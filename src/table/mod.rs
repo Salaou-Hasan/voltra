@@ -1,0 +1,825 @@
+// ============================================================================
+// NeonDB Table Engine — High-throughput rewrite
+//
+// Session 4  — CPU-aware DashMap shard count
+// Session 7  — Serializable isolation (TODO-001) + atomicity on panic (TODO-002)
+// Session 8  — main.rs wiring fix for TODO-003
+// Session 9  — Fixed isolation test to use ReducerContext
+// Session 10 — Root-cause fix for lost-update bug in isolation test.
+//
+//   THE BUG (sessions 7-9 misdiagnosis):
+//     apply_delta_batch() acquires row locks only during the write phase.
+//     But ReducerContext reads the counter BEFORE commit() is called, i.e.
+//     before the lock is held.  Two threads both read old_value=N, both
+//     stage new_value=N+1, then commit sequentially — second write clobbers
+//     the first.  The lock serialises the writes but not the read-modify-write
+//     cycle as a whole.
+//
+//   THE FIX:
+//     Add a new RowDelta operation: "counter_add".  Instead of staging the
+//     absolute new counter value, ReducerContext::set_counter() now stages
+//     a delta amount (+N).  apply_delta_batch() handles "counter_add" by
+//     re-reading the CURRENT committed value under the row lock and adding
+//     the delta atomically.  The read is now inside the lock window.
+//
+//     The "insert"/"update" absolute-write operations remain unchanged for
+//     all other use-cases (set_row, WAL replay, direct tests).
+//
+//   PITFALL: "counter_add" deltas do NOT carry a pre-computed row_data.
+//     row_data is set to None on the staged delta and filled in by
+//     apply_delta_batch() after the locked re-read+add.  Callers that
+//     inspect delta.row_data before commit() will see None — this is
+//     intentional and documented.
+// ============================================================================
+
+use crate::error::{NeonDBError, Result};
+use bytes::Bytes;
+use dashmap::DashMap;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// Compute the optimal DashMap inner-shard count for the current machine.
+fn optimal_row_shard_count() -> usize {
+    let cpus = num_cpus::get();
+    let target = (cpus * 4).next_power_of_two();
+    target.max(16)
+}
+
+// ── Public types ─────────────────────────────────────────────────────────────
+
+pub type RowId = u32;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Counter {
+    pub id: RowId,
+    pub name: String,
+    pub value: i32,
+    pub last_modified: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Player {
+    pub id: RowId,
+    pub name: String,
+    pub level: i32,
+    pub last_modified: i64,
+    pub blob_offset: Option<u64>,
+}
+
+/// Lightweight delta carrying a shared reference to the serialised payload.
+/// Cloning is O(1) — Arc refcount bump only.
+///
+/// ## Operations
+/// - `"insert"` / `"update"` — write `row_data` as the new absolute row value.
+/// - `"delete"` — remove the row; `row_data` is None.
+/// - `"counter_add"` — atomically add `counter_add_amount` to the named
+///   counter under the row lock.  `row_data` is None before commit and is
+///   filled in by `apply_delta_batch()`.  This is the ONLY operation that
+///   performs a locked read-modify-write, which is what makes concurrent
+///   increments correct.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RowDelta {
+    pub table_name: String,
+    pub operation: String,
+    pub row_key: String,
+    pub row_id: RowId,
+    pub shard_id: u32,
+    #[serde(skip)]
+    pub payload_arc: Option<Arc<Bytes>>,
+    pub row_data: Option<Value>,
+    /// Non-zero only for `"counter_add"` operations.
+    /// Stores the signed integer amount to add to the counter's current value.
+    #[serde(default)]
+    pub counter_add_amount: i32,
+    /// Timestamp for `"counter_add"` — used to set `last_modified`.
+    #[serde(default)]
+    pub counter_add_timestamp: i64,
+}
+
+impl RowDelta {
+    pub fn row_data_value(&self) -> Option<Value> {
+        if let Some(arc) = &self.payload_arc {
+            serde_json::from_slice(arc).ok()
+        } else {
+            self.row_data.clone()
+        }
+    }
+}
+
+// ── Internal row representation ───────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+struct StoredRow {
+    row_id: RowId,
+    shard_id: u32,
+    data: Arc<Bytes>,
+    blob_offset: Option<u64>,
+}
+
+// ── Blob store ────────────────────────────────────────────────────────────────
+
+struct BlobStore {
+    #[allow(dead_code)]
+    path: PathBuf,
+    file: File,
+    next_offset: u64,
+}
+
+impl BlobStore {
+    fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(&path)?;
+        let next_offset = file.seek(SeekFrom::End(0))?;
+        Ok(BlobStore { path, file, next_offset })
+    }
+
+    fn store_blob(&mut self, payload: &[u8]) -> Result<u64> {
+        let offset = self.next_offset;
+        let len = payload.len() as u64;
+        self.file.write_all(&len.to_le_bytes())?;
+        self.file.write_all(payload)?;
+        self.file.flush()?;
+        self.next_offset += 8 + len;
+        Ok(offset)
+    }
+
+    fn load_blob(&mut self, offset: u64) -> Result<Vec<u8>> {
+        self.file.seek(SeekFrom::Start(offset))?;
+        let mut len_buf = [0u8; 8];
+        self.file.read_exact(&mut len_buf)?;
+        let len = u64::from_le_bytes(len_buf);
+        let mut buf = vec![0u8; len as usize];
+        self.file.read_exact(&mut buf)?;
+        Ok(buf)
+    }
+}
+
+// ── Per-table shard ───────────────────────────────────────────────────────────
+
+struct Table {
+    rows: DashMap<String, StoredRow>,
+    /// Per-row-key write locks.  Acquired in sorted key order inside
+    /// apply_delta_batch() to prevent deadlocks.  Reads are lock-free.
+    row_locks: DashMap<String, Arc<Mutex<()>>>,
+}
+
+impl Table {
+    fn new() -> Self {
+        let shards = optimal_row_shard_count();
+        Table {
+            rows: DashMap::with_capacity_and_shard_amount(256, shards),
+            row_locks: DashMap::with_capacity_and_shard_amount(256, shards),
+        }
+    }
+
+    fn row_lock(&self, key: &str) -> Arc<Mutex<()>> {
+        if let Some(l) = self.row_locks.get(key) {
+            return l.clone();
+        }
+        self.row_locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+}
+
+// ── TableStore ────────────────────────────────────────────────────────────────
+
+pub struct TableStore {
+    tables: DashMap<String, Arc<Table>>,
+    blob_store: RwLock<BlobStore>,
+    next_row_id: AtomicU32,
+    pub shard_id: u32,
+    pub shard_count: u32,
+}
+
+impl TableStore {
+    pub fn new() -> Self {
+        let data_dir = std::env::temp_dir().join("neondb_blobs");
+        let blob_path = data_dir.join("blobs.bin");
+        let blob_store = BlobStore::open(blob_path).expect("Failed to open blob store");
+
+        TableStore {
+            tables: DashMap::with_capacity_and_shard_amount(64, 32),
+            blob_store: RwLock::new(blob_store),
+            next_row_id: AtomicU32::new(1),
+            shard_id: 0,
+            shard_count: 1,
+        }
+    }
+
+    pub fn set_shard(&mut self, shard_id: u32, shard_count: u32) {
+        self.shard_id = shard_id;
+        self.shard_count = shard_count.max(1);
+    }
+
+    pub fn shard_id(&self) -> u32 {
+        self.shard_id
+    }
+
+    fn alloc_row_id(&self) -> RowId {
+        self.next_row_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn get_or_create_table(&self, name: &str) -> Arc<Table> {
+        if let Some(t) = self.tables.get(name) {
+            return t.clone();
+        }
+        self.tables
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(Table::new()))
+            .clone()
+    }
+
+    fn row_matches_shard(&self, shard_id: u32) -> bool {
+        self.shard_count <= 1 || shard_id == self.shard_id
+    }
+
+    fn decode_row(row: &StoredRow) -> Result<Value> {
+        serde_json::from_slice(&row.data)
+            .map_err(|e| NeonDBError::SerializationError(format!("Row decode: {}", e)))
+    }
+
+    fn load_blob_into_value(&self, value: &mut Value, offset: u64) -> Result<()> {
+        let blob = self.blob_store.write().load_blob(offset)?;
+        let inventory: Value = serde_json::from_slice(&blob)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("inventory".to_string(), inventory);
+        }
+        Ok(())
+    }
+
+    // ── Public read API ──────────────────────────────────────────────────────
+
+    pub fn get_row(&self, table_name: &str, key: &str) -> Result<Option<Value>> {
+        let table = match self.tables.get(table_name) {
+            Some(t) => t.clone(),
+            None => return Ok(None),
+        };
+        let row = match table.rows.get(key) {
+            Some(r) => r.clone(),
+            None => return Ok(None),
+        };
+        if !self.row_matches_shard(row.shard_id) {
+            return Ok(None);
+        }
+        let mut value = Self::decode_row(&row)?;
+        if let Some(offset) = row.blob_offset {
+            self.load_blob_into_value(&mut value, offset)?;
+        }
+        Ok(Some(value))
+    }
+
+    pub fn list_rows(&self, table_name: &str) -> Result<Vec<Value>> {
+        let table = match self.tables.get(table_name) {
+            Some(t) => t.clone(),
+            None => return Ok(vec![]),
+        };
+        let mut rows = Vec::with_capacity(table.rows.len());
+        for entry in table.rows.iter() {
+            let row = entry.value();
+            if !self.row_matches_shard(row.shard_id) {
+                continue;
+            }
+            let mut value = Self::decode_row(row)?;
+            if let Some(offset) = row.blob_offset {
+                self.load_blob_into_value(&mut value, offset)?;
+            }
+            rows.push(value);
+        }
+        Ok(rows)
+    }
+
+    // ── Internal single-row write (lock must already be held by caller) ──────
+
+    fn write_row_unlocked(&self, table_name: &str, key: &str, value: Value) -> Result<RowDelta> {
+        let table = self.get_or_create_table(table_name);
+
+        let (operation, row_id) = if let Some(existing) = table.rows.get(key) {
+            ("update".to_string(), existing.row_id)
+        } else {
+            ("insert".to_string(), self.alloc_row_id())
+        };
+
+        let (final_value, blob_offset) = self.prepare_value(table_name, key, value)?;
+
+        let encoded = serde_json::to_vec(&final_value)
+            .map_err(|e| NeonDBError::SerializationError(format!("Row encode: {}", e)))?;
+        let arc_bytes = Arc::new(Bytes::from(encoded));
+
+        let stored = StoredRow {
+            row_id,
+            shard_id: self.shard_id,
+            data: arc_bytes.clone(),
+            blob_offset,
+        };
+        table.rows.insert(key.to_string(), stored);
+
+        Ok(RowDelta {
+            table_name: table_name.to_string(),
+            operation,
+            row_key: key.to_string(),
+            row_id,
+            shard_id: self.shard_id,
+            payload_arc: Some(arc_bytes),
+            row_data: Some(final_value),
+            counter_add_amount: 0,
+            counter_add_timestamp: 0,
+        })
+    }
+
+    fn delete_row_unlocked(&self, table_name: &str, key: &str) -> Result<RowDelta> {
+        let row_id = self
+            .tables
+            .get(table_name)
+            .and_then(|t| t.rows.get(key).map(|r| r.row_id))
+            .unwrap_or(0);
+        if let Some(table) = self.tables.get(table_name) {
+            table.rows.remove(key);
+        }
+        Ok(RowDelta {
+            table_name: table_name.to_string(),
+            operation: "delete".to_string(),
+            row_key: key.to_string(),
+            row_id,
+            shard_id: self.shard_id,
+            payload_arc: None,
+            row_data: None,
+            counter_add_amount: 0,
+            counter_add_timestamp: 0,
+        })
+    }
+
+    // ── Public write API (single-writer / convenience / tests) ───────────────
+
+    pub fn set_row(&self, table_name: String, key: String, value: Value) -> Result<RowDelta> {
+        self.write_row_unlocked(&table_name, &key, value)
+    }
+
+    pub fn delete_row(&self, table_name: &str, key: &str) -> Result<RowDelta> {
+        self.delete_row_unlocked(table_name, key)
+    }
+
+    // ── ATOMIC BATCH COMMIT ──────────────────────────────────────────────────
+    //
+    // TODO-001: Serializable isolation for concurrent reducers.
+    //   Row locks are acquired in sorted (table_name, row_key) order before
+    //   any writes so two concurrent commits on the same row serialize.
+    //
+    // TODO-002: Atomicity on panic.
+    //   catch_unwind in main.rs prevents commit() from being called on a
+    //   panicking reducer.  If apply_delta_batch itself hits an error mid-
+    //   batch, all already-applied rows are rolled back.
+    //
+    // "counter_add" (Session 10 fix):
+    //   For counter_add deltas the committed value is re-read UNDER THE LOCK
+    //   and the amount is added to it.  This makes the full read-modify-write
+    //   cycle atomic — the read is no longer outside the lock window.
+    pub fn apply_delta_batch(&self, deltas: &[RowDelta]) -> Result<Vec<RowDelta>> {
+        if deltas.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // ── 1. Collect and sort lock keys ────────────────────────────────────
+        let mut lock_keys: Vec<(String, String)> = deltas
+            .iter()
+            .filter(|d| self.shard_count <= 1 || d.shard_id == self.shard_id)
+            .map(|d| (d.table_name.clone(), d.row_key.clone()))
+            .collect();
+        lock_keys.sort_unstable();
+        lock_keys.dedup();
+
+        // ── 2. Acquire all row locks in sorted order ─────────────────────────
+        let lock_arcs: Vec<Arc<Mutex<()>>> = lock_keys
+            .iter()
+            .map(|(table_name, key)| {
+                let table = self.get_or_create_table(table_name);
+                table.row_lock(key)
+            })
+            .collect();
+
+        let _guards: Vec<_> = lock_arcs
+            .iter()
+            .map(|m| m.lock().expect("Row lock poisoned"))
+            .collect();
+
+        // ── 3. Apply each delta, rolling back on error ───────────────────────
+        let mut applied: Vec<(String, String, Option<StoredRow>)> = Vec::new();
+        let mut committed_deltas: Vec<RowDelta> = Vec::with_capacity(deltas.len());
+
+        for delta in deltas {
+            if self.shard_count > 1 && delta.shard_id != self.shard_id {
+                continue;
+            }
+
+            let result: Result<RowDelta> = match delta.operation.as_str() {
+                "insert" | "update" => {
+                    let value = delta
+                        .row_data_value()
+                        .ok_or_else(|| NeonDBError::table_error(
+                            "insert/update delta missing row_data",
+                        ))?;
+                    let old = self
+                        .tables
+                        .get(&delta.table_name)
+                        .and_then(|t| t.rows.get(&delta.row_key).map(|r| r.clone()));
+                    applied.push((delta.table_name.clone(), delta.row_key.clone(), old));
+                    self.write_row_unlocked(&delta.table_name, &delta.row_key, value)
+                }
+                "delete" => {
+                    let old = self
+                        .tables
+                        .get(&delta.table_name)
+                        .and_then(|t| t.rows.get(&delta.row_key).map(|r| r.clone()));
+                    applied.push((delta.table_name.clone(), delta.row_key.clone(), old));
+                    self.delete_row_unlocked(&delta.table_name, &delta.row_key)
+                }
+                // ── counter_add: locked read-modify-write ────────────────────
+                // Re-read current committed value INSIDE the lock, add the
+                // staged amount, write the result.  This is what makes
+                // concurrent increments correct — the read is no longer a
+                // data race outside the lock window.
+                "counter_add" => {
+                    let name = &delta.row_key;
+                    let current_val = self
+                        .get_counter(name)?
+                        .map(|c| c.value)
+                        .unwrap_or(0);
+                    let new_val = current_val + delta.counter_add_amount;
+
+                    // Preserve existing row_id if the row already exists.
+                    let row_id = self
+                        .get_counter(name)?
+                        .map(|c| c.id)
+                        .unwrap_or_else(|| self.alloc_row_id());
+
+                    let counter = Counter {
+                        id: row_id,
+                        name: name.clone(),
+                        value: new_val,
+                        last_modified: delta.counter_add_timestamp,
+                    };
+                    let value = serde_json::to_value(counter)
+                        .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+
+                    let old = self
+                        .tables
+                        .get(&delta.table_name)
+                        .and_then(|t| t.rows.get(&delta.row_key).map(|r| r.clone()));
+                    applied.push((delta.table_name.clone(), delta.row_key.clone(), old));
+                    self.write_row_unlocked(&delta.table_name, name, value)
+                }
+                other => Err(NeonDBError::table_error(format!("Unknown operation: {}", other))),
+            };
+
+            match result {
+                Ok(committed) => committed_deltas.push(committed),
+                Err(e) => {
+                    // Rollback all already-applied rows in reverse order.
+                    for (tbl, key, old_row) in applied.into_iter().rev() {
+                        if let Some(table) = self.tables.get(&tbl) {
+                            match old_row {
+                                Some(row) => { table.rows.insert(key, row); }
+                                None      => { table.rows.remove(&key); }
+                            }
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(committed_deltas)
+    }
+
+    /// Legacy single-delta path — used by WAL replay and convenience tests.
+    pub fn apply_delta(&self, delta: &RowDelta) -> Result<()> {
+        self.apply_delta_batch(std::slice::from_ref(delta)).map(|_| ())
+    }
+
+    // ── Blob helpers ─────────────────────────────────────────────────────────
+
+    fn should_store_blob(value: &Value) -> bool {
+        if let Some(obj) = value.as_object() {
+            if let Some(inventory) = obj.get("inventory") {
+                return inventory.is_array() && !inventory.as_array().unwrap().is_empty();
+            }
+        }
+        false
+    }
+
+    fn prepare_value(
+        &self,
+        table_name: &str,
+        key: &str,
+        mut value: Value,
+    ) -> Result<(Value, Option<u64>)> {
+        let mut blob_offset = None;
+        if Self::should_store_blob(&value) {
+            if let Some(inventory) = value.get_mut("inventory") {
+                let bytes = serde_json::to_vec(inventory)?;
+                let offset = self.blob_store.write().store_blob(&bytes)?;
+                *inventory = Value::Null;
+                blob_offset = Some(offset);
+            }
+        }
+        if table_name == "players" {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "shard_id".to_string(),
+                    Value::Number(self.shard_id.into()),
+                );
+            }
+        }
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("row_key".to_string(), Value::String(key.to_string()));
+        }
+        Ok((value, blob_offset))
+    }
+
+    // ── Counter convenience layer ─────────────────────────────────────────────
+
+    pub fn get_counter(&self, name: &str) -> Result<Option<Counter>> {
+        if let Some(value) = self.get_row("counters", name)? {
+            let counter: Counter = serde_json::from_value(value)
+                .map_err(|e| NeonDBError::SerializationError(
+                    format!("Counter decode: {}", e),
+                ))?;
+            Ok(Some(counter))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn list_counters(&self) -> Result<Vec<Counter>> {
+        let values = self.list_rows("counters")?;
+        values
+            .into_iter()
+            .map(|v| {
+                serde_json::from_value(v).map_err(|e| {
+                    NeonDBError::SerializationError(format!("Counter decode: {}", e))
+                })
+            })
+            .collect()
+    }
+
+    pub fn set_counter(
+        &self,
+        name: String,
+        value: i32,
+        last_modified: i64,
+    ) -> Result<RowDelta> {
+        let existing = self.get_counter(&name)?;
+        let row_id = existing
+            .map(|c| c.id)
+            .unwrap_or_else(|| self.alloc_row_id());
+        let counter = Counter {
+            id: row_id,
+            name: name.clone(),
+            value,
+            last_modified,
+        };
+        self.set_row(
+            "counters".to_string(),
+            name,
+            serde_json::to_value(counter)?,
+        )
+    }
+
+    pub fn delete_counter(&self, name: &str) -> Result<RowDelta> {
+        self.delete_row("counters", name)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> Arc<TableStore> {
+        Arc::new(TableStore::new())
+    }
+
+    #[test]
+    fn test_insert_and_get() {
+        let s = store();
+        s.set_counter("foo".to_string(), 42, 1000).unwrap();
+        let c = s.get_counter("foo").unwrap();
+        assert_eq!(
+            c,
+            Some(Counter {
+                id: c.as_ref().unwrap().id,
+                name: "foo".to_string(),
+                value: 42,
+                last_modified: 1000,
+            })
+        );
+    }
+
+    #[test]
+    fn test_update() {
+        let s = store();
+        s.set_counter("foo".to_string(), 42, 1000).unwrap();
+        s.set_counter("foo".to_string(), 50, 2000).unwrap();
+        assert_eq!(s.get_counter("foo").unwrap().unwrap().value, 50);
+    }
+
+    #[test]
+    fn test_delete() {
+        let s = store();
+        s.set_counter("foo".to_string(), 42, 1000).unwrap();
+        s.delete_counter("foo").unwrap();
+        assert_eq!(s.get_counter("foo").unwrap(), None);
+    }
+
+    #[test]
+    fn test_apply_delta() {
+        let s = store();
+        let delta = RowDelta {
+            table_name: "counters".to_string(),
+            operation: "insert".to_string(),
+            row_key: "foo".to_string(),
+            row_id: 1,
+            shard_id: 0,
+            payload_arc: None,
+            row_data: Some(serde_json::json!({
+                "id": 1, "name": "foo", "value": 100, "last_modified": 5000
+            })),
+            counter_add_amount: 0,
+            counter_add_timestamp: 0,
+        };
+        s.apply_delta(&delta).unwrap();
+        assert_eq!(s.get_counter("foo").unwrap().unwrap().value, 100);
+    }
+
+    #[test]
+    fn test_concurrent_writes_different_tables() {
+        use std::thread;
+        let s = Arc::new(TableStore::new());
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let s = s.clone();
+                thread::spawn(move || {
+                    let table = format!("table_{}", i);
+                    for j in 0..100 {
+                        s.set_row(
+                            table.clone(),
+                            format!("k{}", j),
+                            serde_json::json!({"v": j}),
+                        )
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        for i in 0..8 {
+            let rows = s.list_rows(&format!("table_{}", i)).unwrap();
+            assert_eq!(rows.len(), 100);
+        }
+    }
+
+    #[test]
+    fn test_arc_bytes_delta_payload() {
+        let s = store();
+        let delta = s.set_counter("x".to_string(), 7, 0).unwrap();
+        assert!(delta.payload_arc.is_some());
+        let arc1 = delta.payload_arc.clone().unwrap();
+        let arc2 = arc1.clone();
+        assert_eq!(arc1.as_ptr(), arc2.as_ptr());
+    }
+
+    #[test]
+    fn test_optimal_shard_count_is_power_of_two() {
+        let count = optimal_row_shard_count();
+        assert!(count >= 16);
+        assert_eq!(count & (count - 1), 0, "shard count must be a power of two");
+    }
+
+    // ── TODO-001: Serializable isolation ─────────────────────────────────────
+    //
+    // Two threads each do 500 increments on the SAME counter via ReducerContext.
+    // Final value must be exactly 1000 — no lost updates.
+    //
+    // WHY THIS NOW PASSES (Session 10):
+    //   ReducerContext::set_counter() stages a "counter_add" delta (the amount
+    //   +1) instead of an absolute value.  apply_delta_batch() re-reads the
+    //   current committed value under the row lock and adds the staged amount.
+    //   The full read-modify-write cycle is atomic: no thread can read a stale
+    //   value because the read happens inside the lock, not before it.
+    #[test]
+    fn test_serializable_isolation_no_lost_updates() {
+        use crate::reducer::context::{increment_reducer, ReducerContext};
+        use std::thread;
+
+        let tables = Arc::new(TableStore::new());
+        tables.set_counter("shared".to_string(), 0, 0).unwrap();
+
+        let iters = 500usize;
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let tables = tables.clone();
+                thread::spawn(move || {
+                    for _ in 0..iters {
+                        let mut ctx = ReducerContext::new(tables.clone(), 0);
+                        increment_reducer(&mut ctx, "shared".to_string(), 1).unwrap();
+                        ctx.commit().unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_val = tables.get_counter("shared").unwrap().unwrap().value;
+        assert_eq!(
+            final_val, (iters * 2) as i32,
+            "Expected {} but got {} — lost update detected",
+            iters * 2, final_val
+        );
+    }
+
+    // ── TODO-002: Atomicity — failed batch must not partially apply ───────────
+    #[test]
+    fn test_atomic_batch_rollback_on_error() {
+        let s = store();
+
+        let deltas = vec![
+            RowDelta {
+                table_name: "counters".to_string(),
+                operation: "insert".to_string(),
+                row_key: "alpha".to_string(),
+                row_id: 1,
+                shard_id: 0,
+                payload_arc: None,
+                row_data: Some(serde_json::json!({
+                    "id": 1, "name": "alpha", "value": 99, "last_modified": 0
+                })),
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
+            },
+            RowDelta {
+                table_name: "counters".to_string(),
+                operation: "INVALID_OP".to_string(),
+                row_key: "beta".to_string(),
+                row_id: 2,
+                shard_id: 0,
+                payload_arc: None,
+                row_data: None,
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
+            },
+        ];
+
+        let result = s.apply_delta_batch(&deltas);
+        assert!(result.is_err(), "Batch with invalid op should fail");
+
+        assert!(
+            s.get_counter("alpha").unwrap().is_none(),
+            "Rolled-back row must not be visible after failed batch"
+        );
+        assert!(
+            s.get_counter("beta").unwrap().is_none(),
+            "Row after error point must never have been applied"
+        );
+    }
+
+    // ── counter_add: verify locked RMW produces correct result ───────────────
+    #[test]
+    fn test_counter_add_delta_atomicity() {
+        let s = store();
+        s.set_counter("pts".to_string(), 10, 0).unwrap();
+
+        let delta = RowDelta {
+            table_name: "counters".to_string(),
+            operation: "counter_add".to_string(),
+            row_key: "pts".to_string(),
+            row_id: 0,
+            shard_id: 0,
+            payload_arc: None,
+            row_data: None,
+            counter_add_amount: 5,
+            counter_add_timestamp: 1000,
+        };
+        s.apply_delta_batch(&[delta]).unwrap();
+        assert_eq!(s.get_counter("pts").unwrap().unwrap().value, 15);
+    }
+}

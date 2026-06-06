@@ -1,0 +1,43 @@
+services:
+  neondb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    environment:
+      NEONDB_HOST: "0.0.0.0"
+      NEONDB_PORT: "8000"
+      NEONDB_METRICS_PORT: "8001"
+      NEONDB_WAL_PATH: "/data/wal/neondb.wal"
+      NEONDB_FSYNC_INTERVAL_MS: "0"
+      NEONDB_WAL_BATCH_SIZE: "100000"
+      NEONDB_WAL_BATCH_INTERVAL_MS: "100"
+      NEONDB_UNSAFE_NO_FSYNC: "false"
+      NEONDB_SHARD_ID: "0"
+      NEONDB_SHARD_COUNT: "1"
+      NEONDB_MAX_CONNECTIONS: "200"
+      NEONDB_REDUCER_TIMEOUT_MS: "5000"
+      RUST_LOG: "info"
+    volumes:
+      - neondb-data:/data/wal
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    # Resource limits for containerized deployment
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '1'
+          memory: 512M
+
+volumes:
+  neondb-data:
+    driver: local
