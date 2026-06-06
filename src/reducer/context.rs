@@ -25,6 +25,7 @@
 // ============================================================================
 
 use crate::error::{NeonDBError, Result};
+use crate::schema::SchemaRegistry;
 use crate::table::{Counter, RowDelta, TableStore};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,7 @@ pub struct ReducerContext {
     pub tables: Arc<TableStore>,
     pub timestamp: u64,
     pub caller_id: String,
+    pub schema: Option<Arc<SchemaRegistry>>,
     pending_deltas: Vec<RowDelta>,
     pub pending_diffs: Vec<SubscriptionDiff>,
 }
@@ -51,9 +53,15 @@ impl ReducerContext {
             tables,
             timestamp,
             caller_id: String::new(),
+            schema: None,
             pending_deltas: Vec::with_capacity(4),
             pending_diffs: Vec::with_capacity(4),
         }
+    }
+
+    pub fn with_schema(mut self, schema: Arc<SchemaRegistry>) -> Self {
+        self.schema = Some(schema);
+        self
     }
 
     // ── Reads (check pending deltas first for read-your-writes) ──────────────
@@ -89,6 +97,13 @@ impl ReducerContext {
         row_key: String,
         row_value: Value,
     ) -> Result<RowDelta> {
+        // Schema validation — if a registry is attached, validate before staging.
+        let row_value = if let Some(schema) = &self.schema {
+            schema.validate(&table_name, row_value)?
+        } else {
+            row_value
+        };
+
         let existing = self.get_row(&table_name, &row_key)?;
         let operation = if existing.is_some() {
             "update"

@@ -1407,6 +1407,20 @@ async fn run_server(config: Config) -> Result<()> {
         Err(e) => log::warn!("Migration error: {}", e),
     }
 
+    // ── Schema registry ───────────────────────────────────────────────────────
+    let schema_registry = Arc::new(
+        neondb::schema::SchemaRegistry::load_from_file(std::path::Path::new("schema.toml"))
+            .unwrap_or_else(|e| {
+                log::warn!("schema.toml load error: {} — running without type enforcement", e);
+                neondb::schema::SchemaRegistry::new()
+            })
+    );
+    if schema_registry.table_count() > 0 {
+        log::info!("Schema: enforcing types for tables: {:?}", schema_registry.list_tables());
+    } else {
+        log::debug!("Schema: no schema.toml found — all tables are schema-free");
+    }
+
     let (reducer_tx, reducer_rx) = kanal::unbounded_async::<PendingCall>();
     let subscription_manager = Arc::new(SubscriptionManager::new_with_options(config.two_frame_protocol));
     log::info!("Subscription fan-out mode: {}", if config.two_frame_protocol { "two-frame" } else { "legacy" });
@@ -1461,6 +1475,7 @@ async fn run_server(config: Config) -> Result<()> {
         let seq_w = global_seq.clone();
         let snap_interval_w = snapshot_interval;
         let snap_dir_ww = snapshot_dir_w.clone();
+        let schema_w = schema_registry.clone();
 
         let handle = tokio::spawn(async move {
             log::debug!("Reducer worker {} started", worker_id);
@@ -1475,10 +1490,13 @@ async fn run_server(config: Config) -> Result<()> {
                 let timestamp = current_timestamp_nanos();
                 let call_caller_id = call.caller_id.clone();
 
+                let schema_for_blk = schema_w.clone();
                 let blk_result = tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
                     tokio::task::spawn_blocking(move || {
-                        let mut ctx = ReducerContext::new(tables_blk, timestamp);
+                        let schema_for_ctx = schema_for_blk;
+                        let mut ctx = ReducerContext::new(tables_blk, timestamp)
+                            .with_schema(schema_for_ctx);
                         ctx.caller_id = call_caller_id;
                         let exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             registry_blk.execute(&reducer_name, &mut ctx, &args)

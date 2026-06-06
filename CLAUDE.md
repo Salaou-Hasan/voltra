@@ -483,6 +483,38 @@ Three bugs fixed:
 
 ---
 
+### Session 26 — High Priority Gaps: Templates + Schema + React Hooks
+
+**TODO-023 — Project Templates** (`src/main.rs`)
+- Added `neondb init <name> --template <blank|chat|leaderboard|mmo|turn-based>` flag
+- Added `neondb templates` subcommand listing all templates with descriptions
+- All 5 templates fully embedded as `&str` constants — no external files, no `include_dir` dep
+- Each template ships: JS reducers, TypeScript client example, README, neondb.toml
+- Template details:
+  - `blank`: single hello.js counter reducer
+  - `chat`: rooms + members + messages tables, join_room.js + send_message.js
+  - `leaderboard`: scores table, submit_score.js + reset_scores.js, [[scheduler]] config
+  - `mmo`: players table, spawn_player.js + move_player.js + attack.js, zone subscriptions
+  - `turn-based`: games table, create_game.js + join_game.js + make_move.js with turn validation
+
+**TODO-018 — Typed Schema System** (`src/schema.rs` already existed, wired into server)
+- `src/schema.rs` was already complete: `ColumnType`, `ColumnDef`, `TableSchema`, `SchemaRegistry`, 10 tests
+- Wired into `run_server()`: loads `schema.toml` at startup (no-op if absent — backward compatible)
+- `SchemaRegistry` passed to every `ReducerContext` via `.with_schema(schema_w)`
+- Validation fires on every `set_row` call inside `ReducerContext` before staging the delta
+- Type coercion: integer JSON values auto-coerced to `f64` columns without error
+- Backward compatible: tables without a schema entry accept any JSON (open schema)
+
+**TODO-019 — React Hooks** (`neondb-client-ts/src/hooks.tsx`)
+- `NeonDBProvider` — wraps app with a stable shared `NeonDBClient`, auto-connects/disconnects
+- `useNeonDBQuery<T>(query)` — subscribes, accumulates initial snapshot without per-row re-renders, returns `{ rows: Map<key,T>, loading, error }`
+- `useNeonDBReducer(name)` — returns `[call, { loading, error, lastResult }]`, safe after unmount
+- `useNeonDB()` / `useNeonDBClient()` — escape hatch to raw client
+- React 18 concurrent mode safe: no setState after unmount, stable refs, no tearing
+- `package.json` already exported hooks at `./react` sub-path with React as optional peer dep
+
+---
+
 ## What Remains (Roadmap)
 
 ### 1. Two-frame protocol for subscription delivery

@@ -182,7 +182,7 @@ latency + TPS, markdown report. Required by PHASE_0_PLANNING.md Phase 6 acceptan
 ## NEW GAPS — Added Session 25 (vs SpacetimeDB feature parity)
 
 ### TODO-018 — Typed Schema System
-**Status**: ❌ NOT STARTED
+**Status**: ✅ DONE (Session 26)
 **SpacetimeDB has**: Strongly-typed tables defined in code — columns have explicit types (`u64`, `String`, `bool`), primary keys declared, server enforces them, client bindings generated from schema.
 **We have**: Schema-free tables — rows are raw JSON blobs (`HashMap<String, Value>`). Anything goes in, no validation, no type enforcement.
 
@@ -200,7 +200,7 @@ latency + TPS, markdown report. Required by PHASE_0_PLANNING.md Phase 6 acceptan
 ---
 
 ### TODO-019 — React Hooks in TypeScript SDK
-**Status**: ❌ NOT STARTED
+**Status**: ✅ DONE (Session 26)
 **SpacetimeDB has**: `useSpacetimeDBQuery()`, `useReducer()` — type-safe React hooks that auto-subscribe and re-render on data changes.
 **We have**: Bare `NeonDBClient` class. Developers must wire subscriptions to React state manually.
 
@@ -267,7 +267,7 @@ latency + TPS, markdown report. Required by PHASE_0_PLANNING.md Phase 6 acceptan
 ---
 
 ### TODO-023 — Project Templates
-**Status**: ❌ NOT STARTED
+**Status**: ✅ DONE (Session 26)
 **SpacetimeDB has**: Starter templates for common game patterns (chat, MMO movement, leaderboard, turn-based game).
 **We have**: `neondb init <name>` creates a minimal project with one sample JS reducer. No domain-specific templates.
 
@@ -339,9 +339,9 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 
 ── REMAINING ─────────────────────────────────────────────────────
 17. TODO-017  Dokploy live deploy             ← ship it (your task, not code)
-18. TODO-023  Project templates               ← biggest DX win, pure CLI work
-19. TODO-018  Typed schema system             ← correctness + SpacetimeDB parity
-20. TODO-019  React hooks (TS SDK)            ← frontend usability
+18. TODO-023  Project templates               ✅ DONE (Session 26)
+19. TODO-018  Typed schema system             ✅ DONE (Session 26)
+20. TODO-019  React hooks (TS SDK)            ✅ DONE (Session 26)
 21. TODO-022  Role-based auth / permissions   ← production security
 22. TODO-020  OR / JOIN / LIMIT queries       ← query completeness
 23. TODO-021  Optimistic updates (SDKs)       ← UX quality
