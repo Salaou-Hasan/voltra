@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,46 @@ pub struct ScheduledReducerConfig {
     /// Optional JSON-encoded args to pass to the reducer.
     /// Will be MessagePack-encoded before dispatch.
     pub args_json: Option<String>,
+}
+
+/// Role-based access control configuration.
+///
+/// Maps reducer names to the list of roles that are allowed to call them.
+/// A reducer not listed here is callable by ANY authenticated client (open).
+/// An empty `Vec` means NO role can call it (effectively disabled).
+///
+/// Example in `neondb.toml`:
+/// ```toml
+/// [permissions]
+/// delete_player = ["admin"]
+/// reset_scores  = ["admin", "moderator"]
+/// increment     = ["user", "admin"]
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct PermissionsConfig {
+    /// reducer_name → allowed roles.  `None` entry means no restriction.
+    pub rules: HashMap<String, Vec<String>>,
+}
+
+impl PermissionsConfig {
+    /// Returns `true` if `role` is allowed to call `reducer`.
+    ///
+    /// Rules:
+    /// - Reducer not in the map → allowed for everyone (open).
+    /// - Reducer in the map     → caller's role must be in the allowed list.
+    /// - Scheduler calls (`caller_role == "scheduler"`) always bypass checks.
+    pub fn is_allowed(&self, reducer: &str, caller_role: &str) -> bool {
+        // Scheduler is always trusted — it runs inside the server process.
+        if caller_role == "scheduler" {
+            return true;
+        }
+        match self.rules.get(reducer) {
+            // Not restricted — open to all.
+            None => true,
+            // Restricted — role must be in the list.
+            Some(roles) => roles.iter().any(|r| r == caller_role),
+        }
+    }
 }
 
 /// Server configuration loaded from `neondb.toml`, environment variables, or defaults.
@@ -40,6 +81,8 @@ pub struct Config {
     pub snapshot_interval: u64,
     pub snapshot_dir: PathBuf,
     pub scheduled_reducers: Vec<ScheduledReducerConfig>,
+    /// Role-based access control rules.  Empty = no restrictions.
+    pub permissions: PermissionsConfig,
 }
 
 // These structs mirror the TOML schema. Fields that are not yet wired into
@@ -50,6 +93,7 @@ struct ConfigFile {
     project: Option<ConfigProject>,
     server: Option<ConfigServer>,
     scheduler: Option<Vec<ConfigScheduler>>,
+    permissions: Option<HashMap<String, Vec<String>>>,
 }
 
 #[derive(Deserialize)]
@@ -118,6 +162,7 @@ impl Config {
             snapshot_interval: 1_000_000,
             snapshot_dir: env::temp_dir().join("neondb_snapshots"),
             scheduled_reducers: vec![],
+            permissions: PermissionsConfig::default(),
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -125,6 +170,7 @@ impl Config {
                 if let Ok(parsed) = toml::from_str::<ConfigFile>(&contents) {
                     apply_server_section(&mut cfg, parsed.server);
                     apply_scheduler_section(&mut cfg, parsed.scheduler);
+                    apply_permissions_section(&mut cfg, parsed.permissions);
                 }
             }
         }
@@ -139,6 +185,7 @@ impl Config {
         let mut cfg = Config::from_env();
         apply_server_section(&mut cfg, parsed.server);
         apply_scheduler_section(&mut cfg, parsed.scheduler);
+        apply_permissions_section(&mut cfg, parsed.permissions);
         Some(cfg)
     }
 }
@@ -214,6 +261,15 @@ fn apply_scheduler_section(cfg: &mut Config, scheduler: Option<Vec<ConfigSchedul
                 args_json: s.args_json,
             })
             .collect();
+    }
+}
+
+fn apply_permissions_section(
+    cfg: &mut Config,
+    permissions: Option<HashMap<String, Vec<String>>>,
+) {
+    if let Some(rules) = permissions {
+        cfg.permissions = PermissionsConfig { rules };
     }
 }
 
@@ -295,6 +351,12 @@ fn apply_env_overrides(cfg: &mut Config) {
     if let Ok(d) = env::var("NEONDB_SNAPSHOT_DIR") {
         cfg.snapshot_dir = PathBuf::from(d);
     }
+    // NEONDB_PERMISSIONS accepts a JSON object: {"delete_player":["admin"],"increment":["user","admin"]}
+    if let Ok(json) = env::var("NEONDB_PERMISSIONS") {
+        if let Ok(rules) = serde_json::from_str::<HashMap<String, Vec<String>>>(&json) {
+            cfg.permissions = PermissionsConfig { rules };
+        }
+    }
 }
 
 fn find_config_in_cwd() -> Option<PathBuf> {
@@ -323,5 +385,50 @@ mod tests {
         assert_eq!(config.wal_batch_size, 100_000);
         assert_eq!(config.wal_batch_interval_ms, 100);
         assert!(config.scheduled_reducers.is_empty());
+    }
+
+    #[test]
+    fn test_permissions_open_by_default() {
+        let p = PermissionsConfig::default();
+        // No rules means everything is allowed.
+        assert!(p.is_allowed("any_reducer", "user"));
+        assert!(p.is_allowed("any_reducer", ""));
+    }
+
+    #[test]
+    fn test_permissions_role_check() {
+        let mut rules = HashMap::new();
+        rules.insert("delete_player".to_string(), vec!["admin".to_string()]);
+        rules.insert("increment".to_string(), vec!["user".to_string(), "admin".to_string()]);
+        let p = PermissionsConfig { rules };
+
+        assert!(p.is_allowed("delete_player", "admin"));
+        assert!(!p.is_allowed("delete_player", "user"));
+        assert!(!p.is_allowed("delete_player", ""));
+        assert!(p.is_allowed("increment", "user"));
+        assert!(p.is_allowed("increment", "admin"));
+        assert!(!p.is_allowed("increment", "guest"));
+        // Unrestricted reducer.
+        assert!(p.is_allowed("hello", "guest"));
+    }
+
+    #[test]
+    fn test_permissions_scheduler_always_allowed() {
+        let mut rules = HashMap::new();
+        rules.insert("reset_scores".to_string(), vec!["admin".to_string()]);
+        let p = PermissionsConfig { rules };
+        // Scheduler bypasses all role checks.
+        assert!(p.is_allowed("reset_scores", "scheduler"));
+    }
+
+    #[test]
+    fn test_permissions_empty_roles_blocks_all() {
+        let mut rules = HashMap::new();
+        rules.insert("disabled_reducer".to_string(), vec![]);
+        let p = PermissionsConfig { rules };
+        assert!(!p.is_allowed("disabled_reducer", "admin"));
+        assert!(!p.is_allowed("disabled_reducer", "user"));
+        // Scheduler still gets through.
+        assert!(p.is_allowed("disabled_reducer", "scheduler"));
     }
 }

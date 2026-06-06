@@ -4,6 +4,17 @@
 // Session 7 — TODO-003: pass Arc<TableStore> into subscribe handler so new
 //   clients receive initial_snapshot frames for all existing matching rows.
 //
+// Session 28 — TODO-022: Role-based auth / permissions.
+//   - Bearer token now accepts `Bearer <key>` (unchanged) OR
+//     `Bearer <key>:<role>` (new — role extracted from the suffix after the
+//     last colon).  The key validation uses only the part before the colon.
+//   - Parsed role is stored in `PendingCall.caller_role` and threaded into
+//     `ReducerContext.caller_role` by the worker loop in main.rs.
+//   - Before enqueuing a ReducerCall, the server checks
+//     `permissions.is_allowed(reducer_name, caller_role)`.  Unauthorized
+//     calls get an immediate error response without touching the reducer queue.
+//   - `start_listener` now accepts `permissions: Arc<PermissionsConfig>`.
+//
 // Previous sessions:
 //  1. SubscriptionManager in Arc (no Mutex) — DashMap inside.
 //  2. kanal::AsyncSender<PendingCall> — true async send with back-pressure.
@@ -13,6 +24,7 @@
 
 use super::message::{ClientMessage, ReducerResponse, ServerMessage};
 use super::protocol;
+use crate::config::PermissionsConfig;
 use crate::error::{NeonDBError, Result};
 use crate::subscriptions::{OutboundFrames, SubscriptionManager};
 use crate::table::TableStore;
@@ -31,7 +43,11 @@ pub struct PendingCall {
     pub call_id: u64,
     pub reducer_name: String,
     pub args: Vec<u8>,
+    /// Identity of the caller (X-NeonDB-Identity header or TCP peer address).
     pub caller_id: String,
+    /// Role of the caller, parsed from `Bearer <key>:<role>`.
+    /// Empty string when no role suffix was provided.
+    pub caller_role: String,
     pub response_tx: mpsc::UnboundedSender<ReducerResponse>,
 }
 
@@ -40,6 +56,24 @@ struct ConnectionGuard(Arc<AtomicUsize>);
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Parse a Bearer token into (api_key_part, role_part).
+///
+/// Format: `Bearer <key>` → key = full value, role = ""
+/// Format: `Bearer <key>:<role>` → key = part before last ':', role = part after
+///
+/// The split is on the LAST colon so that keys that happen to contain colons
+/// still work as long as the role is appended after the rightmost one.
+fn parse_bearer(header: &str) -> Option<(String, String)> {
+    let token = header.strip_prefix("Bearer ")?;
+    // Split on the last colon to allow roles like "admin" appended as :<role>.
+    match token.rsplit_once(':') {
+        Some((key, role)) if !role.is_empty() && !role.contains('/') => {
+            Some((key.to_string(), role.to_string()))
+        }
+        _ => Some((token.to_string(), String::new())),
     }
 }
 
@@ -53,6 +87,7 @@ pub async fn start_listener(
     max_connections: usize,
     api_key: Option<String>,
     active_connections: Arc<AtomicUsize>,
+    permissions: Arc<PermissionsConfig>,
     mut shutdown: Receiver<()>,
 ) -> Result<()> {
     let bind_addr = format!("{}:{}", addr, port);
@@ -77,9 +112,10 @@ pub async fn start_listener(
                         let tbl     = tables.clone();
                         let api_key = api_key.clone();
                         let conns   = active_connections.clone();
+                        let perms   = permissions.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, peer_addr.to_string()).await {
+                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, peer_addr.to_string()).await {
                                 log::warn!("Client error: {}", e);
                             }
                         });
@@ -103,29 +139,50 @@ async fn handle_client(
     tables: Arc<TableStore>,
     api_key: Option<String>,
     active_connections: Arc<AtomicUsize>,
+    permissions: Arc<PermissionsConfig>,
     peer_addr: String,
 ) -> Result<()> {
     // ── WebSocket handshake with optional Bearer auth ─────────────────────────
-    // Capture the X-NeonDB-Identity header value from the upgrade request.
-    let caller_id_cell = Arc::new(std::sync::Mutex::new(String::new()));
-    let caller_id_capture = caller_id_cell.clone();
+    // Capture the X-NeonDB-Identity header and the caller role from the token.
+    let caller_id_cell   = Arc::new(std::sync::Mutex::new(String::new()));
+    let caller_role_cell = Arc::new(std::sync::Mutex::new(String::new()));
+    let caller_id_capture   = caller_id_cell.clone();
+    let caller_role_capture = caller_role_cell.clone();
 
     let auth_key = api_key.clone();
     let ws_stream = tokio_tungstenite::accept_hdr_async(
         stream,
         move |request: &Request, response: Response| {
-            if let Some(key) = auth_key.as_ref() {
-                let auth = request
-                    .headers()
-                    .get("authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                if auth != format!("Bearer {}", key) {
+            let auth_header = request
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+
+            if let Some(required_key) = auth_key.as_ref() {
+                // Parse the presented token — accept both `Bearer <key>` and
+                // `Bearer <key>:<role>`.  Only the key part is validated here.
+                let (presented_key, role) = parse_bearer(auth_header)
+                    .unwrap_or_else(|| (String::new(), String::new()));
+
+                if &presented_key != required_key {
                     return Err(ErrorResponse::new(Some("Unauthorized".to_string())));
                 }
+
+                // Store the role for use inside the message loop.
+                if let Ok(mut cell) = caller_role_capture.lock() {
+                    *cell = role;
+                }
+            } else if !auth_header.is_empty() {
+                // No server key required — still parse and store role if provided.
+                if let Some((_key, role)) = parse_bearer(auth_header) {
+                    if let Ok(mut cell) = caller_role_capture.lock() {
+                        *cell = role;
+                    }
+                }
             }
-            // Extract per-connection identity from the X-NeonDB-Identity header.
-            // Falls back to the TCP peer address if not provided.
+
+            // Extract per-connection identity from X-NeonDB-Identity header.
             if let Some(id) = request
                 .headers()
                 .get("x-neondb-identity")
@@ -141,14 +198,13 @@ async fn handle_client(
     .await
     .map_err(|e| NeonDBError::network_error(format!("WebSocket handshake error: {}", e)))?;
 
-    // Resolve caller_id: X-NeonDB-Identity header if supplied, else TCP peer address.
+    // Resolve caller_id and caller_role for the lifetime of this connection.
     let caller_id: String = {
-        let guard = caller_id_cell.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.is_empty() {
-            peer_addr.clone()
-        } else {
-            guard.clone()
-        }
+        let g = caller_id_cell.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_empty() { peer_addr.clone() } else { g.clone() }
+    };
+    let caller_role: String = {
+        caller_role_cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
     };
 
     let _conn_guard = ConnectionGuard(active_connections.clone());
@@ -211,11 +267,31 @@ async fn handle_client(
             Ok(Message::Binary(data)) => {
                 match protocol::decode_client_message(&data) {
                     Ok(ClientMessage::ReducerCall(call)) => {
+                        // ── Permission check ──────────────────────────────────
+                        if !permissions.is_allowed(&call.reducer_name, &caller_role) {
+                            log::warn!(
+                                "Permission denied: caller_role='{}' tried to call '{}'",
+                                caller_role, call.reducer_name
+                            );
+                            let denied = ReducerResponse::error(
+                                call.call_id,
+                                format!(
+                                    "Permission denied: role '{}' is not allowed to call '{}'",
+                                    caller_role, call.reducer_name
+                                ),
+                            );
+                            if let Ok(encoded) = protocol::encode_response(&denied) {
+                                let _ = write_tx.send(Message::Binary(encoded));
+                            }
+                            continue;
+                        }
+
                         let pending = PendingCall {
                             call_id: call.call_id,
                             reducer_name: call.reducer_name,
                             args: call.args,
                             caller_id: caller_id.clone(),
+                            caller_role: caller_role.clone(),
                             response_tx: response_tx.clone(),
                         };
                         if let Err(e) = reducer_tx.send(pending).await {
@@ -226,9 +302,6 @@ async fn handle_client(
                         subscription_id,
                         query,
                     }) => {
-                        // TODO-003: pass the live TableStore so the subscriber
-                        // immediately receives all currently matching rows as
-                        // "initial_snapshot" frames before any future deltas.
                         let result = subscription_manager.subscribe_with_snapshot(
                             client_id,
                             subscription_id.clone(),
@@ -276,11 +349,31 @@ async fn handle_client(
                     }
                     Err(_) => match protocol::decode_reducer_call(&data) {
                         Ok(call) => {
+                            // Permission check on fallback decoder path too.
+                            if !permissions.is_allowed(&call.reducer_name, &caller_role) {
+                                log::warn!(
+                                    "Permission denied (fallback): role='{}' tried '{}'",
+                                    caller_role, call.reducer_name
+                                );
+                                let denied = ReducerResponse::error(
+                                    call.call_id,
+                                    format!(
+                                        "Permission denied: role '{}' is not allowed to call '{}'",
+                                        caller_role, call.reducer_name
+                                    ),
+                                );
+                                if let Ok(encoded) = protocol::encode_response(&denied) {
+                                    let _ = write_tx.send(Message::Binary(encoded));
+                                }
+                                continue;
+                            }
+
                             let pending = PendingCall {
                                 call_id: call.call_id,
                                 reducer_name: call.reducer_name,
                                 args: call.args,
                                 caller_id: caller_id.clone(),
+                                caller_role: caller_role.clone(),
                                 response_tx: response_tx.clone(),
                             };
                             if let Err(e) = reducer_tx.send(pending).await {
@@ -333,8 +426,45 @@ mod tests {
             reducer_name: "increment".to_string(),
             args: vec![],
             caller_id: String::new(),
+            caller_role: String::new(),
             response_tx: _tx,
         };
         assert_eq!(call.call_id, 1);
+        assert_eq!(call.caller_role, "");
+    }
+
+    #[test]
+    fn test_parse_bearer_no_role() {
+        let (key, role) = parse_bearer("Bearer mysecretkey").unwrap();
+        assert_eq!(key, "mysecretkey");
+        assert_eq!(role, "");
+    }
+
+    #[test]
+    fn test_parse_bearer_with_role() {
+        let (key, role) = parse_bearer("Bearer mysecretkey:admin").unwrap();
+        assert_eq!(key, "mysecretkey");
+        assert_eq!(role, "admin");
+    }
+
+    #[test]
+    fn test_parse_bearer_role_user() {
+        let (key, role) = parse_bearer("Bearer abc123:user").unwrap();
+        assert_eq!(key, "abc123");
+        assert_eq!(role, "user");
+    }
+
+    #[test]
+    fn test_parse_bearer_invalid_prefix() {
+        assert!(parse_bearer("Token abc").is_none());
+        assert!(parse_bearer("").is_none());
+    }
+
+    #[test]
+    fn test_parse_bearer_key_with_colons() {
+        // Key itself contains colons; role is appended after the rightmost one.
+        let (key, role) = parse_bearer("Bearer key:with:colons:admin").unwrap();
+        assert_eq!(key, "key:with:colons");
+        assert_eq!(role, "admin");
     }
 }

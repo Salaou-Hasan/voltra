@@ -73,8 +73,6 @@ fn spawn_server_with_env(port: u16, wal_path: PathBuf, extra_env: &[(&str, &str)
 }
 
 /// Build a proper WebSocket upgrade request with an `Authorization: Bearer` header.
-/// Uses `IntoClientRequest` so all required WebSocket headers (Upgrade, Connection,
-/// Sec-WebSocket-Key, etc.) are populated automatically from the URL.
 fn bearer_request(url: &str, api_key: &str) -> tokio_tungstenite::tungstenite::http::Request<()> {
     let mut req = url.into_client_request().expect("valid ws url");
     req.headers_mut().insert(
@@ -579,4 +577,197 @@ async fn integration_e2e_throughput_benchmark() {
         total_success
     );
     assert!(tps > 100.0, "Expected > 100 TPS, got {:.0}", tps);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TODO-022: Role-based permissions integration tests (Session 30)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Helper: send one ReducerCall over an open WebSocket and return the response.
+async fn send_call(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    call_id: u64,
+    reducer: &str,
+    args_bytes: Vec<u8>,
+) -> neondb::network::message::ReducerResponse {
+    use rmp_serde::Serializer;
+    use serde::Serialize;
+
+    let call = neondb::network::message::ReducerCall {
+        call_id,
+        reducer_name: reducer.to_string(),
+        args: args_bytes,
+    };
+    let mut buf = Vec::new();
+    call.serialize(&mut Serializer::new(&mut buf)).unwrap();
+    ws.send(Message::Binary(buf))
+        .await
+        .expect("send reducer call");
+
+    let msg = ws
+        .next()
+        .await
+        .expect("expected response")
+        .expect("ws error");
+    let bytes = match msg {
+        Message::Binary(b) => b,
+        _ => panic!("expected binary response"),
+    };
+    rmp_serde::from_slice(&bytes).expect("deserialize ReducerResponse")
+}
+
+/// A caller with no role must be REJECTED when the server restricts `increment`
+/// to the "admin" role.
+///
+/// Setup: server has `NEONDB_API_KEY=perm_key` and
+///        `NEONDB_PERMISSIONS={"increment":["admin"]}`.
+/// Client connects with `Bearer perm_key` (no :<role> suffix → role = "").
+/// Expected: response.success == false with a "Permission denied" error.
+#[tokio::test]
+async fn integration_permissions_unauthorized_call_rejected() {
+    let port = 18091u16;
+    let wal_path = std::env::temp_dir().join("neondb_perms_reject.wal");
+    let _ = std::fs::remove_file(&wal_path);
+
+    // Restrict "increment" to admin role only.
+    let perms_json = r#"{"increment":["admin"]}"#;
+    let mut child = spawn_server_with_env(
+        port,
+        wal_path.clone(),
+        &[
+            ("NEONDB_API_KEY", "perm_key"),
+            ("NEONDB_PERMISSIONS", perms_json),
+        ],
+    );
+    let ws_url = format!("ws://127.0.0.1:{}", port);
+    wait_for_server_ready_with_auth(&ws_url, Duration::from_secs(5), "perm_key").await;
+
+    // Connect with correct key but NO role suffix.
+    let (mut ws, _) = tokio_tungstenite::connect_async(bearer_request(&ws_url, "perm_key"))
+        .await
+        .expect("connect");
+
+    let args = rmp_serde::to_vec(&IncrementArgs {
+        name: "perms_test".to_string(),
+        delta: 1,
+    })
+    .unwrap();
+
+    let resp = send_call(&mut ws, 1, "increment", args).await;
+
+    assert!(
+        !resp.success,
+        "Call should be rejected: role='' not in [admin], got success=true"
+    );
+    let err = resp.error.unwrap_or_default();
+    assert!(
+        err.to_lowercase().contains("permission denied")
+            || err.to_lowercase().contains("not allowed"),
+        "Expected 'permission denied' in error, got: {}",
+        err
+    );
+
+    child.kill().ok();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&wal_path);
+}
+
+/// A caller with the correct role must be ALLOWED even when the reducer is
+/// restricted.
+///
+/// Setup: same server config as above.
+/// Client connects with `Bearer perm_key:admin` → role = "admin".
+/// Expected: response.success == true.
+#[tokio::test]
+async fn integration_permissions_authorized_call_passes() {
+    let port = 18092u16;
+    let wal_path = std::env::temp_dir().join("neondb_perms_allow.wal");
+    let _ = std::fs::remove_file(&wal_path);
+
+    let perms_json = r#"{"increment":["admin"]}"#;
+    let mut child = spawn_server_with_env(
+        port,
+        wal_path.clone(),
+        &[
+            ("NEONDB_API_KEY", "perm_key2"),
+            ("NEONDB_PERMISSIONS", perms_json),
+        ],
+    );
+    let ws_url = format!("ws://127.0.0.1:{}", port);
+    wait_for_server_ready_with_auth(&ws_url, Duration::from_secs(5), "perm_key2").await;
+
+    // Connect with key:role suffix — role = "admin".
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(bearer_request(&ws_url, "perm_key2:admin"))
+            .await
+            .expect("connect with role");
+
+    let args = rmp_serde::to_vec(&IncrementArgs {
+        name: "perms_admin".to_string(),
+        delta: 5,
+    })
+    .unwrap();
+
+    let resp = send_call(&mut ws, 1, "increment", args).await;
+
+    assert!(
+        resp.success,
+        "Admin role should be allowed to call increment; error: {:?}",
+        resp.error
+    );
+
+    child.kill().ok();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&wal_path);
+}
+
+/// An unrestricted reducer must be callable regardless of the caller's role
+/// (including no role at all).
+///
+/// Setup: server restricts only `delete_user` to ["admin"].
+/// Client calls `increment` (not in permissions map) with no role.
+/// Expected: response.success == true — open reducers are always permitted.
+#[tokio::test]
+async fn integration_permissions_open_reducer_always_allowed() {
+    let port = 18093u16;
+    let wal_path = std::env::temp_dir().join("neondb_perms_open.wal");
+    let _ = std::fs::remove_file(&wal_path);
+
+    // Only "delete_user" is restricted; "increment" is open.
+    let perms_json = r#"{"delete_user":["admin"]}"#;
+    let mut child = spawn_server_with_env(
+        port,
+        wal_path.clone(),
+        &[
+            ("NEONDB_API_KEY", "perm_key3"),
+            ("NEONDB_PERMISSIONS", perms_json),
+        ],
+    );
+    let ws_url = format!("ws://127.0.0.1:{}", port);
+    wait_for_server_ready_with_auth(&ws_url, Duration::from_secs(5), "perm_key3").await;
+
+    // Connect with no role.
+    let (mut ws, _) = tokio_tungstenite::connect_async(bearer_request(&ws_url, "perm_key3"))
+        .await
+        .expect("connect");
+
+    let args = rmp_serde::to_vec(&IncrementArgs {
+        name: "open_test".to_string(),
+        delta: 3,
+    })
+    .unwrap();
+
+    let resp = send_call(&mut ws, 1, "increment", args).await;
+
+    assert!(
+        resp.success,
+        "Open reducer 'increment' must succeed with no role; error: {:?}",
+        resp.error
+    );
+
+    child.kill().ok();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&wal_path);
 }

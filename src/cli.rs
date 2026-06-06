@@ -6,14 +6,15 @@
 //!   - ts(): format as HH:MM:SS.mmm.
 //!
 //! Session 27 fixes:
-//!   - cmd_call: PowerShell-safe args parsing.  On PowerShell, single-quoted
-//!     strings like `'["a", "b"]'` arrive with their outer quotes stripped, so
-//!     the binary receives `["a", "b"]` which is valid JSON — BUT if the user
-//!     accidentally omits the brackets (common on Windows), the binary receives
-//!     `"a", "b"` which fails.  We now auto-wrap bare comma-separated values
-//!     in `[...]` and give a clear suggestion when JSON is still invalid.
-//!   - PowerShell tip: print a one-line hint when args look like they may have
-//!     been mangled by shell quoting so the user knows exactly what to fix.
+//!   - cmd_call: PowerShell-safe args parsing (pass 1-3 fallback chain).
+//!
+//! Session 28 fixes:
+//!   - parse_args_json Pass 3: PowerShell strips ALL quotes, leaving bare words
+//!     like `[general, alice]`.  We now detect bare unquoted tokens inside
+//!     `[...]` and re-quote them as JSON strings before parsing.  Numbers,
+//!     booleans, and null are left unquoted to preserve their types.
+//!   - Error message rewritten: shows the raw input received and two concrete
+//!     working examples instead of the misleading old tip.
 
 use crate::error::{NeonDBError, Result};
 use crate::network::message::{ClientMessage, ReducerCall};
@@ -90,37 +91,81 @@ fn ts() -> String {
     format!("{:02}:{:02}:{:02}.{:03}", hours, mins, secs, millis)
 }
 
-/// Parse reducer args JSON, with PowerShell-friendly fallback.
+/// Parse reducer args JSON with a three-pass PowerShell-resilient fallback.
 ///
-/// PowerShell strips single-quotes: `'["a","b"]'` → `["a","b"]` (fine).
-/// But users sometimes write bare args without brackets: `"a", "b"`.
-/// We auto-wrap those in `[...]` so they work too.
-/// If it still fails, print a helpful platform-specific tip.
+/// PowerShell has two quote-stripping levels depending on how arguments are
+/// passed and which version of PowerShell is in use:
+///
+///   Level 1 — outer single-quotes stripped, inner double-quotes kept:
+///     User types:   `'["general", "alice"]'`
+///     CLI receives: `["general", "alice"]`    ← valid JSON, Pass 1 succeeds
+///
+///   Level 2 — ALL quotes stripped (PowerShell re-parses unquoted tokens):
+///     User types:   `'["general", "alice"]'`
+///     CLI receives: `[general, alice]`         ← bare words, NOT valid JSON
+///
+/// Pass 1 — try the input exactly as received.
+/// Pass 2 — wrap in `[...]` and retry (handles forgotten brackets).
+/// Pass 3 — split on commas, re-quote bare unquoted tokens as JSON strings,
+///           reassemble as a JSON array.  Numbers / booleans / null keep their
+///           original types.
 fn parse_args_json(raw: &str) -> Result<serde_json::Value> {
     let s = raw.trim();
 
-    // Happy path: valid JSON as given.
+    // ── Pass 1: exact input ───────────────────────────────────────────────────
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
         return Ok(v);
     }
 
-    // Auto-wrap bare comma-separated values as a JSON array.
+    // ── Pass 2: wrap bare comma-list in [...] ─────────────────────────────────
+    // Handles: `"general", "alice"` (user forgot outer brackets)
     let wrapped = format!("[{}]", s);
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&wrapped) {
         return Ok(v);
     }
 
-    // Give up — show a clear error with a PowerShell tip.
+    // ── Pass 3: re-quote bare words stripped by PowerShell ────────────────────
+    // Input looks like `[general, alice]` or `general, alice`.
+    // Strip outer brackets, split on commas, quote each bare-word token.
+    let inner = s.trim_start_matches('[').trim_end_matches(']').trim();
+    if !inner.is_empty() {
+        let tokens: Vec<String> = inner
+            .split(',')
+            .map(|tok| {
+                let t = tok.trim();
+                // Leave already-quoted strings, numbers, booleans, and null as-is.
+                if t.starts_with('"')
+                    || t.starts_with('\'')
+                    || t == "true"
+                    || t == "false"
+                    || t == "null"
+                    || t.parse::<f64>().is_ok()
+                {
+                    t.to_string()
+                } else {
+                    // Bare word — wrap as a JSON string.
+                    format!("\"{}\"", t.replace('\\', "\\\\").replace('"', "\\\""))
+                }
+            })
+            .collect();
+        let candidate = format!("[{}]", tokens.join(", "));
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate) {
+            return Ok(v);
+        }
+    }
+
+    // ── Give up: actionable error ─────────────────────────────────────────────
     eprintln!();
-    eprintln!("  Tip (PowerShell): use double-quotes around the JSON array, not single:");
-    eprintln!("    neondb call {} '[\"arg1\", \"arg2\"]'   ← cmd.exe / bash", "reducer");
-    eprintln!("    neondb call {} '[\"arg1\", \"arg2\"]'   ← PowerShell (same syntax)", "reducer");
-    eprintln!("  Or use --args with explicit quoting:");
-    eprintln!("    neondb call {} --args '[\"arg1\", \"arg2\"]'", "reducer");
+    eprintln!("  Error: could not parse args as JSON.");
+    eprintln!("  Raw input received: {}", s);
+    eprintln!();
+    eprintln!("  PowerShell sometimes strips quotes.  Working alternatives:");
+    eprintln!("    neondb call reducer '[\"arg1\", \"arg2\"]'");
+    eprintln!("    neondb call reducer \"['arg1', 'arg2']\"");
     eprintln!();
 
     Err(NeonDBError::invalid_argument(format!(
-        "Invalid args JSON: could not parse '{}' as a JSON value or array",
+        "Invalid args JSON: could not parse '{}' as a JSON array",
         s
     )))
 }

@@ -2,35 +2,25 @@
 // SubscriptionManager — reverse-index + encode-once rewrite
 //
 // Session 7 — TODO-003: Initial state sync on subscribe
+// Session 5 — Reverse index (O(matching) not O(all))
+// Session 4 — encode-once fan-out + CPU-aware DashMap shards
+// Session 27 — `=` (single equals) accepted in addition to `==`
+// Session 30 — TODO-020 partial: OR predicate + LIMIT N on initial snapshot
 //
-//   BEFORE: subscribe() registered the query and returned.  Clients received
-//   only future deltas; they had to do a full read on connect to see existing
-//   data, defeating the subscription model.
+//   OR: `WHERE status = 'active' OR level > 10`
+//     - Full recursive OR support at any nesting depth.
+//     - OR is lower-priority than AND: `A AND B OR C` parses as `(A AND B) OR C`.
+//     - Delivery filter is applied per-delta (live diffs); OR works identically
+//       to AND, just with different boolean semantics.
 //
-//   FIX: subscribe() now accepts an optional Arc<TableStore>.  When provided
-//   it immediately:
-//     1. Queries TableStore for all rows matching the subscription predicate.
-//     2. Serialises each matching row as a SubscriptionDiff with operation
-//        "initial_snapshot" and sends it to the client.
-//   This happens AFTER the subscription is registered in the index so there
-//   is no race: if a reducer fires between registration and snapshot delivery,
-//   the client gets the delta too (it may be a duplicate but that is safe).
-//
-//   Why "initial_snapshot" not "insert"?
-//   Clients can distinguish a snapshot from a live insert and suppress
-//   duplicate-insert warnings if they want.  Clients that don't care can
-//   treat it the same as "insert".
-//
-// Session 5 — Reverse index (O(matching) not O(all)):
-//   table_index: DashMap<table_name, DashMap<client_id, Vec<sub_id>>>
-//   publish_deltas() now O(matching_subscribers) per delta.
-//
-// Session 4 — encode-once fan-out + CPU-aware DashMap shards.
-//
-// Session 27 — Bug fix: predicate parser now accepts `=` (single equals) in
-//   addition to `==`.  CLI users and template next-step hints naturally write
-//   `WHERE room = 'general'`; the parser was rejecting it with
-//   "Subscription predicate invalid".
+//   LIMIT N: `players WHERE zone = 'zone_0_0' LIMIT 100`
+//     - Caps the number of rows delivered in the INITIAL SNAPSHOT only.
+//     - Live diffs are never limited (LIMIT is a one-time snapshot hint).
+//     - LIMIT appears at the end of the query string after the WHERE clause
+//       (or directly after the table name when there is no WHERE clause).
+//     - Example: `SELECT * FROM players LIMIT 50` is NOT supported (no SQL);
+//       the supported form is `players LIMIT 50` or
+//       `players WHERE zone = 'z' LIMIT 50`.
 // ============================================================================
 
 use crate::error::{NeonDBError, Result};
@@ -54,6 +44,9 @@ pub type ClientId = u64;
 pub struct SubscriptionFilter {
     pub table_name: String,
     pub predicate: Option<Predicate>,
+    /// Optional cap on the number of rows delivered in the initial snapshot.
+    /// Has no effect on live delta delivery.
+    pub limit: Option<usize>,
 }
 
 /// A subscription predicate — a node in the filter expression tree.
@@ -69,6 +62,8 @@ pub enum Predicate {
     In { field: String, values: Vec<Value> },
     /// Logical AND of two sub-predicates: `left AND right`
     And(Box<Predicate>, Box<Predicate>),
+    /// Logical OR of two sub-predicates: `left OR right`
+    Or(Box<Predicate>, Box<Predicate>),
 }
 
 #[derive(Clone, Debug)]
@@ -84,8 +79,8 @@ pub enum ComparisonOp {
 impl ComparisonOp {
     pub fn from_str(op: &str) -> Option<Self> {
         match op {
-            "==" | "=" => Some(Self::Eq),   // accept both = and ==
-            "!=" | "<>" => Some(Self::Ne),  // accept both != and <>
+            "==" | "=" => Some(Self::Eq),
+            "!=" | "<>" => Some(Self::Ne),
             ">=" => Some(Self::Ge),
             "<=" => Some(Self::Le),
             ">" => Some(Self::Gt),
@@ -131,11 +126,6 @@ pub struct Subscription {
 
 // ── Client info ───────────────────────────────────────────────────────────────
 
-/// One outbound "subscription write" to a client.
-///
-/// In the legacy protocol, the server sends exactly one frame per subscription diff.
-/// In the optional two-frame protocol, the server sends two frames (route + body),
-/// but they are sent as a single grouped item to prevent interleaving across threads.
 #[derive(Clone, Debug)]
 pub enum OutboundFrames {
     One(Arc<Bytes>),
@@ -276,6 +266,7 @@ impl SubscriptionManager {
     ) -> Result<()> {
         let filter = parse_subscription_query(&query)?;
         let table_name = filter.table_name.clone();
+        let limit = filter.limit;
 
         let client = self.clients.get(&client_id).ok_or_else(|| {
             NeonDBError::invalid_argument(format!("Unknown client: {}", client_id))
@@ -286,7 +277,7 @@ impl SubscriptionManager {
             filter: filter.clone(),
         };
 
-        // ── Register in per-client map and reverse index (BEFORE snapshot) ───
+        // Register in per-client map and reverse index BEFORE snapshot.
         client
             .subscriptions
             .insert(subscription_id.clone(), subscription);
@@ -298,7 +289,7 @@ impl SubscriptionManager {
             .or_insert_with(Vec::new)
             .push(subscription_id.clone());
 
-        // ── TODO-003: initial state sync ─────────────────────────────────────
+        // TODO-003 + LIMIT: initial state sync with optional row cap.
         if let Some(tables) = tables {
             if let Ok(rows) = tables.list_rows_with_keys(&table_name) {
                 let tx = client.tx.clone();
@@ -307,7 +298,14 @@ impl SubscriptionManager {
                 } else {
                     None
                 };
+                let mut sent = 0usize;
                 for (row_key, row_value) in rows {
+                    // LIMIT: stop delivering snapshot rows once cap is reached.
+                    if let Some(cap) = limit {
+                        if sent >= cap {
+                            break;
+                        }
+                    }
                     let synthetic = RowDelta {
                         table_name: table_name.clone(),
                         operation: "initial_snapshot".to_string(),
@@ -329,6 +327,7 @@ impl SubscriptionManager {
                                     first: route,
                                     second: body,
                                 });
+                                sent += 1;
                             }
                         } else if let Some(frame) = encode_legacy_snapshot(
                             &subscription_id,
@@ -337,6 +336,7 @@ impl SubscriptionManager {
                             row_value,
                         ) {
                             let _ = tx.send(OutboundFrames::One(frame));
+                            sent += 1;
                         }
                     }
                 }
@@ -521,6 +521,7 @@ impl Predicate {
                 }
             }
             Predicate::And(left, right) => left.eval(delta) && right.eval(delta),
+            Predicate::Or(left, right) => left.eval(delta) || right.eval(delta),
         }
     }
 
@@ -555,11 +556,15 @@ fn parse_subscription_query(query: &str) -> Result<SubscriptionFilter> {
     } else {
         normalized
     };
-    let lower = normalized.to_lowercase();
+
+    // Strip trailing LIMIT N (case-insensitive) before parsing WHERE clause.
+    let (without_limit, limit) = extract_limit(normalized);
+
+    let lower = without_limit.to_lowercase();
     let (table_name, predicate) = if let Some(idx) = lower.find(" where ") {
-        (&normalized[..idx], Some(normalized[idx + 7..].trim()))
+        (&without_limit[..idx], Some(without_limit[idx + 7..].trim()))
     } else {
-        (normalized, None)
+        (without_limit, None)
     };
     let table_name = table_name.trim();
     if table_name.is_empty() {
@@ -571,25 +576,50 @@ fn parse_subscription_query(query: &str) -> Result<SubscriptionFilter> {
     Ok(SubscriptionFilter {
         table_name: table_name.to_string(),
         predicate,
+        limit,
     })
+}
+
+/// Detects and removes a trailing `LIMIT <n>` clause.
+/// Returns `(query_without_limit, Some(n))` or `(original, None)`.
+fn extract_limit(query: &str) -> (&str, Option<usize>) {
+    let lower = query.to_lowercase();
+    // Look for " limit " followed by digits at the end of the string.
+    if let Some(pos) = lower.rfind(" limit ") {
+        let after = query[pos + 7..].trim();
+        if let Ok(n) = after.parse::<usize>() {
+            return (&query[..pos], Some(n));
+        }
+    }
+    (query, None)
 }
 
 /// Parse a WHERE clause into a (possibly compound) Predicate tree.
 ///
-/// Grammar (simplified):
-///   predicate  = comparison | in_expr | predicate AND predicate
-///   comparison = field op value
-///   in_expr    = field IN ( value, ... )
-///   op         = = | == | != | <> | > | < | >= | <=
+/// Operator precedence (lowest to highest):
+///   OR  →  AND  →  comparison / IN
+///
+/// Parsing is top-down recursive:
+///   1. Try to split on OR  (lowest precedence, right-to-left in tree)
+///   2. Try to split on AND
+///   3. Try IN
+///   4. Fall through to comparison
 fn parse_predicate(predicate: &str) -> Result<Predicate> {
-    // ── 1. Split on AND at depth 0 (parens-aware) ─────────────────────────────
+    // ── 1. Split on OR (lowest precedence) ────────────────────────────────────
+    if let Some((left_str, right_str)) = split_on_keyword(predicate, " or ") {
+        let left = parse_predicate(left_str)?;
+        let right = parse_predicate(right_str)?;
+        return Ok(Predicate::Or(Box::new(left), Box::new(right)));
+    }
+
+    // ── 2. Split on AND ────────────────────────────────────────────────────────
     if let Some((left_str, right_str)) = split_on_and(predicate) {
         let left = parse_predicate(left_str)?;
         let right = parse_predicate(right_str)?;
         return Ok(Predicate::And(Box::new(left), Box::new(right)));
     }
 
-    // ── 2. Detect IN operator ─────────────────────────────────────────────────
+    // ── 3. Detect IN operator ─────────────────────────────────────────────────
     let lower = predicate.to_lowercase();
     if let Some(in_pos) = lower.find(" in ") {
         let field = predicate[..in_pos].trim().to_string();
@@ -604,12 +634,15 @@ fn parse_predicate(predicate: &str) -> Result<Predicate> {
         }
     }
 
-    // ── 3. Fall back to single comparison ─────────────────────────────────────
+    // ── 4. Single comparison ──────────────────────────────────────────────────
     parse_comparison(predicate)
 }
 
-fn split_on_and(predicate: &str) -> Option<(&str, &str)> {
+/// Split `predicate` on the first occurrence of `keyword` at paren depth 0.
+/// `keyword` must be lower-case including surrounding spaces (e.g. `" or "`).
+fn split_on_keyword<'a>(predicate: &'a str, keyword: &str) -> Option<(&'a str, &'a str)> {
     let bytes = predicate.as_bytes();
+    let klen = keyword.len();
     let mut depth = 0usize;
     let mut i = 0;
 
@@ -618,10 +651,10 @@ fn split_on_and(predicate: &str) -> Option<(&str, &str)> {
             b'(' => depth += 1,
             b')' => depth = depth.saturating_sub(1),
             _ => {
-                if depth == 0 && i + 5 <= bytes.len() {
-                    let window = &bytes[i..i + 5];
-                    if window.eq_ignore_ascii_case(b" and ") {
-                        return Some((predicate[..i].trim(), predicate[i + 5..].trim()));
+                if depth == 0 && i + klen <= bytes.len() {
+                    let window = &predicate[i..i + klen];
+                    if window.to_lowercase() == keyword {
+                        return Some((predicate[..i].trim(), predicate[i + klen..].trim()));
                     }
                 }
             }
@@ -631,16 +664,15 @@ fn split_on_and(predicate: &str) -> Option<(&str, &str)> {
     None
 }
 
+fn split_on_and(predicate: &str) -> Option<(&str, &str)> {
+    split_on_keyword(predicate, " and ")
+}
+
 /// Parse a single comparison clause (`field op value`).
-///
-/// Session 27 fix: operators are now tried longest-first so that `>=` is
-/// matched before `>`, and `=` (single equals, SQL-style) is tried last so
-/// it doesn't accidentally consume the `=` in `>=` or `<=`.
+/// Operators tried longest-first to avoid `=` consuming part of `>=`.
 fn parse_comparison(predicate: &str) -> Result<Predicate> {
-    // Try multi-char operators first (longest-match), then single `=`.
     for op in [">=", "<=", "==", "!=", "<>", ">", "<", "="] {
         if let Some(idx) = predicate.find(op) {
-            // For single `=`, skip if it's actually part of `>=`, `<=`, `==`, `!=`.
             if op == "=" {
                 let before = predicate.as_bytes().get(idx.wrapping_sub(1)).copied();
                 let after  = predicate.as_bytes().get(idx + 1).copied();
@@ -722,6 +754,7 @@ mod tests {
         let f = parse_subscription_query("counters").unwrap();
         assert_eq!(f.table_name, "counters");
         assert!(f.predicate.is_none());
+        assert!(f.limit.is_none());
     }
 
     #[test]
@@ -749,7 +782,6 @@ mod tests {
 
     #[test]
     fn single_equals_operator_parses_correctly() {
-        // This is what template next-steps and CLI users naturally write.
         let f = parse_subscription_query("messages WHERE room_id = 'general'").unwrap();
         assert_eq!(f.table_name, "messages");
         match f.predicate.unwrap() {
@@ -773,7 +805,6 @@ mod tests {
 
     #[test]
     fn single_equals_does_not_break_gte_lte() {
-        // >= and <= must still work correctly after the `=` fallback was added.
         let f_gte = parse_subscription_query("scores WHERE value >= 10").unwrap();
         let f_lte = parse_subscription_query("scores WHERE value <= 5").unwrap();
         let d_10 = make_delta("scores", "s1", serde_json::json!({"value": 10}));
@@ -784,7 +815,6 @@ mod tests {
 
     #[test]
     fn players_zone_single_equals_watch_query() {
-        // Matches the template next-steps hint exactly.
         let f = parse_subscription_query("players WHERE zone = 'zone_0_0'").unwrap();
         let hit  = make_delta("players", "alice", serde_json::json!({"zone": "zone_0_0", "x": 0, "y": 0}));
         let miss = make_delta("players", "bob",   serde_json::json!({"zone": "zone_1_0", "x": 10, "y": 0}));
@@ -799,6 +829,163 @@ mod tests {
         let miss = make_delta("games", "game2", serde_json::json!({"id": "game2", "status": "active"}));
         assert!(f.matches(&hit));
         assert!(!f.matches(&miss));
+    }
+
+    // ── Session 30: OR predicate ──────────────────────────────────────────────
+
+    #[test]
+    fn or_predicate_either_side_matches() {
+        let f = parse_subscription_query("players WHERE status = 'alive' OR status = 'respawning'").unwrap();
+        let alive = make_delta("players", "p1", serde_json::json!({"status": "alive"}));
+        let resp  = make_delta("players", "p2", serde_json::json!({"status": "respawning"}));
+        let dead  = make_delta("players", "p3", serde_json::json!({"status": "dead"}));
+        assert!(f.matches(&alive), "alive should match");
+        assert!(f.matches(&resp),  "respawning should match");
+        assert!(!f.matches(&dead), "dead should not match");
+    }
+
+    #[test]
+    fn or_predicate_parses_to_or_node() {
+        let f = parse_subscription_query("players WHERE level < 5 OR level > 90").unwrap();
+        match f.predicate.unwrap() {
+            Predicate::Or(_, _) => {}
+            other => panic!("Expected Or, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn or_with_number_comparison() {
+        let f = parse_subscription_query("scores WHERE value < 10 OR value > 100").unwrap();
+        let low  = make_delta("scores", "s1", serde_json::json!({"value": 5}));
+        let mid  = make_delta("scores", "s2", serde_json::json!({"value": 50}));
+        let high = make_delta("scores", "s3", serde_json::json!({"value": 200}));
+        assert!(f.matches(&low),   "value=5 should match OR value < 10");
+        assert!(!f.matches(&mid),  "value=50 should not match");
+        assert!(f.matches(&high),  "value=200 should match OR value > 100");
+    }
+
+    #[test]
+    fn and_has_higher_precedence_than_or() {
+        // `A AND B OR C` should parse as `(A AND B) OR C`
+        // meaning: A=true,B=false,C=true → true (C branch)
+        let f = parse_subscription_query(
+            "players WHERE level > 5 AND level < 20 OR status = 'vip'"
+        ).unwrap();
+        // level=10, status="normal" → AND is satisfied (10>5 AND 10<20); OR left side wins
+        let and_wins = make_delta("players", "p1", serde_json::json!({"level": 10, "status": "normal"}));
+        // level=50, status="vip" → AND fails, OR right side wins
+        let or_wins  = make_delta("players", "p2", serde_json::json!({"level": 50, "status": "vip"}));
+        // level=50, status="normal" → neither branch
+        let neither  = make_delta("players", "p3", serde_json::json!({"level": 50, "status": "normal"}));
+        assert!(f.matches(&and_wins), "AND branch should match");
+        assert!(f.matches(&or_wins),  "OR right branch should match");
+        assert!(!f.matches(&neither), "Neither branch should not match");
+    }
+
+    #[test]
+    fn or_delivers_delta_to_subscriber() {
+        let mgr = SubscriptionManager::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let cid = mgr.register_client(tx);
+        mgr.subscribe(
+            cid,
+            "s".to_string(),
+            "players WHERE status = 'alive' OR status = 'idle'".to_string(),
+        )
+        .unwrap();
+        let alive = make_delta("players", "p1", serde_json::json!({"status": "alive"}));
+        let idle  = make_delta("players", "p2", serde_json::json!({"status": "idle"}));
+        let dead  = make_delta("players", "p3", serde_json::json!({"status": "dead"}));
+        mgr.publish_deltas(&[alive]);
+        assert!(rx.try_recv().is_ok(), "alive should be delivered");
+        mgr.publish_deltas(&[idle]);
+        assert!(rx.try_recv().is_ok(), "idle should be delivered");
+        mgr.publish_deltas(&[dead]);
+        assert!(rx.try_recv().is_err(), "dead should be filtered");
+    }
+
+    // ── Session 30: LIMIT N on initial snapshot ───────────────────────────────
+
+    #[test]
+    fn limit_parses_correctly() {
+        let f = parse_subscription_query("players LIMIT 10").unwrap();
+        assert_eq!(f.table_name, "players");
+        assert!(f.predicate.is_none());
+        assert_eq!(f.limit, Some(10));
+    }
+
+    #[test]
+    fn limit_with_where_parses_correctly() {
+        let f = parse_subscription_query("players WHERE zone = 'z1' LIMIT 50").unwrap();
+        assert_eq!(f.table_name, "players");
+        assert!(f.predicate.is_some());
+        assert_eq!(f.limit, Some(50));
+    }
+
+    #[test]
+    fn limit_caps_initial_snapshot() {
+        let tables = Arc::new(TableStore::new());
+        // Insert 10 counters.
+        for i in 0..10usize {
+            tables.set_counter(format!("c{}", i), i as i64, 0).unwrap();
+        }
+        let mgr = SubscriptionManager::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let cid = mgr.register_client(tx);
+        // Subscribe with LIMIT 3 — should only receive 3 snapshot frames.
+        mgr.subscribe_with_snapshot(
+            cid,
+            "snap_limited".to_string(),
+            "counters LIMIT 3".to_string(),
+            Some(&tables),
+        )
+        .unwrap();
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 3, "LIMIT 3 should cap snapshot at 3 rows, got {}", count);
+    }
+
+    #[test]
+    fn limit_does_not_affect_live_deltas() {
+        let mgr = SubscriptionManager::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let cid = mgr.register_client(tx);
+        // Subscribe with LIMIT 1 — live deltas should still all be delivered.
+        mgr.subscribe(
+            cid,
+            "s".to_string(),
+            "counters LIMIT 1".to_string(),
+        )
+        .unwrap();
+        for i in 0..5 {
+            let d = make_delta("counters", &format!("k{}", i), serde_json::json!({"value": i}));
+            mgr.publish_deltas(&[d]);
+        }
+        let mut received = 0;
+        while rx.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, 5, "LIMIT should not filter live deltas; got {}", received);
+    }
+
+    #[test]
+    fn limit_zero_delivers_no_snapshot_rows() {
+        let tables = Arc::new(TableStore::new());
+        tables.set_counter("x".to_string(), 1, 0).unwrap();
+        tables.set_counter("y".to_string(), 2, 0).unwrap();
+        let mgr = SubscriptionManager::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let cid = mgr.register_client(tx);
+        mgr.subscribe_with_snapshot(
+            cid,
+            "s".to_string(),
+            "counters LIMIT 0".to_string(),
+            Some(&tables),
+        )
+        .unwrap();
+        assert!(rx.try_recv().is_err(), "LIMIT 0 should deliver no snapshot rows");
     }
 
     // ── All previous tests preserved below ───────────────────────────────────
