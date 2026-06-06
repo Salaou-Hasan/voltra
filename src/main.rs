@@ -45,7 +45,8 @@ use tokio::sync::watch;
 
 #[derive(Parser, Debug)]
 #[command(name = "neondb")]
-#[command(author, version, about = "NeonDB Phase 1 CLI and server", long_about = None)]
+#[command(author, version, about = "NeonDB — self-hosted real-time game backend")]
+#[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -53,26 +54,120 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    // ── Server ───────────────────────────────────────────────────────────────
+    /// Scaffold a new NeonDB project in PATH
     Init {
         #[arg(value_name = "PATH", default_value = ".")]
         path: PathBuf,
     },
+    /// Compile JS reducers in modules/ to WASM (requires `javy`)
     Build {
-        /// Directory containing .js reducer modules to compile.
-        #[arg(short = 'm', long, default_value = "modules")]
+        #[arg(
+            short = 'm',
+            long,
+            default_value = "modules",
+            help = "Directory containing .js reducers to compile"
+        )]
         modules_dir: Option<PathBuf>,
     },
+    /// Start the NeonDB server
     Start {
-        #[arg(short = 'a', long)]
+        #[arg(short = 'a', long, help = "Listen address (default 127.0.0.1)")]
         host: Option<String>,
-        #[arg(short = 'p', long)]
+        #[arg(short = 'p', long, help = "WebSocket port (default 3000)")]
         port: Option<u16>,
-        #[arg(short = 'd', long)]
+        #[arg(short = 'd', long, help = "Data directory (sets WAL path)")]
         data_dir: Option<PathBuf>,
-        #[arg(long = "wal-path")]
+        #[arg(long = "wal-path", help = "Explicit WAL file path")]
         wal_path: Option<PathBuf>,
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, help = "WAL fsync interval ms")]
         fsync_interval_ms: Option<u32>,
+    },
+
+    // ── Inspect (read-only, hits the admin HTTP port) ─────────────────────
+    /// Show server status and metrics
+    Status {
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:3001",
+            help = "Admin/metrics HTTP URL"
+        )]
+        metrics_url: String,
+    },
+    /// List all tables and their row counts
+    Tables {
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:3001",
+            help = "Admin/metrics HTTP URL"
+        )]
+        metrics_url: String,
+    },
+    /// Read rows from a table  (optionally filter to a single row_key)
+    Get {
+        /// Table name (e.g. `players`, `counters`)
+        table: String,
+        /// Optional row_key to return just one row
+        key: Option<String>,
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:3001",
+            help = "Admin/metrics HTTP URL"
+        )]
+        metrics_url: String,
+    },
+
+    // ── Interactive (WebSocket) ───────────────────────────────────────────
+    /// Call a reducer once and print the result
+    Call {
+        /// Reducer name (e.g. `increment`)
+        reducer: String,
+        /// JSON-encoded args.  For the built-in `increment` use '["counter", 1]'.
+        #[arg(help = "JSON args, e.g. '[\"my_counter\", 5]'")]
+        args: Option<String>,
+        #[arg(
+            long,
+            default_value = "ws://127.0.0.1:3000",
+            help = "WebSocket URL of the server"
+        )]
+        url: String,
+        #[arg(long, help = "API key (Authorization: Bearer)")]
+        api_key: Option<String>,
+    },
+    /// Subscribe to a table and stream live updates (Ctrl-C to stop)
+    Watch {
+        /// Subscription query, e.g. `counters` or `players WHERE level > 5`
+        query: String,
+        #[arg(
+            long,
+            default_value = "ws://127.0.0.1:3000",
+            help = "WebSocket URL of the server"
+        )]
+        url: String,
+        #[arg(long, help = "API key (Authorization: Bearer)")]
+        api_key: Option<String>,
+    },
+    /// Run a WebSocket throughput benchmark against a running server
+    Bench {
+        #[arg(
+            long,
+            default_value = "ws://127.0.0.1:3000",
+            help = "WebSocket URL of the server"
+        )]
+        url: String,
+        #[arg(
+            short = 'c',
+            long,
+            default_value = "10",
+            help = "Number of concurrent clients"
+        )]
+        clients: usize,
+        #[arg(short = 'n', long, default_value = "500", help = "Calls per client")]
+        calls: usize,
+        #[arg(long, default_value = "50", help = "Warmup calls per client")]
+        warmup: usize,
+        #[arg(long, help = "API key (Authorization: Bearer)")]
+        api_key: Option<String>,
     },
 }
 
@@ -81,6 +176,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        // ── Server commands ───────────────────────────────────────────────
         Commands::Init { path } => {
             init_project(path)?;
             Ok(())
@@ -113,7 +209,157 @@ async fn main() -> Result<()> {
             }
             run_server(config).await
         }
+
+        // ── Inspect commands (HTTP) ───────────────────────────────────
+        Commands::Status { metrics_url } => neondb::cli::cmd_status(&metrics_url).await,
+        Commands::Tables { metrics_url } => neondb::cli::cmd_tables(&metrics_url).await,
+        Commands::Get {
+            table,
+            key,
+            metrics_url,
+        } => neondb::cli::cmd_get(&metrics_url, &table, key.as_deref()).await,
+
+        // ── Interactive commands (WebSocket) ───────────────────────────
+        Commands::Call {
+            reducer,
+            args,
+            url,
+            api_key,
+        } => neondb::cli::cmd_call(&url, &reducer, args.as_deref(), api_key.as_deref()).await,
+        Commands::Watch {
+            query,
+            url,
+            api_key,
+        } => neondb::cli::cmd_watch(&url, &query, api_key.as_deref()).await,
+        Commands::Bench {
+            url,
+            clients,
+            calls,
+            warmup,
+            api_key,
+        } => run_cli_bench(&url, clients, calls, warmup, api_key.as_deref()).await,
     }
+}
+
+/// Run a quick inline WebSocket benchmark from the CLI (`neondb bench`).
+async fn run_cli_bench(
+    ws_url: &str,
+    num_clients: usize,
+    calls_per_client: usize,
+    warmup_per_client: usize,
+    api_key: Option<&str>,
+) -> Result<()> {
+    use futures::{SinkExt, StreamExt};
+    use hdrhistogram::Histogram;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+    use tokio::task::JoinSet;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Message;
+
+    #[derive(serde::Serialize)]
+    struct IncrArgs {
+        name: String,
+        delta: i32,
+    }
+    #[derive(serde::Serialize)]
+    struct CallW {
+        #[serde(rename = "ReducerCall")]
+        rc: (u64, String, Vec<u8>),
+    }
+
+    println!("=== NeonDB Bench ===");
+    println!("  Server  : {}", ws_url);
+    println!(
+        "  Clients : {}  Calls/client: {}  Warmup: {}",
+        num_clients, calls_per_client, warmup_per_client
+    );
+
+    let args_bytes = rmp_serde::to_vec(&IncrArgs {
+        name: "bench".to_string(),
+        delta: 1,
+    })
+    .unwrap();
+    let latencies: Arc<Mutex<Histogram<u64>>> = Arc::new(Mutex::new(Histogram::new(3).unwrap()));
+    let mut join_set = JoinSet::new();
+    let start = Instant::now();
+
+    for cid in 0..num_clients {
+        let url = ws_url.to_string();
+        let api = api_key.map(String::from);
+        let args = args_bytes.clone();
+        let lat = latencies.clone();
+        let warmup = warmup_per_client;
+        let calls = calls_per_client;
+
+        join_set.spawn(async move {
+            let mut req = url.as_str().into_client_request().unwrap();
+            if let Some(k) = &api {
+                req.headers_mut()
+                    .insert("authorization", format!("Bearer {}", k).parse().unwrap());
+            }
+            let Ok((mut ws, _)) = tokio_tungstenite::connect_async(req).await else {
+                return 0usize;
+            };
+            let total = warmup + calls;
+            let mut ok = 0usize;
+            for i in 0..total {
+                let cw = rmp_serde::to_vec(&CallW {
+                    rc: (
+                        (cid as u64) * 1_000_000 + i as u64,
+                        "increment".to_string(),
+                        args.clone(),
+                    ),
+                })
+                .unwrap();
+                let t0 = Instant::now();
+                if ws.send(Message::Binary(cw)).await.is_err() {
+                    break;
+                }
+                if let Ok(Some(Ok(Message::Binary(_) | Message::Text(_)))) =
+                    tokio::time::timeout(Duration::from_secs(10), ws.next()).await
+                {
+                    if i >= warmup {
+                        let us = t0.elapsed().as_micros() as u64;
+                        if let Ok(mut h) = lat.lock() {
+                            let _ = h.record(us);
+                        }
+                        ok += 1;
+                    }
+                }
+            }
+            let _ = ws.close(None).await;
+            ok
+        });
+    }
+
+    let mut total = 0usize;
+    while let Some(r) = join_set.join_next().await {
+        if let Ok(n) = r {
+            total += n;
+        }
+    }
+    let elapsed = start.elapsed();
+    let tps = total as f64 / elapsed.as_secs_f64();
+
+    println!("\nResults:");
+    println!("  Time       : {:.3}s", elapsed.as_secs_f64());
+    println!("  Throughput : {:.0} TPS", tps);
+    println!(
+        "  Success    : {}/{}",
+        total,
+        num_clients * calls_per_client
+    );
+    if let Ok(h) = latencies.lock() {
+        println!(
+            "  Latency (µs): p50={} p95={} p99={} max={}",
+            h.value_at_percentile(50.0),
+            h.value_at_percentile(95.0),
+            h.value_at_percentile(99.0),
+            h.max()
+        );
+    }
+    Ok(())
 }
 
 /// Compile every `.js` module in `modules_dir` to `.wasm` using the `javy` compiler.
@@ -368,11 +614,13 @@ async fn run_server(config: Config) -> Result<()> {
     // ── Metrics server ────────────────────────────────────────────────────────
     let metrics_handle = {
         let subs_c = subscription_manager.clone();
+        let tables_c = tables.clone();
         let rx_shutdown = shutdown_rx.clone();
         let host_c = config.host.clone();
         let mport = config.metrics_port;
         tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, rx_shutdown).await {
+            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, rx_shutdown).await
+            {
                 log::error!("Metrics server error: {}", e);
             }
         })
@@ -652,6 +900,7 @@ async fn start_metrics_server(
     host: String,
     port: u16,
     subscription_manager: Arc<SubscriptionManager>,
+    tables: Arc<TableStore>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse().map_err(|e| {
@@ -660,16 +909,22 @@ async fn start_metrics_server(
 
     let make_service = make_service_fn(move |_| {
         let subs = subscription_manager.clone();
+        let tbl = tables.clone();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 let subs = subs.clone();
-                async move { handle_metrics_request(req, subs).await }
+                let tbl = tbl.clone();
+                async move { handle_metrics_request(req, subs, tbl).await }
             }))
         }
     });
 
     let server = Server::bind(&addr).serve(make_service);
-    log::info!("Metrics endpoint available on http://{}", addr);
+    log::info!("Admin/metrics endpoint available on http://{}", addr);
+    log::info!("  GET /metrics          Prometheus-style metrics");
+    log::info!("  GET /healthz          Health check");
+    log::info!("  GET /tables           List tables + row counts (JSON)");
+    log::info!("  GET /tables/<name>    Dump all rows in a table (JSON)");
 
     server
         .with_graceful_shutdown(async move {
@@ -681,21 +936,84 @@ async fn start_metrics_server(
         })
 }
 
+fn json_response(value: serde_json::Value) -> Response<Body> {
+    let mut r = Response::new(Body::from(value.to_string()));
+    r.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("application/json"),
+    );
+    r
+}
+
 async fn handle_metrics_request(
     req: Request<Body>,
     subscription_manager: Arc<SubscriptionManager>,
+    tables: Arc<TableStore>,
 ) -> Result<Response<Body>> {
-    match (req.method(), req.uri().path()) {
+    let path = req.uri().path().to_string();
+
+    match (req.method(), path.as_str()) {
         (&Method::GET, "/metrics") => {
             let active_subscriptions = subscription_manager.active_subscriptions();
+            let active_connections = subscription_manager.active_connections();
+            let total_rows = tables.total_row_count();
             let uptime = current_timestamp_nanos();
             let body = format!(
-                "# NeonDB metrics\nactive_subscriptions {}\nuptime_nanos {}\n",
-                active_subscriptions, uptime
+                "# NeonDB metrics\n\
+                 active_subscriptions {}\n\
+                 active_connections {}\n\
+                 total_rows {}\n\
+                 uptime_nanos {}\n",
+                active_subscriptions, active_connections, total_rows, uptime
             );
             Ok(Response::new(Body::from(body)))
         }
-        (&Method::GET, "/healthz") => Ok(Response::new(Body::from("ok"))),
+
+        (&Method::GET, "/healthz") => Ok(json_response(serde_json::json!({
+            "status": "ok",
+            "total_rows": tables.total_row_count(),
+            "active_connections": subscription_manager.active_connections(),
+        }))),
+
+        // GET /tables — list all tables with their row counts.
+        (&Method::GET, "/tables") => {
+            let mut table_list = Vec::new();
+            for name in tables.list_tables() {
+                let count = tables
+                    .list_rows_with_keys(&name)
+                    .map(|r| r.len())
+                    .unwrap_or(0);
+                table_list.push(serde_json::json!({ "name": name, "rows": count }));
+            }
+            Ok(json_response(serde_json::json!({
+                "tables": table_list,
+                "total_rows": tables.total_row_count(),
+            })))
+        }
+
+        // GET /tables/<name> — dump all rows of a single table.
+        (&Method::GET, p) if p.starts_with("/tables/") => {
+            let table_name = p.trim_start_matches("/tables/");
+            match tables.list_rows_with_keys(table_name) {
+                Ok(rows) => {
+                    let row_objs: Vec<serde_json::Value> = rows
+                        .into_iter()
+                        .map(|(key, data)| serde_json::json!({ "row_key": key, "data": data }))
+                        .collect();
+                    Ok(json_response(serde_json::json!({
+                        "table": table_name,
+                        "count": row_objs.len(),
+                        "rows": row_objs,
+                    })))
+                }
+                Err(e) => {
+                    let mut r = json_response(serde_json::json!({ "error": e.to_string() }));
+                    *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                    Ok(r)
+                }
+            }
+        }
+
         _ => {
             let mut r = Response::new(Body::from("Not Found"));
             *r.status_mut() = StatusCode::NOT_FOUND;

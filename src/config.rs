@@ -109,7 +109,7 @@ impl Config {
             shard_count: 1,
             log_level: default_log,
             metrics_port: default_port + 1,
-            max_connections: 100,
+            max_connections: 500,
             reducer_timeout_ms: 5_000,
             api_key: None,
             tune_system: false,

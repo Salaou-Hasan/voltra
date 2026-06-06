@@ -1,0 +1,1 @@
+Run `neondb start` from the project root to start the native NeonDB server.

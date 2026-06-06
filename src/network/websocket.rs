@@ -153,7 +153,7 @@ async fn handle_client(
 
     let _conn_guard = ConnectionGuard(active_connections.clone());
     let current = active_connections.fetch_add(1, Ordering::SeqCst);
-    log::info!("Active WebSocket clients: {}", current + 1);
+    log::debug!("Active WebSocket clients: {}", current + 1);
 
     let (ws_sink, mut ws_rx) = ws_stream.split();
 
