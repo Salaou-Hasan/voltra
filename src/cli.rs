@@ -1,20 +1,19 @@
 //! Interactive CLI client commands for NeonDB.
 //!
-//! These commands connect to a *running* NeonDB server:
-//!   - Read-only inspection (`status`, `tables`, `get`) uses the HTTP admin
-//!     endpoint on the metrics port.
-//!   - Interactive commands (`call`, `watch`) use the WebSocket port.
-//!
-//! All commands print human-friendly output and are designed to be usable by
-//! beginners (sensible defaults) and experts (full flags).
-//!
 //! Session 25 fixes:
-//!   - CallWire: send ClientMessage::ReducerCall directly (struct variant,
-//!     not a hand-rolled tuple) so the server's primary decoder always matches.
-//!   - SubscribeWire: send ClientMessage::Subscribe directly (struct variant
-//!     with named fields) — the old tuple wire hit the fallback decoder and
-//!     produced a decode error, silently dropping the subscription.
-//!   - ts(): format timestamp as HH:MM:SS.mmm instead of raw milliseconds.
+//!   - CallWire: send ClientMessage::ReducerCall directly (struct variant).
+//!   - SubscribeWire: send ClientMessage::Subscribe directly (struct variant).
+//!   - ts(): format as HH:MM:SS.mmm.
+//!
+//! Session 27 fixes:
+//!   - cmd_call: PowerShell-safe args parsing.  On PowerShell, single-quoted
+//!     strings like `'["a", "b"]'` arrive with their outer quotes stripped, so
+//!     the binary receives `["a", "b"]` which is valid JSON — BUT if the user
+//!     accidentally omits the brackets (common on Windows), the binary receives
+//!     `"a", "b"` which fails.  We now auto-wrap bare comma-separated values
+//!     in `[...]` and give a clear suggestion when JSON is still invalid.
+//!   - PowerShell tip: print a one-line hint when args look like they may have
+//!     been mangled by shell quoting so the user knows exactly what to fix.
 
 use crate::error::{NeonDBError, Result};
 use crate::network::message::{ClientMessage, ReducerCall};
@@ -25,7 +24,6 @@ use tokio_tungstenite::tungstenite::Message;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/// Build a WebSocket request, optionally adding a Bearer auth header.
 fn ws_request(
     url: &str,
     api_key: Option<&str>,
@@ -44,7 +42,6 @@ fn ws_request(
     Ok(req)
 }
 
-/// Perform a simple HTTP GET and return the response body as a string.
 async fn http_get(url: &str) -> Result<String> {
     let uri: hyper::Uri = url
         .parse()
@@ -70,7 +67,6 @@ async fn http_get(url: &str) -> Result<String> {
     Ok(body)
 }
 
-/// Pretty-print a JSON string (falls back to raw on parse failure).
 fn print_json_pretty(raw: &str) {
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(v) => println!(
@@ -81,29 +77,56 @@ fn print_json_pretty(raw: &str) {
     }
 }
 
-/// Format the current wall-clock time as HH:MM:SS.mmm.
-///
-/// Session 25 fix: the old implementation printed a raw millisecond modulus
-/// (e.g. "47293821") which was unreadable. This formats as "13:24:05.821".
 fn ts() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-
-    // UTC wall clock — good enough for a terminal timestamp.
     let total_secs = (ms / 1000) as u64;
     let millis = ms % 1000;
     let secs = total_secs % 60;
     let mins = (total_secs / 60) % 60;
     let hours = (total_secs / 3600) % 24;
-
     format!("{:02}:{:02}:{:02}.{:03}", hours, mins, secs, millis)
+}
+
+/// Parse reducer args JSON, with PowerShell-friendly fallback.
+///
+/// PowerShell strips single-quotes: `'["a","b"]'` → `["a","b"]` (fine).
+/// But users sometimes write bare args without brackets: `"a", "b"`.
+/// We auto-wrap those in `[...]` so they work too.
+/// If it still fails, print a helpful platform-specific tip.
+fn parse_args_json(raw: &str) -> Result<serde_json::Value> {
+    let s = raw.trim();
+
+    // Happy path: valid JSON as given.
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+        return Ok(v);
+    }
+
+    // Auto-wrap bare comma-separated values as a JSON array.
+    let wrapped = format!("[{}]", s);
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&wrapped) {
+        return Ok(v);
+    }
+
+    // Give up — show a clear error with a PowerShell tip.
+    eprintln!();
+    eprintln!("  Tip (PowerShell): use double-quotes around the JSON array, not single:");
+    eprintln!("    neondb call {} '[\"arg1\", \"arg2\"]'   ← cmd.exe / bash", "reducer");
+    eprintln!("    neondb call {} '[\"arg1\", \"arg2\"]'   ← PowerShell (same syntax)", "reducer");
+    eprintln!("  Or use --args with explicit quoting:");
+    eprintln!("    neondb call {} --args '[\"arg1\", \"arg2\"]'", "reducer");
+    eprintln!();
+
+    Err(NeonDBError::invalid_argument(format!(
+        "Invalid args JSON: could not parse '{}' as a JSON value or array",
+        s
+    )))
 }
 
 // ── status ─────────────────────────────────────────────────────────────────────
 
-/// `neondb status` — show server health and metrics via the admin HTTP port.
 pub async fn cmd_status(metrics_url: &str) -> Result<()> {
     let health_url = format!("{}/healthz", metrics_url.trim_end_matches('/'));
     let metrics_endpoint = format!("{}/metrics", metrics_url.trim_end_matches('/'));
@@ -131,7 +154,6 @@ pub async fn cmd_status(metrics_url: &str) -> Result<()> {
 
 // ── tables ───────────────────────────────────────────────────────────────────
 
-/// `neondb tables` — list all tables with row counts.
 pub async fn cmd_tables(metrics_url: &str) -> Result<()> {
     let url = format!("{}/tables", metrics_url.trim_end_matches('/'));
     let body = http_get(&url).await?;
@@ -166,7 +188,6 @@ pub async fn cmd_tables(metrics_url: &str) -> Result<()> {
 
 // ── get ────────────────────────────────────────────────────────────────────────
 
-/// `neondb get <table> [key]` — read rows from a table.
 pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Result<()> {
     let url = format!("{}/tables/{}", metrics_url.trim_end_matches('/'), table);
     let body = http_get(&url).await?;
@@ -187,10 +208,7 @@ pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Resul
             match found {
                 Some(row) => {
                     let data = row.get("data").cloned().unwrap_or(serde_json::Value::Null);
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&data).unwrap_or_default()
-                    );
+                    println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
                 }
                 None => println!("Row '{}' not found in table '{}'", k, table),
             }
@@ -204,11 +222,7 @@ pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Resul
             for row in rows {
                 let rk = row.get("row_key").and_then(|v| v.as_str()).unwrap_or("?");
                 let data = row.get("data").cloned().unwrap_or(serde_json::Value::Null);
-                println!(
-                    "  [{}] {}",
-                    rk,
-                    serde_json::to_string(&data).unwrap_or_default()
-                );
+                println!("  [{}] {}", rk, serde_json::to_string(&data).unwrap_or_default());
             }
         }
     }
@@ -217,32 +231,19 @@ pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Resul
 
 // ── call ───────────────────────────────────────────────────────────────────────
 
-/// `neondb call <reducer> [args_json]` — invoke a reducer once and print the result.
-///
-/// `args_json` is a JSON value passed to the reducer.  For the built-in
-/// `increment` reducer, pass a positional array: `'["my_counter", 5]'`.
-///
-/// Session 25 fix: encode the frame as a real `ClientMessage::ReducerCall`
-/// (via `rmp_serde::to_vec`) so it matches the server's primary decoder path
-/// (`decode_client_message`) exactly. The old hand-rolled `CallWire` tuple
-/// always fell through to the fallback decoder.
 pub async fn cmd_call(
     ws_url: &str,
     reducer: &str,
     args_json: Option<&str>,
     api_key: Option<&str>,
 ) -> Result<()> {
-    // Parse args JSON → MessagePack bytes
     let args_value: serde_json::Value = match args_json {
-        Some(s) => serde_json::from_str(s)
-            .map_err(|e| NeonDBError::invalid_argument(format!("Invalid args JSON: {}", e)))?,
+        Some(s) => parse_args_json(s)?,
         None => serde_json::json!([]),
     };
     let args_bytes = rmp_serde::to_vec(&args_value)
         .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
 
-    // Encode as the canonical ClientMessage enum variant so the server's
-    // primary decoder (decode_client_message) handles it directly.
     let msg = ClientMessage::ReducerCall(ReducerCall {
         call_id: 1,
         reducer_name: reducer.to_string(),
@@ -265,14 +266,12 @@ pub async fn cmd_call(
         .await
         .map_err(|e| NeonDBError::network_error(e.to_string()))?;
 
-    // Await one response (10-second timeout)
     let resp = tokio::time::timeout(Duration::from_secs(10), ws.next())
         .await
         .map_err(|_| NeonDBError::network_error("Timed out waiting for response".to_string()))?;
 
     match resp {
         Some(Ok(Message::Binary(data))) => {
-            // Server sends back a ReducerResponse struct: [call_id, success, result?, error?]
             match rmp_serde::from_slice::<(u64, bool, Option<Vec<u8>>, Option<String>)>(&data) {
                 Ok((_cid, success, result, error)) => {
                     if success {
@@ -287,11 +286,7 @@ pub async fn cmd_call(
                             }
                         }
                     } else {
-                        println!(
-                            "✗ Reducer '{}' failed: {}",
-                            reducer,
-                            error.unwrap_or_default()
-                        );
+                        println!("✗ Reducer '{}' failed: {}", reducer, error.unwrap_or_default());
                     }
                 }
                 Err(e) => println!("Could not decode response: {}", e),
@@ -299,11 +294,9 @@ pub async fn cmd_call(
         }
         Some(Ok(_)) => println!("Unexpected non-binary response"),
         Some(Err(e)) => return Err(NeonDBError::network_error(e.to_string())),
-        None => {
-            return Err(NeonDBError::network_error(
-                "Connection closed without a response".to_string(),
-            ))
-        }
+        None => return Err(NeonDBError::network_error(
+            "Connection closed without a response".to_string(),
+        )),
     }
 
     let _ = ws.close(None).await;
@@ -312,14 +305,6 @@ pub async fn cmd_call(
 
 // ── watch ──────────────────────────────────────────────────────────────────────
 
-/// `neondb watch <query>` — subscribe to a table query and print live updates
-/// until interrupted (Ctrl-C).
-///
-/// Session 25 fix: encode the Subscribe frame as a real `ClientMessage::Subscribe`
-/// (struct variant with named fields `subscription_id` + `query`). The old
-/// `SubscribeWire` sent a tuple `(sub_id, query)` which is array-encoded by
-/// rmp_serde and cannot be decoded as a struct variant — the server logged a
-/// decode error and silently dropped the subscription.
 pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Result<()> {
     let request = ws_request(ws_url, api_key)?;
     let (mut ws, _) = tokio_tungstenite::connect_async(request)
@@ -331,7 +316,6 @@ pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Resu
             ))
         })?;
 
-    // Encode as the canonical ClientMessage enum variant.
     let msg = ClientMessage::Subscribe {
         subscription_id: "cli_watch".to_string(),
         query: query.to_string(),
@@ -345,7 +329,6 @@ pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Resu
 
     println!("Watching '{}' (Ctrl-C to stop)…\n", query);
 
-    // Two-frame protocol routing state.
     let mut pending_route: Option<Vec<String>> = None;
 
     loop {
@@ -384,93 +367,46 @@ fn handle_watch_frame(data: &[u8], pending_route: &mut Option<Vec<String>>) {
                 let fields = content.as_array().cloned().unwrap_or_default();
                 match variant.as_str() {
                     "SubscriptionAck" => {
-                        // {"SubscriptionAck": {subscription_id, success, message}}
-                        let ok = content
-                            .get("success")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or_else(|| {
-                                fields.get(1).and_then(|v| v.as_bool()).unwrap_or(false)
-                            });
+                        let ok = content.get("success").and_then(|v| v.as_bool())
+                            .unwrap_or_else(|| fields.get(1).and_then(|v| v.as_bool()).unwrap_or(false));
                         if ok {
                             println!("[{}] subscribed ✓", ts());
                         } else {
-                            let msg = content
-                                .get("message")
-                                .and_then(|v| v.as_str())
+                            let msg = content.get("message").and_then(|v| v.as_str())
                                 .or_else(|| fields.get(2).and_then(|v| v.as_str()))
                                 .unwrap_or("");
                             println!("[{}] subscription failed: {}", ts(), msg);
                         }
-                        return;
                     }
                     "SubscriptionDiff" => {
-                        // {"SubscriptionDiff": {subscription_id, table_name, row_key, operation, row_data}}
-                        let table = content
-                            .get("table_name")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| fields.get(1).and_then(|v| v.as_str()))
-                            .unwrap_or("?");
-                        let key = content
-                            .get("row_key")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| fields.get(2).and_then(|v| v.as_str()))
-                            .unwrap_or("?");
-                        let op = content
-                            .get("operation")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| fields.get(3).and_then(|v| v.as_str()))
-                            .unwrap_or("?");
-                        let row = content
-                            .get("row_data")
-                            .cloned()
-                            .or_else(|| fields.get(4).cloned())
-                            .unwrap_or(serde_json::Value::Null);
+                        let table = content.get("table_name").and_then(|v| v.as_str())
+                            .or_else(|| fields.get(1).and_then(|v| v.as_str())).unwrap_or("?");
+                        let key = content.get("row_key").and_then(|v| v.as_str())
+                            .or_else(|| fields.get(2).and_then(|v| v.as_str())).unwrap_or("?");
+                        let op = content.get("operation").and_then(|v| v.as_str())
+                            .or_else(|| fields.get(3).and_then(|v| v.as_str())).unwrap_or("?");
+                        let row = content.get("row_data").cloned()
+                            .or_else(|| fields.get(4).cloned()).unwrap_or(serde_json::Value::Null);
                         println!("[{}] {:<16} {}.{} = {}", ts(), op, table, key, row);
-                        return;
                     }
                     "SubscriptionRoute" => {
-                        // {"SubscriptionRoute": {subscription_ids: [...]}}
-                        let ids = content
-                            .get("subscription_ids")
-                            .and_then(|v| v.as_array())
+                        let ids = content.get("subscription_ids").and_then(|v| v.as_array())
                             .or_else(|| fields.get(0).and_then(|v| v.as_array()))
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(|x| x.as_str().map(String::from))
-                                    .collect()
-                            })
+                            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
                             .unwrap_or_default();
                         *pending_route = Some(ids);
-                        return;
                     }
                     "SubscriptionBody" => {
-                        // {"SubscriptionBody": {table_name, row_key, operation, row_data}}
-                        let table = content
-                            .get("table_name")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| fields.get(0).and_then(|v| v.as_str()))
-                            .unwrap_or("?");
-                        let key = content
-                            .get("row_key")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| fields.get(1).and_then(|v| v.as_str()))
-                            .unwrap_or("?");
-                        let op = content
-                            .get("operation")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| fields.get(2).and_then(|v| v.as_str()))
-                            .unwrap_or("?");
-                        let row = content
-                            .get("row_data")
-                            .cloned()
-                            .or_else(|| fields.get(3).cloned())
-                            .unwrap_or(serde_json::Value::Null);
+                        let table = content.get("table_name").and_then(|v| v.as_str())
+                            .or_else(|| fields.get(0).and_then(|v| v.as_str())).unwrap_or("?");
+                        let key = content.get("row_key").and_then(|v| v.as_str())
+                            .or_else(|| fields.get(1).and_then(|v| v.as_str())).unwrap_or("?");
+                        let op = content.get("operation").and_then(|v| v.as_str())
+                            .or_else(|| fields.get(2).and_then(|v| v.as_str())).unwrap_or("?");
+                        let row = content.get("row_data").cloned()
+                            .or_else(|| fields.get(3).cloned()).unwrap_or(serde_json::Value::Null);
                         let n = pending_route.take().map(|r| r.len()).unwrap_or(1);
-                        println!(
-                            "[{}] {:<16} {}.{} = {} (×{} sub)",
-                            ts(), op, table, key, row, n
-                        );
-                        return;
+                        println!("[{}] {:<16} {}.{} = {} (×{} sub)", ts(), op, table, key, row, n);
                     }
                     _ => {}
                 }

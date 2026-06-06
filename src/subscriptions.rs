@@ -26,6 +26,11 @@
 //   publish_deltas() now O(matching_subscribers) per delta.
 //
 // Session 4 — encode-once fan-out + CPU-aware DashMap shards.
+//
+// Session 27 — Bug fix: predicate parser now accepts `=` (single equals) in
+//   addition to `==`.  CLI users and template next-step hints naturally write
+//   `WHERE room = 'general'`; the parser was rejecting it with
+//   "Subscription predicate invalid".
 // ============================================================================
 
 use crate::error::{NeonDBError, Result};
@@ -79,8 +84,8 @@ pub enum ComparisonOp {
 impl ComparisonOp {
     pub fn from_str(op: &str) -> Option<Self> {
         match op {
-            "==" => Some(Self::Eq),
-            "!=" => Some(Self::Ne),
+            "==" | "=" => Some(Self::Eq),   // accept both = and ==
+            "!=" | "<>" => Some(Self::Ne),  // accept both != and <>
             ">=" => Some(Self::Ge),
             "<=" => Some(Self::Le),
             ">" => Some(Self::Gt),
@@ -253,19 +258,6 @@ impl SubscriptionManager {
         }
     }
 
-    /// Register a subscription and immediately deliver matching existing rows
-    /// as "initial_snapshot" frames.
-    ///
-    /// TODO-003: tables is now taken as an optional parameter.
-    /// - When Some(tables): initial snapshot is sent before returning.
-    /// - When None: only registers the subscription (used in tests that don't
-    ///   need snapshot behaviour).
-    ///
-    /// Race safety: we register the subscription in the index FIRST, then
-    /// snapshot.  A reducer firing between registration and snapshot delivery
-    /// will push a delta to the client.  The client may receive both a snapshot
-    /// row and a delta for the same row — that is safe (last write wins in the
-    /// client cache).
     pub fn subscribe(
         &self,
         client_id: ClientId,
@@ -307,21 +299,15 @@ impl SubscriptionManager {
             .push(subscription_id.clone());
 
         // ── TODO-003: initial state sync ─────────────────────────────────────
-        // After registration, snapshot all currently matching rows and push
-        // them to the client as "initial_snapshot" frames.
         if let Some(tables) = tables {
             if let Ok(rows) = tables.list_rows_with_keys(&table_name) {
                 let tx = client.tx.clone();
-                // In two-frame mode, route is constant for this subscription id.
                 let route_bytes = if self.two_frame {
                     encode_route(vec![subscription_id.clone()])
                 } else {
                     None
                 };
                 for (row_key, row_value) in rows {
-                    // Build a synthetic delta so SubscriptionFilter::matches
-                    // (including compound AND / IN predicates) can be reused
-                    // without duplicating field-extraction logic.
                     let synthetic = RowDelta {
                         table_name: table_name.clone(),
                         operation: "initial_snapshot".to_string(),
@@ -410,8 +396,6 @@ impl SubscriptionManager {
                     continue;
                 };
 
-                // Per-client aggregation to avoid sending the same body multiple times
-                // for clients with multiple matching subscriptions.
                 let mut per_client: HashMap<ClientId, (UnboundedSender<OutboundFrames>, Vec<String>)> =
                     HashMap::new();
 
@@ -448,7 +432,6 @@ impl SubscriptionManager {
                     }
                 }
             } else {
-                // Legacy: one frame per subscription id, but encode once per unique sub_id.
                 let mut matching: Vec<(UnboundedSender<OutboundFrames>, String)> = Vec::new();
 
                 for client_entry in table_entry.iter() {
@@ -524,9 +507,6 @@ impl SubscriptionFilter {
 }
 
 impl Predicate {
-    /// Evaluate this predicate against a row delta.
-    /// For compound predicates (AND) each sub-tree evaluates independently
-    /// against the same delta — enabling multi-column WHERE clauses.
     pub fn eval(&self, delta: &RowDelta) -> bool {
         match self {
             Predicate::Comparison { field, op, value } => {
@@ -600,7 +580,7 @@ fn parse_subscription_query(query: &str) -> Result<SubscriptionFilter> {
 ///   predicate  = comparison | in_expr | predicate AND predicate
 ///   comparison = field op value
 ///   in_expr    = field IN ( value, ... )
-///   op         = == | != | > | < | >= | <=
+///   op         = = | == | != | <> | > | < | >= | <=
 fn parse_predicate(predicate: &str) -> Result<Predicate> {
     // ── 1. Split on AND at depth 0 (parens-aware) ─────────────────────────────
     if let Some((left_str, right_str)) = split_on_and(predicate) {
@@ -610,7 +590,6 @@ fn parse_predicate(predicate: &str) -> Result<Predicate> {
     }
 
     // ── 2. Detect IN operator ─────────────────────────────────────────────────
-    // Pattern (case-insensitive):  <field> IN ( <value>, ... )
     let lower = predicate.to_lowercase();
     if let Some(in_pos) = lower.find(" in ") {
         let field = predicate[..in_pos].trim().to_string();
@@ -629,8 +608,6 @@ fn parse_predicate(predicate: &str) -> Result<Predicate> {
     parse_comparison(predicate)
 }
 
-/// Split `predicate` on the first ` AND ` (case-insensitive) that is NOT
-/// inside parentheses.  Returns `Some((left, right))` or `None`.
 fn split_on_and(predicate: &str) -> Option<(&str, &str)> {
     let bytes = predicate.as_bytes();
     let mut depth = 0usize;
@@ -655,15 +632,30 @@ fn split_on_and(predicate: &str) -> Option<(&str, &str)> {
 }
 
 /// Parse a single comparison clause (`field op value`).
+///
+/// Session 27 fix: operators are now tried longest-first so that `>=` is
+/// matched before `>`, and `=` (single equals, SQL-style) is tried last so
+/// it doesn't accidentally consume the `=` in `>=` or `<=`.
 fn parse_comparison(predicate: &str) -> Result<Predicate> {
-    for op in [">=", "<=", "==", "!=", ">", "<"] {
+    // Try multi-char operators first (longest-match), then single `=`.
+    for op in [">=", "<=", "==", "!=", "<>", ">", "<", "="] {
         if let Some(idx) = predicate.find(op) {
+            // For single `=`, skip if it's actually part of `>=`, `<=`, `==`, `!=`.
+            if op == "=" {
+                let before = predicate.as_bytes().get(idx.wrapping_sub(1)).copied();
+                let after  = predicate.as_bytes().get(idx + 1).copied();
+                if matches!(before, Some(b'>' | b'<' | b'!' | b'='))
+                    || matches!(after, Some(b'='))
+                {
+                    continue;
+                }
+            }
             let field = predicate[..idx].trim().to_string();
             let value_part = predicate[idx + op.len()..].trim();
-            let op = ComparisonOp::from_str(op)
+            let cmp_op = ComparisonOp::from_str(op)
                 .ok_or_else(|| NeonDBError::invalid_argument("Unsupported comparator"))?;
             let value = parse_predicate_value(value_part)?;
-            return Ok(Predicate::Comparison { field, op, value });
+            return Ok(Predicate::Comparison { field, op: cmp_op, value });
         }
     }
     Err(NeonDBError::invalid_argument(
@@ -723,7 +715,7 @@ mod tests {
         }
     }
 
-    // ── Existing tests (all must still pass) ─────────────────────────────────
+    // ── Existing tests ────────────────────────────────────────────────────────
 
     #[test]
     fn parse_subscription_query_without_predicate() {
@@ -753,6 +745,64 @@ mod tests {
         assert!(!f.matches(&d));
     }
 
+    // ── Session 27: single `=` operator ──────────────────────────────────────
+
+    #[test]
+    fn single_equals_operator_parses_correctly() {
+        // This is what template next-steps and CLI users naturally write.
+        let f = parse_subscription_query("messages WHERE room_id = 'general'").unwrap();
+        assert_eq!(f.table_name, "messages");
+        match f.predicate.unwrap() {
+            Predicate::Comparison { field, op, value } => {
+                assert_eq!(field, "room_id");
+                assert!(matches!(op, ComparisonOp::Eq));
+                assert_eq!(value, Value::String("general".to_string()));
+            }
+            other => panic!("expected Comparison, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn single_equals_matches_string_delta() {
+        let f = parse_subscription_query("messages WHERE room_id = 'general'").unwrap();
+        let matching = make_delta("messages", "m1", serde_json::json!({"room_id": "general", "text": "hi"}));
+        let non_matching = make_delta("messages", "m2", serde_json::json!({"room_id": "private", "text": "hi"}));
+        assert!(f.matches(&matching),     "room_id='general' should match");
+        assert!(!f.matches(&non_matching), "room_id='private' should not match");
+    }
+
+    #[test]
+    fn single_equals_does_not_break_gte_lte() {
+        // >= and <= must still work correctly after the `=` fallback was added.
+        let f_gte = parse_subscription_query("scores WHERE value >= 10").unwrap();
+        let f_lte = parse_subscription_query("scores WHERE value <= 5").unwrap();
+        let d_10 = make_delta("scores", "s1", serde_json::json!({"value": 10}));
+        let d_5  = make_delta("scores", "s2", serde_json::json!({"value": 5}));
+        assert!(f_gte.matches(&d_10), ">= 10 should match value=10");
+        assert!(f_lte.matches(&d_5),  "<= 5 should match value=5");
+    }
+
+    #[test]
+    fn players_zone_single_equals_watch_query() {
+        // Matches the template next-steps hint exactly.
+        let f = parse_subscription_query("players WHERE zone = 'zone_0_0'").unwrap();
+        let hit  = make_delta("players", "alice", serde_json::json!({"zone": "zone_0_0", "x": 0, "y": 0}));
+        let miss = make_delta("players", "bob",   serde_json::json!({"zone": "zone_1_0", "x": 10, "y": 0}));
+        assert!(f.matches(&hit),  "zone_0_0 should match");
+        assert!(!f.matches(&miss), "zone_1_0 should not match");
+    }
+
+    #[test]
+    fn games_id_single_equals_watch_query() {
+        let f = parse_subscription_query("games WHERE id = 'game1'").unwrap();
+        let hit  = make_delta("games", "game1", serde_json::json!({"id": "game1", "status": "active"}));
+        let miss = make_delta("games", "game2", serde_json::json!({"id": "game2", "status": "active"}));
+        assert!(f.matches(&hit));
+        assert!(!f.matches(&miss));
+    }
+
+    // ── All previous tests preserved below ───────────────────────────────────
+
     #[test]
     fn publish_deltas_arc_clone_count() {
         let mgr = SubscriptionManager::new();
@@ -760,11 +810,8 @@ mod tests {
         let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
-        mgr.subscribe(id1, "s1".to_string(), "counters".to_string())
-            .unwrap();
-        mgr.subscribe(id2, "s2".to_string(), "counters".to_string())
-            .unwrap();
-
+        mgr.subscribe(id1, "s1".to_string(), "counters".to_string()).unwrap();
+        mgr.subscribe(id2, "s2".to_string(), "counters".to_string()).unwrap();
         let deltas = vec![make_delta("counters", "k", serde_json::json!({"v": 1}))];
         mgr.publish_deltas(&deltas);
     }
@@ -776,26 +823,14 @@ mod tests {
         let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
-        mgr.subscribe(id1, "world_sync".to_string(), "players".to_string())
-            .unwrap();
-        mgr.subscribe(id2, "world_sync".to_string(), "players".to_string())
-            .unwrap();
-
-        let deltas = vec![make_delta(
-            "players",
-            "hero_1",
-            serde_json::json!({"hp": 100}),
-        )];
+        mgr.subscribe(id1, "world_sync".to_string(), "players".to_string()).unwrap();
+        mgr.subscribe(id2, "world_sync".to_string(), "players".to_string()).unwrap();
+        let deltas = vec![make_delta("players", "hero_1", serde_json::json!({"hp": 100}))];
         mgr.publish_deltas(&deltas);
-
         let frame1 = recv_one(&mut rx1);
         let frame2 = recv_one(&mut rx2);
-
-        assert_eq!(
-            Arc::as_ptr(&frame1),
-            Arc::as_ptr(&frame2),
-            "shared sub_id must share the same Arc<Bytes> allocation"
-        );
+        assert_eq!(Arc::as_ptr(&frame1), Arc::as_ptr(&frame2),
+            "shared sub_id must share the same Arc<Bytes> allocation");
     }
 
     #[test]
@@ -805,33 +840,17 @@ mod tests {
         let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
-        mgr.subscribe(id1, "sub_client_1".to_string(), "counters".to_string())
-            .unwrap();
-        mgr.subscribe(id2, "sub_client_2".to_string(), "counters".to_string())
-            .unwrap();
-
-        let deltas = vec![make_delta(
-            "counters",
-            "score",
-            serde_json::json!({"value": 42}),
-        )];
+        mgr.subscribe(id1, "sub_client_1".to_string(), "counters".to_string()).unwrap();
+        mgr.subscribe(id2, "sub_client_2".to_string(), "counters".to_string()).unwrap();
+        let deltas = vec![make_delta("counters", "score", serde_json::json!({"value": 42}))];
         mgr.publish_deltas(&deltas);
-
         let frame1 = recv_one(&mut rx1);
         let frame2 = recv_one(&mut rx2);
-
         use crate::network::message::ServerMessage;
         let msg1: ServerMessage = rmp_serde::from_slice(&frame1).unwrap();
         let msg2: ServerMessage = rmp_serde::from_slice(&frame2).unwrap();
-
-        match msg1 {
-            ServerMessage::SubscriptionDiff(d) => assert_eq!(d.subscription_id, "sub_client_1"),
-            _ => panic!("expected SubscriptionDiff"),
-        }
-        match msg2 {
-            ServerMessage::SubscriptionDiff(d) => assert_eq!(d.subscription_id, "sub_client_2"),
-            _ => panic!("expected SubscriptionDiff"),
-        }
+        match msg1 { ServerMessage::SubscriptionDiff(d) => assert_eq!(d.subscription_id, "sub_client_1"), _ => panic!() }
+        match msg2 { ServerMessage::SubscriptionDiff(d) => assert_eq!(d.subscription_id, "sub_client_2"), _ => panic!() }
     }
 
     #[test]
@@ -839,33 +858,16 @@ mod tests {
         let mgr = SubscriptionManager::new_with_options(true);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "s".to_string(), "players".to_string())
-            .unwrap();
-
+        mgr.subscribe(cid, "s".to_string(), "players".to_string()).unwrap();
         let deltas = vec![make_delta("players", "p1", serde_json::json!({"hp": 99}))];
         mgr.publish_deltas(&deltas);
-
         let frames = rx.try_recv().expect("expected outbound frames");
         match frames {
             OutboundFrames::Two { first, second } => {
-                let route: crate::network::message::ServerMessage =
-                    rmp_serde::from_slice(&first).unwrap();
-                let body: crate::network::message::ServerMessage =
-                    rmp_serde::from_slice(&second).unwrap();
-
-                match route {
-                    crate::network::message::ServerMessage::SubscriptionRoute(r) => {
-                        assert_eq!(r.subscription_ids, vec!["s".to_string()]);
-                    }
-                    _ => panic!("expected SubscriptionRoute"),
-                }
-                match body {
-                    crate::network::message::ServerMessage::SubscriptionBody(b) => {
-                        assert_eq!(b.table_name, "players");
-                        assert_eq!(b.row_key, "p1");
-                    }
-                    _ => panic!("expected SubscriptionBody"),
-                }
+                let route: crate::network::message::ServerMessage = rmp_serde::from_slice(&first).unwrap();
+                let body: crate::network::message::ServerMessage = rmp_serde::from_slice(&second).unwrap();
+                match route { crate::network::message::ServerMessage::SubscriptionRoute(r) => assert_eq!(r.subscription_ids, vec!["s".to_string()]), _ => panic!() }
+                match body { crate::network::message::ServerMessage::SubscriptionBody(b) => { assert_eq!(b.table_name, "players"); assert_eq!(b.row_key, "p1"); } _ => panic!() }
             }
             other => panic!("expected two-frame outbound, got {:?}", other),
         }
@@ -878,35 +880,12 @@ mod tests {
         let (tx_skip, mut rx_skip) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id_match = mgr.register_client(tx_match);
         let id_skip = mgr.register_client(tx_skip);
-
-        mgr.subscribe(
-            id_match,
-            "high".to_string(),
-            "counters WHERE value >= 10".to_string(),
-        )
-        .unwrap();
-        mgr.subscribe(
-            id_skip,
-            "low".to_string(),
-            "counters WHERE value >= 100".to_string(),
-        )
-        .unwrap();
-
-        let deltas = vec![make_delta(
-            "counters",
-            "score",
-            serde_json::json!({"value": 42}),
-        )];
+        mgr.subscribe(id_match, "high".to_string(), "counters WHERE value >= 10".to_string()).unwrap();
+        mgr.subscribe(id_skip, "low".to_string(), "counters WHERE value >= 100".to_string()).unwrap();
+        let deltas = vec![make_delta("counters", "score", serde_json::json!({"value": 42}))];
         mgr.publish_deltas(&deltas);
-
-        assert!(
-            rx_match.try_recv().is_ok(),
-            "matching predicate should receive"
-        );
-        assert!(
-            rx_skip.try_recv().is_err(),
-            "non-matching predicate should be filtered"
-        );
+        assert!(rx_match.try_recv().is_ok(), "matching predicate should receive");
+        assert!(rx_skip.try_recv().is_err(), "non-matching predicate should be filtered");
     }
 
     #[test]
@@ -921,9 +900,7 @@ mod tests {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "s".to_string(), "players".to_string())
-            .unwrap();
-
+        mgr.subscribe(cid, "s".to_string(), "players".to_string()).unwrap();
         let deltas = vec![make_delta("counters", "k", serde_json::json!({"v": 1}))];
         mgr.publish_deltas(&deltas);
         assert!(rx.try_recv().is_err());
@@ -936,23 +913,12 @@ mod tests {
         let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id_a = mgr.register_client(tx_a);
         let id_b = mgr.register_client(tx_b);
-
-        mgr.subscribe(id_a, "sa".to_string(), "table_alpha".to_string())
-            .unwrap();
-        mgr.subscribe(id_b, "sb".to_string(), "table_beta".to_string())
-            .unwrap();
-
+        mgr.subscribe(id_a, "sa".to_string(), "table_alpha".to_string()).unwrap();
+        mgr.subscribe(id_b, "sb".to_string(), "table_beta".to_string()).unwrap();
         let deltas = vec![make_delta("table_alpha", "k1", serde_json::json!({"x": 1}))];
         mgr.publish_deltas(&deltas);
-
-        assert!(
-            rx_a.try_recv().is_ok(),
-            "table_alpha subscriber must receive"
-        );
-        assert!(
-            rx_b.try_recv().is_err(),
-            "table_beta subscriber must NOT receive"
-        );
+        assert!(rx_a.try_recv().is_ok(), "table_alpha subscriber must receive");
+        assert!(rx_b.try_recv().is_err(), "table_beta subscriber must NOT receive");
     }
 
     #[test]
@@ -960,20 +926,9 @@ mod tests {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-
-        mgr.subscribe(cid, "sub1".to_string(), "counters".to_string())
-            .unwrap();
+        mgr.subscribe(cid, "sub1".to_string(), "counters".to_string()).unwrap();
         mgr.unsubscribe(cid, "sub1").unwrap();
-
-        assert!(
-            mgr.table_index.get("counters").is_none()
-                || mgr
-                    .table_index
-                    .get("counters")
-                    .map(|m| m.is_empty())
-                    .unwrap_or(true)
-        );
-
+        assert!(mgr.table_index.get("counters").is_none() || mgr.table_index.get("counters").map(|m| m.is_empty()).unwrap_or(true));
         let deltas = vec![make_delta("counters", "k", serde_json::json!({"v": 99}))];
         mgr.publish_deltas(&deltas);
         assert!(rx.try_recv().is_err());
@@ -984,26 +939,14 @@ mod tests {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-
-        mgr.subscribe(cid, "s1".to_string(), "players".to_string())
-            .unwrap();
-        mgr.subscribe(cid, "s2".to_string(), "counters".to_string())
-            .unwrap();
+        mgr.subscribe(cid, "s1".to_string(), "players".to_string()).unwrap();
+        mgr.subscribe(cid, "s2".to_string(), "counters".to_string()).unwrap();
         mgr.unregister_client(cid);
-
         for table in &["players", "counters"] {
-            let absent = mgr
-                .table_index
-                .get(*table)
-                .map(|m| m.get(&cid).is_none())
-                .unwrap_or(true);
+            let absent = mgr.table_index.get(*table).map(|m| m.get(&cid).is_none()).unwrap_or(true);
             assert!(absent);
         }
-
-        let deltas = vec![
-            make_delta("players", "hero", serde_json::json!({"hp": 50})),
-            make_delta("counters", "score", serde_json::json!({"value": 1})),
-        ];
+        let deltas = vec![make_delta("players", "hero", serde_json::json!({"hp": 50})), make_delta("counters", "score", serde_json::json!({"value": 1}))];
         mgr.publish_deltas(&deltas);
         assert!(rx.try_recv().is_err());
     }
@@ -1011,42 +954,24 @@ mod tests {
     #[test]
     fn reverse_index_correct_delivery_at_scale() {
         let mgr = SubscriptionManager::new();
-
         let mut rxs_players = Vec::new();
         let mut rxs_counters = Vec::new();
-
         for i in 0..25 {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
             let cid = mgr.register_client(tx);
-            mgr.subscribe(cid, format!("ps_{}", i), "players".to_string())
-                .unwrap();
+            mgr.subscribe(cid, format!("ps_{}", i), "players".to_string()).unwrap();
             rxs_players.push(rx);
         }
         for i in 0..25 {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
             let cid = mgr.register_client(tx);
-            mgr.subscribe(cid, format!("cs_{}", i), "counters".to_string())
-                .unwrap();
+            mgr.subscribe(cid, format!("cs_{}", i), "counters".to_string()).unwrap();
             rxs_counters.push(rx);
         }
-
         let deltas = vec![make_delta("players", "p1", serde_json::json!({"hp": 100}))];
         mgr.publish_deltas(&deltas);
-
-        for (i, rx) in rxs_players.iter_mut().enumerate() {
-            assert!(
-                rx.try_recv().is_ok(),
-                "players subscriber {} must receive",
-                i
-            );
-        }
-        for (i, rx) in rxs_counters.iter_mut().enumerate() {
-            assert!(
-                rx.try_recv().is_err(),
-                "counters subscriber {} must NOT receive",
-                i
-            );
-        }
+        for (i, rx) in rxs_players.iter_mut().enumerate() { assert!(rx.try_recv().is_ok(), "players subscriber {} must receive", i); }
+        for (i, rx) in rxs_counters.iter_mut().enumerate() { assert!(rx.try_recv().is_err(), "counters subscriber {} must NOT receive", i); }
     }
 
     #[test]
@@ -1054,139 +979,66 @@ mod tests {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-
-        mgr.subscribe(cid, "watch_players".to_string(), "players".to_string())
-            .unwrap();
-        mgr.subscribe(cid, "watch_counters".to_string(), "counters".to_string())
-            .unwrap();
-
+        mgr.subscribe(cid, "watch_players".to_string(), "players".to_string()).unwrap();
+        mgr.subscribe(cid, "watch_counters".to_string(), "counters".to_string()).unwrap();
         let deltas = vec![make_delta("players", "hero", serde_json::json!({"hp": 75}))];
         mgr.publish_deltas(&deltas);
-
         let frame = recv_one(&mut rx);
         let msg: crate::network::message::ServerMessage = rmp_serde::from_slice(&frame).unwrap();
-        match msg {
-            crate::network::message::ServerMessage::SubscriptionDiff(d) => {
-                assert_eq!(d.subscription_id, "watch_players");
-                assert_eq!(d.table_name, "players");
-            }
-            _ => panic!("expected SubscriptionDiff"),
-        }
+        match msg { crate::network::message::ServerMessage::SubscriptionDiff(d) => { assert_eq!(d.subscription_id, "watch_players"); assert_eq!(d.table_name, "players"); } _ => panic!() }
         assert!(rx.try_recv().is_err());
     }
 
-    // ── TODO-003: Initial state sync tests ───────────────────────────────────
-
-    /// Subscribe to a table that already has data — client must receive
-    /// initial_snapshot frames for all matching rows immediately.
     #[test]
     fn initial_snapshot_delivered_on_subscribe() {
         let tables = Arc::new(TableStore::new());
-        // Insert two counters before the client subscribes.
         tables.set_counter("alpha".to_string(), 10, 0).unwrap();
         tables.set_counter("beta".to_string(), 20, 0).unwrap();
-
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-
-        mgr.subscribe_with_snapshot(
-            cid,
-            "snap_all".to_string(),
-            "counters".to_string(),
-            Some(&tables),
-        )
-        .unwrap();
-
-        // Should receive exactly 2 snapshot frames (one per existing row).
+        mgr.subscribe_with_snapshot(cid, "snap_all".to_string(), "counters".to_string(), Some(&tables)).unwrap();
         let mut received = 0;
         while let Ok(frames) = rx.try_recv() {
-            let frame = match frames {
-                OutboundFrames::One(b) => b,
-                OutboundFrames::Two { .. } => panic!("expected legacy snapshot frame"),
-            };
+            let frame = match frames { OutboundFrames::One(b) => b, OutboundFrames::Two { .. } => panic!() };
             let msg: crate::network::message::ServerMessage = rmp_serde::from_slice(&frame).unwrap();
-            match msg {
-                crate::network::message::ServerMessage::SubscriptionDiff(d) => {
-                    assert_eq!(d.subscription_id, "snap_all");
-                    assert_eq!(d.operation, "initial_snapshot");
-                    assert_eq!(d.table_name, "counters");
-                    received += 1;
-                }
-                _ => panic!("expected SubscriptionDiff"),
-            }
+            match msg { crate::network::message::ServerMessage::SubscriptionDiff(d) => { assert_eq!(d.subscription_id, "snap_all"); assert_eq!(d.operation, "initial_snapshot"); assert_eq!(d.table_name, "counters"); received += 1; } _ => panic!() }
         }
         assert_eq!(received, 2, "expected 2 snapshot frames, got {}", received);
     }
 
-    /// Initial snapshot must respect the subscription predicate — only
-    /// matching rows should be sent.
     #[test]
     fn initial_snapshot_respects_predicate() {
         let tables = Arc::new(TableStore::new());
         tables.set_counter("low".to_string(), 5, 0).unwrap();
         tables.set_counter("high".to_string(), 50, 0).unwrap();
-
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-
-        // Only subscribe to rows where value > 10
-        mgr.subscribe_with_snapshot(
-            cid,
-            "snap_high".to_string(),
-            "counters WHERE value > 10".to_string(),
-            Some(&tables),
-        )
-        .unwrap();
-
+        mgr.subscribe_with_snapshot(cid, "snap_high".to_string(), "counters WHERE value > 10".to_string(), Some(&tables)).unwrap();
         let mut received = 0;
-        while let Ok(_) = rx.try_recv() {
-            received += 1;
-        }
-        // Only "high" (value=50) matches value > 10
-        assert_eq!(
-            received, 1,
-            "expected 1 snapshot frame (only 'high' matches), got {}",
-            received
-        );
+        while let Ok(_) = rx.try_recv() { received += 1; }
+        assert_eq!(received, 1, "expected 1 snapshot frame (only 'high' matches), got {}", received);
     }
 
-    /// subscribe() without a table store must NOT send snapshot frames
-    /// (backwards-compatible behaviour for tests that don't pass tables).
     #[test]
     fn subscribe_without_tables_sends_no_snapshot() {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "no_snap".to_string(), "counters".to_string())
-            .unwrap();
-        assert!(
-            rx.try_recv().is_err(),
-            "no snapshot should be sent without tables"
-        );
+        mgr.subscribe(cid, "no_snap".to_string(), "counters".to_string()).unwrap();
+        assert!(rx.try_recv().is_err(), "no snapshot should be sent without tables");
     }
-
-    // ── TODO-004: IN operator ────────────────────────────────────────────────
 
     #[test]
     fn predicate_in_matches_member_value() {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-        mgr.subscribe(
-            cid,
-            "s".to_string(),
-            "players WHERE status IN ('active', 'pending')".to_string(),
-        )
-        .unwrap();
-
-        // Matching delta (status = active)
+        mgr.subscribe(cid, "s".to_string(), "players WHERE status IN ('active', 'pending')".to_string()).unwrap();
         let d = make_delta("players", "p1", serde_json::json!({"status": "active"}));
         mgr.publish_deltas(&[d]);
         assert!(rx.try_recv().is_ok(), "IN match should deliver");
-
-        // Non-matching delta (status = banned)
         let d2 = make_delta("players", "p2", serde_json::json!({"status": "banned"}));
         mgr.publish_deltas(&[d2]);
         assert!(rx.try_recv().is_err(), "IN non-match should be filtered");
@@ -1197,71 +1049,30 @@ mod tests {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-        mgr.subscribe(
-            cid,
-            "s".to_string(),
-            "players WHERE level IN (1, 5, 10)".to_string(),
-        )
-        .unwrap();
-
+        mgr.subscribe(cid, "s".to_string(), "players WHERE level IN (1, 5, 10)".to_string()).unwrap();
         let match_delta = make_delta("players", "p1", serde_json::json!({"level": 5}));
         mgr.publish_deltas(&[match_delta]);
         assert!(rx.try_recv().is_ok(), "level=5 should match IN (1,5,10)");
-
         let no_match = make_delta("players", "p2", serde_json::json!({"level": 7}));
         mgr.publish_deltas(&[no_match]);
-        assert!(
-            rx.try_recv().is_err(),
-            "level=7 should not match IN (1,5,10)"
-        );
+        assert!(rx.try_recv().is_err(), "level=7 should not match IN (1,5,10)");
     }
-
-    // ── TODO-004: AND compound predicates ───────────────────────────────────
 
     #[test]
     fn predicate_and_both_must_match() {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-        mgr.subscribe(
-            cid,
-            "s".to_string(),
-            "players WHERE score > 100 AND level > 5".to_string(),
-        )
-        .unwrap();
-
-        // Both conditions met → deliver
-        let both = make_delta(
-            "players",
-            "p1",
-            serde_json::json!({"score": 200, "level": 10}),
-        );
+        mgr.subscribe(cid, "s".to_string(), "players WHERE score > 100 AND level > 5".to_string()).unwrap();
+        let both = make_delta("players", "p1", serde_json::json!({"score": 200, "level": 10}));
         mgr.publish_deltas(&[both]);
         assert!(rx.try_recv().is_ok(), "both conditions met should deliver");
-
-        // Only left condition met → filter
-        let only_left = make_delta(
-            "players",
-            "p2",
-            serde_json::json!({"score": 200, "level": 3}),
-        );
+        let only_left = make_delta("players", "p2", serde_json::json!({"score": 200, "level": 3}));
         mgr.publish_deltas(&[only_left]);
-        assert!(
-            rx.try_recv().is_err(),
-            "only left condition should be filtered"
-        );
-
-        // Only right condition met → filter
-        let only_right = make_delta(
-            "players",
-            "p3",
-            serde_json::json!({"score": 50, "level": 10}),
-        );
+        assert!(rx.try_recv().is_err(), "only left condition should be filtered");
+        let only_right = make_delta("players", "p3", serde_json::json!({"score": 50, "level": 10}));
         mgr.publish_deltas(&[only_right]);
-        assert!(
-            rx.try_recv().is_err(),
-            "only right condition should be filtered"
-        );
+        assert!(rx.try_recv().is_err(), "only right condition should be filtered");
     }
 
     #[test]
@@ -1269,51 +1080,21 @@ mod tests {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-        mgr.subscribe(
-            cid,
-            "s".to_string(),
-            "players WHERE status IN ('active', 'vip') AND score >= 50".to_string(),
-        )
-        .unwrap();
-
-        // status=active, score=100 → both match
-        let hit = make_delta(
-            "players",
-            "p1",
-            serde_json::json!({"status": "active", "score": 100}),
-        );
+        mgr.subscribe(cid, "s".to_string(), "players WHERE status IN ('active', 'vip') AND score >= 50".to_string()).unwrap();
+        let hit = make_delta("players", "p1", serde_json::json!({"status": "active", "score": 100}));
         mgr.publish_deltas(&[hit]);
-        assert!(
-            rx.try_recv().is_ok(),
-            "status=active AND score=100 should deliver"
-        );
-
-        // status=vip, score=10 → only IN matches
-        let low_score = make_delta(
-            "players",
-            "p2",
-            serde_json::json!({"status": "vip", "score": 10}),
-        );
+        assert!(rx.try_recv().is_ok());
+        let low_score = make_delta("players", "p2", serde_json::json!({"status": "vip", "score": 10}));
         mgr.publish_deltas(&[low_score]);
-        assert!(
-            rx.try_recv().is_err(),
-            "status=vip but score=10 should be filtered"
-        );
-
-        // status=banned, score=200 → only comparison matches
-        let banned = make_delta(
-            "players",
-            "p3",
-            serde_json::json!({"status": "banned", "score": 200}),
-        );
+        assert!(rx.try_recv().is_err());
+        let banned = make_delta("players", "p3", serde_json::json!({"status": "banned", "score": 200}));
         mgr.publish_deltas(&[banned]);
-        assert!(rx.try_recv().is_err(), "status=banned should be filtered");
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn parse_in_predicate_returns_correct_values() {
-        let filter =
-            parse_subscription_query("items WHERE rarity IN ('common', 'rare', 'epic')").unwrap();
+        let filter = parse_subscription_query("items WHERE rarity IN ('common', 'rare', 'epic')").unwrap();
         assert_eq!(filter.table_name, "items");
         match filter.predicate.unwrap() {
             Predicate::In { field, values } => {
@@ -1333,14 +1114,8 @@ mod tests {
         assert_eq!(filter.table_name, "players");
         match filter.predicate.unwrap() {
             Predicate::And(left, right) => {
-                match *left {
-                    Predicate::Comparison { field, .. } => assert_eq!(field, "score"),
-                    _ => panic!("expected Comparison on left"),
-                }
-                match *right {
-                    Predicate::Comparison { field, .. } => assert_eq!(field, "level"),
-                    _ => panic!("expected Comparison on right"),
-                }
+                match *left { Predicate::Comparison { field, .. } => assert_eq!(field, "score"), _ => panic!() }
+                match *right { Predicate::Comparison { field, .. } => assert_eq!(field, "level"), _ => panic!() }
             }
             other => panic!("Expected And predicate, got {:?}", other),
         }
