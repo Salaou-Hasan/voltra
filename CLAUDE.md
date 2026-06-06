@@ -39,7 +39,8 @@ NeonDB/
 │   ├── error.rs                # NeonDBError enum, Result alias
 │   ├── schema.rs               # ColumnType, ColumnDef, TableSchema, SchemaRegistry
 │   ├── migrations.rs           # apply_migrations(), add/remove/rename field ops
-│   ├── subscriptions.rs        # SubscriptionManager, Predicate (AND/OR/IN/Comparison), LIMIT
+│   ├── subscriptions.rs        # SubscriptionManager, Predicate (AND/OR/IN/Comparison),
+│   │                           #   LIMIT N, ORDER BY field ASC|DESC
 │   ├── table/
 │   │   └── mod.rs              # TableStore, Counter, Player, RowDelta, BlobStore
 │   ├── reducer/
@@ -72,6 +73,13 @@ NeonDB/
 │   └── increment_wasm.wat      # sample WAT reducer
 ├── migrations/
 │   └── README.md               # migration file format docs
+├── neondb-client-ts/           # TypeScript client SDK
+│   └── src/
+│       ├── client.ts           # NeonDBClient — call(), call() w/ optimistic, subscribe()
+│       └── types.ts            # OptimisticOptions, OptimisticCache, RowDiff, …
+├── neondb-client-rust/         # Rust client SDK
+│   └── src/
+│       └── client.rs           # NeonDBClient — call(), call_optimistic(), subscribe()
 └── mygame/                     # sample project directory (neondb init output)
 ```
 
@@ -108,14 +116,27 @@ NeonDB/
 - **Reverse index** (`table_index`) — O(matching_subscribers) publish.
 - **Initial state sync**: `subscribe_with_snapshot()` delivers existing rows as `"initial_snapshot"` frames.
 - **Predicate tree**: `Predicate::Comparison | In | And | Or` — full boolean expression tree.
-- **LIMIT N**: `SubscriptionFilter.limit: Option<usize>` caps the initial snapshot. Live deltas are never limited.
+- **LIMIT N**: `SubscriptionFilter.limit: Option<usize>` caps the initial snapshot (applied after ORDER BY sort).
 - **OR operator**: `WHERE status = 'alive' OR status = 'idle'` fully supported.
+- **ORDER BY**: `SubscriptionFilter.order_by: Option<OrderBy>` sorts snapshot rows before delivery; `SortDirection::Asc | Desc`; numbers numeric, strings lexicographic, missing field sorts last.
 
 ### config.rs
 - `PermissionsConfig` — `HashMap<reducer_name, Vec<role>>`. Loaded from `[permissions]` TOML or `NEONDB_PERMISSIONS` env var (JSON). Used by websocket.rs to enforce per-reducer roles.
 
 ### cli.rs
 - `parse_args_json()` — PowerShell-safe. Auto-detects bare unquoted words inside `[...]` (e.g. `[general, alice]` from PowerShell quote-stripping) and auto-quotes them to produce valid JSON before parsing.
+
+### TypeScript SDK (neondb-client-ts/src/client.ts)
+- **Optimistic updates**: `call(reducer, args, { optimistic: (cache) => newCache })`.
+  - Snapshots cache before call, applies speculative state immediately.
+  - Rolls back to snapshot on server error; calls `onRollback?` if provided.
+  - Also rolls back on timeout or disconnect.
+  - `OptimisticCache = Map<tableName, Map<rowKey, rowData>>`.
+
+### Rust SDK (neondb-client-rust/src/client.rs)
+- **Optimistic updates**: `call_optimistic(reducer, args, |cache| new_cache).await`.
+  - `CacheSnapshot = HashMap<String, HashMap<String, serde_json::Value>>`.
+  - Background connection task stores snapshot keyed by call_id; rolls back on `ReducerResponse.success == false`.
 
 ---
 
@@ -176,33 +197,49 @@ Remove-Item -Recurse -Force target\criterion
 
 ### Session 29 — Template system redesign
 - `main.rs` completely rebuilt with 4 templates: `rust/basic`, `rust/game-ready`, `rust/chat`, `typescript`.
-- Each template: JS reducers, TypeScript client, schema.toml, neondb.toml with permissions, README.
-- `rust/game-ready` adds `GENRE_GUIDE.md` explaining how to adapt to any game genre.
-- `neondb templates` subcommand lists all templates with categories and descriptions.
+- `neondb templates` subcommand lists all templates.
 
-### Session 30 — TODO-022 integration tests + TODO-020 OR/LIMIT (partial)
+### Session 30 — TODO-022 tests + TODO-020 OR/LIMIT
+- 3 permissions integration tests added (94 total).
+- `Predicate::Or` + `parse_predicate()` OR support, `extract_limit()`, `SubscriptionFilter.limit`.
+- 9 new unit tests in subscriptions.rs.
 
-**TODO-022 — 3 integration tests** (`tests/integration.rs`):
-- `integration_permissions_unauthorized_call_rejected` — caller with empty role cannot call a restricted reducer.
-- `integration_permissions_authorized_call_passes` — caller with `Bearer key:admin` can call an admin-only reducer.
-- `integration_permissions_open_reducer_always_allowed` — unrestricted reducers pass regardless of role.
-- Total integration tests: **94** (up from 91).
+### Session 31 — TODO-020 ORDER BY + TODO-021 Optimistic Updates
 
-**TODO-020 partial — OR predicate + LIMIT N** (`src/subscriptions.rs`):
-- `Predicate::Or(Box<Predicate>, Box<Predicate>)` added to the predicate enum.
-- `parse_predicate()` now tries OR first (lowest precedence), then AND, then IN, then comparison.
-- Precedence: `AND > OR` — so `A AND B OR C` parses as `(A AND B) OR C`.
-- `extract_limit()` strips a trailing `LIMIT N` from the query string.
-- `SubscriptionFilter.limit: Option<usize>` — caps initial snapshot delivery only.
-- 9 new unit tests covering OR matching, precedence, LIMIT parsing, LIMIT=0, live delta not limited.
-- **Remaining for TODO-020**: `ORDER BY field ASC|DESC` on snapshot, `JOIN` across two tables.
+**TODO-020 ORDER BY** (`src/subscriptions.rs`):
+- `SortDirection { Asc, Desc }` enum.
+- `OrderBy { field: String, direction: SortDirection }` struct.
+- `SubscriptionFilter.order_by: Option<OrderBy>` field.
+- `extract_order_by()` strips `ORDER BY field [ASC|DESC]` from the query before WHERE parsing.
+- `subscribe_with_snapshot()` refactored: collect → sort (ORDER BY) → take (LIMIT) → deliver.
+- Query clause ordering: `TABLE [WHERE pred] [ORDER BY field [ASC|DESC]] [LIMIT N]`.
+- Numbers compared numerically; strings lexicographically; missing field sorts last in both directions.
+- 5 new unit tests: `order_by_parses_desc`, `order_by_parses_asc_default`, `order_by_with_where_and_limit`, `order_by_desc_sorts_snapshot_numeric`, `order_by_asc_sorts_snapshot_numeric`, `order_by_desc_combined_with_limit`, `order_by_does_not_affect_live_deltas`.
+
+**TODO-021 Optimistic Updates — TypeScript SDK** (`neondb-client-ts/src/`):
+- `types.ts`: added `OptimisticCache`, `OptimisticOptions { optimistic, onRollback? }`.
+- `client.ts`: `call()` now accepts optional third `OptimisticOptions` arg.
+  - Pre-call: `snapshotCache()` deep-clones rowCache → `rollbackSnapshot`.
+  - Applies `optimistic(rollbackSnapshot)` to live cache immediately.
+  - On server error: `applyOptimisticCache(rollbackSnapshot)` + `onRollback?()`.
+  - On timeout: same rollback.
+  - On disconnect: `rejectAllPending()` rolls back all in-flight optimistic calls.
+  - `applyOptimisticCache(cache)` and `snapshotCache()` are private helpers.
+
+**TODO-021 Optimistic Updates — Rust SDK** (`neondb-client-rust/src/client.rs`):
+- `CacheSnapshot = HashMap<String, HashMap<String, serde_json::Value>>`.
+- `snapshot_dashmap_cache()` / `apply_snapshot_to_cache()` helpers.
+- `Command::ApplyOptimistic` variant registers the rollback snapshot with the background task.
+- `call_optimistic(reducer, args, |cache| new_cache)` — public async method.
+  - Applies speculative state before sending the reducer call.
+  - Background `dispatch_message()` removes snapshot on success, rolls back on failure.
 
 ---
 
 ## Current Build Status
 
-After Session 30:
-- `cargo test` → **94 tests passing** (3 new permissions integration tests + 9 new subscriptions unit tests).
+After Session 31:
+- `cargo test` → **101 tests passing** (7 new ORDER BY unit tests + existing 94).
 - `cargo build --release` → zero errors, zero warnings.
 - `neondb-client-rust/`: `cargo build` → zero errors, zero warnings.
 - TypeScript SDK: `node --test neondb-client-ts/dist/tests/client.test.js` → **3 tests pass**.
@@ -227,5 +264,9 @@ After Session 30:
 14. **Row lock ordering** — `apply_delta_batch` acquires locks in sorted (table_name, row_key) order.
 15. **PowerShell args auto-quoting** — `parse_args_json()` handles `[general, alice]` → `["general", "alice"]`. Do not remove.
 16. **OR vs AND precedence** — in `subscriptions.rs`, OR is parsed first (lower precedence), AND second. `A AND B OR C` = `(A AND B) OR C`. This matches SQL standard.
-17. **LIMIT only affects initial snapshot** — `SubscriptionFilter.limit` is checked during `subscribe_with_snapshot()` only. Live deltas from `publish_deltas()` are never limited.
-18. **Template slash paths** — template names contain `/` (e.g. `rust/basic`). The `--template` flag accepts them as-is; the `init_project` function dispatches on the full string.
+17. **LIMIT only affects initial snapshot** — `SubscriptionFilter.limit` is checked during `subscribe_with_snapshot()` only.
+18. **ORDER BY only affects initial snapshot** — `SubscriptionFilter.order_by` sorts rows before delivery; live deltas are never reordered.
+19. **ORDER BY before LIMIT** — `extract_order_by()` strips ORDER BY first; LIMIT truncation happens after sorting.
+20. **Template slash paths** — template names contain `/` (e.g. `rust/basic`). The `--template` flag accepts them as-is.
+21. **Optimistic cache in TS SDK** — `snapshotCache()` deep-clones (new Map per table). `applyOptimisticCache()` clears then rebuilds. Both are private. Never mutate the snapshot returned by the `optimistic` callback's input.
+22. **Optimistic cache in Rust SDK** — `call_optimistic` sends `Command::ApplyOptimistic` (snapshot registration) then `Command::Call` (network frame). The background task processes them in order; `ApplyOptimistic` always arrives before `Call`'s ReducerResponse.

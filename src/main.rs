@@ -34,7 +34,7 @@ use hyper::{
     Body, Method, Request, Response, Server, StatusCode,
 };
 use neondb::{
-    config::{Config, PermissionsConfig, ScheduledReducerConfig},
+    config::{Config, ScheduledReducerConfig},
     error::Result,
     network::{start_listener, PendingCall, ReducerResponse},
     reducer::{ReducerContext, ReducerRegistry},

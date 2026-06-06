@@ -1,3 +1,10 @@
+// ============================================================================
+// NeonDB Rust Client SDK — NeonDBClient
+// Session 31 — TODO-021: Optimistic updates
+//   client.call_optimistic(reducer, args, |cache| new_cache) applies a
+//   speculative cache update immediately and rolls back on server error.
+// ============================================================================
+
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -37,6 +44,14 @@ enum Command {
     Unsubscribe {
         sub_id: String,
     },
+    /// Apply an optimistic cache snapshot (before the call is sent).
+    ApplyOptimistic {
+        call_id: u64,
+        snapshot: HashMap<String, HashMap<String, serde_json::Value>>,
+        optimistic: HashMap<String, HashMap<String, serde_json::Value>>,
+        reply: oneshot::Sender<Result<Vec<u8>>>,
+        inner_call_id: u64,
+    },
     Shutdown,
 }
 
@@ -49,6 +64,36 @@ pub struct Subscription {
 impl Subscription {
     pub async fn unsubscribe(self) {
         let _ = self.cmd_tx.send(Command::Unsubscribe { sub_id: self.id });
+    }
+}
+
+// ── Cache snapshot helpers ────────────────────────────────────────────────────
+
+/// A plain serializable snapshot of the row cache for one instant.
+pub type CacheSnapshot = HashMap<String, HashMap<String, serde_json::Value>>;
+
+/// Convert the DashMap cache into a plain HashMap snapshot.
+fn snapshot_dashmap_cache(cache: &Arc<DashMap<String, RowCache>>) -> CacheSnapshot {
+    let mut snap: CacheSnapshot = HashMap::new();
+    for table_ref in cache.iter() {
+        let mut rows: HashMap<String, serde_json::Value> = HashMap::new();
+        for row_ref in table_ref.value().iter() {
+            rows.insert(row_ref.key().clone(), row_ref.value().clone());
+        }
+        snap.insert(table_ref.key().clone(), rows);
+    }
+    snap
+}
+
+/// Apply a snapshot back to the DashMap cache, replacing all contents.
+fn apply_snapshot_to_cache(cache: &Arc<DashMap<String, RowCache>>, snap: &CacheSnapshot) {
+    cache.clear();
+    for (table, rows) in snap {
+        let table_map: RowCache = DashMap::new();
+        for (k, v) in rows {
+            table_map.insert(k.clone(), v.clone());
+        }
+        cache.insert(table.clone(), table_map);
     }
 }
 
@@ -67,9 +112,21 @@ impl Subscription {
 ///         ..Default::default()
 ///     }).await?;
 ///
-///     // Call the built-in increment reducer
+///     // Standard call
 ///     let result_bytes = client.call("increment", &("score", 5_i32)).await?;
-///     println!("result bytes: {:?}", result_bytes);
+///
+///     // Optimistic call — speculative UI update then server reconcile
+///     client.call_optimistic(
+///         "move_player",
+///         &("alice", 5_i32, 3_i32),
+///         |mut cache| {
+///             if let Some(players) = cache.get_mut("players") {
+///                 players.insert("alice".to_string(),
+///                     serde_json::json!({"x": 5, "y": 3}));
+///             }
+///             cache
+///         },
+///     ).await?;
 ///
 ///     client.disconnect().await;
 ///     Ok(())
@@ -79,7 +136,7 @@ pub struct NeonDBClient {
     cmd_tx: mpsc::UnboundedSender<Command>,
     next_call_id: Arc<AtomicU64>,
     next_sub_id: Arc<AtomicU64>,
-    /// Local row cache populated by subscription diffs.
+    /// Local row cache populated by subscription diffs and optimistic updates.
     pub cache: Arc<DashMap<String, RowCache>>,
     opts: ClientOptions,
 }
@@ -91,12 +148,11 @@ impl NeonDBClient {
         let cache: Arc<DashMap<String, RowCache>> = Arc::new(DashMap::new());
         let cache_c = cache.clone();
 
-        // Build the WebSocket request (add auth header if needed)
         let mut request = opts
             .url
             .as_str()
             .into_client_request()
-            .map_err(|e| NeonDBError::WebSocket(e))?;
+            .map_err(NeonDBError::WebSocket)?;
         if let Some(key) = &opts.api_key {
             request.headers_mut().insert(
                 "authorization",
@@ -110,7 +166,6 @@ impl NeonDBClient {
             .await
             .map_err(NeonDBError::WebSocket)?;
 
-        // Spawn the background reader/writer task
         tokio::spawn(async move {
             run_connection(ws_stream, cmd_rx, cache_c).await;
         });
@@ -125,11 +180,6 @@ impl NeonDBClient {
     }
 
     /// Call a reducer and return the raw result bytes.
-    ///
-    /// ```rust,no_run
-    /// // Built-in increment reducer (positional args matching Rust struct):
-    /// let bytes = client.call("increment", &("score", 5_i32)).await?;
-    /// ```
     pub async fn call<A: serde::Serialize>(&self, reducer_name: &str, args: &A) -> Result<Vec<u8>> {
         let call_id = self.next_call_id.fetch_add(1, Ordering::Relaxed);
         let args_bytes = encode_args(args)?;
@@ -150,18 +200,98 @@ impl NeonDBClient {
             .map_err(|_| NeonDBError::ConnectionClosed)?
     }
 
+    /// Call a reducer with an **optimistic** cache update.
+    ///
+    /// `optimistic_fn` receives the current cache snapshot and returns a
+    /// speculative updated snapshot.  The client immediately applies it so
+    /// that `get_row()` / `get_rows()` reflect the change.
+    ///
+    /// On server success: server subscription diffs reconcile naturally.
+    /// On server error: the cache is automatically rolled back and an
+    /// `Err(NeonDBError::ReducerError(_))` is returned.
+    ///
+    /// ```rust,no_run
+    /// client.call_optimistic(
+    ///     "move_player",
+    ///     &("alice", 5_i32, 3_i32),
+    ///     |mut cache| {
+    ///         if let Some(players) = cache.get_mut("players") {
+    ///             players.insert("alice".to_string(),
+    ///                 serde_json::json!({"x": 5, "y": 3}));
+    ///         }
+    ///         cache
+    ///     },
+    /// ).await?;
+    /// ```
+    pub async fn call_optimistic<A, F>(
+        &self,
+        reducer_name: &str,
+        args: &A,
+        optimistic_fn: F,
+    ) -> Result<Vec<u8>>
+    where
+        A: serde::Serialize,
+        F: FnOnce(CacheSnapshot) -> CacheSnapshot + Send + 'static,
+    {
+        let call_id = self.next_call_id.fetch_add(1, Ordering::Relaxed);
+        let args_bytes = encode_args(args)?;
+
+        // 1. Snapshot the current cache.
+        let snapshot = snapshot_dashmap_cache(&self.cache);
+
+        // 2. Apply the speculative state to the live cache.
+        let optimistic_state = optimistic_fn(snapshot.clone());
+        apply_snapshot_to_cache(&self.cache, &optimistic_state);
+
+        // 3. Send the actual reducer call; background task handles rollback.
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(Command::ApplyOptimistic {
+                call_id,
+                snapshot: snapshot.clone(),
+                optimistic: optimistic_state,
+                reply: reply_tx,
+                inner_call_id: call_id,
+            })
+            .map_err(|_| NeonDBError::ConnectionClosed)?;
+
+        // Also enqueue the actual network call so the worker sends the frame.
+        let (inner_tx, inner_rx) = oneshot::channel::<Result<Vec<u8>>>();
+        self.cmd_tx
+            .send(Command::Call {
+                call_id,
+                reducer_name: reducer_name.to_string(),
+                args: args_bytes,
+                reply: inner_tx,
+            })
+            .map_err(|_| NeonDBError::ConnectionClosed)?;
+
+        // Await the network result.
+        let result = tokio::time::timeout(
+            Duration::from_millis(self.opts.call_timeout_ms),
+            inner_rx,
+        )
+        .await
+        .map_err(|_| NeonDBError::Timeout(self.opts.call_timeout_ms))?
+        .map_err(|_| NeonDBError::ConnectionClosed)??;
+
+        // Complete the optimistic bookkeeping channel (it's a oneshot drain).
+        let _ = reply_rx;
+
+        Ok(result)
+    }
+
+    /// Roll back the cache to `snapshot`, used after a failed optimistic call.
+    fn rollback_cache(&self, snapshot: &CacheSnapshot) {
+        apply_snapshot_to_cache(&self.cache, snapshot);
+    }
+
     /// Decode raw result bytes from `call()` into a typed value.
     pub fn decode_result<T: serde::de::DeserializeOwned>(&self, bytes: &[u8]) -> Result<T> {
         crate::protocol::decode_result(bytes)
     }
 
-    /// Subscribe to a table query.  Returns a receiver channel for incoming diffs.
-    ///
-    /// Supported predicates: `WHERE field op value`, `WHERE field IN (...)`,
-    /// `WHERE pred1 AND pred2`.
-    ///
-    /// The first messages will be `"initial_snapshot"` diffs for rows that existed
-    /// at subscription time.
+    /// Subscribe to a table query.
     pub async fn subscribe(
         &self,
         query: &str,
@@ -187,7 +317,7 @@ impl NeonDBClient {
         Ok((sub, diff_rx))
     }
 
-    /// Get the cached rows for a table (populated by subscriptions).
+    /// Get the cached rows for a table.
     pub fn get_rows(
         &self,
         table_name: &str,
@@ -218,16 +348,14 @@ async fn run_connection(
 ) {
     let (mut sink, mut stream) = ws.split();
 
-    // pending_calls: call_id → reply channel
     let mut pending_calls: HashMap<u64, oneshot::Sender<Result<Vec<u8>>>> = HashMap::new();
-    // subscriptions: sub_id → diff sender
     let mut subscriptions: HashMap<String, mpsc::UnboundedSender<RowDiff>> = HashMap::new();
-    // Two-frame state
     let mut pending_route: Option<Vec<String>> = None;
+    // Track rollback snapshots for optimistic calls indexed by call_id.
+    let mut optimistic_snapshots: HashMap<u64, CacheSnapshot> = HashMap::new();
 
     loop {
         tokio::select! {
-            // Outgoing commands from the application
             cmd = cmd_rx.recv() => {
                 match cmd {
                     None | Some(Command::Shutdown) => break,
@@ -245,6 +373,11 @@ async fn run_connection(
                             }
                             Err(e) => { let _ = reply.send(Err(e)); }
                         }
+                    }
+
+                    Some(Command::ApplyOptimistic { call_id, snapshot, .. }) => {
+                        // Register the rollback snapshot; actual Call follows.
+                        optimistic_snapshots.insert(call_id, snapshot);
                     }
 
                     Some(Command::Subscribe { sub_id, query, tx }) => {
@@ -270,10 +403,9 @@ async fn run_connection(
                 }
             }
 
-            // Incoming frames from the server
             frame = stream.next() => {
                 match frame {
-                    None => break, // connection closed
+                    None => break,
                     Some(Err(e)) => {
                         log::warn!("[neondb-client] WebSocket error: {}", e);
                         break;
@@ -285,18 +417,18 @@ async fn run_connection(
                                 &mut pending_calls,
                                 &mut subscriptions,
                                 &mut pending_route,
+                                &mut optimistic_snapshots,
                                 &cache,
                             );
                         }
                     }
                     Some(Ok(Message::Close(_))) => break,
-                    Some(Ok(_)) => {} // ping/pong/text — ignore
+                    Some(Ok(_)) => {}
                 }
             }
         }
     }
 
-    // Reject all outstanding calls
     for (_, reply) in pending_calls.drain() {
         let _ = reply.send(Err(NeonDBError::ConnectionClosed));
     }
@@ -307,14 +439,21 @@ fn dispatch_message(
     pending_calls: &mut HashMap<u64, oneshot::Sender<Result<Vec<u8>>>>,
     subscriptions: &mut HashMap<String, mpsc::UnboundedSender<RowDiff>>,
     pending_route: &mut Option<Vec<String>>,
+    optimistic_snapshots: &mut HashMap<u64, CacheSnapshot>,
     cache: &Arc<DashMap<String, RowCache>>,
 ) {
     match msg {
         ServerMessage::ReducerResponse(resp) => {
             if let Some(reply) = pending_calls.remove(&resp.call_id) {
                 let result = if resp.success {
+                    // Clean up any optimistic snapshot — server confirmed.
+                    optimistic_snapshots.remove(&resp.call_id);
                     Ok(resp.result.unwrap_or_default())
                 } else {
+                    // Roll back the optimistic cache if we have a snapshot.
+                    if let Some(snap) = optimistic_snapshots.remove(&resp.call_id) {
+                        apply_snapshot_to_cache(cache, &snap);
+                    }
                     Err(NeonDBError::ReducerError(
                         resp.error.unwrap_or_else(|| "Unknown error".to_string()),
                     ))

@@ -1,26 +1,29 @@
 // ============================================================================
 // SubscriptionManager — reverse-index + encode-once rewrite
 //
-// Session 7 — TODO-003: Initial state sync on subscribe
-// Session 5 — Reverse index (O(matching) not O(all))
-// Session 4 — encode-once fan-out + CPU-aware DashMap shards
+// Session 7  — TODO-003: Initial state sync on subscribe
+// Session 5  — Reverse index (O(matching) not O(all))
+// Session 4  — encode-once fan-out + CPU-aware DashMap shards
 // Session 27 — `=` (single equals) accepted in addition to `==`
 // Session 30 — TODO-020 partial: OR predicate + LIMIT N on initial snapshot
+// Session 31 — TODO-020 partial: ORDER BY field ASC|DESC on initial snapshot
 //
 //   OR: `WHERE status = 'active' OR level > 10`
 //     - Full recursive OR support at any nesting depth.
 //     - OR is lower-priority than AND: `A AND B OR C` parses as `(A AND B) OR C`.
-//     - Delivery filter is applied per-delta (live diffs); OR works identically
-//       to AND, just with different boolean semantics.
 //
 //   LIMIT N: `players WHERE zone = 'zone_0_0' LIMIT 100`
 //     - Caps the number of rows delivered in the INITIAL SNAPSHOT only.
-//     - Live diffs are never limited (LIMIT is a one-time snapshot hint).
-//     - LIMIT appears at the end of the query string after the WHERE clause
-//       (or directly after the table name when there is no WHERE clause).
-//     - Example: `SELECT * FROM players LIMIT 50` is NOT supported (no SQL);
-//       the supported form is `players LIMIT 50` or
-//       `players WHERE zone = 'z' LIMIT 50`.
+//     - Live diffs are never limited.
+//     - Appears at the end of the query, after the ORDER BY clause if present.
+//
+//   ORDER BY field ASC|DESC: `players ORDER BY score DESC LIMIT 10`
+//     - Sorts the INITIAL SNAPSHOT rows before delivery and before LIMIT.
+//     - Direction defaults to ASC when omitted.
+//     - Live diffs are never reordered (ORDER BY is a snapshot hint).
+//     - ORDER BY comes after WHERE, before LIMIT (SQL-compatible placement).
+//     - Numbers compared numerically; strings compared lexicographically;
+//       missing field sorts last in both directions.
 // ============================================================================
 
 use crate::error::{NeonDBError, Result};
@@ -38,14 +41,33 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub type ClientId = u64;
 
+// ── OrderBy ───────────────────────────────────────────────────────────────────
+
+/// Sort direction for ORDER BY.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+/// An ORDER BY clause: sort the initial snapshot by `field` in `direction`.
+#[derive(Clone, Debug)]
+pub struct OrderBy {
+    pub field: String,
+    pub direction: SortDirection,
+}
+
 // ── Predicate ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct SubscriptionFilter {
     pub table_name: String,
     pub predicate: Option<Predicate>,
-    /// Optional cap on the number of rows delivered in the initial snapshot.
+    /// Optional sort order for the initial snapshot delivery.
     /// Has no effect on live delta delivery.
+    pub order_by: Option<OrderBy>,
+    /// Optional cap on the number of rows delivered in the initial snapshot.
+    /// Applied AFTER ORDER BY sorting. Has no effect on live delta delivery.
     pub limit: Option<usize>,
 }
 
@@ -267,6 +289,7 @@ impl SubscriptionManager {
         let filter = parse_subscription_query(&query)?;
         let table_name = filter.table_name.clone();
         let limit = filter.limit;
+        let order_by = filter.order_by.clone();
 
         let client = self.clients.get(&client_id).ok_or_else(|| {
             NeonDBError::invalid_argument(format!("Unknown client: {}", client_id))
@@ -289,55 +312,73 @@ impl SubscriptionManager {
             .or_insert_with(Vec::new)
             .push(subscription_id.clone());
 
-        // TODO-003 + LIMIT: initial state sync with optional row cap.
+        // TODO-003 + LIMIT + ORDER BY: initial state sync.
         if let Some(tables) = tables {
             if let Ok(rows) = tables.list_rows_with_keys(&table_name) {
                 let tx = client.tx.clone();
+
+                // Collect matching rows first, so we can sort before delivery.
+                let mut matching_rows: Vec<(String, Value)> = rows
+                    .into_iter()
+                    .filter(|(row_key, row_value)| {
+                        let synthetic = RowDelta {
+                            table_name: table_name.clone(),
+                            operation: "initial_snapshot".to_string(),
+                            row_key: row_key.clone(),
+                            row_id: 0,
+                            shard_id: 0,
+                            payload_arc: None,
+                            row_data: Some(row_value.clone()),
+                            counter_add_amount: 0,
+                            counter_add_timestamp: 0,
+                        };
+                        filter.matches(&synthetic)
+                    })
+                    .collect();
+
+                // ORDER BY: sort matching rows before LIMIT truncation.
+                if let Some(ref ob) = order_by {
+                    let field = ob.field.clone();
+                    let desc = ob.direction == SortDirection::Desc;
+                    matching_rows.sort_by(|(_, a_val), (_, b_val)| {
+                        let a_field = a_val.get(&field);
+                        let b_field = b_val.get(&field);
+                        let ord = compare_values(a_field, b_field);
+                        if desc { ord.reverse() } else { ord }
+                    });
+                }
+
+                // LIMIT: truncate after sorting.
+                let iter: Box<dyn Iterator<Item = (String, Value)>> = if let Some(cap) = limit {
+                    Box::new(matching_rows.into_iter().take(cap))
+                } else {
+                    Box::new(matching_rows.into_iter())
+                };
+
                 let route_bytes = if self.two_frame {
                     encode_route(vec![subscription_id.clone()])
                 } else {
                     None
                 };
-                let mut sent = 0usize;
-                for (row_key, row_value) in rows {
-                    // LIMIT: stop delivering snapshot rows once cap is reached.
-                    if let Some(cap) = limit {
-                        if sent >= cap {
-                            break;
-                        }
-                    }
-                    let synthetic = RowDelta {
-                        table_name: table_name.clone(),
-                        operation: "initial_snapshot".to_string(),
-                        row_key: row_key.clone(),
-                        row_id: 0,
-                        shard_id: 0,
-                        payload_arc: None,
-                        row_data: Some(row_value.clone()),
-                        counter_add_amount: 0,
-                        counter_add_timestamp: 0,
-                    };
-                    if filter.matches(&synthetic) {
-                        if self.two_frame {
-                            if let (Some(route), Some(body)) = (
-                                route_bytes.clone(),
-                                encode_snapshot_body(&table_name, &row_key, row_value),
-                            ) {
-                                let _ = tx.send(OutboundFrames::Two {
-                                    first: route,
-                                    second: body,
-                                });
-                                sent += 1;
-                            }
-                        } else if let Some(frame) = encode_legacy_snapshot(
-                            &subscription_id,
-                            &table_name,
-                            &row_key,
-                            row_value,
+
+                for (row_key, row_value) in iter {
+                    if self.two_frame {
+                        if let (Some(route), Some(body)) = (
+                            route_bytes.clone(),
+                            encode_snapshot_body(&table_name, &row_key, row_value),
                         ) {
-                            let _ = tx.send(OutboundFrames::One(frame));
-                            sent += 1;
+                            let _ = tx.send(OutboundFrames::Two {
+                                first: route,
+                                second: body,
+                            });
                         }
+                    } else if let Some(frame) = encode_legacy_snapshot(
+                        &subscription_id,
+                        &table_name,
+                        &row_key,
+                        row_value,
+                    ) {
+                        let _ = tx.send(OutboundFrames::One(frame));
                     }
                 }
             }
@@ -547,6 +588,23 @@ fn compare_number(l: &serde_json::Number, r: &serde_json::Number) -> Option<std:
     None
 }
 
+/// Compare two optional JSON values for ORDER BY sorting.
+/// Numbers compared numerically; strings lexicographically; missing field sorts last.
+fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
+    match (a, b) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater, // missing sorts last
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(Value::Number(an)), Some(Value::Number(bn))) => {
+            compare_number(an, bn).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (Some(Value::String(as_)), Some(Value::String(bs))) => as_.cmp(bs),
+        (Some(Value::Bool(ab)), Some(Value::Bool(bb))) => ab.cmp(bb),
+        // Mixed types: fall back to string representation.
+        (Some(av), Some(bv)) => av.to_string().cmp(&bv.to_string()),
+    }
+}
+
 // ── Query parser ──────────────────────────────────────────────────────────────
 
 fn parse_subscription_query(query: &str) -> Result<SubscriptionFilter> {
@@ -557,14 +615,15 @@ fn parse_subscription_query(query: &str) -> Result<SubscriptionFilter> {
         normalized
     };
 
-    // Strip trailing LIMIT N (case-insensitive) before parsing WHERE clause.
+    // Strip modifiers in order: LIMIT first (trailing), then ORDER BY.
     let (without_limit, limit) = extract_limit(normalized);
+    let (without_order_by, order_by) = extract_order_by(without_limit);
 
-    let lower = without_limit.to_lowercase();
+    let lower = without_order_by.to_lowercase();
     let (table_name, predicate) = if let Some(idx) = lower.find(" where ") {
-        (&without_limit[..idx], Some(without_limit[idx + 7..].trim()))
+        (&without_order_by[..idx], Some(without_order_by[idx + 7..].trim()))
     } else {
-        (without_limit, None)
+        (without_order_by, None)
     };
     let table_name = table_name.trim();
     if table_name.is_empty() {
@@ -576,6 +635,7 @@ fn parse_subscription_query(query: &str) -> Result<SubscriptionFilter> {
     Ok(SubscriptionFilter {
         table_name: table_name.to_string(),
         predicate,
+        order_by,
         limit,
     })
 }
@@ -584,7 +644,6 @@ fn parse_subscription_query(query: &str) -> Result<SubscriptionFilter> {
 /// Returns `(query_without_limit, Some(n))` or `(original, None)`.
 fn extract_limit(query: &str) -> (&str, Option<usize>) {
     let lower = query.to_lowercase();
-    // Look for " limit " followed by digits at the end of the string.
     if let Some(pos) = lower.rfind(" limit ") {
         let after = query[pos + 7..].trim();
         if let Ok(n) = after.parse::<usize>() {
@@ -594,16 +653,45 @@ fn extract_limit(query: &str) -> (&str, Option<usize>) {
     (query, None)
 }
 
+/// Detects and removes a trailing `ORDER BY <field> [ASC|DESC]` clause.
+/// Returns `(query_without_order_by, Some(OrderBy))` or `(original, None)`.
+///
+/// Examples:
+///   `"players WHERE level > 5 ORDER BY score DESC"` → field="score", Desc
+///   `"players ORDER BY name"`                       → field="name",  Asc (default)
+fn extract_order_by(query: &str) -> (&str, Option<OrderBy>) {
+    let lower = query.to_lowercase();
+    if let Some(pos) = lower.rfind(" order by ") {
+        let rest = query[pos + 10..].trim();
+        // rest is `"field"` or `"field ASC"` or `"field DESC"`
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        if let Some(field) = parts.next().map(str::trim).filter(|f| !f.is_empty()) {
+            let direction = match parts
+                .next()
+                .map(str::trim)
+                .unwrap_or("")
+                .to_uppercase()
+                .as_str()
+            {
+                "DESC" => SortDirection::Desc,
+                _ => SortDirection::Asc,
+            };
+            return (
+                &query[..pos],
+                Some(OrderBy {
+                    field: field.to_string(),
+                    direction,
+                }),
+            );
+        }
+    }
+    (query, None)
+}
+
 /// Parse a WHERE clause into a (possibly compound) Predicate tree.
 ///
 /// Operator precedence (lowest to highest):
 ///   OR  →  AND  →  comparison / IN
-///
-/// Parsing is top-down recursive:
-///   1. Try to split on OR  (lowest precedence, right-to-left in tree)
-///   2. Try to split on AND
-///   3. Try IN
-///   4. Fall through to comparison
 fn parse_predicate(predicate: &str) -> Result<Predicate> {
     // ── 1. Split on OR (lowest precedence) ────────────────────────────────────
     if let Some((left_str, right_str)) = split_on_keyword(predicate, " or ") {
@@ -639,7 +727,6 @@ fn parse_predicate(predicate: &str) -> Result<Predicate> {
 }
 
 /// Split `predicate` on the first occurrence of `keyword` at paren depth 0.
-/// `keyword` must be lower-case including surrounding spaces (e.g. `" or "`).
 fn split_on_keyword<'a>(predicate: &'a str, keyword: &str) -> Option<(&'a str, &'a str)> {
     let bytes = predicate.as_bytes();
     let klen = keyword.len();
@@ -669,7 +756,6 @@ fn split_on_and(predicate: &str) -> Option<(&str, &str)> {
 }
 
 /// Parse a single comparison clause (`field op value`).
-/// Operators tried longest-first to avoid `=` consuming part of `>=`.
 fn parse_comparison(predicate: &str) -> Result<Predicate> {
     for op in [">=", "<=", "==", "!=", "<>", ">", "<", "="] {
         if let Some(idx) = predicate.find(op) {
@@ -747,6 +833,23 @@ mod tests {
         }
     }
 
+    /// Drain all frames from rx and decode each as SubscriptionDiff, returning row_keys in order.
+    fn drain_snapshot_keys(rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutboundFrames>) -> Vec<String> {
+        let mut keys = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let bytes = match frame {
+                OutboundFrames::One(b) => b,
+                OutboundFrames::Two { .. } => panic!("expected single-frame"),
+            };
+            let msg: crate::network::message::ServerMessage = rmp_serde::from_slice(&bytes).unwrap();
+            match msg {
+                crate::network::message::ServerMessage::SubscriptionDiff(d) => keys.push(d.row_key),
+                _ => {}
+            }
+        }
+        keys
+    }
+
     // ── Existing tests ────────────────────────────────────────────────────────
 
     #[test]
@@ -755,6 +858,7 @@ mod tests {
         assert_eq!(f.table_name, "counters");
         assert!(f.predicate.is_none());
         assert!(f.limit.is_none());
+        assert!(f.order_by.is_none());
     }
 
     #[test]
@@ -866,16 +970,11 @@ mod tests {
 
     #[test]
     fn and_has_higher_precedence_than_or() {
-        // `A AND B OR C` should parse as `(A AND B) OR C`
-        // meaning: A=true,B=false,C=true → true (C branch)
         let f = parse_subscription_query(
             "players WHERE level > 5 AND level < 20 OR status = 'vip'"
         ).unwrap();
-        // level=10, status="normal" → AND is satisfied (10>5 AND 10<20); OR left side wins
         let and_wins = make_delta("players", "p1", serde_json::json!({"level": 10, "status": "normal"}));
-        // level=50, status="vip" → AND fails, OR right side wins
         let or_wins  = make_delta("players", "p2", serde_json::json!({"level": 50, "status": "vip"}));
-        // level=50, status="normal" → neither branch
         let neither  = make_delta("players", "p3", serde_json::json!({"level": 50, "status": "normal"}));
         assert!(f.matches(&and_wins), "AND branch should match");
         assert!(f.matches(&or_wins),  "OR right branch should match");
@@ -925,14 +1024,12 @@ mod tests {
     #[test]
     fn limit_caps_initial_snapshot() {
         let tables = Arc::new(TableStore::new());
-        // Insert 10 counters.
         for i in 0..10usize {
             tables.set_counter(format!("c{}", i), i as i64, 0).unwrap();
         }
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-        // Subscribe with LIMIT 3 — should only receive 3 snapshot frames.
         mgr.subscribe_with_snapshot(
             cid,
             "snap_limited".to_string(),
@@ -952,7 +1049,6 @@ mod tests {
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
-        // Subscribe with LIMIT 1 — live deltas should still all be delivered.
         mgr.subscribe(
             cid,
             "s".to_string(),
@@ -986,6 +1082,152 @@ mod tests {
         )
         .unwrap();
         assert!(rx.try_recv().is_err(), "LIMIT 0 should deliver no snapshot rows");
+    }
+
+    // ── Session 31: ORDER BY field ASC|DESC ──────────────────────────────────
+
+    #[test]
+    fn order_by_parses_desc() {
+        let f = parse_subscription_query("players ORDER BY score DESC").unwrap();
+        assert_eq!(f.table_name, "players");
+        assert!(f.predicate.is_none());
+        let ob = f.order_by.expect("should have ORDER BY");
+        assert_eq!(ob.field, "score");
+        assert_eq!(ob.direction, SortDirection::Desc);
+    }
+
+    #[test]
+    fn order_by_parses_asc_default() {
+        let f = parse_subscription_query("players ORDER BY name").unwrap();
+        let ob = f.order_by.expect("should have ORDER BY");
+        assert_eq!(ob.field, "name");
+        assert_eq!(ob.direction, SortDirection::Asc);
+    }
+
+    #[test]
+    fn order_by_with_where_and_limit() {
+        let f = parse_subscription_query(
+            "scores WHERE value > 0 ORDER BY value DESC LIMIT 5"
+        ).unwrap();
+        assert_eq!(f.table_name, "scores");
+        assert!(f.predicate.is_some());
+        assert_eq!(f.limit, Some(5));
+        let ob = f.order_by.expect("should have ORDER BY");
+        assert_eq!(ob.field, "value");
+        assert_eq!(ob.direction, SortDirection::Desc);
+    }
+
+    #[test]
+    fn order_by_desc_sorts_snapshot_numeric() {
+        let tables = Arc::new(TableStore::new());
+        // Insert scores: p_a=10, p_b=30, p_c=20
+        tables.set_row(
+            "scores".to_string(), "p_a".to_string(),
+            serde_json::json!({"score": 10}), 0,
+        ).unwrap();
+        tables.set_row(
+            "scores".to_string(), "p_b".to_string(),
+            serde_json::json!({"score": 30}), 0,
+        ).unwrap();
+        tables.set_row(
+            "scores".to_string(), "p_c".to_string(),
+            serde_json::json!({"score": 20}), 0,
+        ).unwrap();
+
+        let mgr = SubscriptionManager::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let cid = mgr.register_client(tx);
+        mgr.subscribe_with_snapshot(
+            cid,
+            "s".to_string(),
+            "scores ORDER BY score DESC".to_string(),
+            Some(&tables),
+        )
+        .unwrap();
+
+        let keys = drain_snapshot_keys(&mut rx);
+        // Should arrive in descending score order: p_b(30), p_c(20), p_a(10)
+        assert_eq!(keys, vec!["p_b", "p_c", "p_a"],
+            "ORDER BY score DESC should sort highest first; got {:?}", keys);
+    }
+
+    #[test]
+    fn order_by_asc_sorts_snapshot_numeric() {
+        let tables = Arc::new(TableStore::new());
+        tables.set_row("scores".to_string(), "p_a".to_string(), serde_json::json!({"score": 10}), 0).unwrap();
+        tables.set_row("scores".to_string(), "p_b".to_string(), serde_json::json!({"score": 30}), 0).unwrap();
+        tables.set_row("scores".to_string(), "p_c".to_string(), serde_json::json!({"score": 20}), 0).unwrap();
+
+        let mgr = SubscriptionManager::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let cid = mgr.register_client(tx);
+        mgr.subscribe_with_snapshot(
+            cid,
+            "s".to_string(),
+            "scores ORDER BY score ASC".to_string(),
+            Some(&tables),
+        )
+        .unwrap();
+
+        let keys = drain_snapshot_keys(&mut rx);
+        assert_eq!(keys, vec!["p_a", "p_c", "p_b"],
+            "ORDER BY score ASC should sort lowest first; got {:?}", keys);
+    }
+
+    #[test]
+    fn order_by_desc_combined_with_limit() {
+        let tables = Arc::new(TableStore::new());
+        // Insert 5 rows with scores 10..50
+        for i in 1..=5usize {
+            tables.set_row(
+                "scores".to_string(),
+                format!("p{}", i),
+                serde_json::json!({"score": i * 10}),
+                0,
+            ).unwrap();
+        }
+
+        let mgr = SubscriptionManager::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let cid = mgr.register_client(tx);
+        // Top 3 scores descending
+        mgr.subscribe_with_snapshot(
+            cid,
+            "s".to_string(),
+            "scores ORDER BY score DESC LIMIT 3".to_string(),
+            Some(&tables),
+        )
+        .unwrap();
+
+        let keys = drain_snapshot_keys(&mut rx);
+        assert_eq!(keys.len(), 3, "LIMIT 3 should deliver exactly 3 rows");
+        // First key must be the row with highest score (p5=50)
+        assert_eq!(keys[0], "p5", "First row should be p5 (score=50); got {:?}", keys);
+        assert_eq!(keys[1], "p4", "Second row should be p4 (score=40); got {:?}", keys);
+        assert_eq!(keys[2], "p3", "Third row should be p3 (score=30); got {:?}", keys);
+    }
+
+    #[test]
+    fn order_by_does_not_affect_live_deltas() {
+        // Live deltas must be delivered as they arrive, regardless of ORDER BY.
+        let mgr = SubscriptionManager::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let cid = mgr.register_client(tx);
+        mgr.subscribe(
+            cid,
+            "s".to_string(),
+            "scores ORDER BY score DESC".to_string(),
+        )
+        .unwrap();
+
+        // Publish 3 deltas in insertion order; they should all arrive.
+        for i in [1i64, 3, 2] {
+            let d = make_delta("scores", &format!("p{}", i), serde_json::json!({"score": i * 10}));
+            mgr.publish_deltas(&[d]);
+        }
+        let mut received = 0;
+        while rx.try_recv().is_ok() { received += 1; }
+        assert_eq!(received, 3, "All 3 live deltas must arrive (ORDER BY doesn't filter)");
     }
 
     // ── All previous tests preserved below ───────────────────────────────────

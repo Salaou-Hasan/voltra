@@ -79,3 +79,48 @@ export interface Subscription {
 
 /** Cached rows for a single table, keyed by row_key. */
 export type RowCache = Map<string, Record<string, unknown>>;
+
+// ── Optimistic updates ────────────────────────────────────────────────────────
+
+/**
+ * A snapshot of the full client-side row cache for ALL tables.
+ * Passed to `optimistic` so it can produce a speculative updated state.
+ */
+export type OptimisticCache = Map<string, RowCache>;
+
+/**
+ * Options for optimistic call() invocations.
+ *
+ * Usage:
+ * ```ts
+ * await client.call("move_player", { x: 5, y: 3 }, {
+ *   optimistic: (cache) => {
+ *     const players = cache.get("players") ?? new Map();
+ *     players.set("alice", { ...players.get("alice"), x: 5, y: 3 });
+ *     return new Map([...cache, ["players", players]]);
+ *   },
+ * });
+ * ```
+ *
+ * The callback receives the current cache and MUST return a NEW Map
+ * representing the optimistically updated state.  The client immediately
+ * updates its local cache with the returned value so that any UI reading
+ * `getRows()` / `getRow()` sees the change before the server responds.
+ *
+ * On server success: the server's subscription diffs will reconcile the cache.
+ * On server error: the cache is automatically rolled back to the pre-call state.
+ */
+export interface OptimisticOptions {
+  /**
+   * Pure function: receives current cache snapshot, returns speculative state.
+   * Must not mutate the argument; return a new Map.
+   */
+  optimistic: (cache: OptimisticCache) => OptimisticCache;
+  /**
+   * Optional callback invoked if the server rejects the call AND the
+   * optimistic update has been rolled back.
+   * @param error   The server error string.
+   * @param rolled  The cache state after rollback (same as before the call).
+   */
+  onRollback?: (error: string, rolledBack: OptimisticCache) => void;
+}
