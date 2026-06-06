@@ -1,18 +1,17 @@
 // ============================================================================
 // NeonDB TypeScript Client SDK — NeonDBClient
+// Session 31 — TODO-021: Optimistic updates
+//   call(reducer, args, { optimistic }) applies a speculative cache update
+//   immediately, then rolls back on server error.
 // ============================================================================
 import { encodeReducerCall, encodeSubscribe, encodeUnsubscribe, encodeArgs, decodeServerMessage, decodeResult, } from "./protocol.js";
 // Use native WebSocket in browsers; dynamically import 'ws' in Node.js.
-// `ws` supports custom HTTP headers (required for API key auth).
 async function getWebSocketCtor() {
     if (typeof globalThis.WebSocket !== "undefined") {
         return globalThis.WebSocket;
     }
-    // Node.js path — `ws` must be installed
     try {
-        // ESM-safe dynamic import (works when this package is `"type": "module"`).
         const mod = await import("ws");
-        // `ws` exports either `WebSocket` or a default export depending on bundler.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (mod.WebSocket ??
             mod.default ??
@@ -34,11 +33,8 @@ export class NeonDBClient {
     closed = false;
     pendingRoute = null;
     // ── Connection lifecycle events ───────────────────────────────────────────
-    /** Fired when the WebSocket connection is opened (or re-opened). */
     onConnected;
-    /** Fired when the connection is closed. */
     onDisconnected;
-    /** Fired when an unhandled server error message arrives. */
     onError;
     constructor(options) {
         this.opts = {
@@ -49,14 +45,6 @@ export class NeonDBClient {
         };
     }
     // ── Connection ────────────────────────────────────────────────────────────
-    /**
-     * Open the WebSocket connection.
-     * Resolves when the connection is ready to use.
-     *
-     * In Node.js the API key is sent as an HTTP header.
-     * In browsers the API key cannot be sent as a header — connect to a server
-     * without an API key, or route through a proxy that adds the header.
-     */
     connect() {
         if (this.ws?.readyState === WebSocket.OPEN) {
             return Promise.resolve();
@@ -64,7 +52,6 @@ export class NeonDBClient {
         this.closed = false;
         return this.openSocket();
     }
-    /** Close the connection and stop auto-reconnect. */
     disconnect() {
         this.closed = true;
         if (this.reconnectTimer != null) {
@@ -79,23 +66,36 @@ export class NeonDBClient {
     /**
      * Call a reducer and return the raw result bytes.
      *
-     * For the built-in `increment` reducer, pass args as a positional array
-     * matching the Rust struct field order:
+     * **Standard (non-optimistic):**
      * ```ts
      * const bytes = await client.call("increment", ["score", 1]);
-     * const result = client.decodeResult(bytes!); // { new_value: 5, timestamp: … }
      * ```
      *
-     * For JS/WASM reducers that accept an object:
+     * **Optimistic update:**
      * ```ts
-     * await client.call("myReducer", { key: "value" });
+     * await client.call("move_player", { x: 5, y: 3 }, {
+     *   optimistic: (cache) => {
+     *     const players = new Map(cache.get("players") ?? []);
+     *     players.set("alice", { ...players.get("alice"), x: 5, y: 3 });
+     *     return new Map([...cache, ["players", players]]);
+     *   },
+     *   onRollback: (err, rolled) => console.warn("rolled back:", err),
+     * });
      * ```
      *
-     * @returns Raw result bytes (MessagePack-encoded), or `null` if the call
-     *          succeeded with no result.
-     * @throws if the reducer returned an error or the call timed out.
+     * When `optimistic` is provided the client:
+     *   1. Snapshots the current cache.
+     *   2. Applies your speculative cache immediately (so `getRows()` reflects
+     *      the change before the server responds).
+     *   3. Sends the reducer call to the server.
+     *   4. On server **success**: server subscription diffs naturally reconcile.
+     *   5. On server **error**: cache is rolled back to the pre-call snapshot
+     *      and `onRollback` is called if supplied.
+     *
+     * @returns Raw result bytes, or `null` if the call succeeded with no result.
+     * @throws  If the reducer returned an error or the call timed out.
      */
-    call(reducerName, args = []) {
+    call(reducerName, args = [], optimisticOpts) {
         return new Promise((resolve, reject) => {
             if (!this.isConnected()) {
                 reject(new Error("Not connected"));
@@ -104,8 +104,22 @@ export class NeonDBClient {
             const callId = this.nextCallId++;
             const encodedArgs = encodeArgs(args);
             const frame = encodeReducerCall(callId, reducerName, encodedArgs);
+            // ── Optimistic: snapshot + apply before sending ──────────────────────
+            let rollbackSnapshot = null;
+            if (optimisticOpts?.optimistic) {
+                // Deep-clone the current cache so rollback can restore it exactly.
+                rollbackSnapshot = this.snapshotCache();
+                // Apply the speculative state.
+                const newCache = optimisticOpts.optimistic(rollbackSnapshot);
+                this.applyOptimisticCache(newCache);
+            }
             const timer = setTimeout(() => {
                 this.pendingCalls.delete(callId);
+                // Timeout: roll back if we made an optimistic update.
+                if (rollbackSnapshot !== null) {
+                    this.applyOptimisticCache(rollbackSnapshot);
+                    optimisticOpts?.onRollback?.(`call "${reducerName}" timed out`, this.snapshotCache());
+                }
                 reject(new Error(`call "${reducerName}" timed out after ${this.opts.callTimeout}ms`));
             }, this.opts.callTimeout);
             this.pendingCalls.set(callId, {
@@ -115,21 +129,30 @@ export class NeonDBClient {
                         resolve(result.resultBytes);
                     }
                     else {
+                        // Server error: roll back optimistic cache if present.
+                        if (rollbackSnapshot !== null) {
+                            this.applyOptimisticCache(rollbackSnapshot);
+                            optimisticOpts?.onRollback?.(result.error ?? "Reducer returned an error", this.snapshotCache());
+                        }
                         reject(new Error(result.error ?? "Reducer returned an error"));
                     }
                 },
                 reject: (err) => {
                     clearTimeout(timer);
+                    if (rollbackSnapshot !== null) {
+                        this.applyOptimisticCache(rollbackSnapshot);
+                    }
                     reject(err);
                 },
                 timer,
+                rollbackSnapshot,
+                onRollback: optimisticOpts?.onRollback,
             });
             this.send(frame);
         });
     }
     /**
      * Decode MessagePack result bytes into a JavaScript value.
-     * Convenience wrapper around the protocol `decodeResult` helper.
      */
     decodeResult(bytes) {
         return decodeResult(bytes);
@@ -142,18 +165,12 @@ export class NeonDBClient {
      * const sub = client.subscribe("players WHERE level > 5", (diff) => {
      *   console.log(diff.operation, diff.rowKey, diff.rowData);
      * });
-     *
-     * // Later:
      * sub.unsubscribe();
      * ```
      *
      * Supported predicates:
-     *   - Single field:  `WHERE score >= 100`
-     *   - IN operator:   `WHERE status IN ('active', 'pending')`
-     *   - AND compound:  `WHERE score > 100 AND level > 5`
-     *
-     * The `"initial_snapshot"` operation is delivered for each row that
-     * already exists in the table at subscription time.
+     *   `WHERE field op value`, `WHERE field IN (…)`, `WHERE a AND b`,
+     *   `WHERE a OR b`, `ORDER BY field ASC|DESC`, `LIMIT N`
      */
     subscribe(query, callback) {
         const subId = `sub_${this.nextSubId++}_${Date.now()}`;
@@ -175,15 +192,11 @@ export class NeonDBClient {
     // ── Row cache ─────────────────────────────────────────────────────────────
     /**
      * Return the client-side row cache for a table.
-     * The cache is populated by subscription diffs (including initial snapshots).
-     *
-     * @returns A `Map<rowKey, rowData>` snapshot.  Returns an empty map if no
-     *          subscription has delivered data for this table yet.
+     * Reflects both server-confirmed diffs and any in-flight optimistic updates.
      */
     getRows(tableName) {
         return this.rowCache.get(tableName) ?? new Map();
     }
-    /** Return a single cached row, or `undefined` if not present. */
     getRow(tableName, rowKey) {
         return this.rowCache.get(tableName)?.get(rowKey);
     }
@@ -191,17 +204,35 @@ export class NeonDBClient {
     isConnected() {
         return this.ws?.readyState === WebSocket.OPEN;
     }
+    // ── Optimistic helpers ────────────────────────────────────────────────────
+    /**
+     * Deep-snapshot the current row cache into an OptimisticCache
+     * (Map<tableName, Map<rowKey, rowData>>).
+     */
+    snapshotCache() {
+        const snap = new Map();
+        for (const [table, rows] of this.rowCache) {
+            snap.set(table, new Map(rows));
+        }
+        return snap;
+    }
+    /**
+     * Replace the live rowCache with the contents of an OptimisticCache.
+     * Used both to apply speculative states and to restore rollback snapshots.
+     */
+    applyOptimisticCache(cache) {
+        this.rowCache.clear();
+        for (const [table, rows] of cache) {
+            this.rowCache.set(table, new Map(rows));
+        }
+    }
     // ── Internal ──────────────────────────────────────────────────────────────
     async openSocket() {
         const WS = await getWebSocketCtor();
         let opened = false;
-        // In Node.js, pass headers option for API key auth.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let ws;
         if (this.opts.apiKey) {
-            // Node.js `ws` library supports options object with headers.
-            // In a browser environment, this constructor form is not supported —
-            // users must proxy the API key or leave it unset.
             try {
                 ws = new WS(this.opts.url, {
                     headers: { Authorization: `Bearer ${this.opts.apiKey}` },
@@ -221,7 +252,6 @@ export class NeonDBClient {
                 opened = true;
                 resolve();
                 this.onConnected?.();
-                // Re-subscribe after reconnect
                 for (const [subId, entry] of this.subscriptions) {
                     this.send(encodeSubscribe(subId, entry.query));
                 }
@@ -240,13 +270,10 @@ export class NeonDBClient {
                 }
             };
             ws.onerror = (_evt) => {
-                // Note: the browser WebSocket API doesn't provide much error detail.
                 if (!opened) {
                     reject(new Error("WebSocket error"));
                 }
             };
-            // NOTE: browser WebSocket types differ from the `ws` Node.js library.
-            // Use runtime checks instead of strict TS typing here.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             ws.onmessage = (evt) => {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -255,7 +282,6 @@ export class NeonDBClient {
                     this.handleFrame(data);
                 }
                 else if (ArrayBuffer.isView(data)) {
-                    // Buffer / Uint8Array / DataView
                     this.handleFrame(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
                 }
             };
@@ -273,27 +299,21 @@ export class NeonDBClient {
                 break;
             }
             case "SubscriptionAck":
-                // No user callback — acks just confirm subscription registration.
-                // Errors are logged if the subscription failed.
                 if (!msg.data.success) {
                     console.warn(`[NeonDB] Subscription "${msg.data.subscriptionId}" failed: ${msg.data.message}`);
                 }
                 break;
             case "SubscriptionDiff": {
                 const diff = msg.data;
-                // Update local row cache
                 this.applyToCache(diff.tableName, diff.rowKey, diff.operation, diff.rowData);
-                // Notify subscriber
                 const entry = this.subscriptions.get(diff.subscriptionId);
                 entry?.callback(diff);
                 break;
             }
             case "SubscriptionRoute":
-                // Two-frame protocol: the next SubscriptionBody applies to these ids.
                 this.pendingRoute = msg.data.subscriptionIds;
                 break;
             case "SubscriptionBody": {
-                // Two-frame protocol: apply to all ids in the immediately prior route.
                 const route = this.pendingRoute;
                 this.pendingRoute = null;
                 if (!route || route.length === 0)
@@ -316,7 +336,6 @@ export class NeonDBClient {
                 this.onError?.(msg.message);
                 break;
             case "Unknown":
-                // Ignore unrecognised frames (forward-compat)
                 break;
         }
     }
@@ -340,6 +359,10 @@ export class NeonDBClient {
     rejectAllPending(err) {
         for (const pending of this.pendingCalls.values()) {
             clearTimeout(pending.timer);
+            // Roll back any in-flight optimistic updates on disconnect.
+            if (pending.rollbackSnapshot !== null) {
+                this.applyOptimisticCache(pending.rollbackSnapshot);
+            }
             pending.reject(err);
         }
         this.pendingCalls.clear();
