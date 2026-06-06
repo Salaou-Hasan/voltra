@@ -22,11 +22,10 @@
 //   racing_tick        : 12 subs, 3 writes/call (racing position broadcast)
 // ============================================================================
 
-use bytes::Bytes;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use neondb::{
     reducer::{increment_reducer, ReducerContext},
-    subscriptions::SubscriptionManager,
+    subscriptions::{OutboundFrames, SubscriptionManager},
     table::{RowDelta, TableStore},
 };
 use std::sync::Arc;
@@ -55,12 +54,12 @@ fn build_sub_manager(
     table: &str,
 ) -> (
     Arc<SubscriptionManager>,
-    Vec<mpsc::UnboundedReceiver<Arc<Bytes>>>,
+    Vec<mpsc::UnboundedReceiver<OutboundFrames>>,
 ) {
     let mgr = Arc::new(SubscriptionManager::new());
     let mut rxs = Vec::with_capacity(n);
     for i in 0..n {
-        let (tx, rx) = mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, rx) = mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, format!("sub_{}", i), table.to_string())
             .unwrap();

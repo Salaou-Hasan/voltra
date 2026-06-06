@@ -14,9 +14,8 @@
 use super::message::{ClientMessage, ReducerResponse, ServerMessage};
 use super::protocol;
 use crate::error::{NeonDBError, Result};
-use crate::subscriptions::SubscriptionManager;
+use crate::subscriptions::{OutboundFrames, SubscriptionManager};
 use crate::table::TableStore;
-use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -188,13 +187,21 @@ async fn handle_client(
     });
 
     // ── Register client ───────────────────────────────────────────────────────
-    let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<Arc<Bytes>>();
+    let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<OutboundFrames>();
     let client_id = subscription_manager.register_client(sub_tx);
 
     let write_tx_sub = write_tx.clone();
     let sub_task = tokio::spawn(async move {
-        while let Some(arc_bytes) = sub_rx.recv().await {
-            let _ = write_tx_sub.send(Message::Binary(arc_bytes.to_vec()));
+        while let Some(frames) = sub_rx.recv().await {
+            match frames {
+                OutboundFrames::One(bytes) => {
+                    let _ = write_tx_sub.send(Message::Binary(bytes.to_vec()));
+                }
+                OutboundFrames::Two { first, second } => {
+                    let _ = write_tx_sub.send(Message::Binary(first.to_vec()));
+                    let _ = write_tx_sub.send(Message::Binary(second.to_vec()));
+                }
+            }
         }
     });
 

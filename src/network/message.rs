@@ -60,6 +60,28 @@ pub struct SubscriptionDiff {
     pub row_data: Option<serde_json::Value>,
 }
 
+/// Two-frame subscription protocol: the routing header (per client).
+///
+/// When enabled, the server sends:
+/// 1) `SubscriptionRoute { subscription_ids }`
+/// 2) `SubscriptionBody { ... }`
+///
+/// The client must associate the immediately following `SubscriptionBody`
+/// with all `subscription_ids` in the route message.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubscriptionRoute {
+    pub subscription_ids: Vec<String>,
+}
+
+/// Two-frame subscription protocol: the shared body (encoded once per delta).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubscriptionBody {
+    pub table_name: String,
+    pub row_key: String,
+    pub operation: String,
+    pub row_data: Option<serde_json::Value>,
+}
+
 /// Server messages sent back to clients.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ServerMessage {
@@ -70,6 +92,8 @@ pub enum ServerMessage {
         message: Option<String>,
     },
     SubscriptionDiff(SubscriptionDiff),
+    SubscriptionRoute(SubscriptionRoute),
+    SubscriptionBody(SubscriptionBody),
     Error { message: String },
 }
 

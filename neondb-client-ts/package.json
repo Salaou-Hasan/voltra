@@ -13,8 +13,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "node --experimental-vm-modules dist/tests/client.test.js",
-    "test:ts": "ts-node --esm src/tests/client.test.ts"
+    "test": "npm run build && node --test dist/tests/*.test.js"
   },
   "keywords": ["neondb", "websocket", "realtime", "game-backend", "messagepack"],
   "license": "MIT",

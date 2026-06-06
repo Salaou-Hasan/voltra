@@ -6,49 +6,33 @@
 export interface NeonDBClientOptions {
   /** WebSocket URL, e.g. "ws://localhost:3000" or "wss://db.yourgame.com" */
   url: string;
-
   /**
-   * Optional API key.  When set, sent as `Authorization: Bearer <key>` in the
-   * WebSocket upgrade request headers (Node.js only — browsers cannot set
-   * custom WebSocket headers).
+   * Optional API key.  Sent as `Authorization: Bearer <key>` in the
+   * WebSocket upgrade headers (Node.js only — browsers cannot set custom
+   * WebSocket upgrade headers).
    */
   apiKey?: string;
-
   /**
-   * Milliseconds between automatic reconnect attempts after an unexpected
-   * disconnect.  Set to 0 to disable auto-reconnect.  Default: 3000.
+   * Milliseconds between auto-reconnect attempts.
+   * Set to 0 to disable.  Default: 3000.
    */
   reconnectInterval?: number;
-
   /**
-   * Milliseconds before a `call()` promise is rejected with a timeout error.
+   * Milliseconds before a `call()` promise is rejected with a timeout.
    * Default: 5000.
    */
   callTimeout?: number;
 }
 
-// ── Outgoing messages (client → server) ──────────────────────────────────────
+// ── Incoming message types ────────────────────────────────────────────────────
 
-/** Raw wire structure sent for every reducer call. */
-export interface ReducerCallWire {
-  call_id: number;
-  reducer_name: string;
-  /** MessagePack-encoded args (already encoded by the caller). */
-  args: Uint8Array;
-}
-
-// ── Incoming messages (server → client) ──────────────────────────────────────
-
-/** Outcome of a reducer call. */
 export interface ReducerResult {
   callId: number;
   success: boolean;
-  /** MessagePack-encoded result bytes, if any. */
   resultBytes: Uint8Array | null;
   error: string | null;
 }
 
-/** Acknowledgment of a Subscribe or Unsubscribe request. */
 export interface SubscriptionAck {
   subscriptionId: string;
   success: boolean;
@@ -57,27 +41,41 @@ export interface SubscriptionAck {
 
 /**
  * A single row change delivered to a subscriber.
- * `rowData` is the decoded JSON value from the server; for `"delete"` events
- * it will be `null`.
+ * `operation` is one of: `"insert"`, `"update"`, `"delete"`, `"initial_snapshot"`.
  */
 export interface RowDiff {
-  /** Which subscription triggered this diff. */
   subscriptionId: string;
   tableName: string;
   rowKey: string;
-  /** `"insert"`, `"update"`, `"delete"`, or `"initial_snapshot"` */
   operation: string;
   rowData: Record<string, unknown> | null;
 }
 
-/** Callback invoked for every matching row change. */
+/**
+ * Two-frame protocol — route frame.
+ * Lists the subscription IDs that the immediately following SubscriptionBody applies to.
+ */
+export interface SubscriptionRouteData {
+  subscriptionIds: string[];
+}
+
+/**
+ * Two-frame protocol — body frame.
+ * The delta body shared across all subscribers listed in the preceding SubscriptionRoute.
+ */
+export interface SubscriptionBodyData {
+  tableName: string;
+  rowKey: string;
+  operation: string;
+  rowData: Record<string, unknown> | null;
+}
+
 export type SubscriptionCallback = (diff: RowDiff) => void;
 
-/** Returned by `subscribe()` — call `.unsubscribe()` to stop. */
 export interface Subscription {
   id: string;
   unsubscribe: () => void;
 }
 
-/** Cached snapshot of a table's rows, indexed by row_key. */
+/** Cached rows for a single table, keyed by row_key. */
 export type RowCache = Map<string, Record<string, unknown>>;

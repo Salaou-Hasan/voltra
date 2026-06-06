@@ -22,10 +22,10 @@
 // dominate — set to false if you want to see real durable-write numbers.
 // ============================================================================
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use neondb::{
     reducer::{increment_reducer, ReducerContext},
-    subscriptions::SubscriptionManager,
+    subscriptions::{OutboundFrames, SubscriptionManager},
     table::TableStore,
     wal::{BatchedWalWriter, WalEntry},
 };
@@ -34,7 +34,6 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::mpsc::unbounded_channel;
-use bytes::Bytes;
 
 // ── shared test infrastructure ────────────────────────────────────────────────
 
@@ -44,7 +43,7 @@ struct GameServer {
     wal: Arc<BatchedWalWriter>,
     seq: Arc<AtomicU64>,
     /// Keep subscription receivers alive so channels stay open.
-    _rxs: Vec<tokio::sync::mpsc::UnboundedReceiver<Arc<Bytes>>>,
+    _rxs: Vec<tokio::sync::mpsc::UnboundedReceiver<OutboundFrames>>,
 }
 
 impl GameServer {
@@ -54,7 +53,7 @@ impl GameServer {
 
         let mut rxs = Vec::with_capacity(n_subs);
         for i in 0..n_subs {
-            let (tx, rx) = unbounded_channel::<Arc<Bytes>>();
+            let (tx, rx) = unbounded_channel::<OutboundFrames>();
             let cid = mgr.register_client(tx);
             mgr.subscribe(cid, format!("sub_{}", i), sub_table.to_string())
                 .unwrap();

@@ -29,14 +29,13 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use neondb::{
     reducer::{increment_reducer, ReducerContext},
-    subscriptions::SubscriptionManager,
+    subscriptions::{OutboundFrames, SubscriptionManager},
     table::TableStore,
     wal::BatchedWalWriter,
 };
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::unbounded_channel;
-use bytes::Bytes;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -57,10 +56,10 @@ fn new_store() -> Arc<TableStore> {
 fn register_n_subscribers(
     mgr: &Arc<SubscriptionManager>,
     n: usize,
-) -> Vec<tokio::sync::mpsc::UnboundedReceiver<Arc<Bytes>>> {
+) -> Vec<tokio::sync::mpsc::UnboundedReceiver<OutboundFrames>> {
     let mut rxs = Vec::with_capacity(n);
     for i in 0..n {
-        let (tx, rx) = unbounded_channel::<Arc<Bytes>>();
+        let (tx, rx) = unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, format!("sub_{}", i), "counters".to_string())
             .unwrap();
@@ -105,7 +104,7 @@ fn bench_fanout_scaling(c: &mut Criterion) {
 // ── Bench E: full pipeline — reducer + WAL (no-fsync) + subscriptions ────────
 
 fn bench_full_pipeline_with_wal(c: &mut Criterion) {
-    let rt = new_rt();
+    let _rt = new_rt();
     let mut group = c.benchmark_group("full_pipeline/with_wal");
     group.throughput(Throughput::Elements(1));
     group.sample_size(50);
@@ -235,7 +234,7 @@ fn bench_predicate_fanout(c: &mut Criterion) {
     // half don't (value >= 999999).
     let mut rxs = Vec::new();
     for i in 0..20usize {
-        let (tx, rx) = unbounded_channel::<Arc<Bytes>>();
+        let (tx, rx) = unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
         let query = if i < 10 {
             "counters WHERE value >= 0".to_string()

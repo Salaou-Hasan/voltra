@@ -13,91 +13,61 @@
 //   ClientMessage::Subscribe(…)       → { "Subscribe":    [sub_id, query] }
 //   ClientMessage::Unsubscribe(…)     → { "Unsubscribe":  [sub_id] }
 //
-// Incoming (server → client):
+// Incoming (server → client) — classic protocol:
 //   ReducerResponse (bare struct)     → [call_id, success, result_bin|nil, error|nil]
 //   ServerMessage::SubscriptionAck    → { "SubscriptionAck":    [sub_id, ok, msg|nil] }
 //   ServerMessage::SubscriptionDiff   → { "SubscriptionDiff":   [sub_id, table, key, op, data|nil] }
 //   ServerMessage::Error              → { "Error": [message] }
+//
+// Incoming (server → client) — two-frame protocol (TODO-013):
+//   ServerMessage::SubscriptionRoute  → { "SubscriptionRoute": [[sub_id, ...]] }
+//   ServerMessage::SubscriptionBody   → { "SubscriptionBody":  [table, key, op, data|nil] }
 // ============================================================================
 
-import { encode, decode, ExtensionCodec } from "@msgpack/msgpack";
-import type { ReducerResult, SubscriptionAck, RowDiff } from "./types.js";
-
-/** Codec that passes through Uint8Arrays so BIN data survives the round-trip. */
-const codec = new ExtensionCodec();
-
-// ── Encode helpers ────────────────────────────────────────────────────────────
-
-/**
- * Encode a reducer call message.
- * `args` should already be MessagePack-encoded by the caller.
- */
-export function encodeReducerCall(
-  callId: number,
-  reducerName: string,
-  args: Uint8Array
-): Uint8Array {
-  // ClientMessage::ReducerCall(ReducerCall { call_id, reducer_name, args })
-  // rmp_serde encodes the outer enum as: {"ReducerCall": [call_id, name, args]}
-  // rmp_serde encodes the inner struct as array: [call_id, name, args]
-  return encode({ ReducerCall: [callId, reducerName, args] });
-}
-
-/**
- * Encode a subscribe message.
- * `subscriptionId` is an arbitrary string chosen by the caller.
- * `query` is a NeonDB subscription query, e.g. `"players WHERE level > 5"`.
- */
-export function encodeSubscribe(
-  subscriptionId: string,
-  query: string
-): Uint8Array {
-  // ClientMessage::Subscribe { subscription_id, query }
-  // → {"Subscribe": [subscription_id, query]}
-  return encode({ Subscribe: [subscriptionId, query] });
-}
-
-/**
- * Encode an unsubscribe message.
- */
-export function encodeUnsubscribe(subscriptionId: string): Uint8Array {
-  // ClientMessage::Unsubscribe { subscription_id }
-  // → {"Unsubscribe": [subscription_id]}
-  return encode({ Unsubscribe: [subscriptionId] });
-}
-
-/**
- * Encode arbitrary data as MessagePack for use as reducer args.
- *
- * For the built-in `increment` reducer the server expects a positional array:
- *   `encodeArgs(["myCounter", 5])` → positional array (matches rmp_serde struct)
- *
- * For JS reducers that accept objects:
- *   `encodeArgs({ name: "myCounter", delta: 5 })` → MessagePack map
- */
-export function encodeArgs(args: unknown): Uint8Array {
-  return encode(args);
-}
-
-// ── Decode helpers ────────────────────────────────────────────────────────────
+import { encode, decode } from "@msgpack/msgpack";
+import type {
+  ReducerResult,
+  SubscriptionAck,
+  RowDiff,
+  SubscriptionRouteData,
+  SubscriptionBodyData,
+} from "./types.js";
 
 export type DecodedMessage =
   | { type: "ReducerResponse"; data: ReducerResult }
   | { type: "SubscriptionAck"; data: SubscriptionAck }
   | { type: "SubscriptionDiff"; data: RowDiff }
+  | { type: "SubscriptionRoute"; data: SubscriptionRouteData }
+  | { type: "SubscriptionBody"; data: SubscriptionBodyData }
   | { type: "Error"; message: string }
   | { type: "Unknown" };
 
-/**
- * Decode a raw server WebSocket frame into a typed message.
- *
- * The server sends two different envelope formats:
- * - **Bare `ReducerResponse`**: encoded as a MessagePack ARRAY
- *   `[call_id, success, result_bin|nil, error_str|nil]`
- * - **`ServerMessage` variant**: encoded as a MessagePack MAP with one entry
- *   `{"VariantName": [fields…]}`
- */
-export function decodeServerMessage(bytes: ArrayBuffer | Uint8Array): DecodedMessage {
+export function encodeReducerCall(
+  callId: number,
+  reducerName: string,
+  args: Uint8Array,
+): Uint8Array {
+  return encode({ ReducerCall: [callId, reducerName, args] });
+}
+
+export function encodeSubscribe(
+  subscriptionId: string,
+  query: string,
+): Uint8Array {
+  return encode({ Subscribe: [subscriptionId, query] });
+}
+
+export function encodeUnsubscribe(subscriptionId: string): Uint8Array {
+  return encode({ Unsubscribe: [subscriptionId] });
+}
+
+export function encodeArgs(args: unknown): Uint8Array {
+  return encode(args);
+}
+
+export function decodeServerMessage(
+  bytes: ArrayBuffer | Uint8Array,
+): DecodedMessage {
   const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let value: unknown;
   try {
@@ -106,12 +76,15 @@ export function decodeServerMessage(bytes: ArrayBuffer | Uint8Array): DecodedMes
     return { type: "Unknown" };
   }
 
-  // ── Bare ReducerResponse: array [call_id, success, result|nil, error|nil]
+  // Bare ReducerResponse: array [call_id, success, result|nil, error|nil]
   if (Array.isArray(value) && value.length >= 2) {
     const [rawCallId, success] = value;
-    if ((typeof rawCallId === "number" || typeof rawCallId === "bigint") &&
-        typeof success === "boolean") {
-      const callId = typeof rawCallId === "bigint" ? Number(rawCallId) : rawCallId;
+    if (
+      (typeof rawCallId === "number" || typeof rawCallId === "bigint") &&
+      typeof success === "boolean"
+    ) {
+      const callId =
+        typeof rawCallId === "bigint" ? Number(rawCallId) : rawCallId;
       const resultRaw = value[2];
       const errorRaw = value[3];
       return {
@@ -126,7 +99,7 @@ export function decodeServerMessage(bytes: ArrayBuffer | Uint8Array): DecodedMes
     }
   }
 
-  // ── ServerMessage variant: { "VariantName": [fields…] }
+  // ServerMessage variant: { "VariantName": [fields…] }
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
     const entries = Object.entries(value as Record<string, unknown>);
     if (entries.length === 1) {
@@ -146,10 +119,12 @@ export function decodeServerMessage(bytes: ArrayBuffer | Uint8Array): DecodedMes
 
         case "SubscriptionDiff": {
           const rawData = fields[4];
-          let rowData: Record<string, unknown> | null = null;
-          if (rawData != null && typeof rawData === "object" && !Array.isArray(rawData)) {
-            rowData = rawData as Record<string, unknown>;
-          }
+          const rowData =
+            rawData != null &&
+            typeof rawData === "object" &&
+            !Array.isArray(rawData)
+              ? (rawData as Record<string, unknown>)
+              : null;
           return {
             type: "SubscriptionDiff",
             data: {
@@ -162,12 +137,42 @@ export function decodeServerMessage(bytes: ArrayBuffer | Uint8Array): DecodedMes
           };
         }
 
+        case "SubscriptionRoute": {
+          // fields[0] is an array of subscription id strings
+          const idsRaw = fields[0];
+          const subscriptionIds = Array.isArray(idsRaw)
+            ? idsRaw.map((v) => String(v))
+            : [];
+          return { type: "SubscriptionRoute", data: { subscriptionIds } };
+        }
+
+        case "SubscriptionBody": {
+          // [table_name, row_key, operation, row_data|nil]
+          const rawData = fields[3];
+          const rowData =
+            rawData != null &&
+            typeof rawData === "object" &&
+            !Array.isArray(rawData)
+              ? (rawData as Record<string, unknown>)
+              : null;
+          return {
+            type: "SubscriptionBody",
+            data: {
+              tableName: String(fields[0] ?? ""),
+              rowKey: String(fields[1] ?? ""),
+              operation: String(fields[2] ?? ""),
+              rowData,
+            },
+          };
+        }
+
         case "ReducerResponse": {
-          // ServerMessage::ReducerResponse (alternative wrapping)
           const inner = Array.isArray(content) ? content : [];
           const rawCallId = inner[0];
           const callId =
-            typeof rawCallId === "bigint" ? Number(rawCallId) : Number(rawCallId ?? 0);
+            typeof rawCallId === "bigint"
+              ? Number(rawCallId)
+              : Number(rawCallId ?? 0);
           return {
             type: "ReducerResponse",
             data: {
@@ -194,10 +199,6 @@ export function decodeServerMessage(bytes: ArrayBuffer | Uint8Array): DecodedMes
   return { type: "Unknown" };
 }
 
-/**
- * Decode MessagePack bytes into a JavaScript value.
- * Useful for decoding reducer result bytes returned in `ReducerResult.resultBytes`.
- */
 export function decodeResult<T = unknown>(bytes: Uint8Array): T {
   return decode(bytes) as T;
 }

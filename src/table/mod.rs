@@ -790,6 +790,119 @@ impl TableStore {
     pub fn set_next_row_id(&self, next_id: u32) {
         self.next_row_id.store(next_id, Ordering::SeqCst);
     }
+
+    // ── Columnar read API ─────────────────────────────────────────────────────
+    //
+    // These methods provide column-oriented access patterns on top of the
+    // existing row-oriented DashMap storage.  They are useful for:
+    //   - Analytics queries (count by status, distinct values, etc.)
+    //   - Subscription filter back-testing without full row decode
+    //   - Aggregations in JS/WASM reducers via host functions
+
+    /// Return the value of `field` for every row in `table_name` that has it,
+    /// as a list of `(row_key, field_value)` pairs sorted by `row_key`.
+    ///
+    /// Much cheaper than `list_rows()` when you only need one field per row —
+    /// the JSON decode is limited to a single key extraction.
+    pub fn scan_column(&self, table_name: &str, field: &str) -> Vec<(String, Value)> {
+        let table = match self.tables.get(table_name) {
+            Some(t) => t.clone(),
+            None => return vec![],
+        };
+        let mut result = Vec::with_capacity(table.rows.len());
+        for entry in table.rows.iter() {
+            let row = entry.value();
+            if !self.row_matches_shard(row.shard_id) {
+                continue;
+            }
+            // Fast path: decode only the root JSON object and extract the key.
+            if let Ok(obj) = serde_json::from_slice::<serde_json::Map<String, Value>>(&row.data) {
+                if let Some(v) = obj.get(field) {
+                    result.push((entry.key().clone(), v.clone()));
+                }
+            }
+        }
+        result.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        result
+    }
+
+    /// Count rows in `table_name` grouped by the value of `field`.
+    ///
+    /// Returns a `HashMap<field_value_as_string, count>`.
+    /// Rows that don't have `field` are not counted.
+    pub fn count_by_field(
+        &self,
+        table_name: &str,
+        field: &str,
+    ) -> std::collections::HashMap<String, usize> {
+        use std::collections::HashMap;
+        let table = match self.tables.get(table_name) {
+            Some(t) => t.clone(),
+            None => return HashMap::new(),
+        };
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for entry in table.rows.iter() {
+            let row = entry.value();
+            if !self.row_matches_shard(row.shard_id) {
+                continue;
+            }
+            if let Ok(obj) = serde_json::from_slice::<serde_json::Map<String, Value>>(&row.data) {
+                if let Some(v) = obj.get(field) {
+                    let key = value_to_index_key(v).unwrap_or_else(|| "null".to_string());
+                    *counts.entry(key).or_insert(0) += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    /// Return all distinct values of `field` across all rows in `table_name`,
+    /// sorted by their string representation.
+    pub fn distinct_field_values(&self, table_name: &str, field: &str) -> Vec<Value> {
+        use std::collections::BTreeSet;
+        let table = match self.tables.get(table_name) {
+            Some(t) => t.clone(),
+            None => return vec![],
+        };
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut values: Vec<Value> = Vec::new();
+        for entry in table.rows.iter() {
+            let row = entry.value();
+            if !self.row_matches_shard(row.shard_id) {
+                continue;
+            }
+            if let Ok(obj) = serde_json::from_slice::<serde_json::Map<String, Value>>(&row.data) {
+                if let Some(v) = obj.get(field) {
+                    let key = value_to_index_key(v).unwrap_or_else(|| "null".to_string());
+                    if seen.insert(key) {
+                        values.push(v.clone());
+                    }
+                }
+            }
+        }
+        values
+    }
+
+    /// Return the count of rows in `table_name` that have a specific value
+    /// for `field`.  Uses the secondary index if registered (O(1)); falls back
+    /// to a full scan otherwise (O(n)).
+    pub fn count_matching(&self, table_name: &str, field: &str, value: &Value) -> usize {
+        // Fast path: use secondary index if available.
+        if let Some(keys) = self.index_lookup(table_name, field, value) {
+            return keys.len();
+        }
+        // Slow path: linear scan.
+        let serialized = value_to_index_key(value).unwrap_or_else(|| "null".to_string());
+        self.scan_column(table_name, field)
+            .iter()
+            .filter(|(_, v)| value_to_index_key(v).as_deref() == Some(serialized.as_str()))
+            .count()
+    }
+
+    /// Return the total number of rows across all tables in this store.
+    pub fn total_row_count(&self) -> usize {
+        self.tables.iter().map(|t| t.value().rows.len()).sum()
+    }
 }
 
 /// Convert a JSON Value to the canonical string key used inside a FieldIndex.
@@ -1136,6 +1249,147 @@ mod tests {
             active.is_empty(),
             "deleted row should be removed from index"
         );
+    }
+
+    // ── Columnar API tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_scan_column_basic() {
+        let ts = Arc::new(TableStore::new());
+        ts.set_row(
+            "items".to_string(),
+            "i1".to_string(),
+            serde_json::json!({"rarity": "common", "power": 5}),
+        )
+        .unwrap();
+        ts.set_row(
+            "items".to_string(),
+            "i2".to_string(),
+            serde_json::json!({"rarity": "rare", "power": 20}),
+        )
+        .unwrap();
+        ts.set_row(
+            "items".to_string(),
+            "i3".to_string(),
+            serde_json::json!({"rarity": "common", "power": 8}),
+        )
+        .unwrap();
+
+        let col = ts.scan_column("items", "rarity");
+        assert_eq!(col.len(), 3);
+        // Sorted by row_key: i1, i2, i3
+        assert_eq!(col[0], ("i1".to_string(), serde_json::json!("common")));
+        assert_eq!(col[1], ("i2".to_string(), serde_json::json!("rare")));
+    }
+
+    #[test]
+    fn test_count_by_field() {
+        let ts = Arc::new(TableStore::new());
+        ts.set_row(
+            "items".to_string(),
+            "i1".to_string(),
+            serde_json::json!({"rarity": "common"}),
+        )
+        .unwrap();
+        ts.set_row(
+            "items".to_string(),
+            "i2".to_string(),
+            serde_json::json!({"rarity": "rare"}),
+        )
+        .unwrap();
+        ts.set_row(
+            "items".to_string(),
+            "i3".to_string(),
+            serde_json::json!({"rarity": "common"}),
+        )
+        .unwrap();
+        ts.set_row(
+            "items".to_string(),
+            "i4".to_string(),
+            serde_json::json!({"no_rarity": true}),
+        )
+        .unwrap();
+
+        let counts = ts.count_by_field("items", "rarity");
+        assert_eq!(counts.get("common"), Some(&2));
+        assert_eq!(counts.get("rare"), Some(&1));
+        assert_eq!(counts.get("epic"), None);
+        // i4 has no 'rarity' field — not counted
+        assert_eq!(counts.values().sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn test_distinct_field_values() {
+        let ts = Arc::new(TableStore::new());
+        ts.set_row(
+            "items".to_string(),
+            "i1".to_string(),
+            serde_json::json!({"tier": 1}),
+        )
+        .unwrap();
+        ts.set_row(
+            "items".to_string(),
+            "i2".to_string(),
+            serde_json::json!({"tier": 3}),
+        )
+        .unwrap();
+        ts.set_row(
+            "items".to_string(),
+            "i3".to_string(),
+            serde_json::json!({"tier": 1}),
+        )
+        .unwrap();
+        ts.set_row(
+            "items".to_string(),
+            "i4".to_string(),
+            serde_json::json!({"tier": 2}),
+        )
+        .unwrap();
+
+        let vals = ts.distinct_field_values("items", "tier");
+        assert_eq!(vals.len(), 3, "should have 3 distinct tiers: 1, 2, 3");
+    }
+
+    #[test]
+    fn test_count_matching_uses_index() {
+        let ts = Arc::new(TableStore::new());
+        ts.create_index("players", "status").unwrap();
+        ts.set_row(
+            "players".to_string(),
+            "p1".to_string(),
+            serde_json::json!({"status": "active"}),
+        )
+        .unwrap();
+        ts.set_row(
+            "players".to_string(),
+            "p2".to_string(),
+            serde_json::json!({"status": "inactive"}),
+        )
+        .unwrap();
+        ts.set_row(
+            "players".to_string(),
+            "p3".to_string(),
+            serde_json::json!({"status": "active"}),
+        )
+        .unwrap();
+
+        let n = ts.count_matching("players", "status", &serde_json::json!("active"));
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn test_total_row_count() {
+        let ts = Arc::new(TableStore::new());
+        ts.set_counter("a".to_string(), 1, 0).unwrap();
+        ts.set_counter("b".to_string(), 2, 0).unwrap();
+        ts.set_row(
+            "players".to_string(),
+            "p1".to_string(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+
+        assert_eq!(ts.total_row_count(), 3);
     }
 
     #[test]

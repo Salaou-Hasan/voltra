@@ -29,11 +29,12 @@
 // ============================================================================
 
 use crate::error::{NeonDBError, Result};
-use crate::network::message::{ServerMessage, SubscriptionDiff};
+use crate::network::message::{ServerMessage, SubscriptionBody, SubscriptionDiff, SubscriptionRoute};
 use crate::table::{RowDelta, TableStore};
 use bytes::Bytes;
 use dashmap::DashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -125,50 +126,87 @@ pub struct Subscription {
 
 // ── Client info ───────────────────────────────────────────────────────────────
 
+/// One outbound "subscription write" to a client.
+///
+/// In the legacy protocol, the server sends exactly one frame per subscription diff.
+/// In the optional two-frame protocol, the server sends two frames (route + body),
+/// but they are sent as a single grouped item to prevent interleaving across threads.
+#[derive(Clone, Debug)]
+pub enum OutboundFrames {
+    One(Arc<Bytes>),
+    Two {
+        first: Arc<Bytes>,
+        second: Arc<Bytes>,
+    },
+}
+
 struct ClientInfo {
-    tx: UnboundedSender<Arc<Bytes>>,
+    tx: UnboundedSender<OutboundFrames>,
     subscriptions: DashMap<String, Subscription>,
 }
 
-// ── Encoded frame ─────────────────────────────────────────────────────────────
+// ── Encoding helpers ──────────────────────────────────────────────────────────
 
-struct EncodedFrame {
-    bytes: Arc<Bytes>,
+fn encode_server(msg: &ServerMessage) -> Option<Arc<Bytes>> {
+    rmp_serde::to_vec(msg)
+        .ok()
+        .map(|b| Arc::new(Bytes::from(b)))
 }
 
-impl EncodedFrame {
-    fn encode(sub_id: &str, delta: &RowDelta) -> Option<Self> {
-        let diff = SubscriptionDiff {
-            subscription_id: sub_id.to_string(),
-            table_name: delta.table_name.clone(),
-            row_key: delta.row_key.clone(),
-            operation: delta.operation.clone(),
-            row_data: delta.row_data.clone(),
-        };
-        let msg = ServerMessage::SubscriptionDiff(diff);
-        rmp_serde::to_vec(&msg).ok().map(|b| EncodedFrame {
-            bytes: Arc::new(Bytes::from(b)),
-        })
-    }
+fn encode_legacy_diff(sub_id: &str, delta: &RowDelta) -> Option<Arc<Bytes>> {
+    let diff = SubscriptionDiff {
+        subscription_id: sub_id.to_string(),
+        table_name: delta.table_name.clone(),
+        row_key: delta.row_key.clone(),
+        operation: delta.operation.clone(),
+        row_data: delta.row_data.clone(),
+    };
+    encode_server(&ServerMessage::SubscriptionDiff(diff))
+}
 
-    fn encode_snapshot(
-        sub_id: &str,
-        table_name: &str,
-        row_key: &str,
-        row_data: Value,
-    ) -> Option<Self> {
-        let diff = SubscriptionDiff {
-            subscription_id: sub_id.to_string(),
-            table_name: table_name.to_string(),
-            row_key: row_key.to_string(),
-            operation: "initial_snapshot".to_string(),
-            row_data: Some(row_data),
-        };
-        let msg = ServerMessage::SubscriptionDiff(diff);
-        rmp_serde::to_vec(&msg).ok().map(|b| EncodedFrame {
-            bytes: Arc::new(Bytes::from(b)),
-        })
-    }
+fn encode_legacy_snapshot(
+    sub_id: &str,
+    table_name: &str,
+    row_key: &str,
+    row_data: Value,
+) -> Option<Arc<Bytes>> {
+    let diff = SubscriptionDiff {
+        subscription_id: sub_id.to_string(),
+        table_name: table_name.to_string(),
+        row_key: row_key.to_string(),
+        operation: "initial_snapshot".to_string(),
+        row_data: Some(row_data),
+    };
+    encode_server(&ServerMessage::SubscriptionDiff(diff))
+}
+
+fn encode_route(subscription_ids: Vec<String>) -> Option<Arc<Bytes>> {
+    let route = SubscriptionRoute { subscription_ids };
+    encode_server(&ServerMessage::SubscriptionRoute(route))
+}
+
+fn encode_body(delta: &RowDelta) -> Option<Arc<Bytes>> {
+    let body = SubscriptionBody {
+        table_name: delta.table_name.clone(),
+        row_key: delta.row_key.clone(),
+        operation: delta.operation.clone(),
+        row_data: delta.row_data.clone(),
+    };
+    encode_server(&ServerMessage::SubscriptionBody(body))
+}
+
+fn encode_snapshot_body(
+    table_name: &str,
+    row_key: &str,
+    row_data: Value,
+) -> Option<Arc<Bytes>> {
+    let body = SubscriptionBody {
+        table_name: table_name.to_string(),
+        row_key: row_key.to_string(),
+        operation: "initial_snapshot".to_string(),
+        row_data: Some(row_data),
+    };
+    encode_server(&ServerMessage::SubscriptionBody(body))
 }
 
 // ── Manager ───────────────────────────────────────────────────────────────────
@@ -177,18 +215,24 @@ pub struct SubscriptionManager {
     clients: DashMap<ClientId, Arc<ClientInfo>>,
     table_index: DashMap<String, DashMap<ClientId, Vec<String>>>,
     next_id: AtomicU64,
+    two_frame: bool,
 }
 
 impl SubscriptionManager {
     pub fn new() -> Self {
+        SubscriptionManager::new_with_options(false)
+    }
+
+    pub fn new_with_options(two_frame: bool) -> Self {
         SubscriptionManager {
             clients: DashMap::with_capacity_and_shard_amount(256, 16),
             table_index: DashMap::with_capacity_and_shard_amount(32, 8),
             next_id: AtomicU64::new(1),
+            two_frame,
         }
     }
 
-    pub fn register_client(&self, tx: UnboundedSender<Arc<Bytes>>) -> ClientId {
+    pub fn register_client(&self, tx: UnboundedSender<OutboundFrames>) -> ClientId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.clients.insert(
             id,
@@ -268,6 +312,12 @@ impl SubscriptionManager {
         if let Some(tables) = tables {
             if let Ok(rows) = tables.list_rows_with_keys(&table_name) {
                 let tx = client.tx.clone();
+                // In two-frame mode, route is constant for this subscription id.
+                let route_bytes = if self.two_frame {
+                    encode_route(vec![subscription_id.clone()])
+                } else {
+                    None
+                };
                 for (row_key, row_value) in rows {
                     // Build a synthetic delta so SubscriptionFilter::matches
                     // (including compound AND / IN predicates) can be reused
@@ -284,13 +334,23 @@ impl SubscriptionManager {
                         counter_add_timestamp: 0,
                     };
                     if filter.matches(&synthetic) {
-                        if let Some(frame) = EncodedFrame::encode_snapshot(
+                        if self.two_frame {
+                            if let (Some(route), Some(body)) = (
+                                route_bytes.clone(),
+                                encode_snapshot_body(&table_name, &row_key, row_value),
+                            ) {
+                                let _ = tx.send(OutboundFrames::Two {
+                                    first: route,
+                                    second: body,
+                                });
+                            }
+                        } else if let Some(frame) = encode_legacy_snapshot(
                             &subscription_id,
                             &table_name,
                             &row_key,
                             row_value,
                         ) {
-                            let _ = tx.send(frame.bytes);
+                            let _ = tx.send(OutboundFrames::One(frame));
                         }
                     }
                 }
@@ -345,52 +405,97 @@ impl SubscriptionManager {
                 None => continue,
             };
 
-            let mut matching: Vec<(UnboundedSender<Arc<Bytes>>, String)> = Vec::new();
-
-            for client_entry in table_entry.iter() {
-                let client_id = *client_entry.key();
-                let sub_ids = client_entry.value();
-
-                let client = match self.clients.get(&client_id) {
-                    Some(c) => c,
-                    None => continue,
+            if self.two_frame {
+                let Some(body) = encode_body(delta) else {
+                    continue;
                 };
 
-                for sub_id in sub_ids.iter() {
-                    let sub = match client.subscriptions.get(sub_id) {
-                        Some(s) => s,
+                // Per-client aggregation to avoid sending the same body multiple times
+                // for clients with multiple matching subscriptions.
+                let mut per_client: HashMap<ClientId, (UnboundedSender<OutboundFrames>, Vec<String>)> =
+                    HashMap::new();
+
+                for client_entry in table_entry.iter() {
+                    let client_id = *client_entry.key();
+                    let sub_ids = client_entry.value();
+
+                    let client = match self.clients.get(&client_id) {
+                        Some(c) => c,
                         None => continue,
                     };
 
-                    if sub.filter.matches(delta) {
-                        matching.push((client.tx.clone(), sub_id.clone()));
-                    }
-                }
-            }
-
-            if matching.is_empty() {
-                continue;
-            }
-
-            matching.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-
-            let mut i = 0;
-            while i < matching.len() {
-                let sub_id = &matching[i].1;
-
-                let run_end = matching[i..]
-                    .iter()
-                    .position(|(_, sid)| sid != sub_id)
-                    .map(|p| i + p)
-                    .unwrap_or(matching.len());
-
-                if let Some(frame) = EncodedFrame::encode(sub_id, delta) {
-                    for (tx, _) in &matching[i..run_end] {
-                        let _ = tx.send(frame.bytes.clone());
+                    for sub_id in sub_ids.iter() {
+                        let sub = match client.subscriptions.get(sub_id) {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        if sub.filter.matches(delta) {
+                            per_client
+                                .entry(client_id)
+                                .or_insert_with(|| (client.tx.clone(), Vec::new()))
+                                .1
+                                .push(sub_id.clone());
+                        }
                     }
                 }
 
-                i = run_end;
+                for (_cid, (tx, sub_ids)) in per_client {
+                    if let Some(route) = encode_route(sub_ids) {
+                        let _ = tx.send(OutboundFrames::Two {
+                            first: route,
+                            second: body.clone(),
+                        });
+                    }
+                }
+            } else {
+                // Legacy: one frame per subscription id, but encode once per unique sub_id.
+                let mut matching: Vec<(UnboundedSender<OutboundFrames>, String)> = Vec::new();
+
+                for client_entry in table_entry.iter() {
+                    let client_id = *client_entry.key();
+                    let sub_ids = client_entry.value();
+
+                    let client = match self.clients.get(&client_id) {
+                        Some(c) => c,
+                        None => continue,
+                    };
+
+                    for sub_id in sub_ids.iter() {
+                        let sub = match client.subscriptions.get(sub_id) {
+                            Some(s) => s,
+                            None => continue,
+                        };
+
+                        if sub.filter.matches(delta) {
+                            matching.push((client.tx.clone(), sub_id.clone()));
+                        }
+                    }
+                }
+
+                if matching.is_empty() {
+                    continue;
+                }
+
+                matching.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+
+                let mut i = 0;
+                while i < matching.len() {
+                    let sub_id = &matching[i].1;
+
+                    let run_end = matching[i..]
+                        .iter()
+                        .position(|(_, sid)| sid != sub_id)
+                        .map(|p| i + p)
+                        .unwrap_or(matching.len());
+
+                    if let Some(frame) = encode_legacy_diff(sub_id, delta) {
+                        for (tx, _) in &matching[i..run_end] {
+                            let _ = tx.send(OutboundFrames::One(frame.clone()));
+                        }
+                    }
+
+                    i = run_end;
+                }
             }
         }
     }
@@ -609,6 +714,15 @@ mod tests {
         }
     }
 
+    fn recv_one(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutboundFrames>,
+    ) -> Arc<Bytes> {
+        match rx.try_recv().expect("expected a frame") {
+            OutboundFrames::One(b) => b,
+            OutboundFrames::Two { .. } => panic!("expected legacy single-frame message"),
+        }
+    }
+
     // ── Existing tests (all must still pass) ─────────────────────────────────
 
     #[test]
@@ -642,8 +756,8 @@ mod tests {
     #[test]
     fn publish_deltas_arc_clone_count() {
         let mgr = SubscriptionManager::new();
-        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
-        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
         mgr.subscribe(id1, "s1".to_string(), "counters".to_string())
@@ -658,8 +772,8 @@ mod tests {
     #[test]
     fn publish_deltas_shared_sub_id_encodes_once() {
         let mgr = SubscriptionManager::new();
-        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
-        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
         mgr.subscribe(id1, "world_sync".to_string(), "players".to_string())
@@ -674,8 +788,8 @@ mod tests {
         )];
         mgr.publish_deltas(&deltas);
 
-        let frame1 = rx1.try_recv().expect("client 1 should receive");
-        let frame2 = rx2.try_recv().expect("client 2 should receive");
+        let frame1 = recv_one(&mut rx1);
+        let frame2 = recv_one(&mut rx2);
 
         assert_eq!(
             Arc::as_ptr(&frame1),
@@ -687,8 +801,8 @@ mod tests {
     #[test]
     fn publish_deltas_unique_sub_ids_receive_correct_data() {
         let mgr = SubscriptionManager::new();
-        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
-        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
         mgr.subscribe(id1, "sub_client_1".to_string(), "counters".to_string())
@@ -703,8 +817,8 @@ mod tests {
         )];
         mgr.publish_deltas(&deltas);
 
-        let frame1 = rx1.try_recv().expect("client 1 should receive");
-        let frame2 = rx2.try_recv().expect("client 2 should receive");
+        let frame1 = recv_one(&mut rx1);
+        let frame2 = recv_one(&mut rx2);
 
         use crate::network::message::ServerMessage;
         let msg1: ServerMessage = rmp_serde::from_slice(&frame1).unwrap();
@@ -721,10 +835,47 @@ mod tests {
     }
 
     #[test]
+    fn two_frame_protocol_groups_route_and_body() {
+        let mgr = SubscriptionManager::new_with_options(true);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let cid = mgr.register_client(tx);
+        mgr.subscribe(cid, "s".to_string(), "players".to_string())
+            .unwrap();
+
+        let deltas = vec![make_delta("players", "p1", serde_json::json!({"hp": 99}))];
+        mgr.publish_deltas(&deltas);
+
+        let frames = rx.try_recv().expect("expected outbound frames");
+        match frames {
+            OutboundFrames::Two { first, second } => {
+                let route: crate::network::message::ServerMessage =
+                    rmp_serde::from_slice(&first).unwrap();
+                let body: crate::network::message::ServerMessage =
+                    rmp_serde::from_slice(&second).unwrap();
+
+                match route {
+                    crate::network::message::ServerMessage::SubscriptionRoute(r) => {
+                        assert_eq!(r.subscription_ids, vec!["s".to_string()]);
+                    }
+                    _ => panic!("expected SubscriptionRoute"),
+                }
+                match body {
+                    crate::network::message::ServerMessage::SubscriptionBody(b) => {
+                        assert_eq!(b.table_name, "players");
+                        assert_eq!(b.row_key, "p1");
+                    }
+                    _ => panic!("expected SubscriptionBody"),
+                }
+            }
+            other => panic!("expected two-frame outbound, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn publish_deltas_predicate_filters_correctly() {
         let mgr = SubscriptionManager::new();
-        let (tx_match, mut rx_match) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
-        let (tx_skip, mut rx_skip) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx_match, mut rx_match) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx_skip, mut rx_skip) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id_match = mgr.register_client(tx_match);
         let id_skip = mgr.register_client(tx_skip);
 
@@ -768,7 +919,7 @@ mod tests {
     #[test]
     fn publish_deltas_wrong_table_not_delivered() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "s".to_string(), "players".to_string())
             .unwrap();
@@ -781,8 +932,8 @@ mod tests {
     #[test]
     fn reverse_index_skips_unrelated_table_entirely() {
         let mgr = SubscriptionManager::new();
-        let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
-        let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let id_a = mgr.register_client(tx_a);
         let id_b = mgr.register_client(tx_b);
 
@@ -807,7 +958,7 @@ mod tests {
     #[test]
     fn reverse_index_cleaned_up_on_unsubscribe() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
 
         mgr.subscribe(cid, "sub1".to_string(), "counters".to_string())
@@ -831,7 +982,7 @@ mod tests {
     #[test]
     fn reverse_index_cleaned_up_on_unregister() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
 
         mgr.subscribe(cid, "s1".to_string(), "players".to_string())
@@ -865,14 +1016,14 @@ mod tests {
         let mut rxs_counters = Vec::new();
 
         for i in 0..25 {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
             let cid = mgr.register_client(tx);
             mgr.subscribe(cid, format!("ps_{}", i), "players".to_string())
                 .unwrap();
             rxs_players.push(rx);
         }
         for i in 0..25 {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
             let cid = mgr.register_client(tx);
             mgr.subscribe(cid, format!("cs_{}", i), "counters".to_string())
                 .unwrap();
@@ -901,7 +1052,7 @@ mod tests {
     #[test]
     fn client_with_multi_table_subscriptions() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
 
         mgr.subscribe(cid, "watch_players".to_string(), "players".to_string())
@@ -912,7 +1063,7 @@ mod tests {
         let deltas = vec![make_delta("players", "hero", serde_json::json!({"hp": 75}))];
         mgr.publish_deltas(&deltas);
 
-        let frame = rx.try_recv().expect("should receive one frame");
+        let frame = recv_one(&mut rx);
         let msg: crate::network::message::ServerMessage = rmp_serde::from_slice(&frame).unwrap();
         match msg {
             crate::network::message::ServerMessage::SubscriptionDiff(d) => {
@@ -936,7 +1087,7 @@ mod tests {
         tables.set_counter("beta".to_string(), 20, 0).unwrap();
 
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
 
         mgr.subscribe_with_snapshot(
@@ -949,9 +1100,12 @@ mod tests {
 
         // Should receive exactly 2 snapshot frames (one per existing row).
         let mut received = 0;
-        while let Ok(frame) = rx.try_recv() {
-            let msg: crate::network::message::ServerMessage =
-                rmp_serde::from_slice(&frame).unwrap();
+        while let Ok(frames) = rx.try_recv() {
+            let frame = match frames {
+                OutboundFrames::One(b) => b,
+                OutboundFrames::Two { .. } => panic!("expected legacy snapshot frame"),
+            };
+            let msg: crate::network::message::ServerMessage = rmp_serde::from_slice(&frame).unwrap();
             match msg {
                 crate::network::message::ServerMessage::SubscriptionDiff(d) => {
                     assert_eq!(d.subscription_id, "snap_all");
@@ -974,7 +1128,7 @@ mod tests {
         tables.set_counter("high".to_string(), 50, 0).unwrap();
 
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
 
         // Only subscribe to rows where value > 10
@@ -1003,7 +1157,7 @@ mod tests {
     #[test]
     fn subscribe_without_tables_sends_no_snapshot() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "no_snap".to_string(), "counters".to_string())
             .unwrap();
@@ -1018,7 +1172,7 @@ mod tests {
     #[test]
     fn predicate_in_matches_member_value() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
         mgr.subscribe(
             cid,
@@ -1041,7 +1195,7 @@ mod tests {
     #[test]
     fn predicate_in_with_numbers() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
         mgr.subscribe(
             cid,
@@ -1067,7 +1221,7 @@ mod tests {
     #[test]
     fn predicate_and_both_must_match() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
         mgr.subscribe(
             cid,
@@ -1113,7 +1267,7 @@ mod tests {
     #[test]
     fn predicate_in_and_comparison_combined() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Bytes>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
         let cid = mgr.register_client(tx);
         mgr.subscribe(
             cid,

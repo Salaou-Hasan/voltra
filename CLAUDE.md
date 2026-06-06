@@ -344,12 +344,121 @@ cargo run --release --bin neondb-bench -- --clients 20 --calls 1000 --output rep
 
 ---
 
+### Session 16 — TODO-011 TypeScript Client SDK
+
+**TODO-011: `@neondb/client` TypeScript package (neondb-client-ts/)**
+
+- **`neondb-client-ts/src/types.ts`** — `NeonDBClientOptions`, `ReducerResult`, `SubscriptionAck`, `RowDiff`, `SubscriptionRouteData`, `SubscriptionBodyData`, `SubscriptionCallback`, `Subscription`, `RowCache`.
+- **`neondb-client-ts/src/protocol.ts`** — MessagePack encode/decode helpers: `encodeReducerCall`, `encodeSubscribe`, `encodeUnsubscribe`, `encodeArgs`, `decodeServerMessage` (handles bare `ReducerResponse` array, `SubscriptionDiff`, `SubscriptionRoute`, `SubscriptionBody`, `SubscriptionAck`, `Error`).
+- **`neondb-client-ts/src/client.ts`** — `NeonDBClient` class: async `connect()` / `disconnect()`, `call(reducer, args)`, `subscribe(query, callback)`, local row cache (`getRows` / `getRow`), `onConnected` / `onDisconnected` / `onError` hooks, auto-reconnect with full re-subscription, Node.js API-key auth via `Authorization: Bearer` header (ESM dynamic `import("ws")`).
+- **`neondb-client-ts/src/tests/client.test.ts`** — 3 Node.js built-in tests using a mock `WebSocketServer`: auth header test, subscription diff + row cache test, auto-reconnect re-subscription test.
+- **`neondb-client-ts/package.json`** — `@neondb/client 0.1.0`, ESM module, `@msgpack/msgpack` dependency, `ws` peer dependency.
+- **`neondb-client-ts/README.md`** — full API reference and wire-protocol documentation.
+
+All 3 TypeScript tests pass: `node --test dist/tests/client.test.js`.
+
+---
+
+### Session 17 — TODO-013 Two-Frame Subscription Protocol
+
+**TODO-013: Two-Frame Protocol (src/subscriptions.rs, src/network/message.rs, src/network/websocket.rs)**
+
+The server-side implementation was already complete in a prior session (noted here for clarity):
+
+- **`src/network/message.rs`** — added `SubscriptionRoute { subscription_ids: Vec<String> }` and `SubscriptionBody { table_name, row_key, operation, row_data }` structs, plus `ServerMessage::SubscriptionRoute` and `ServerMessage::SubscriptionBody` enum variants.
+- **`src/subscriptions.rs`** — `OutboundFrames` enum (`One(Arc<Bytes>)` or `Two { first, second }`). `SubscriptionManager::new_with_options(two_frame: bool)` constructor. `publish_deltas()` in two-frame mode: encodes body ONCE per delta (O(1)), sends a tiny route frame per client listing all matching subscription IDs (O(clients)). `subscribe_with_snapshot()` delivers initial-snapshot frames in two-frame format. Test: `two_frame_protocol_groups_route_and_body`.
+- **`src/network/websocket.rs`** — subscription write task sends `OutboundFrames::Two` as two separate WebSocket binary frames atomically.
+- **`src/config.rs`** — added `two_frame_protocol: bool` (default `false`, env: `NEONDB_TWO_FRAME_PROTOCOL=1`).
+- **`src/main.rs`** — `SubscriptionManager::new_with_options(config.two_frame_protocol)`.
+- **Client-side**: `neondb-client-ts` handles both legacy `SubscriptionDiff` and two-frame `SubscriptionRoute`/`SubscriptionBody` — transparent to the caller.
+
+---
+
+### Session 18 — Project state audit + TypeScript source sync
+
+Discovered that `neondb-client-ts/dist/` was built from a more complete version of the TypeScript source than what existed in `src/`. Synced `src/client.ts` and `src/protocol.ts` to match the compiled dist (the dist was the ground truth):
+
+- **`src/client.ts`** — subscriptions now stored as `Map<id, { query, callback }>` so re-subscription on reconnect works; `openSocket()` is `async` with ESM dynamic import; `handleFrame` handles `SubscriptionRoute` and `SubscriptionBody`; `onmessage` handles both `ArrayBuffer` and `ArrayBufferView` (Node.js Buffer).
+- **`src/protocol.ts`** — `decodeServerMessage` handles `SubscriptionRoute` and `SubscriptionBody`; `DecodedMessage` union includes all variants.
+- **`src/types.ts`** — added `SubscriptionRouteData` and `SubscriptionBodyData` interfaces.
+- Rebuilt with `npm run build` — zero TypeScript errors. All 3 tests still pass.
+
+---
+
+### Session 19 — TODO-012 Rust Client SDK
+
+**TODO-012: `neondb-client` Rust crate (neondb-client-rust/)**
+
+- **`neondb-client-rust/src/lib.rs`** — public re-exports, quick-start doc comment.
+- **`neondb-client-rust/src/types.rs`** — wire types (`ReducerCall`, `ReducerResponse`, `ServerMessage`, `ClientMessage`, `SubscriptionRoute`, `SubscriptionBody`) and client API types (`ClientOptions`, `RowDiff`, `RowCache`).
+- **`neondb-client-rust/src/protocol.rs`** — `encode_client_message`, `decode_server_frame` (handles bare array `ReducerResponse` + `ServerMessage` enum variants), `encode_args`, `decode_result`.
+- **`neondb-client-rust/src/client.rs`** — `NeonDBClient` with `connect()`, `call()`, `subscribe()`, `get_rows()`, `get_row()`, `disconnect()`; background `run_connection` task with `tokio::select!` loop; two-frame protocol (`SubscriptionRoute`/`SubscriptionBody`) support; `Subscription` handle with channel-based diff delivery.
+- API key auth via `Authorization: Bearer` header at WebSocket upgrade time.
+- Standalone crate — own `Cargo.toml`, NOT a workspace member; builds with zero errors and zero warnings.
+
+---
+
+### Session 20 — TODO-010 Schema Migrations implemented
+
+**TODO-010: Schema Migration Support (src/migrations.rs)**
+
+- **`src/migrations.rs`** — new module. `apply_migrations(dir, tables)` scans `migrations/*.toml` sorted lexicographically, parses each file, and applies steps. Three idempotent operations:
+  - `add_field` — adds a field with a default value to rows that are missing it (skips rows that already have the field)
+  - `remove_field` — removes a field from rows that have it
+  - `rename_field` — renames `old_field` to `new_field` in rows that have the old name
+- **`src/lib.rs`** — added `pub mod migrations;`.
+- **`src/main.rs`** — migrations applied at startup, after snapshot + WAL recovery, before workers start. Errors are logged as `WARN` (non-fatal, consistent with WAL/snapshot failure handling).
+- **`migrations/README.md`** — new directory with format documentation.
+- 6 new unit tests: add field, skip existing, remove field, rename field, empty-dir no-op, full TOML file apply.
+
+---
+
+### Session 21 — TODO-005 JS Runtime Improvement
+
+**TODO-005: WASM-first JS loading + `neondb build` command**
+
+Implemented Option A from the TODO: JS reducers now transparently upgrade to Wasmtime JIT when a pre-compiled `.wasm` companion file exists.
+
+- **`src/reducer/registry.rs`** — `register_module()` now checks if a `.wasm` file with the same stem exists alongside a `.js` file. If found, the WASM version is loaded via the existing Wasmtime runtime (Cranelift JIT, ~10–50× faster). Falls back to Boa for `.js` files without a WASM companion.
+- **`src/main.rs`** — `Commands::Build { modules_dir }` is now functional: scans `modules/` for `.js` files and invokes `javy compile <file>.js -o <file>.wasm` for each. Prints install instructions if `javy` is not on PATH.
+
+Workflow for production: `neondb build` → produces `.wasm` files → `neondb start` picks them up automatically.
+
+---
+
+### Session 22 — TODO-014 Columnar Table Storage (Practical)
+
+**TODO-014: Columnar read API on TableStore (src/table/mod.rs)**
+
+Added 5 columnar-access methods that provide column-oriented performance patterns on top of the existing row-oriented DashMap storage:
+
+- **`scan_column(table, field)`** — returns `(row_key, field_value)` pairs sorted by key, decoding only the requested field per row (avoids full row decode).
+- **`count_by_field(table, field)`** — groups rows by field value → count. Useful for analytics.
+- **`distinct_field_values(table, field)`** — returns all unique values of a field (de-duplicated via `BTreeSet`).
+- **`count_matching(table, field, value)`** — uses the secondary index (O(1)) if registered; falls back to `scan_column` (O(n)).
+- **`total_row_count()`** — sums row counts across all tables.
+- 5 new unit tests.
+
+---
+
+### Session 23 — TODO-016 End-to-End Benchmark
+
+**TODO-016: End-to-End WebSocket Benchmark (benches/end_to_end.rs, tests/integration.rs)**
+
+- **`benches/end_to_end.rs`** — fully rewritten. Now auto-spawns the NeonDB release binary on port 19000, waits for it to be ready, runs N concurrent WebSocket clients with warmup + benchmark phases, and prints TPS + latency percentiles (p50/p90/p95/p99/p99.9/max). Respects `WS_URL` env var to connect to an external server instead.
+- **`tests/integration.rs`** — added `integration_e2e_throughput_benchmark` test marked `#[ignore]`. Spawns the server, runs 5 clients × 100 calls, asserts 100% success rate and > 100 TPS. Run with: `cargo test -- --include-ignored`.
+
+---
+
 ## Current Build Status
 
-After Session 15:
-- `cargo test` → **79 tests, all pass** (73 unit + 6 integration).
+After Session 23:
+- `cargo test` → **85 unit + 6 integration (1 ignored) = 91 tests, all pass**.
 - `cargo build --release` → zero errors, zero warnings.
+- `cargo build --bench end_to_end` → end-to-end benchmark binary builds cleanly.
 - `cargo build --bin neondb-bench` → standalone benchmark binary builds cleanly.
+- `neondb-client-rust/`: `cargo build` → zero errors, zero warnings.
+- TypeScript SDK: `node --test neondb-client-ts/dist/tests/client.test.js` → **3 tests pass**.
 
 ---
 

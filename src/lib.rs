@@ -1,5 +1,6 @@
 pub mod config;
 pub mod error;
+pub mod migrations;
 pub mod network;
 pub mod reducer;
 pub mod subscriptions;

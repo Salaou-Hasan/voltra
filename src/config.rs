@@ -34,8 +34,11 @@ pub struct Config {
     pub api_key: Option<String>,
     pub tune_system: bool,
     pub reuse_port: bool,
-    pub snapshot_interval: u64, // rows between automatic snapshots; 0 = disabled
-    pub snapshot_dir: PathBuf,  // directory where snapshot files are written
+    /// Enable two-frame subscription delivery: route header + shared body per delta.
+    /// Env: NEONDB_TWO_FRAME_PROTOCOL=1. Default: false (legacy one-frame mode).
+    pub two_frame_protocol: bool,
+    pub snapshot_interval: u64,
+    pub snapshot_dir: PathBuf,
     pub scheduled_reducers: Vec<ScheduledReducerConfig>,
 }
 
@@ -73,6 +76,7 @@ struct ConfigServer {
     api_key: Option<String>,
     tune_system: Option<bool>,
     reuse_port: Option<bool>,
+    two_frame_protocol: Option<bool>,
     snapshot_interval: Option<u64>,
     snapshot_dir: Option<String>,
 }
@@ -110,9 +114,10 @@ impl Config {
             api_key: None,
             tune_system: false,
             reuse_port: true,
-            scheduled_reducers: vec![],
+            two_frame_protocol: false,
             snapshot_interval: 1_000_000,
             snapshot_dir: env::temp_dir().join("neondb_snapshots"),
+            scheduled_reducers: vec![],
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -187,6 +192,9 @@ fn apply_server_section(cfg: &mut Config, server: Option<ConfigServer>) {
     }
     if let Some(r) = s.reuse_port {
         cfg.reuse_port = r;
+    }
+    if let Some(t) = s.two_frame_protocol {
+        cfg.two_frame_protocol = t;
     }
     if let Some(i) = s.snapshot_interval {
         cfg.snapshot_interval = i;
@@ -275,6 +283,9 @@ fn apply_env_overrides(cfg: &mut Config) {
     }
     if let Ok(r) = env::var("NEONDB_REUSE_PORT") {
         cfg.reuse_port = r == "1" || r.eq_ignore_ascii_case("true");
+    }
+    if let Ok(v) = env::var("NEONDB_TWO_FRAME_PROTOCOL") {
+        cfg.two_frame_protocol = v == "1" || v.eq_ignore_ascii_case("true");
     }
     if let Ok(i) = env::var("NEONDB_SNAPSHOT_INTERVAL")
         .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))

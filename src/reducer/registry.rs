@@ -90,6 +90,21 @@ impl ReducerRegistry {
             return Ok(());
         }
 
+        // TODO-005: WASM-first — if a pre-compiled .wasm companion exists for this
+        // .js file, prefer it.  The .wasm is produced by `neondb build` via javy.
+        // This transparently upgrades JS reducers to Wasmtime JIT when available,
+        // with no changes needed to the reducer source code.
+        let ext = if ext == "js" {
+            let wasm_path = path.with_extension("wasm");
+            if wasm_path.exists() {
+                log::info!("Using pre-compiled WASM for JS reducer at {:?}", wasm_path);
+                return self.register_module(&wasm_path);
+            }
+            ext
+        } else {
+            ext
+        };
+
         let name = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -97,7 +112,11 @@ impl ReducerRegistry {
             .to_string();
 
         if self.reducers.contains_key(&name) {
-            log::debug!("Reducer '{}' already registered, skipping {}", name, path.display());
+            log::debug!(
+                "Reducer '{}' already registered, skipping {}",
+                name,
+                path.display()
+            );
             return Ok(());
         }
 
@@ -120,21 +139,32 @@ impl ReducerRegistry {
         Ok(Some(metadata))
     }
 
-    fn register_module_from_metadata(&mut self, sidecar_path: &Path, metadata: ModuleMetadata) -> Result<()> {
-        let module_file = metadata.file.ok_or_else(|| {
-            NeonDBError::invalid_argument("Module metadata missing 'file' field")
-        })?;
+    fn register_module_from_metadata(
+        &mut self,
+        sidecar_path: &Path,
+        metadata: ModuleMetadata,
+    ) -> Result<()> {
+        let module_file = metadata
+            .file
+            .ok_or_else(|| NeonDBError::invalid_argument("Module metadata missing 'file' field"))?;
         let module_path = sidecar_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(&module_file);
 
         let name = metadata.name.unwrap_or_else(|| {
-            module_path.file_stem().unwrap_or_default().to_string_lossy().into_owned()
+            module_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
         });
 
         if self.reducers.contains_key(&name) {
-            log::debug!("Reducer '{}' already registered, skipping metadata module", name);
+            log::debug!(
+                "Reducer '{}' already registered, skipping metadata module",
+                name
+            );
             return Ok(());
         }
 
@@ -173,17 +203,40 @@ impl ReducerRegistry {
 
         match ext {
             "js" => {
-                let backend = V8ReducerBackend::from_file(path.to_path_buf(), timeout)
-                    .map_err(|e| NeonDBError::reducer_error(format!("Failed to load JS module '{}': {}", path.display(), e)))?;
-                Ok(ReducerDefinition { name: name.to_string(), runtime: ReducerRuntime::V8, backend: Box::new(backend) })
+                let backend =
+                    V8ReducerBackend::from_file(path.to_path_buf(), timeout).map_err(|e| {
+                        NeonDBError::reducer_error(format!(
+                            "Failed to load JS module '{}': {}",
+                            path.display(),
+                            e
+                        ))
+                    })?;
+                Ok(ReducerDefinition {
+                    name: name.to_string(),
+                    runtime: ReducerRuntime::V8,
+                    backend: Box::new(backend),
+                })
             }
             "wasm" | "wat" => {
                 let fn_name = entrypoint.unwrap_or("reducer");
-                let backend = WasmReducerBackend::from_file(path.to_path_buf(), fn_name)
-                    .map_err(|e| NeonDBError::reducer_error(format!("Failed to load WASM module '{}': {}", path.display(), e)))?;
-                Ok(ReducerDefinition { name: name.to_string(), runtime: ReducerRuntime::Wasm, backend: Box::new(backend) })
+                let backend =
+                    WasmReducerBackend::from_file(path.to_path_buf(), fn_name).map_err(|e| {
+                        NeonDBError::reducer_error(format!(
+                            "Failed to load WASM module '{}': {}",
+                            path.display(),
+                            e
+                        ))
+                    })?;
+                Ok(ReducerDefinition {
+                    name: name.to_string(),
+                    runtime: ReducerRuntime::Wasm,
+                    backend: Box::new(backend),
+                })
             }
-            other => Err(NeonDBError::invalid_argument(format!("Unsupported module extension: '{}'", other))),
+            other => Err(NeonDBError::invalid_argument(format!(
+                "Unsupported module extension: '{}'",
+                other
+            ))),
         }
     }
 
@@ -198,9 +251,15 @@ impl ReducerRegistry {
         );
     }
 
-    pub fn execute(&self, reducer_name: &str, ctx: &mut crate::reducer::context::ReducerContext, args: &[u8]) -> Result<Vec<u8>> {
-        let definition = self.reducers.get(reducer_name)
-            .ok_or_else(|| NeonDBError::reducer_error(format!("Unknown reducer: '{}'", reducer_name)))?;
+    pub fn execute(
+        &self,
+        reducer_name: &str,
+        ctx: &mut crate::reducer::context::ReducerContext,
+        args: &[u8],
+    ) -> Result<Vec<u8>> {
+        let definition = self.reducers.get(reducer_name).ok_or_else(|| {
+            NeonDBError::reducer_error(format!("Unknown reducer: '{}'", reducer_name))
+        })?;
         definition.backend.execute(ctx, args)
     }
 
@@ -214,8 +273,8 @@ mod tests {
     use super::*;
     use crate::reducer::context::{IncrementResult, ReducerContext};
     use crate::table::TableStore;
-    use std::sync::Arc;
     use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
 
     fn make_ctx() -> ReducerContext {
         ReducerContext::new(Arc::new(TableStore::new()), 100)
@@ -242,7 +301,9 @@ mod tests {
     fn test_registry_unknown_reducer_returns_error() {
         let registry = ReducerRegistry::new().unwrap();
         let mut ctx = make_ctx();
-        let err = registry.execute("does_not_exist", &mut ctx, b"").unwrap_err();
+        let err = registry
+            .execute("does_not_exist", &mut ctx, b"")
+            .unwrap_err();
         assert!(matches!(err, NeonDBError::ReducerError(_)));
     }
 
@@ -278,18 +339,26 @@ mod tests {
         let dir = PathBuf::from("modules");
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("test_registry_js.js");
-        std::fs::write(&path, r#"function reducer(args) {
+        std::fs::write(
+            &path,
+            r#"function reducer(args) {
   var v = ((__neondb_get("counters", args.name) || {}).value || 0) + args.delta;
   __neondb_set("counters", args.name, v);
   return { new_value: v, timestamp: 0 };
-}"#).unwrap();
+}"#,
+        )
+        .unwrap();
 
         let registry = ReducerRegistry::new().unwrap();
-        assert!(registry.list_reducers().contains(&"test_registry_js".to_string()));
+        assert!(registry
+            .list_reducers()
+            .contains(&"test_registry_js".to_string()));
 
         let mut ctx = make_ctx();
         let args = rmp_serde::to_vec(&serde_json::json!({"name": "mana", "delta": 7})).unwrap();
-        let result = registry.execute("test_registry_js", &mut ctx, &args).unwrap();
+        let result = registry
+            .execute("test_registry_js", &mut ctx, &args)
+            .unwrap();
         let decoded: serde_json::Value = rmp_serde::from_slice(&result).unwrap();
         assert_eq!(decoded["new_value"], 7);
         std::fs::remove_file(&path).ok();
@@ -301,20 +370,28 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("test_registry_wasm.wat");
         // Imports must come before memory and func definitions (WASM spec).
-        std::fs::write(&path, r#"(module
+        std::fs::write(
+            &path,
+            r#"(module
   (memory (export "memory") 1)
   (data (i32.const 0) "{\"new_value\":42,\"timestamp\":0}")
   (func (export "reducer") (param i32 i32) (result i32 i32)
     i32.const 0
     i32.const 30
   )
-)"#).unwrap();
+)"#,
+        )
+        .unwrap();
 
         let registry = ReducerRegistry::new().unwrap();
-        assert!(registry.list_reducers().contains(&"test_registry_wasm".to_string()));
+        assert!(registry
+            .list_reducers()
+            .contains(&"test_registry_wasm".to_string()));
 
         let mut ctx = make_ctx();
-        let result = registry.execute("test_registry_wasm", &mut ctx, b"").unwrap();
+        let result = registry
+            .execute("test_registry_wasm", &mut ctx, b"")
+            .unwrap();
         let decoded: serde_json::Value = rmp_serde::from_slice(&result).unwrap();
         assert_eq!(decoded["new_value"], 42);
         std::fs::remove_file(&path).ok();

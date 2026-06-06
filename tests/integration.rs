@@ -497,3 +497,86 @@ async fn integration_no_api_key_accepts_all() {
     let _ = child.wait();
     let _ = std::fs::remove_file(&wal_path);
 }
+
+/// End-to-end throughput smoke test.
+/// Spawns the server, runs 5 clients × 100 calls, asserts > 100 TPS.
+/// Skipped in normal `cargo test` — run with `cargo test -- --include-ignored`.
+#[tokio::test]
+#[ignore = "e2e perf test — run explicitly with --include-ignored"]
+async fn integration_e2e_throughput_benchmark() {
+    use std::time::Instant;
+
+    let port = 18090u16;
+    let wal_path = std::env::temp_dir().join("neondb_e2e_bench_test.wal");
+    let _ = std::fs::remove_file(&wal_path);
+
+    let mut child = spawn_server(port, wal_path.clone());
+    let ws_url = format!("ws://127.0.0.1:{}", port);
+    wait_for_server_ready(&ws_url, Duration::from_secs(10)).await;
+
+    let num_clients = 5usize;
+    let calls_per_client = 100usize;
+    let total_expected = num_clients * calls_per_client;
+
+    let start = Instant::now();
+    let tasks: Vec<_> = (0..num_clients)
+        .map(|id| {
+            let url = ws_url.clone();
+            tokio::spawn(async move {
+                let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+                let args = rmp_serde::to_vec(&IncrementArgs {
+                    name: "bench_test".to_string(),
+                    delta: 1,
+                })
+                .unwrap();
+                let mut ok = 0usize;
+                for i in 0..calls_per_client {
+                    let call_id = (id as u64) * 10_000 + i as u64;
+                    let call = neondb::ReducerCall {
+                        call_id,
+                        reducer_name: "increment".to_string(),
+                        args: args.clone(),
+                    };
+                    let frame = rmp_serde::to_vec(&call).unwrap();
+                    if ws.send(Message::Binary(frame)).await.is_ok() {
+                        if let Ok(Some(Ok(Message::Binary(_)))) =
+                            tokio::time::timeout(Duration::from_secs(5), ws.next()).await
+                        {
+                            ok += 1;
+                        }
+                    }
+                }
+                ok
+            })
+        })
+        .collect();
+
+    let mut total_success = 0usize;
+    for t in tasks {
+        if let Ok(n) = t.await {
+            total_success += n;
+        }
+    }
+    let elapsed = start.elapsed();
+    let tps = total_success as f64 / elapsed.as_secs_f64();
+
+    child.kill().ok();
+    child.wait().ok();
+    let _ = std::fs::remove_file(&wal_path);
+
+    println!(
+        "\ne2e benchmark: {}/{} calls in {:.2}s = {:.0} TPS",
+        total_success,
+        total_expected,
+        elapsed.as_secs_f64(),
+        tps
+    );
+
+    assert!(
+        total_success == total_expected,
+        "Expected {} successes, got {}",
+        total_expected,
+        total_success
+    );
+    assert!(tps > 100.0, "Expected > 100 TPS, got {:.0}", tps);
+}

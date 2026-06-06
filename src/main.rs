@@ -57,7 +57,11 @@ enum Commands {
         #[arg(value_name = "PATH", default_value = ".")]
         path: PathBuf,
     },
-    Build {},
+    Build {
+        /// Directory containing .js reducer modules to compile.
+        #[arg(short = 'm', long, default_value = "modules")]
+        modules_dir: Option<PathBuf>,
+    },
     Start {
         #[arg(short = 'a', long)]
         host: Option<String>,
@@ -81,9 +85,8 @@ async fn main() -> Result<()> {
             init_project(path)?;
             Ok(())
         }
-        Commands::Build {} => {
-            println!("Native-only MVP: build is not supported for WASM/TypeScript modules.");
-            Ok(())
+        Commands::Build { modules_dir } => {
+            build_wasm_modules(modules_dir.as_deref().unwrap_or(Path::new("modules")))
         }
         Commands::Start {
             host,
@@ -111,6 +114,117 @@ async fn main() -> Result<()> {
             run_server(config).await
         }
     }
+}
+
+/// Compile every `.js` module in `modules_dir` to `.wasm` using the `javy` compiler.
+///
+/// `javy` embeds QuickJS into a WASM module, giving JS reducers near-native
+/// performance via the existing Wasmtime runtime — no V8 required.
+///
+/// Install javy: <https://github.com/bytecodealliance/javy/releases>
+///   Or via cargo: `cargo install javy`
+fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
+    if !modules_dir.is_dir() {
+        println!(
+            "No '{}' directory found. Create one and add your .js reducers.",
+            modules_dir.display()
+        );
+        return Ok(());
+    }
+
+    // Check that javy is available.
+    let javy_ok = std::process::Command::new("javy")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !javy_ok {
+        eprintln!("Error: 'javy' compiler not found.");
+        eprintln!();
+        eprintln!("Install javy to compile JS reducers to WASM:");
+        eprintln!("  cargo install javy");
+        eprintln!("  or download from https://github.com/bytecodealliance/javy/releases");
+        eprintln!();
+        eprintln!("Why WASM? Compiled reducers run via Wasmtime (Cranelift JIT) and are");
+        eprintln!("10-50x faster than the Boa interpreter used for raw .js files.");
+        return Err(neondb::error::NeonDBError::internal("javy not installed"));
+    }
+
+    let entries: Vec<_> = std::fs::read_dir(modules_dir)
+        .map_err(|e| {
+            neondb::error::NeonDBError::internal(format!(
+                "Cannot read {}: {}",
+                modules_dir.display(),
+                e
+            ))
+        })?
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("js"))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if entries.is_empty() {
+        println!(
+            "No .js files found in {}. Nothing to build.",
+            modules_dir.display()
+        );
+        return Ok(());
+    }
+
+    let mut compiled = 0usize;
+    let mut failed = 0usize;
+
+    for entry in &entries {
+        let js_path = entry.path();
+        let wasm_path = js_path.with_extension("wasm");
+
+        print!(
+            "Compiling {} -> {} ... ",
+            js_path.file_name().unwrap_or_default().to_string_lossy(),
+            wasm_path.file_name().unwrap_or_default().to_string_lossy(),
+        );
+
+        let status = std::process::Command::new("javy")
+            .arg("compile")
+            .arg(&js_path)
+            .arg("-o")
+            .arg(&wasm_path)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                println!("OK");
+                compiled += 1;
+            }
+            Ok(s) => {
+                println!("FAILED (exit code {})", s.code().unwrap_or(-1));
+                failed += 1;
+            }
+            Err(e) => {
+                println!("FAILED ({})", e);
+                failed += 1;
+            }
+        }
+    }
+
+    println!();
+    println!("Build complete: {} compiled, {} failed", compiled, failed);
+    if compiled > 0 {
+        println!("Compiled WASM modules will be loaded automatically on next 'neondb start'.");
+    }
+    if failed > 0 {
+        return Err(neondb::error::NeonDBError::internal(format!(
+            "{} module(s) failed to compile",
+            failed
+        )));
+    }
+    Ok(())
 }
 
 fn init_project(path: PathBuf) -> Result<()> {
@@ -195,11 +309,29 @@ async fn run_server(config: Config) -> Result<()> {
         log::info!("WAL file does not exist, starting fresh");
     }
 
+    // ── Schema migrations ─────────────────────────────────────────────────────
+    let migrations_dir = std::path::PathBuf::from("migrations");
+    match neondb::migrations::apply_migrations(&migrations_dir, &tables) {
+        Ok(0) => log::debug!("No migrations to apply"),
+        Ok(n) => log::info!("Applied {} migration file(s)", n),
+        Err(e) => log::warn!("Migration error: {}", e),
+    }
+
     // ── kanal async channel — replaces SegQueue + sleep(50ms) ────────────────
     let (reducer_tx, reducer_rx) = kanal::unbounded_async::<PendingCall>();
 
     // ── Subscription manager (Arc, no Mutex — uses DashMap internally) ────────
-    let subscription_manager = Arc::new(SubscriptionManager::new());
+    let subscription_manager = Arc::new(SubscriptionManager::new_with_options(
+        config.two_frame_protocol,
+    ));
+    log::info!(
+        "Subscription fan-out mode: {}",
+        if config.two_frame_protocol {
+            "two-frame (O(1) encode)"
+        } else {
+            "legacy (one encode per subscriber)"
+        }
+    );
 
     let active_connections = Arc::new(AtomicUsize::new(0));
     let (shutdown_tx, shutdown_rx) = watch::channel(());

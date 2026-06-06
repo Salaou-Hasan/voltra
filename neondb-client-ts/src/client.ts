@@ -18,19 +18,25 @@ import type {
   RowCache,
 } from "./types.js";
 
-// Use native WebSocket in browsers; dynamically require 'ws' in Node.js.
+// Use native WebSocket in browsers; dynamically import 'ws' in Node.js.
 // `ws` supports custom HTTP headers (required for API key auth).
-function getWebSocketClass(): typeof WebSocket {
+async function getWebSocketCtor(): Promise<typeof WebSocket> {
   if (typeof globalThis.WebSocket !== "undefined") {
     return globalThis.WebSocket;
   }
+
   // Node.js path — `ws` must be installed
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require("ws");
+    // ESM-safe dynamic import (works when this package is `"type": "module"`).
+    const mod = await import("ws");
+    // `ws` exports either `WebSocket` or a default export depending on bundler.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return ((mod as any).WebSocket ??
+      (mod as any).default ??
+      mod) as typeof WebSocket;
   } catch {
     throw new Error(
-      "WebSocket is not available. In Node.js, install the 'ws' package: npm install ws"
+      "WebSocket is not available. In Node.js, install the 'ws' package: npm install ws",
     );
   }
 }
@@ -41,16 +47,22 @@ interface PendingCall {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface SubEntry {
+  query: string;
+  callback: SubscriptionCallback;
+}
+
 export class NeonDBClient {
   private readonly opts: Required<NeonDBClientOptions>;
   private ws: WebSocket | null = null;
   private pendingCalls = new Map<number, PendingCall>();
-  private subscriptions = new Map<string, SubscriptionCallback>();
+  private subscriptions = new Map<string, SubEntry>();
   private rowCache = new Map<string, RowCache>(); // tableName → { rowKey → rowData }
   private nextCallId = 1;
   private nextSubId = 1;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
+  private pendingRoute: string[] | null = null;
 
   // ── Connection lifecycle events ───────────────────────────────────────────
   /** Fired when the WebSocket connection is opened (or re-opened). */
@@ -83,10 +95,8 @@ export class NeonDBClient {
     if (this.ws?.readyState === WebSocket.OPEN) {
       return Promise.resolve();
     }
-    return new Promise((resolve, reject) => {
-      this.closed = false;
-      this.openSocket(resolve, reject);
-    });
+    this.closed = false;
+    return this.openSocket();
   }
 
   /** Close the connection and stop auto-reconnect. */
@@ -135,7 +145,11 @@ export class NeonDBClient {
 
       const timer = setTimeout(() => {
         this.pendingCalls.delete(callId);
-        reject(new Error(`call "${reducerName}" timed out after ${this.opts.callTimeout}ms`));
+        reject(
+          new Error(
+            `call "${reducerName}" timed out after ${this.opts.callTimeout}ms`,
+          ),
+        );
       }, this.opts.callTimeout);
 
       this.pendingCalls.set(callId, {
@@ -190,7 +204,7 @@ export class NeonDBClient {
    */
   subscribe(query: string, callback: SubscriptionCallback): Subscription {
     const subId = `sub_${this.nextSubId++}_${Date.now()}`;
-    this.subscriptions.set(subId, callback);
+    this.subscriptions.set(subId, { query, callback });
 
     const frame = encodeSubscribe(subId, query);
     if (this.isConnected()) {
@@ -222,7 +236,10 @@ export class NeonDBClient {
   }
 
   /** Return a single cached row, or `undefined` if not present. */
-  getRow(tableName: string, rowKey: string): Record<string, unknown> | undefined {
+  getRow(
+    tableName: string,
+    rowKey: string,
+  ): Record<string, unknown> | undefined {
     return this.rowCache.get(tableName)?.get(rowKey);
   }
 
@@ -234,11 +251,9 @@ export class NeonDBClient {
 
   // ── Internal ──────────────────────────────────────────────────────────────
 
-  private openSocket(
-    onOpen?: () => void,
-    onError?: (e: Error) => void
-  ): void {
-    const WS = getWebSocketClass();
+  private async openSocket(): Promise<void> {
+    const WS = await getWebSocketCtor();
+    let opened = false;
 
     // In Node.js, pass headers option for API key auth.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -261,41 +276,57 @@ export class NeonDBClient {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
 
-    ws.onopen = () => {
-      onOpen?.();
-      this.onConnected?.();
-      // Re-subscribe after reconnect
-      for (const [subId] of this.subscriptions) {
-        // Re-send subscriptions — but we don't have the original query stored.
-        // Subscriptions created before connect() is called are re-sent here;
-        // the query is not retained, so callers should re-subscribe manually.
-        // TODO: store (subId → query) map to enable transparent re-subscription.
-      }
-    };
+    return new Promise((resolve, reject) => {
+      ws.onopen = () => {
+        opened = true;
+        resolve();
+        this.onConnected?.();
+        // Re-subscribe after reconnect
+        for (const [subId, entry] of this.subscriptions) {
+          this.send(encodeSubscribe(subId, entry.query));
+        }
+      };
 
-    ws.onclose = () => {
-      this.onDisconnected?.();
-      this.rejectAllPending(new Error("Connection closed"));
-      if (!this.closed && this.opts.reconnectInterval > 0) {
-        this.reconnectTimer = setTimeout(() => {
-          this.openSocket();
-        }, this.opts.reconnectInterval);
-      }
-    };
+      ws.onclose = () => {
+        this.onDisconnected?.();
+        this.rejectAllPending(new Error("Connection closed"));
+        if (!opened) {
+          reject(new Error("Connection closed before it was established"));
+          return;
+        }
+        if (!this.closed && this.opts.reconnectInterval > 0) {
+          this.reconnectTimer = setTimeout(() => {
+            void this.openSocket();
+          }, this.opts.reconnectInterval);
+        }
+      };
 
-    ws.onerror = (evt: Event) => {
-      const msg = "WebSocket error";
-      onError?.(new Error(msg));
-    };
+      ws.onerror = (_evt: Event) => {
+        // Note: the browser WebSocket API doesn't provide much error detail.
+        if (!opened) {
+          reject(new Error("WebSocket error"));
+        }
+      };
 
-    ws.onmessage = (evt: MessageEvent<ArrayBuffer | string>) => {
-      if (evt.data instanceof ArrayBuffer || evt.data instanceof Uint8Array) {
-        this.handleFrame(evt.data as ArrayBuffer);
-      }
-    };
+      // NOTE: browser WebSocket types differ from the `ws` Node.js library.
+      // Use runtime checks instead of strict TS typing here.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ws.onmessage = (evt: any) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const data: any = evt?.data;
+        if (data instanceof ArrayBuffer) {
+          this.handleFrame(data);
+        } else if (ArrayBuffer.isView(data)) {
+          // Buffer / Uint8Array / DataView
+          this.handleFrame(
+            new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+          );
+        }
+      };
+    });
   }
 
-  private handleFrame(data: ArrayBuffer): void {
+  private handleFrame(data: ArrayBuffer | Uint8Array): void {
     const msg = decodeServerMessage(data);
 
     switch (msg.type) {
@@ -313,7 +344,7 @@ export class NeonDBClient {
         // Errors are logged if the subscription failed.
         if (!msg.data.success) {
           console.warn(
-            `[NeonDB] Subscription "${msg.data.subscriptionId}" failed: ${msg.data.message}`
+            `[NeonDB] Subscription "${msg.data.subscriptionId}" failed: ${msg.data.message}`,
           );
         }
         break;
@@ -321,10 +352,45 @@ export class NeonDBClient {
       case "SubscriptionDiff": {
         const diff = msg.data;
         // Update local row cache
-        this.applyToCache(diff.tableName, diff.rowKey, diff.operation, diff.rowData);
+        this.applyToCache(
+          diff.tableName,
+          diff.rowKey,
+          diff.operation,
+          diff.rowData,
+        );
         // Notify subscriber
-        const cb = this.subscriptions.get(diff.subscriptionId);
-        cb?.(diff);
+        const entry = this.subscriptions.get(diff.subscriptionId);
+        entry?.callback(diff);
+        break;
+      }
+
+      case "SubscriptionRoute":
+        // Two-frame protocol: the next SubscriptionBody applies to these ids.
+        this.pendingRoute = msg.data.subscriptionIds;
+        break;
+
+      case "SubscriptionBody": {
+        // Two-frame protocol: apply to all ids in the immediately prior route.
+        const route = this.pendingRoute;
+        this.pendingRoute = null;
+        if (!route || route.length === 0) break;
+        for (const subscriptionId of route) {
+          const diff = {
+            subscriptionId,
+            tableName: msg.data.tableName,
+            rowKey: msg.data.rowKey,
+            operation: msg.data.operation,
+            rowData: msg.data.rowData,
+          };
+          this.applyToCache(
+            diff.tableName,
+            diff.rowKey,
+            diff.operation,
+            diff.rowData,
+          );
+          const entry = this.subscriptions.get(subscriptionId);
+          entry?.callback(diff);
+        }
         break;
       }
 
@@ -342,7 +408,7 @@ export class NeonDBClient {
     tableName: string,
     rowKey: string,
     operation: string,
-    rowData: Record<string, unknown> | null
+    rowData: Record<string, unknown> | null,
   ): void {
     if (!this.rowCache.has(tableName)) {
       this.rowCache.set(tableName, new Map());
