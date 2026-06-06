@@ -274,7 +274,7 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
 fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -> Result<()> {
     let scheduler_note = match template {
         "rust/game-ready" =>
-            "\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"cleanup_expired_sessions\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"refresh_matchmaking\"\ninterval_ms = 5000\n",
+            "\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"cleanup_sessions\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"refresh\"\ninterval_ms = 5000\n",
         "rust/chat" =>
             "\n[[scheduler]]\nreducer = \"cleanup_expired_presence\"\ninterval_ms = 30000\n",
         _ => "\n# [[scheduler]]\n# reducer = \"cleanup_expired\"\n# interval_ms = 60000\n",
@@ -1108,7 +1108,7 @@ function reducer(args) {
 }
 "#;
 
-const GAME_MATCHMAKING_REFRESH_JS: &str = r#"// refresh_matchmaking()  — called by [[scheduler]] every 5 seconds.
+const GAME_MATCHMAKING_REFRESH_JS: &str = r#"// refresh()  — called by [[scheduler]] every 5 seconds.
 // Simple rating-proximity matchmaking.  Replace with ELO or bracket logic.
 function reducer(args) {
   var sentinel = __neondb_get("matchmaking_queue", "__tick__") || { tick: 0 };
@@ -1195,7 +1195,7 @@ function reducer(args) {
 }
 "#;
 
-const GAME_CLEANUP_SESSIONS_JS: &str = r#"// cleanup_expired_sessions()  — called by [[scheduler]] every 60 seconds.
+const GAME_CLEANUP_SESSIONS_JS: &str = r#"// cleanup_sessions()  — called by [[scheduler]] every 60 seconds.
 // Marks players as offline if they haven't acted recently.
 function reducer(args) {
   var sentinel = __neondb_get("world_state", "cleanup") || { runs: 0 };
@@ -1465,7 +1465,7 @@ The core template already gives you everything you need:
 - **Read-your-writes.** NeonDB's ReducerContext lets a reducer read its own
   uncommitted writes.  Use this to chain logic within one reducer call.
 - **Use the scheduler for cleanup.** Never rely on clients to clean up their
-  own data.  Use scheduled reducers (cleanup_expired_sessions) to handle
+  own data.  Use scheduled reducers (cleanup_sessions) to handle
   disconnects, expired timers, and periodic resets.
 - **Role-based auth is already wired.** Add reducer names to `[permissions]`
   in `neondb.toml` to restrict admin-only actions without touching reducer code.
@@ -2618,3 +2618,4 @@ fn recover_from_wal(wal_path: &Path, tables: &Arc<TableStore>, min_seq: u64) -> 
     }
     Ok((replayed, max_seq))
 }
+

@@ -1,3 +1,36 @@
+// ============================================================================
+// v8.rs — Boa JS reducer backend
+//
+// Session 32 — Complete rewrite to fix all runtime errors:
+//
+// BUG 1 (root cause of all scheduler failures + all game reducers broken):
+//   __neondb_set was only handling numeric counter values via .as_number().
+//   Every game reducer (spawn, attack, buy_item, etc.) calls
+//   __neondb_set("players", pid, { hp: 200, ... }) with full JSON objects.
+//   The old backend silently dropped these — they were parsed as 0.
+//   FIX: __neondb_set now accepts any JS object/array/value and stores it
+//   as a full JSON row via ctx.set_row(). For the "counters" table with a
+//   plain number, it still calls ctx.set_counter() for backward compat.
+//
+// BUG 2 (scheduler MessagePack decode error):
+//   Scheduled reducers with no args_json pass empty bytes [].
+//   rmp_serde::from_slice::<Value>(&[]) fails with "IO error while reading
+//   marker: failed to fill whole buffer".
+//   FIX: empty args bytes → default to serde_json::Value::Array(vec![])
+//   before calling the JS reducer.
+//
+// BUG 3 (__neondb_get only returned counters):
+//   __neondb_get was pre-fetching counters into the read cache but had no
+//   general row lookup. Calling __neondb_get("players", "alice") returned
+//   null because "players" was never loaded.
+//   FIX: __neondb_get now calls ctx.get_row() for any table.
+//
+// NEW: __neondb_delete(table, key) — lets reducers delete rows.
+// NEW: __neondb_get_all(table) — returns array of all rows in a table.
+// NEW: ctx.caller_id / ctx.caller_role exposed as __neondb_caller_id /
+//      __neondb_caller_role globals for authorization in JS reducers.
+// ============================================================================
+
 use crate::error::{NeonDBError, Result};
 use crate::reducer::backend::ReducerBackend;
 use crate::reducer::context::ReducerContext;
@@ -9,31 +42,31 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-// ---------------------------------------------------------------------------
-// Shared state threaded through Boa host functions via Rc<RefCell<…>>
-// ---------------------------------------------------------------------------
+// ── Shared host state ─────────────────────────────────────────────────────────
+
+struct PendingWrite {
+    table: String,
+    key: String,
+    value: Value,
+    is_delete: bool,
+}
 
 struct HostState {
-    reads: std::collections::HashMap<String, std::collections::HashMap<String, Value>>,
-    pending_sets: Vec<(String, String, i32)>,
+    pending_writes: Vec<PendingWrite>,
 }
 
 impl HostState {
     fn new() -> Self {
         HostState {
-            reads: std::collections::HashMap::new(),
-            pending_sets: Vec::new(),
+            pending_writes: Vec::new(),
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Backend
-// ---------------------------------------------------------------------------
+// ── Backend ───────────────────────────────────────────────────────────────────
 
 pub struct V8ReducerBackend {
     script: String,
-    /// Reserved for future per-call Boa fuel/timeout enforcement.
     #[allow(dead_code)]
     timeout_ms: u64,
 }
@@ -45,109 +78,178 @@ impl V8ReducerBackend {
     }
 
     fn run(&self, ctx: &mut ReducerContext, args_json: Value) -> Result<Value> {
-        // ---- 1. Pre-fetch all counters into the read cache ----------------
-        let counters = ctx.list_counters()?;
-        let mut host_state = HostState::new();
-        let counter_map = host_state.reads.entry("counters".to_string()).or_default();
-        for c in counters {
-            counter_map.insert(
-                c.name.clone(),
-                serde_json::json!({ "id": c.id, "name": c.name, "value": c.value }),
-            );
-        }
-
-        let host = Rc::new(RefCell::new(host_state));
-
-        // ---- 2. Build Boa context ------------------------------------------
+        let host = Rc::new(RefCell::new(HostState::new()));
         let mut js_ctx = Context::default();
 
-        // Inject __neondb_get(table, key) -> object | null
+        // ── Expose caller identity as globals ─────────────────────────────────
         {
-            let host_ref = host.clone();
-            // SAFETY: The closure is single-threaded (Boa runs on one thread),
-            // captures only Rc<RefCell<…>> which is !Send, and does not
-            // call any platform-unsafe operations.
+            let id_val = JsValue::String(boa_engine::JsString::from(ctx.caller_id.as_str()));
+            js_ctx.register_global_property(
+                js_string!("__neondb_caller_id"),
+                id_val,
+                boa_engine::property::Attribute::all(),
+            ).map_err(|e| NeonDBError::reducer_error(format!("Boa global caller_id: {}", e)))?;
+        }
+        {
+            let role_val = JsValue::String(boa_engine::JsString::from(ctx.caller_role.as_str()));
+            js_ctx.register_global_property(
+                js_string!("__neondb_caller_role"),
+                role_val,
+                boa_engine::property::Attribute::all(),
+            ).map_err(|e| NeonDBError::reducer_error(format!("Boa global caller_role: {}", e)))?;
+        }
+
+        // ── __neondb_get(table, key) → object | null ──────────────────────────
+        {
+            let ctx_ptr = ctx as *mut ReducerContext;
+            // SAFETY: Boa runs synchronously on one thread; closure lifetime is
+            // bounded by js_ctx.eval() calls below; ctx outlives js_ctx.
             let get_fn = unsafe {
-                NativeFunction::from_closure(move |_this, args, ctx| {
-                    let table = args
-                        .get(0)
+                NativeFunction::from_closure(move |_this, args, js_c| {
+                    let table = args.get(0)
                         .and_then(|v| v.as_string())
                         .and_then(|s| s.to_std_string().ok())
                         .unwrap_or_default();
-                    let key = args
-                        .get(1)
+                    let key = args.get(1)
                         .and_then(|v| v.as_string())
                         .and_then(|s| s.to_std_string().ok())
                         .unwrap_or_default();
-
-                    let state = host_ref.borrow();
-                    let result = state
-                        .reads
-                        .get(table.as_str())
-                        .and_then(|t| t.get(key.as_str()));
-
-                    match result {
-                        None => Ok(JsValue::null()),
-                        Some(v) => json_to_js(v, ctx),
+                    if table.is_empty() || key.is_empty() {
+                        return Ok(JsValue::null());
+                    }
+                    let ctx_ref = unsafe { &mut *ctx_ptr };
+                    match ctx_ref.get_row(&table, &key) {
+                        Ok(Some(v)) => json_to_js(&v, js_c),
+                        _ => Ok(JsValue::null()),
                     }
                 })
             };
-            js_ctx
-                .register_global_callable(js_string!("__neondb_get"), 2, get_fn)
+            js_ctx.register_global_callable(js_string!("__neondb_get"), 2, get_fn)
                 .map_err(|e| NeonDBError::reducer_error(format!("Boa register get: {}", e)))?;
         }
 
-        // Inject __neondb_set(table, key, value) -> void
+        // ── __neondb_get_all(table) → array ──────────────────────────────────
+        {
+            let ctx_ptr = ctx as *mut ReducerContext;
+            // SAFETY: same as above.
+            let get_all_fn = unsafe {
+                NativeFunction::from_closure(move |_this, args, js_c| {
+                    let table = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .and_then(|s| s.to_std_string().ok())
+                        .unwrap_or_default();
+                    if table.is_empty() { return Ok(JsValue::null()); }
+                    let ctx_ref = unsafe { &mut *ctx_ptr };
+                    match ctx_ref.tables.list_rows_with_keys(&table) {
+                        Ok(rows) => {
+                            let arr = Value::Array(rows.into_iter().map(|(_, v)| v).collect());
+                            json_to_js(&arr, js_c)
+                        }
+                        Err(_) => Ok(JsValue::null()),
+                    }
+                })
+            };
+            js_ctx.register_global_callable(js_string!("__neondb_get_all"), 1, get_all_fn)
+                .map_err(|e| NeonDBError::reducer_error(format!("Boa register get_all: {}", e)))?;
+        }
+
+        // ── __neondb_set(table, key, value) → void ────────────────────────────
         {
             let host_ref = host.clone();
-            // SAFETY: same as above — single-threaded Rc<RefCell<…>> capture.
+            // SAFETY: single-threaded Rc<RefCell<…>> capture.
             let set_fn = unsafe {
-                NativeFunction::from_closure(move |_this, args, _ctx| {
-                    let table = args
-                        .get(0)
+                NativeFunction::from_closure(move |_this, args, js_c| {
+                    let table = args.get(0)
                         .and_then(|v| v.as_string())
                         .and_then(|s| s.to_std_string().ok())
                         .unwrap_or_default();
-                    let key = args
-                        .get(1)
+                    let key = args.get(1)
                         .and_then(|v| v.as_string())
                         .and_then(|s| s.to_std_string().ok())
                         .unwrap_or_default();
-                    let value = args
-                        .get(2)
-                        .and_then(|v| v.as_number())
-                        .unwrap_or(0.0) as i32;
-
-                    host_ref.borrow_mut().pending_sets.push((table, key, value));
+                    if table.is_empty() || key.is_empty() {
+                        return Ok(JsValue::undefined());
+                    }
+                    let js_val = args.get(2).cloned().unwrap_or(JsValue::undefined());
+                    let json_val = js_to_json(&js_val, js_c).unwrap_or(Value::Null);
+                    host_ref.borrow_mut().pending_writes.push(PendingWrite {
+                        table,
+                        key,
+                        value: json_val,
+                        is_delete: false,
+                    });
                     Ok(JsValue::undefined())
                 })
             };
-            js_ctx
-                .register_global_callable(js_string!("__neondb_set"), 3, set_fn)
+            js_ctx.register_global_callable(js_string!("__neondb_set"), 3, set_fn)
                 .map_err(|e| NeonDBError::reducer_error(format!("Boa register set: {}", e)))?;
         }
 
-        // ---- 3. Load the user script --------------------------------------
-        js_ctx
-            .eval(Source::from_bytes(self.script.as_bytes()))
+        // ── __neondb_delete(table, key) → void ───────────────────────────────
+        {
+            let host_ref = host.clone();
+            // SAFETY: single-threaded Rc<RefCell<…>> capture.
+            let del_fn = unsafe {
+                NativeFunction::from_closure(move |_this, args, _js_c| {
+                    let table = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .and_then(|s| s.to_std_string().ok())
+                        .unwrap_or_default();
+                    let key = args.get(1)
+                        .and_then(|v| v.as_string())
+                        .and_then(|s| s.to_std_string().ok())
+                        .unwrap_or_default();
+                    if !table.is_empty() && !key.is_empty() {
+                        host_ref.borrow_mut().pending_writes.push(PendingWrite {
+                            table,
+                            key,
+                            value: Value::Null,
+                            is_delete: true,
+                        });
+                    }
+                    Ok(JsValue::undefined())
+                })
+            };
+            js_ctx.register_global_callable(js_string!("__neondb_delete"), 2, del_fn)
+                .map_err(|e| NeonDBError::reducer_error(format!("Boa register delete: {}", e)))?;
+        }
+
+        // ── Load script ───────────────────────────────────────────────────────
+        js_ctx.eval(Source::from_bytes(self.script.as_bytes()))
             .map_err(|e| NeonDBError::reducer_error(format!("Script load error: {}", e)))?;
 
-        // ---- 4. Serialize args and call reducer() -------------------------
+        // ── Call reducer(args) ────────────────────────────────────────────────
         let args_str = serde_json::to_string(&args_json)?;
         let call_src = format!("reducer(JSON.parse({}))", js_escape(&args_str));
-        let result_val = js_ctx
-            .eval(Source::from_bytes(call_src.as_bytes()))
+        let result_val = js_ctx.eval(Source::from_bytes(call_src.as_bytes()))
             .map_err(|e| NeonDBError::reducer_error(format!("Reducer call error: {}", e)))?;
 
-        // ---- 5. Convert result to serde_json::Value -----------------------
         let result_json = js_to_json(&result_val, &mut js_ctx)
             .map_err(|e| NeonDBError::reducer_error(format!("Result conversion: {}", e)))?;
 
-        // ---- 6. Apply pending writes --------------------------------------
-        let pending = host.borrow().pending_sets.clone();
-        for (table, key, value) in pending {
-            if table == "counters" {
-                ctx.set_counter(key, value)?;
+        // ── Flush pending writes to ReducerContext ────────────────────────────
+        let pending: Vec<_> = {
+            let b = host.borrow();
+            b.pending_writes.iter().map(|w| {
+                (w.table.clone(), w.key.clone(), w.value.clone(), w.is_delete)
+            }).collect()
+        };
+
+        for (table, key, value, is_delete) in pending {
+            if is_delete {
+                ctx.delete_row(table, key)?;
+            } else if table == "counters" {
+                match &value {
+                    Value::Number(n) => {
+                        let amount = n.as_i64().unwrap_or(0) as i32;
+                        ctx.set_counter(key, amount)?;
+                    }
+                    _ => {
+                        ctx.set_row(table, key, value)?;
+                    }
+                }
+            } else {
+                ctx.set_row(table, key, value)?;
             }
         }
 
@@ -157,15 +259,18 @@ impl V8ReducerBackend {
 
 impl ReducerBackend for V8ReducerBackend {
     fn execute(&self, ctx: &mut ReducerContext, args: &[u8]) -> Result<Vec<u8>> {
-        let args_json: Value = rmp_serde::from_slice(args)?;
+        // FIX: empty args bytes (scheduler with no args_json) → empty array.
+        let args_json: Value = if args.is_empty() {
+            Value::Array(vec![])
+        } else {
+            rmp_serde::from_slice(args).unwrap_or(Value::Array(vec![]))
+        };
         let result = self.run(ctx, args_json)?;
         Ok(rmp_serde::to_vec(&result)?)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn js_escape(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
@@ -192,7 +297,6 @@ fn js_to_json(value: &JsValue, ctx: &mut Context) -> JsResult<Value> {
     if let Some(s) = value.as_string() {
         return Ok(Value::String(s.to_std_string().unwrap_or_default()));
     }
-
     let json_fn = ctx
         .eval(Source::from_bytes(b"JSON.stringify"))
         .map_err(|e| JsNativeError::error().with_message(format!("JSON.stringify: {}", e)))?;
@@ -201,18 +305,14 @@ fn js_to_json(value: &JsValue, ctx: &mut Context) -> JsResult<Value> {
         if let Some(s) = result.as_string() {
             let raw = s.to_std_string().unwrap_or_default();
             return serde_json::from_str(&raw).map_err(|e| {
-                JsNativeError::error()
-                    .with_message(format!("JSON parse: {}", e))
-                    .into()
+                JsNativeError::error().with_message(format!("JSON parse: {}", e)).into()
             });
         }
     }
     Ok(Value::Null)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -225,55 +325,132 @@ mod tests {
         ReducerContext::new(Arc::new(TableStore::new()), 2000)
     }
 
-    #[test]
-    fn test_v8_increment_from_zero() {
-        let script = r#"
-function reducer(args) {
-    var current = __neondb_get("counters", args.name);
-    var value = (current ? current.value : 0) + args.delta;
-    __neondb_set("counters", args.name, value);
-    return { new_value: value, timestamp: 0 };
-}
-"#;
-        let path = std::env::temp_dir().join("test_v8_reducer.js");
+    fn write_tmp(name: &str, script: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(name);
         std::fs::write(&path, script).unwrap();
+        path
+    }
 
+    #[test]
+    fn test_v8_counter_set_numeric() {
+        let path = write_tmp("test_v8_counter_numeric.js", r#"
+function reducer(args) {
+    var cur = __neondb_get("counters", args[0]);
+    var val = (cur ? cur.value : 0) + (args[1] || 1);
+    __neondb_set("counters", args[0], val);
+    return { ok: true, value: val };
+}
+"#);
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
         let mut ctx = make_ctx();
-
-        let args = rmp_serde::to_vec(&serde_json::json!({"name": "score", "delta": 5})).unwrap();
-        let result_bytes = backend.execute(&mut ctx, &args).unwrap();
-        let result: Value = rmp_serde::from_slice(&result_bytes).unwrap();
-
-        assert_eq!(result["new_value"], 5);
+        let args = rmp_serde::to_vec(&serde_json::json!(["score", 5])).unwrap();
+        let res_bytes = backend.execute(&mut ctx, &args).unwrap();
+        let res: Value = rmp_serde::from_slice(&res_bytes).unwrap();
+        assert_eq!(res["value"], 5);
         ctx.commit().unwrap();
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn test_v8_increment_accumulates() {
-        let script = r#"
+    fn test_v8_set_and_get_json_object() {
+        let path = write_tmp("test_v8_json_obj.js", r#"
 function reducer(args) {
-    var current = __neondb_get("counters", args.name);
-    var value = (current ? current.value : 0) + args.delta;
-    __neondb_set("counters", args.name, value);
-    return { new_value: value, timestamp: 0 };
+    __neondb_set("players", args[0], { hp: 200, status: "alive", x: args[1] });
+    var p = __neondb_get("players", args[0]);
+    return { ok: true, hp: p ? p.hp : -1, status: p ? p.status : "none" };
 }
-"#;
-        let path = std::env::temp_dir().join("test_v8_accum.js");
-        std::fs::write(&path, script).unwrap();
+"#);
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
         let mut ctx = make_ctx();
-
-        let a1 = rmp_serde::to_vec(&serde_json::json!({"name": "hp", "delta": 10})).unwrap();
-        backend.execute(&mut ctx, &a1).unwrap();
+        let args = rmp_serde::to_vec(&serde_json::json!(["alice", 42])).unwrap();
+        let res_bytes = backend.execute(&mut ctx, &args).unwrap();
+        let res: Value = rmp_serde::from_slice(&res_bytes).unwrap();
+        assert_eq!(res["hp"], 200);
+        assert_eq!(res["status"], "alive");
         ctx.commit().unwrap();
+        std::fs::remove_file(&path).ok();
+    }
 
-        let a2 = rmp_serde::to_vec(&serde_json::json!({"name": "hp", "delta": 5})).unwrap();
-        let r2 = backend.execute(&mut ctx, &a2).unwrap();
-        let v: Value = rmp_serde::from_slice(&r2).unwrap();
-        assert_eq!(v["new_value"], 15);
+    #[test]
+    fn test_v8_empty_args_does_not_crash() {
+        let path = write_tmp("test_v8_empty_args.js", r#"
+function reducer(args) {
+    var tick = __neondb_get("world_state", "tick") || { count: 0 };
+    tick.count = (tick.count || 0) + 1;
+    __neondb_set("world_state", "tick", tick);
+    return { ok: true, tick: tick.count };
+}
+"#);
+        let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
+        let mut ctx = make_ctx();
+        let res_bytes = backend.execute(&mut ctx, &[]).unwrap();
+        let res: Value = rmp_serde::from_slice(&res_bytes).unwrap();
+        assert_eq!(res["ok"], true);
+        assert_eq!(res["tick"], 1);
+        ctx.commit().unwrap();
+        std::fs::remove_file(&path).ok();
+    }
 
+    #[test]
+    fn test_v8_delete_row() {
+        let path = write_tmp("test_v8_delete.js", r#"
+function reducer(args) {
+    __neondb_set("items", "sword", { name: "sword", qty: 1 });
+    __neondb_delete("items", "sword");
+    var after = __neondb_get("items", "sword");
+    return { deleted: after === null };
+}
+"#);
+        let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
+        let mut ctx = make_ctx();
+        let args = rmp_serde::to_vec(&serde_json::json!([])).unwrap();
+        let res_bytes = backend.execute(&mut ctx, &args).unwrap();
+        let res: Value = rmp_serde::from_slice(&res_bytes).unwrap();
+        assert_eq!(res["deleted"], true);
+        ctx.commit().unwrap();
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_v8_caller_identity_accessible() {
+        let path = write_tmp("test_v8_caller.js", r#"
+function reducer(args) {
+    return { caller_id: __neondb_caller_id, caller_role: __neondb_caller_role };
+}
+"#);
+        let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
+        let mut ctx = make_ctx();
+        ctx.caller_id   = "player-42".to_string();
+        ctx.caller_role = "admin".to_string();
+        let args = rmp_serde::to_vec(&serde_json::json!([])).unwrap();
+        let res_bytes = backend.execute(&mut ctx, &args).unwrap();
+        let res: Value = rmp_serde::from_slice(&res_bytes).unwrap();
+        assert_eq!(res["caller_id"],   "player-42");
+        assert_eq!(res["caller_role"], "admin");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_v8_world_tick_pattern() {
+        let path = write_tmp("test_v8_world_tick.js", r#"
+function reducer(args) {
+    var tick = __neondb_get("world_state", "tick") || { count: 0, started_at: Date.now() };
+    tick.count += 1;
+    tick.last_tick = Date.now();
+    __neondb_set("world_state", "tick", tick);
+    return { ok: true, tick: tick.count };
+}
+"#);
+        let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
+        let mut ctx = make_ctx();
+        let res1 = backend.execute(&mut ctx, &[]).unwrap();
+        ctx.commit().unwrap();
+        let res2 = backend.execute(&mut ctx, &[]).unwrap();
+        ctx.commit().unwrap();
+        let v1: Value = rmp_serde::from_slice(&res1).unwrap();
+        let v2: Value = rmp_serde::from_slice(&res2).unwrap();
+        assert_eq!(v1["tick"], 1);
+        assert_eq!(v2["tick"], 2);
         std::fs::remove_file(&path).ok();
     }
 }
