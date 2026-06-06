@@ -179,6 +179,134 @@ latency + TPS, markdown report. Required by PHASE_0_PLANNING.md Phase 6 acceptan
 
 ---
 
+## NEW GAPS — Added Session 25 (vs SpacetimeDB feature parity)
+
+### TODO-018 — Typed Schema System
+**Status**: ❌ NOT STARTED
+**SpacetimeDB has**: Strongly-typed tables defined in code — columns have explicit types (`u64`, `String`, `bool`), primary keys declared, server enforces them, client bindings generated from schema.
+**We have**: Schema-free tables — rows are raw JSON blobs (`HashMap<String, Value>`). Anything goes in, no validation, no type enforcement.
+
+**What to build**:
+- `schema.toml` file format: define tables with named columns + types (`u64`, `i32`, `String`, `bool`, `f64`, `bytes`)
+- Primary key declaration per table
+- Server validates row writes against schema on every `set_row` call
+- `neondb init` scaffolds a starter `schema.toml` alongside `neondb.toml`
+- Schema loaded at startup, stored in `TableStore`
+- Migration support already exists (migrations/*.toml) — wire schema changes through it
+
+**Files to create/modify**: `src/schema.rs` (new), `src/table/mod.rs`, `src/main.rs`, `src/cli.rs`
+**Tests to add**: type enforcement rejects wrong types, primary key uniqueness, schema load from file.
+
+---
+
+### TODO-019 — React Hooks in TypeScript SDK
+**Status**: ❌ NOT STARTED
+**SpacetimeDB has**: `useSpacetimeDBQuery()`, `useReducer()` — type-safe React hooks that auto-subscribe and re-render on data changes.
+**We have**: Bare `NeonDBClient` class. Developers must wire subscriptions to React state manually.
+
+**What to build**:
+- `neondb-client-ts/src/hooks.ts` — `useNeonDBQuery(query)`, `useNeonDBReducer(name)` hooks
+- `useNeonDBQuery(query)` returns `{ rows, loading, error }` and re-renders when matching rows change
+- `useNeonDBReducer(name)` returns `[call, { loading, error }]` — fires the reducer and tracks status
+- `NeonDBProvider` context component wraps the app with a shared client instance
+- Works with React 18 (hooks + concurrent mode safe)
+
+**Files to create**: `neondb-client-ts/src/hooks.ts`, `neondb-client-ts/src/context.ts`
+**Tests to add**: hook re-renders on subscription diff, reducer call updates loading state.
+
+---
+
+### TODO-020 — OR / JOIN / ORDER BY / LIMIT in Subscription Queries
+**Status**: ❌ NOT STARTED
+**SpacetimeDB has**: Full SQL-style subscription queries including `OR`, `JOIN` across tables, `ORDER BY`, `LIMIT`.
+**We have**: `WHERE field op value`, `IN (...)`, `AND` — no `OR`, no joins, no ordering, no limits.
+
+**What to build** (in priority order):
+1. `OR` operator: `WHERE status = 'active' OR level > 10`
+2. `LIMIT N`: cap the number of rows delivered in initial snapshot and diffs
+3. `ORDER BY field ASC|DESC`: sort initial snapshot rows (not applicable to live diffs)
+4. `JOIN` across two tables: `players JOIN scores ON players.id = scores.player_id` (hardest)
+
+**Files to modify**: `src/subscriptions.rs` (predicate parser + matcher)
+**Tests to add**: OR short-circuit, LIMIT on snapshot, ORDER BY sort order.
+
+---
+
+### TODO-021 — Optimistic Updates in Client SDKs
+**Status**: ❌ NOT STARTED
+**SpacetimeDB has**: Client immediately updates local cache before server confirms, then reconciles on server response. UI feels instant.
+**We have**: Both SDKs wait for the server ack before updating cache. Adds round-trip latency to every UI interaction.
+
+**What to build**:
+- `call(reducer, args, { optimistic: (cache) => newCache })` API in both SDKs
+- Client applies the optimistic function to local cache immediately
+- On server success: reconcile with real server data (usually a no-op)
+- On server error: roll back optimistic change, expose error to caller
+- Works transparently with `useNeonDBQuery` (TODO-019) for instant UI updates
+
+**Files to modify**: `neondb-client-ts/src/client.ts`, `neondb-client-rust/src/client.rs`
+**Tests to add**: optimistic apply + rollback on error, reconcile on success.
+
+---
+
+### TODO-022 — Per-Reducer Permissions / Role-Based Auth
+**Status**: ❌ NOT STARTED
+**SpacetimeDB has**: OIDC tokens, per-user identity, per-reducer access control.
+**We have**: Single global API key — any authenticated client can call any reducer.
+
+**What to build**:
+- `[permissions]` section in `neondb.toml`: map reducer names to required roles
+- Roles assigned to connections at handshake via JWT or extended Bearer token (`Bearer <key>:<role>`)
+- Server checks role before dispatching reducer call; rejects with 403-equivalent error if unauthorized
+- `ctx.caller_role: String` available inside reducers (alongside existing `ctx.caller_id`)
+- Example: `admin` role can call `delete_player`, `user` role can only call `increment`
+
+**Files to modify**: `src/config.rs`, `src/network/websocket.rs`, `src/reducer/context.rs`, `src/main.rs`
+**Tests to add**: unauthorized call rejected, authorized call passes, role available in ctx.
+
+---
+
+### TODO-023 — Project Templates
+**Status**: ❌ NOT STARTED
+**SpacetimeDB has**: Starter templates for common game patterns (chat, MMO movement, leaderboard, turn-based game).
+**We have**: `neondb init <name>` creates a minimal project with one sample JS reducer. No domain-specific templates.
+
+**What to build**:
+- `neondb init <name> --template <template>` flag
+- Built-in templates:
+  - `blank` (default) — current behavior: neondb.toml + hello.js
+  - `chat` — rooms table, messages table, send_message reducer, join_room reducer, TS client example
+  - `leaderboard` — scores table, submit_score reducer, get_top_n reducer, scheduled reset reducer
+  - `mmo` — players table, move reducer, attack reducer, subscription by zone/area
+  - `turn-based` — games table, players table, make_move reducer with turn validation
+- Each template ships as an embedded directory in the binary (use `include_dir!` macro or hand-coded strings)
+- `neondb init my-game --template chat` scaffolds the full working example
+- `neondb templates` CLI command lists available templates with descriptions
+
+**Files to modify**: `src/main.rs` (init_project + new templates subcommand)
+**New dependency**: `include_dir` crate for embedding template files in the binary
+**Tests to add**: each template scaffolds without error, server starts from scaffolded dir.
+
+---
+
+### TODO-024 — C# / Unity SDK
+**Status**: ❌ NOT STARTED — LOW PRIORITY
+**SpacetimeDB has**: Full C# SDK targeting Unity — their primary game dev market.
+**We have**: TypeScript and Rust SDKs only.
+
+**What to build**:
+- `neondb-client-csharp/` — standalone C# library targeting .NET Standard 2.1 (Unity compatible)
+- `NeonDBClient` class: `Connect()`, `Call()`, `Subscribe()`, `Disconnect()`
+- MessagePack encode/decode (use `MessagePack-CSharp` library)
+- WebSocket via `ClientWebSocket` (.NET built-in)
+- Local row cache as `Dictionary<string, Dictionary<string, object>>`
+- Unity-friendly: no `async/await` in hot path, uses callbacks + `UnityMainThreadDispatcher`
+
+**Files to create**: `neondb-client-csharp/` directory, full SDK
+**Note**: Tackle after TODO-019 (React hooks) since C# follows the same SDK patterns.
+
+---
+
 ## DEPLOYMENT
 
 ### TODO-017 — Dokploy Deployment
@@ -191,20 +319,33 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 ## EXECUTION ORDER (Recommended for Next Agent)
 
 ```
-1. TODO-006  Snapshots                       ← production viability (WAL scale)
-2. TODO-007  Auth                            ← production viability
-3. TODO-004  Subscription query engine       ← subscription completeness
-4. TODO-005  JS runtime (Boa → WASM/V8)      ✅ DONE
-5. TODO-009  Indexes                         ← query performance (isolation done ✅)
-6. TODO-008  Scheduled reducers              ← feature completeness
-7. TODO-011  TypeScript SDK                  ✅ DONE
-8. TODO-013  Two-frame protocol              ✅ DONE
-9. TODO-015  Benchmarking tool               ← Phase 6 acceptance criterion
-10. TODO-014 Columnar storage                ✅ DONE
-11. TODO-012 Rust SDK                        ✅ DONE
-12. TODO-010 Schema migrations               ✅ DONE
-13. TODO-016 End-to-end bench                ✅ DONE
-14. TODO-017 Dokploy deploy                  ← ship it
+── DONE ──────────────────────────────────────────────────────────
+ 1. TODO-001  Serializable isolation          ✅ DONE (Session 7)
+ 2. TODO-002  Atomicity on panic              ✅ DONE (Session 7)
+ 3. TODO-003  Initial state sync              ✅ DONE (Session 7+8)
+ 4. TODO-006  Snapshots                       ✅ DONE (Session 9)
+ 5. TODO-007  Auth (API key + caller_id)      ✅ DONE (Session 10)
+ 6. TODO-004  Subscription query engine       ✅ DONE (Session 11)
+ 7. TODO-009  Indexes                         ✅ DONE (Session 12)
+ 8. TODO-008  Scheduled reducers              ✅ DONE (Session 13)
+ 9. TODO-015  Benchmarking tool               ✅ DONE (Session 14)
+10. TODO-011  TypeScript SDK                  ✅ DONE (Session 16)
+11. TODO-013  Two-frame protocol              ✅ DONE (Session 17)
+12. TODO-012  Rust SDK                        ✅ DONE (Session 19)
+13. TODO-010  Schema migrations               ✅ DONE (Session 20)
+14. TODO-005  JS runtime (WASM-first)         ✅ DONE (Session 21)
+15. TODO-014  Columnar storage API            ✅ DONE (Session 22)
+16. TODO-016  End-to-end bench                ✅ DONE (Session 23)
+
+── REMAINING ─────────────────────────────────────────────────────
+17. TODO-017  Dokploy live deploy             ← ship it (your task, not code)
+18. TODO-023  Project templates               ← biggest DX win, pure CLI work
+19. TODO-018  Typed schema system             ← correctness + SpacetimeDB parity
+20. TODO-019  React hooks (TS SDK)            ← frontend usability
+21. TODO-022  Role-based auth / permissions   ← production security
+22. TODO-020  OR / JOIN / LIMIT queries       ← query completeness
+23. TODO-021  Optimistic updates (SDKs)       ← UX quality
+24. TODO-024  C# / Unity SDK                  ← low priority, big effort
 ```
 
 ---

@@ -5,6 +5,16 @@
 //  - Pass Arc<TableStore> into start_listener so WebSocket handler can
 //    deliver initial_snapshot frames on subscribe (TODO-003 wiring).
 //
+// Session 25 fix:
+//  - init_project() now scaffolds a full project tree:
+//      neondb.toml, modules/hello.js, migrations/README.md,
+//      README.md, .gitignore
+//  - init_project() refuses to scaffold into "." (no bare project name)
+//    to prevent accidentally writing into C:\Users\King or similar.
+//  - build_wasm_modules() error message corrected: javy is NOT on crates.io
+//    as a binary crate. Users must download the release binary from GitHub:
+//    https://github.com/bytecodealliance/javy/releases
+//
 // Previous sessions:
 //  1. TableStore is now Arc<TableStore> (no Mutex) — DashMap handles concurrency.
 //  2. SegQueue + sleep(50ms) poll loop replaced by kanal async channel —
@@ -57,8 +67,8 @@ enum Commands {
     // ── Server ───────────────────────────────────────────────────────────────
     /// Scaffold a new NeonDB project in PATH
     Init {
-        #[arg(value_name = "PATH", default_value = ".")]
-        path: PathBuf,
+        #[arg(value_name = "NAME", help = "Project name / directory to create")]
+        path: Option<PathBuf>,
     },
     /// Compile JS reducers in modules/ to WASM (requires `javy`)
     Build {
@@ -241,134 +251,248 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Run a quick inline WebSocket benchmark from the CLI (`neondb bench`).
-async fn run_cli_bench(
-    ws_url: &str,
-    num_clients: usize,
-    calls_per_client: usize,
-    warmup_per_client: usize,
-    api_key: Option<&str>,
-) -> Result<()> {
-    use futures::{SinkExt, StreamExt};
-    use hdrhistogram::Histogram;
-    use std::sync::{Arc, Mutex};
-    use std::time::Instant;
-    use tokio::task::JoinSet;
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::Message;
-
-    #[derive(serde::Serialize)]
-    struct IncrArgs {
-        name: String,
-        delta: i32,
-    }
-    #[derive(serde::Serialize)]
-    struct CallW {
-        #[serde(rename = "ReducerCall")]
-        rc: (u64, String, Vec<u8>),
-    }
-
-    println!("=== NeonDB Bench ===");
-    println!("  Server  : {}", ws_url);
-    println!(
-        "  Clients : {}  Calls/client: {}  Warmup: {}",
-        num_clients, calls_per_client, warmup_per_client
-    );
-
-    let args_bytes = rmp_serde::to_vec(&IncrArgs {
-        name: "bench".to_string(),
-        delta: 1,
-    })
-    .unwrap();
-    let latencies: Arc<Mutex<Histogram<u64>>> = Arc::new(Mutex::new(Histogram::new(3).unwrap()));
-    let mut join_set = JoinSet::new();
-    let start = Instant::now();
-
-    for cid in 0..num_clients {
-        let url = ws_url.to_string();
-        let api = api_key.map(String::from);
-        let args = args_bytes.clone();
-        let lat = latencies.clone();
-        let warmup = warmup_per_client;
-        let calls = calls_per_client;
-
-        join_set.spawn(async move {
-            let mut req = url.as_str().into_client_request().unwrap();
-            if let Some(k) = &api {
-                req.headers_mut()
-                    .insert("authorization", format!("Bearer {}", k).parse().unwrap());
-            }
-            let Ok((mut ws, _)) = tokio_tungstenite::connect_async(req).await else {
-                return 0usize;
-            };
-            let total = warmup + calls;
-            let mut ok = 0usize;
-            for i in 0..total {
-                let cw = rmp_serde::to_vec(&CallW {
-                    rc: (
-                        (cid as u64) * 1_000_000 + i as u64,
-                        "increment".to_string(),
-                        args.clone(),
-                    ),
-                })
-                .unwrap();
-                let t0 = Instant::now();
-                if ws.send(Message::Binary(cw)).await.is_err() {
-                    break;
-                }
-                if let Ok(Some(Ok(Message::Binary(_) | Message::Text(_)))) =
-                    tokio::time::timeout(Duration::from_secs(10), ws.next()).await
-                {
-                    if i >= warmup {
-                        let us = t0.elapsed().as_micros() as u64;
-                        if let Ok(mut h) = lat.lock() {
-                            let _ = h.record(us);
-                        }
-                        ok += 1;
-                    }
-                }
-            }
-            let _ = ws.close(None).await;
-            ok
-        });
-    }
-
-    let mut total = 0usize;
-    while let Some(r) = join_set.join_next().await {
-        if let Ok(n) = r {
-            total += n;
+// ── init_project ──────────────────────────────────────────────────────────────
+//
+// Scaffolds a complete, runnable NeonDB project:
+//
+//   <name>/
+//   ├── neondb.toml          server configuration
+//   ├── modules/
+//   │   └── hello.js         sample JS reducer (works out of the box with Boa)
+//   ├── migrations/
+//   │   └── README.md        migration format docs
+//   ├── README.md            project quick-start
+//   └── .gitignore
+//
+// Refuses to scaffold into the current directory (no bare `neondb init`) to
+// prevent accidentally writing config files into the user's home folder.
+fn init_project(path: Option<PathBuf>) -> Result<()> {
+    let path = match path {
+        Some(p) => p,
+        None => {
+            eprintln!("Error: please supply a project name.");
+            eprintln!();
+            eprintln!("  Usage:   neondb init <project-name>");
+            eprintln!("  Example: neondb init my-game");
+            return Err(neondb::error::NeonDBError::invalid_argument(
+                "missing project name — run: neondb init <project-name>",
+            ));
         }
-    }
-    let elapsed = start.elapsed();
-    let tps = total as f64 / elapsed.as_secs_f64();
+    };
 
-    println!("\nResults:");
-    println!("  Time       : {:.3}s", elapsed.as_secs_f64());
-    println!("  Throughput : {:.0} TPS", tps);
-    println!(
-        "  Success    : {}/{}",
-        total,
-        num_clients * calls_per_client
+    let project_path = path.clone();
+    fs::create_dir_all(&project_path)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot create directory: {}", e)))?;
+
+    let project_name = project_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("my-game");
+
+    // ── neondb.toml ──────────────────────────────────────────────────────────
+    let toml = format!(
+        r#"[project]
+name = "{name}"
+version = "0.1.0"
+
+[server]
+host = "127.0.0.1"
+port = 3000
+metrics_port = 3001
+
+# Uncomment to require Bearer token auth on all connections:
+# api_key = "change-me"
+
+# WAL durability (0 = fsync every write; 100 = batch every 100ms)
+fsync_interval_ms = 0
+
+# Snapshots (every 1 000 000 committed transactions by default)
+# snapshot_interval = 1000000
+
+# Scheduled reducers — fires automatically on a fixed interval
+# [[scheduler]]
+# reducer = "cleanup_expired"
+# interval_ms = 60000
+"#,
+        name = project_name
     );
-    if let Ok(h) = latencies.lock() {
-        println!(
-            "  Latency (µs): p50={} p95={} p99={} max={}",
-            h.value_at_percentile(50.0),
-            h.value_at_percentile(95.0),
-            h.value_at_percentile(99.0),
-            h.max()
-        );
-    }
+    fs::write(project_path.join("neondb.toml"), &toml)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Write neondb.toml: {}", e)))?;
+
+    // ── modules/hello.js ─────────────────────────────────────────────────────
+    fs::create_dir_all(project_path.join("modules"))
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Create modules/: {}", e)))?;
+
+    let sample_js = r#"/**
+ * hello.js — sample NeonDB JavaScript reducer
+ *
+ * Call it from the CLI:
+ *   neondb call hello '["score", 1]'
+ *
+ * Or from code (TypeScript):
+ *   await client.call("hello", ["score", 1]);
+ *
+ * Host globals injected by NeonDB (Boa runtime):
+ *   __neondb_get(table, key) -> object | null
+ *   __neondb_set(table, key, value) -> void
+ *
+ * For 10-50x better performance, compile to WASM:
+ *   neondb build
+ * (requires javy — see README.md for install instructions)
+ */
+function reducer(args) {
+  var name  = args[0] || "counter";
+  var delta = args[1] || 1;
+
+  var row   = __neondb_get("counters", name);
+  var value = (row && typeof row.value === "number") ? row.value : 0;
+  value += delta;
+
+  __neondb_set("counters", name, { value: value });
+
+  return { new_value: value };
+}
+"#;
+    fs::write(project_path.join("modules").join("hello.js"), sample_js)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Write modules/hello.js: {}", e)))?;
+
+    // ── migrations/README.md ─────────────────────────────────────────────────
+    fs::create_dir_all(project_path.join("migrations"))
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Create migrations/: {}", e)))?;
+
+    let migration_readme = r#"# Migrations
+
+Place `.toml` files here. NeonDB applies them automatically at startup,
+in lexicographic filename order. Each file is idempotent — safe to re-run.
+
+## Format
+
+```toml
+[[steps]]
+operation = "add_field"
+table     = "players"
+field     = "xp"
+default_value = 0
+
+[[steps]]
+operation = "rename_field"
+table     = "players"
+old_field = "old_name"
+new_field = "display_name"
+
+[[steps]]
+operation = "remove_field"
+table     = "players"
+field     = "deprecated_flag"
+```
+
+Supported operations: `add_field`, `remove_field`, `rename_field`.
+"#;
+    fs::write(project_path.join("migrations").join("README.md"), migration_readme)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Write migrations/README.md: {}", e)))?;
+
+    // ── README.md ─────────────────────────────────────────────────────────────
+    let readme = format!(
+        r#"# {name}
+
+A NeonDB game backend project.
+
+## Quick start
+
+```bash
+# Start the server
+neondb start
+
+# In a second terminal — check it is alive
+neondb status
+neondb tables
+
+# Call the sample reducer
+neondb call hello '["score", 1]'
+
+# Watch live updates
+neondb watch counters
+```
+
+## Adding reducers
+
+Drop `.js` files into `modules/` — loaded automatically on start.
+
+For better performance, compile JS to WASM (10-50x faster via Wasmtime JIT):
+
+```bash
+# 1. Download javy from https://github.com/bytecodealliance/javy/releases
+#    Put the javy binary on your PATH.
+
+# 2. Compile all JS reducers in modules/
+neondb build
+
+# 3. Start the server — it will prefer .wasm over .js automatically
+neondb start
+```
+
+## Schema migrations
+
+Add `.toml` files to `migrations/` — applied automatically on startup.
+See `migrations/README.md` for the format.
+
+## Configuration
+
+Edit `neondb.toml` to change host, port, API key, WAL path, etc.
+Environment variables override TOML values:
+
+| Variable         | Default   | Description              |
+|------------------|-----------|--------------------------|
+| NEONDB_HOST      | 127.0.0.1 | Listen address           |
+| NEONDB_PORT      | 3000      | WebSocket port           |
+| NEONDB_API_KEY   | (none)    | Bearer token auth        |
+| NEONDB_WAL_PATH  | OS temp   | WAL file location        |
+| RUST_LOG         | info      | Log verbosity            |
+"#,
+        name = project_name
+    );
+    fs::write(project_path.join("README.md"), readme)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Write README.md: {}", e)))?;
+
+    // ── .gitignore ────────────────────────────────────────────────────────────
+    fs::write(
+        project_path.join(".gitignore"),
+        "*.wal\n*.bin\nsnapshots/\n*.tmp\n",
+    )
+    .map_err(|e| neondb::error::NeonDBError::internal(format!("Write .gitignore: {}", e)))?;
+
+    // ── Print success + next steps ────────────────────────────────────────────
+    println!();
+    println!("  Created project '{}'", project_name);
+    println!();
+    println!("  {}/", project_name);
+    println!("  ├── neondb.toml          server configuration");
+    println!("  ├── modules/");
+    println!("  │   └── hello.js         sample reducer (Boa JS, works immediately)");
+    println!("  ├── migrations/");
+    println!("  │   └── README.md        migration format docs");
+    println!("  ├── README.md");
+    println!("  └── .gitignore");
+    println!();
+    println!("  Next steps:");
+    println!("    cd {}", project_name);
+    println!("    neondb start");
+    println!("    neondb call hello '[\"score\", 1]'");
+    println!("    neondb watch counters");
+    println!();
+
     Ok(())
 }
 
-/// Compile every `.js` module in `modules_dir` to `.wasm` using the `javy` compiler.
-///
-/// `javy` embeds QuickJS into a WASM module, giving JS reducers near-native
-/// performance via the existing Wasmtime runtime — no V8 required.
-///
-/// Install javy: <https://github.com/bytecodealliance/javy/releases>
-///   Or via cargo: `cargo install javy`
+// ── build_wasm_modules ────────────────────────────────────────────────────────
+//
+// Compile every `.js` file in modules_dir to `.wasm` using javy.
+//
+// IMPORTANT: javy is NOT available via `cargo install javy`.
+// The `javy` crate on crates.io is a library, not a binary.
+// Download the CLI binary from:
+//   https://github.com/bytecodealliance/javy/releases
+// Place it on your PATH, then run `neondb build`.
 fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
     if !modules_dir.is_dir() {
         println!(
@@ -378,7 +502,7 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // Check that javy is available.
+    // Probe for javy
     let javy_ok = std::process::Command::new("javy")
         .arg("--version")
         .output()
@@ -386,15 +510,19 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
         .unwrap_or(false);
 
     if !javy_ok {
-        eprintln!("Error: 'javy' compiler not found.");
+        eprintln!("Error: 'javy' not found on PATH.");
         eprintln!();
-        eprintln!("Install javy to compile JS reducers to WASM:");
-        eprintln!("  cargo install javy");
-        eprintln!("  or download from https://github.com/bytecodealliance/javy/releases");
+        eprintln!("javy is a standalone binary — it is NOT on crates.io.");
+        eprintln!("Download the latest release for your OS from:");
+        eprintln!("  https://github.com/bytecodealliance/javy/releases");
+        eprintln!();
+        eprintln!("Windows:  download javy-x86_64-windows.zip, extract javy.exe, add to PATH");
+        eprintln!("Linux:    download javy-x86_64-linux.gz, gunzip, chmod +x, move to /usr/local/bin");
+        eprintln!("macOS:    download javy-x86_64-macos.gz, gunzip, chmod +x, move to /usr/local/bin");
         eprintln!();
         eprintln!("Why WASM? Compiled reducers run via Wasmtime (Cranelift JIT) and are");
         eprintln!("10-50x faster than the Boa interpreter used for raw .js files.");
-        return Err(neondb::error::NeonDBError::internal("javy not installed"));
+        return Err(neondb::error::NeonDBError::internal("javy not found on PATH"));
     }
 
     let entries: Vec<_> = std::fs::read_dir(modules_dir)
@@ -431,7 +559,7 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
         let wasm_path = js_path.with_extension("wasm");
 
         print!(
-            "Compiling {} -> {} ... ",
+            "  Compiling {} -> {} ... ",
             js_path.file_name().unwrap_or_default().to_string_lossy(),
             wasm_path.file_name().unwrap_or_default().to_string_lossy(),
         );
@@ -445,7 +573,7 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
 
         match status {
             Ok(s) if s.success() => {
-                println!("OK");
+                println!("ok");
                 compiled += 1;
             }
             Ok(s) => {
@@ -460,36 +588,16 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
     }
 
     println!();
-    println!("Build complete: {} compiled, {} failed", compiled, failed);
-    if compiled > 0 {
-        println!("Compiled WASM modules will be loaded automatically on next 'neondb start'.");
-    }
-    if failed > 0 {
+    if failed == 0 {
+        println!("Build complete: {} file(s) compiled.", compiled);
+        println!("Run 'neondb start' — compiled .wasm files will be preferred over .js automatically.");
+    } else {
+        println!("Build complete: {} compiled, {} failed.", compiled, failed);
         return Err(neondb::error::NeonDBError::internal(format!(
             "{} module(s) failed to compile",
             failed
         )));
     }
-    Ok(())
-}
-
-fn init_project(path: PathBuf) -> Result<()> {
-    let project_path = fs::canonicalize(&path).unwrap_or(path);
-    fs::create_dir_all(&project_path)?;
-    let toml = r#"[project]
-name = "neondb-sample"
-version = "0.1.0"
-
-[server]
-host = "127.0.0.1"
-port = 3000
-"#;
-    fs::write(project_path.join("neondb.toml"), toml)?;
-    fs::write(
-        project_path.join("README_INIT.md"),
-        "Run `neondb start` from the project root to start the native NeonDB server.",
-    )?;
-    println!("Initialized NeonDB project at {}", project_path.display());
     Ok(())
 }
 
@@ -514,14 +622,6 @@ async fn run_server(config: Config) -> Result<()> {
     );
 
     // ── Snapshot + WAL recovery ─────────────────────────────────────────────
-    //
-    // Recovery order:
-    //   1. Find the most-recent snapshot file in snapshot_dir.
-    //   2. If found, load it (restores all rows + next_row_id) and record
-    //      last_sequence so we can skip WAL entries already covered.
-    //   3. Replay only WAL entries with sequence_number > snapshot.last_sequence.
-    //   4. Initialise global_seq to (max_replayed_seq + 1) to prevent
-    //      duplicate sequence numbers across restarts.
     let mut min_wal_seq: u64 = 0;
     let mut initial_seq: u64 = 0;
 
@@ -563,10 +663,10 @@ async fn run_server(config: Config) -> Result<()> {
         Err(e) => log::warn!("Migration error: {}", e),
     }
 
-    // ── kanal async channel — replaces SegQueue + sleep(50ms) ────────────────
+    // ── kanal async channel ───────────────────────────────────────────────────
     let (reducer_tx, reducer_rx) = kanal::unbounded_async::<PendingCall>();
 
-    // ── Subscription manager (Arc, no Mutex — uses DashMap internally) ────────
+    // ── Subscription manager ──────────────────────────────────────────────────
     let subscription_manager = Arc::new(SubscriptionManager::new_with_options(
         config.two_frame_protocol,
     ));
@@ -583,13 +683,11 @@ async fn run_server(config: Config) -> Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
     // ── WebSocket listener ────────────────────────────────────────────────────
-    // NOTE: tables is passed so the subscribe handler can deliver
-    // initial_snapshot frames for all existing matching rows (TODO-003).
     let listener_handle = {
         let config_c = config.clone();
         let tx_c = reducer_tx.clone();
         let subs_c = subscription_manager.clone();
-        let tables_c = tables.clone(); // <── TODO-003 fix
+        let tables_c = tables.clone();
         let conns_c = active_connections.clone();
         let rx_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
@@ -598,7 +696,7 @@ async fn run_server(config: Config) -> Result<()> {
                 config_c.port,
                 tx_c,
                 subs_c,
-                tables_c, // <── TODO-003 fix
+                tables_c,
                 config_c.max_connections,
                 config_c.api_key.clone(),
                 conns_c,
@@ -634,18 +732,13 @@ async fn run_server(config: Config) -> Result<()> {
         config.unsafe_no_fsync,
     )?);
 
-    // ── Parallel reducer workers (one per logical CPU) ────────────────────────
-    // Each worker owns a clone of the kanal receiver (MPMC), the Arc<TableStore>,
-    // Arc<ReducerRegistry>, Arc<SubscriptionManager>, and Arc<BatchedWalWriter>.
-    // They race to pull the next call; no coordination needed between workers.
+    // ── Parallel reducer workers ──────────────────────────────────────────────
     let worker_count = num_cpus::get().max(1);
     log::info!("Starting {} parallel reducer workers", worker_count);
 
     let timeout_ms = config.reducer_timeout_ms;
     let snapshot_interval = config.snapshot_interval;
     let snapshot_dir_w = config.snapshot_dir.clone();
-    // global_seq starts after the last replayed WAL entry so new entries
-    // never duplicate sequence numbers from a previous run.
     let global_seq = Arc::new(std::sync::atomic::AtomicU64::new(initial_seq));
 
     let mut worker_handles = Vec::with_capacity(worker_count);
@@ -664,7 +757,7 @@ async fn run_server(config: Config) -> Result<()> {
             loop {
                 let call = match rx.recv().await {
                     Ok(c) => c,
-                    Err(_) => break, // channel closed — graceful shutdown
+                    Err(_) => break,
                 };
 
                 let call_id = call.call_id;
@@ -675,8 +768,6 @@ async fn run_server(config: Config) -> Result<()> {
                 let timestamp = current_timestamp_nanos();
                 let call_caller_id = call.caller_id.clone();
 
-                // Run the (potentially CPU-heavy) reducer on the blocking thread
-                // pool so it doesn't starve the Tokio async runtime.
                 let blk_result = tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
                     tokio::task::spawn_blocking(move || {
@@ -719,11 +810,6 @@ async fn run_server(config: Config) -> Result<()> {
                                     Ok(_) => {
                                         subs_w.publish_deltas(&deltas);
 
-                                        // Trigger a background snapshot every
-                                        // `snapshot_interval` committed transactions.
-                                        // fetch_add returns the PREVIOUS value, so
-                                        // seq_num=0,1,...  The snapshot fires when
-                                        // (seq_num + 1) is a multiple of the interval.
                                         if snap_interval_w > 0
                                             && (seq_num + 1) % snap_interval_w == 0
                                         {
@@ -789,11 +875,7 @@ async fn run_server(config: Config) -> Result<()> {
         worker_handles.push(handle);
     }
 
-    // ── Scheduled reducer tasks ─────────────────────────────────────────
-    // One lightweight async task per [[scheduler]] entry.  Each task ticks at
-    // `interval_ms`, enqueues a PendingCall into the worker pool, and waits for
-    // the result in a fire-and-forget inner task.  Shuts down when the watcher
-    // fires so all scheduled reducers drain gracefully.
+    // ── Scheduled reducer tasks ───────────────────────────────────────────────
     let mut scheduler_handles = Vec::new();
     let sched_seq = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX / 2));
 
@@ -803,8 +885,6 @@ async fn run_server(config: Config) -> Result<()> {
         let seq_sched = sched_seq.clone();
         let mut rx_shutdown_sched = shutdown_rx.clone();
 
-        // Pre-encode args: JSON string → MessagePack bytes.
-        // Falls back to empty bytes if args_json is absent or unparseable.
         let args_bytes: Vec<u8> = sched
             .args_json
             .as_deref()
@@ -821,9 +901,7 @@ async fn run_server(config: Config) -> Result<()> {
         let handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_millis(sched.interval_ms.max(1)));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            // First tick fires immediately — skip it so the first real fire
-            // happens one full interval after startup.
-            ticker.tick().await;
+            ticker.tick().await; // skip first tick
 
             loop {
                 tokio::select! {
@@ -838,7 +916,6 @@ async fn run_server(config: Config) -> Result<()> {
                             response_tx: resp_tx,
                         };
                         if tx_sched.send(call).await.is_ok() {
-                            // Await the result in a detached task so we don't block the tick.
                             let name_c = sched.reducer.clone();
                             tokio::spawn(async move {
                                 if let Some(resp) = resp_rx.recv().await {
@@ -853,7 +930,6 @@ async fn run_server(config: Config) -> Result<()> {
                                 }
                             });
                         } else {
-                            // Channel closed — workers are shutting down.
                             break;
                         }
                     }
@@ -865,14 +941,11 @@ async fn run_server(config: Config) -> Result<()> {
         scheduler_handles.push(handle);
     }
 
-    // ── Wait for Ctrl-C ────────────────────────────────────────────────
+    // ── Wait for Ctrl-C ───────────────────────────────────────────────────────
     tokio::signal::ctrl_c().await.ok();
     log::info!("Shutdown signal received");
 
-    // Broadcast shutdown so schedulers and the listener stop accepting work.
     let _ = shutdown_tx.send(());
-
-    // Drop the sender so all workers drain remaining calls then exit.
     drop(reducer_tx);
     for h in worker_handles {
         let _ = h.await;
@@ -880,17 +953,104 @@ async fn run_server(config: Config) -> Result<()> {
     for h in scheduler_handles {
         let _ = h.await;
     }
-
-    // Flush and close WAL.
     if let Ok(writer) = Arc::try_unwrap(wal_writer) {
         if let Err(e) = writer.shutdown() {
             log::error!("Error shutting down WAL writer: {}", e);
         }
     }
-
     let _ = listener_handle.await;
     let _ = metrics_handle.await;
     log::info!("Shutdown complete");
+    Ok(())
+}
+
+// ── Inline bench ──────────────────────────────────────────────────────────────
+
+async fn run_cli_bench(
+    ws_url: &str,
+    num_clients: usize,
+    calls_per_client: usize,
+    warmup_per_client: usize,
+    api_key: Option<&str>,
+) -> Result<()> {
+    use futures::{SinkExt, StreamExt};
+    use hdrhistogram::Histogram;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+    use tokio::task::JoinSet;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Message;
+
+    #[derive(serde::Serialize)]
+    struct IncrArgs { name: String, delta: i32 }
+    #[derive(serde::Serialize)]
+    struct CallW {
+        #[serde(rename = "ReducerCall")]
+        rc: (u64, String, Vec<u8>),
+    }
+
+    println!("=== NeonDB Bench ===");
+    println!("  Server  : {}", ws_url);
+    println!("  Clients : {}  Calls/client: {}  Warmup: {}", num_clients, calls_per_client, warmup_per_client);
+
+    let args_bytes = rmp_serde::to_vec(&IncrArgs { name: "bench".to_string(), delta: 1 }).unwrap();
+    let latencies: Arc<Mutex<Histogram<u64>>> = Arc::new(Mutex::new(Histogram::new(3).unwrap()));
+    let mut join_set = JoinSet::new();
+    let start = Instant::now();
+
+    for cid in 0..num_clients {
+        let url = ws_url.to_string();
+        let api = api_key.map(String::from);
+        let args = args_bytes.clone();
+        let lat = latencies.clone();
+        let warmup = warmup_per_client;
+        let calls = calls_per_client;
+
+        join_set.spawn(async move {
+            let mut req = url.as_str().into_client_request().unwrap();
+            if let Some(k) = &api {
+                req.headers_mut().insert("authorization", format!("Bearer {}", k).parse().unwrap());
+            }
+            let Ok((mut ws, _)) = tokio_tungstenite::connect_async(req).await else { return 0usize; };
+            let total = warmup + calls;
+            let mut ok = 0usize;
+            for i in 0..total {
+                let cw = rmp_serde::to_vec(&CallW {
+                    rc: ((cid as u64) * 1_000_000 + i as u64, "increment".to_string(), args.clone()),
+                }).unwrap();
+                let t0 = Instant::now();
+                if ws.send(Message::Binary(cw)).await.is_err() { break; }
+                if let Ok(Some(Ok(Message::Binary(_) | Message::Text(_)))) =
+                    tokio::time::timeout(Duration::from_secs(10), ws.next()).await
+                {
+                    if i >= warmup {
+                        let us = t0.elapsed().as_micros() as u64;
+                        if let Ok(mut h) = lat.lock() { let _ = h.record(us); }
+                        ok += 1;
+                    }
+                }
+            }
+            let _ = ws.close(None).await;
+            ok
+        });
+    }
+
+    let mut total = 0usize;
+    while let Some(r) = join_set.join_next().await {
+        if let Ok(n) = r { total += n; }
+    }
+    let elapsed = start.elapsed();
+    let tps = total as f64 / elapsed.as_secs_f64();
+
+    println!("\nResults:");
+    println!("  Time       : {:.3}s", elapsed.as_secs_f64());
+    println!("  Throughput : {:.0} TPS", tps);
+    println!("  Success    : {}/{}", total, num_clients * calls_per_client);
+    if let Ok(h) = latencies.lock() {
+        println!("  Latency (µs): p50={} p95={} p99={} max={}",
+            h.value_at_percentile(50.0), h.value_at_percentile(95.0),
+            h.value_at_percentile(99.0), h.max());
+    }
     Ok(())
 }
 
@@ -927,13 +1087,9 @@ async fn start_metrics_server(
     log::info!("  GET /tables/<name>    Dump all rows in a table (JSON)");
 
     server
-        .with_graceful_shutdown(async move {
-            let _ = shutdown.changed().await;
-        })
+        .with_graceful_shutdown(async move { let _ = shutdown.changed().await; })
         .await
-        .map_err(|e| {
-            neondb::error::NeonDBError::network_error(format!("Metrics server error: {}", e))
-        })
+        .map_err(|e| neondb::error::NeonDBError::network_error(format!("Metrics server error: {}", e)))
 }
 
 fn json_response(value: serde_json::Value) -> Response<Body> {
@@ -954,35 +1110,24 @@ async fn handle_metrics_request(
 
     match (req.method(), path.as_str()) {
         (&Method::GET, "/metrics") => {
-            let active_subscriptions = subscription_manager.active_subscriptions();
-            let active_connections = subscription_manager.active_connections();
-            let total_rows = tables.total_row_count();
-            let uptime = current_timestamp_nanos();
             let body = format!(
-                "# NeonDB metrics\n\
-                 active_subscriptions {}\n\
-                 active_connections {}\n\
-                 total_rows {}\n\
-                 uptime_nanos {}\n",
-                active_subscriptions, active_connections, total_rows, uptime
+                "# NeonDB metrics\nactive_subscriptions {}\nactive_connections {}\ntotal_rows {}\nuptime_nanos {}\n",
+                subscription_manager.active_subscriptions(),
+                subscription_manager.active_connections(),
+                tables.total_row_count(),
+                current_timestamp_nanos(),
             );
             Ok(Response::new(Body::from(body)))
         }
-
         (&Method::GET, "/healthz") => Ok(json_response(serde_json::json!({
             "status": "ok",
             "total_rows": tables.total_row_count(),
             "active_connections": subscription_manager.active_connections(),
         }))),
-
-        // GET /tables — list all tables with their row counts.
         (&Method::GET, "/tables") => {
             let mut table_list = Vec::new();
             for name in tables.list_tables() {
-                let count = tables
-                    .list_rows_with_keys(&name)
-                    .map(|r| r.len())
-                    .unwrap_or(0);
+                let count = tables.list_rows_with_keys(&name).map(|r| r.len()).unwrap_or(0);
                 table_list.push(serde_json::json!({ "name": name, "rows": count }));
             }
             Ok(json_response(serde_json::json!({
@@ -990,8 +1135,6 @@ async fn handle_metrics_request(
                 "total_rows": tables.total_row_count(),
             })))
         }
-
-        // GET /tables/<name> — dump all rows of a single table.
         (&Method::GET, p) if p.starts_with("/tables/") => {
             let table_name = p.trim_start_matches("/tables/");
             match tables.list_rows_with_keys(table_name) {
@@ -1013,7 +1156,6 @@ async fn handle_metrics_request(
                 }
             }
         }
-
         _ => {
             let mut r = Response::new(Body::from("Not Found"));
             *r.status_mut() = StatusCode::NOT_FOUND;
@@ -1031,14 +1173,6 @@ fn current_timestamp_nanos() -> u64 {
         .unwrap_or(0)
 }
 
-/// Replay WAL entries from `wal_path` into `tables`.
-///
-/// Entries whose `sequence_number <= min_seq` are skipped — they are already
-/// captured in the snapshot that was loaded before this call.
-///
-/// Returns `(replayed_count, max_sequence_number_seen)`.  The caller should
-/// initialise `global_seq` to `max_seq + 1` to prevent duplicate sequence
-/// numbers across restarts.
 fn recover_from_wal(
     wal_path: &Path,
     tables: &Arc<TableStore>,
@@ -1049,19 +1183,10 @@ fn recover_from_wal(
     let mut replayed = 0usize;
     let mut max_seq = min_seq;
     for entry in &entries {
-        // Track the highest sequence number regardless of whether we replay.
         max_seq = max_seq.max(entry.header.sequence_number);
-
-        // Skip entries already covered by the loaded snapshot.
-        if entry.header.sequence_number <= min_seq {
-            continue;
-        }
-
+        if entry.header.sequence_number <= min_seq { continue; }
         if !entry.verify_checksum() {
-            log::warn!(
-                "WAL entry {} has invalid checksum, skipping",
-                entry.header.sequence_number
-            );
+            log::warn!("WAL entry {} has invalid checksum, skipping", entry.header.sequence_number);
             continue;
         }
         for delta in &entry.payload.deltas {

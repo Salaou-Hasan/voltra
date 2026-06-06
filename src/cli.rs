@@ -7,8 +7,17 @@
 //!
 //! All commands print human-friendly output and are designed to be usable by
 //! beginners (sensible defaults) and experts (full flags).
+//!
+//! Session 25 fixes:
+//!   - CallWire: send ClientMessage::ReducerCall directly (struct variant,
+//!     not a hand-rolled tuple) so the server's primary decoder always matches.
+//!   - SubscribeWire: send ClientMessage::Subscribe directly (struct variant
+//!     with named fields) — the old tuple wire hit the fallback decoder and
+//!     produced a decode error, silently dropping the subscription.
+//!   - ts(): format timestamp as HH:MM:SS.mmm instead of raw milliseconds.
 
 use crate::error::{NeonDBError, Result};
+use crate::network::message::{ClientMessage, ReducerCall};
 use futures::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -70,6 +79,26 @@ fn print_json_pretty(raw: &str) {
         ),
         Err(_) => println!("{}", raw),
     }
+}
+
+/// Format the current wall-clock time as HH:MM:SS.mmm.
+///
+/// Session 25 fix: the old implementation printed a raw millisecond modulus
+/// (e.g. "47293821") which was unreadable. This formats as "13:24:05.821".
+fn ts() -> String {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    // UTC wall clock — good enough for a terminal timestamp.
+    let total_secs = (ms / 1000) as u64;
+    let millis = ms % 1000;
+    let secs = total_secs % 60;
+    let mins = (total_secs / 60) % 60;
+    let hours = (total_secs / 3600) % 24;
+
+    format!("{:02}:{:02}:{:02}.{:03}", hours, mins, secs, millis)
 }
 
 // ── status ─────────────────────────────────────────────────────────────────────
@@ -152,7 +181,6 @@ pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Resul
 
     match key {
         Some(k) => {
-            // Filter to a single row_key
             let found = rows
                 .iter()
                 .find(|row| row.get("row_key").and_then(|v| v.as_str()) == Some(k));
@@ -193,19 +221,34 @@ pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Resul
 ///
 /// `args_json` is a JSON value passed to the reducer.  For the built-in
 /// `increment` reducer, pass a positional array: `'["my_counter", 5]'`.
+///
+/// Session 25 fix: encode the frame as a real `ClientMessage::ReducerCall`
+/// (via `rmp_serde::to_vec`) so it matches the server's primary decoder path
+/// (`decode_client_message`) exactly. The old hand-rolled `CallWire` tuple
+/// always fell through to the fallback decoder.
 pub async fn cmd_call(
     ws_url: &str,
     reducer: &str,
     args_json: Option<&str>,
     api_key: Option<&str>,
 ) -> Result<()> {
-    // Parse args JSON → MessagePack
+    // Parse args JSON → MessagePack bytes
     let args_value: serde_json::Value = match args_json {
         Some(s) => serde_json::from_str(s)
             .map_err(|e| NeonDBError::invalid_argument(format!("Invalid args JSON: {}", e)))?,
         None => serde_json::json!([]),
     };
     let args_bytes = rmp_serde::to_vec(&args_value)
+        .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+
+    // Encode as the canonical ClientMessage enum variant so the server's
+    // primary decoder (decode_client_message) handles it directly.
+    let msg = ClientMessage::ReducerCall(ReducerCall {
+        call_id: 1,
+        reducer_name: reducer.to_string(),
+        args: args_bytes,
+    });
+    let frame = rmp_serde::to_vec(&msg)
         .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
 
     let request = ws_request(ws_url, api_key)?;
@@ -218,31 +261,23 @@ pub async fn cmd_call(
             ))
         })?;
 
-    let call_id: u64 = 1;
-    // {"ReducerCall": [call_id, reducer, args_bytes]}
-    let frame = rmp_serde::to_vec(&CallWire {
-        reducer_call: (call_id, reducer.to_string(), args_bytes),
-    })
-    .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
-
     ws.send(Message::Binary(frame))
         .await
         .map_err(|e| NeonDBError::network_error(e.to_string()))?;
 
-    // Await one response
+    // Await one response (10-second timeout)
     let resp = tokio::time::timeout(Duration::from_secs(10), ws.next())
         .await
         .map_err(|_| NeonDBError::network_error("Timed out waiting for response".to_string()))?;
 
     match resp {
         Some(Ok(Message::Binary(data))) => {
-            // [call_id, success, result|nil, error|nil]
+            // Server sends back a ReducerResponse struct: [call_id, success, result?, error?]
             match rmp_serde::from_slice::<(u64, bool, Option<Vec<u8>>, Option<String>)>(&data) {
                 Ok((_cid, success, result, error)) => {
                     if success {
                         println!("✓ Reducer '{}' succeeded.", reducer);
                         if let Some(bytes) = result {
-                            // Try to decode result bytes as a JSON-ish value
                             match rmp_serde::from_slice::<serde_json::Value>(&bytes) {
                                 Ok(v) => println!(
                                     "Result: {}",
@@ -279,6 +314,12 @@ pub async fn cmd_call(
 
 /// `neondb watch <query>` — subscribe to a table query and print live updates
 /// until interrupted (Ctrl-C).
+///
+/// Session 25 fix: encode the Subscribe frame as a real `ClientMessage::Subscribe`
+/// (struct variant with named fields `subscription_id` + `query`). The old
+/// `SubscribeWire` sent a tuple `(sub_id, query)` which is array-encoded by
+/// rmp_serde and cannot be decoded as a struct variant — the server logged a
+/// decode error and silently dropped the subscription.
 pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Result<()> {
     let request = ws_request(ws_url, api_key)?;
     let (mut ws, _) = tokio_tungstenite::connect_async(request)
@@ -290,11 +331,13 @@ pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Resu
             ))
         })?;
 
-    let sub_id = "cli_watch".to_string();
-    let frame = rmp_serde::to_vec(&SubscribeWire {
-        subscribe: (sub_id.clone(), query.to_string()),
-    })
-    .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+    // Encode as the canonical ClientMessage enum variant.
+    let msg = ClientMessage::Subscribe {
+        subscription_id: "cli_watch".to_string(),
+        query: query.to_string(),
+    };
+    let frame = rmp_serde::to_vec(&msg)
+        .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
 
     ws.send(Message::Binary(frame))
         .await
@@ -334,45 +377,63 @@ pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Resu
     Ok(())
 }
 
-fn ts() -> String {
-    // Simple HH:MM:SS.mmm-ish marker using elapsed wall clock.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    format!("{}", now % 100_000_000)
-}
-
 fn handle_watch_frame(data: &[u8], pending_route: &mut Option<Vec<String>>) {
-    // Try ServerMessage enum forms first.
     if let Ok(val) = rmp_serde::from_slice::<serde_json::Value>(data) {
-        // ServerMessage variants are encoded as {"Variant": [...]}
         if let Some(obj) = val.as_object() {
             if let Some((variant, content)) = obj.iter().next() {
                 let fields = content.as_array().cloned().unwrap_or_default();
                 match variant.as_str() {
                     "SubscriptionAck" => {
-                        let ok = fields.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+                        // {"SubscriptionAck": {subscription_id, success, message}}
+                        let ok = content
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or_else(|| {
+                                fields.get(1).and_then(|v| v.as_bool()).unwrap_or(false)
+                            });
                         if ok {
                             println!("[{}] subscribed ✓", ts());
                         } else {
-                            let msg = fields.get(2).and_then(|v| v.as_str()).unwrap_or("");
+                            let msg = content
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| fields.get(2).and_then(|v| v.as_str()))
+                                .unwrap_or("");
                             println!("[{}] subscription failed: {}", ts(), msg);
                         }
                         return;
                     }
                     "SubscriptionDiff" => {
-                        let table = fields.get(1).and_then(|v| v.as_str()).unwrap_or("?");
-                        let key = fields.get(2).and_then(|v| v.as_str()).unwrap_or("?");
-                        let op = fields.get(3).and_then(|v| v.as_str()).unwrap_or("?");
-                        let row = fields.get(4).cloned().unwrap_or(serde_json::Value::Null);
-                        println!("[{}] {:<16} {} {} = {}", ts(), op, table, key, row);
+                        // {"SubscriptionDiff": {subscription_id, table_name, row_key, operation, row_data}}
+                        let table = content
+                            .get("table_name")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(1).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let key = content
+                            .get("row_key")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(2).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let op = content
+                            .get("operation")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(3).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let row = content
+                            .get("row_data")
+                            .cloned()
+                            .or_else(|| fields.get(4).cloned())
+                            .unwrap_or(serde_json::Value::Null);
+                        println!("[{}] {:<16} {}.{} = {}", ts(), op, table, key, row);
                         return;
                     }
                     "SubscriptionRoute" => {
-                        let ids = fields
-                            .get(0)
+                        // {"SubscriptionRoute": {subscription_ids: [...]}}
+                        let ids = content
+                            .get("subscription_ids")
                             .and_then(|v| v.as_array())
+                            .or_else(|| fields.get(0).and_then(|v| v.as_array()))
                             .map(|a| {
                                 a.iter()
                                     .filter_map(|x| x.as_str().map(String::from))
@@ -383,19 +444,31 @@ fn handle_watch_frame(data: &[u8], pending_route: &mut Option<Vec<String>>) {
                         return;
                     }
                     "SubscriptionBody" => {
-                        let table = fields.get(0).and_then(|v| v.as_str()).unwrap_or("?");
-                        let key = fields.get(1).and_then(|v| v.as_str()).unwrap_or("?");
-                        let op = fields.get(2).and_then(|v| v.as_str()).unwrap_or("?");
-                        let row = fields.get(3).cloned().unwrap_or(serde_json::Value::Null);
+                        // {"SubscriptionBody": {table_name, row_key, operation, row_data}}
+                        let table = content
+                            .get("table_name")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(0).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let key = content
+                            .get("row_key")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(1).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let op = content
+                            .get("operation")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(2).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let row = content
+                            .get("row_data")
+                            .cloned()
+                            .or_else(|| fields.get(3).cloned())
+                            .unwrap_or(serde_json::Value::Null);
                         let n = pending_route.take().map(|r| r.len()).unwrap_or(1);
                         println!(
-                            "[{}] {:<16} {} {} = {} (×{} sub)",
-                            ts(),
-                            op,
-                            table,
-                            key,
-                            row,
-                            n
+                            "[{}] {:<16} {}.{} = {} (×{} sub)",
+                            ts(), op, table, key, row, n
                         );
                         return;
                     }
@@ -404,22 +477,4 @@ fn handle_watch_frame(data: &[u8], pending_route: &mut Option<Vec<String>>) {
             }
         }
     }
-}
-
-// ── Wire structs (rmp_serde array-tagged enum encoding) ─────────────────────────
-//
-// serde serializes a newtype enum variant `ClientMessage::ReducerCall(x)` as a
-// map `{"ReducerCall": x}`.  We mirror that here with `rename`d single-field
-// structs that serialize to the same MessagePack map shape.
-
-#[derive(serde::Serialize)]
-struct CallWire {
-    #[serde(rename = "ReducerCall")]
-    reducer_call: (u64, String, Vec<u8>),
-}
-
-#[derive(serde::Serialize)]
-struct SubscribeWire {
-    #[serde(rename = "Subscribe")]
-    subscribe: (String, String),
 }

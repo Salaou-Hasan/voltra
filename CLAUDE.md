@@ -462,6 +462,27 @@ After Session 23:
 
 ---
 
+### Session 25 — CLI Wire Protocol + UX Fixes
+
+**File: `src/cli.rs`**
+
+Three bugs fixed:
+
+1. **`cmd_call` wire format** — The old `CallWire` struct sent `{"ReducerCall": (call_id, reducer_name, args)}` as a hand-rolled tuple. rmp_serde encodes tuples as arrays, which the server's primary `decode_client_message` path couldn't match (it expects `ClientMessage::ReducerCall(ReducerCall{...})`  — a newtype around a struct). Every call silently fell through to the fallback `decode_reducer_call` path. Fixed by encoding directly as `ClientMessage::ReducerCall(ReducerCall { ... })` so the primary decoder always handles it.
+
+2. **`cmd_watch` wire format (critical)** — The old `SubscribeWire` sent `{"Subscribe": (sub_id, query)}` — a tuple. But `ClientMessage::Subscribe` is a **struct variant** (`Subscribe { subscription_id, query }`), which rmp_serde encodes as a map, not an array. The tuple wire could never be decoded as a struct variant — the server logged a decode error and dropped the subscription silently. `neondb watch` appeared to connect but never received any diffs. Fixed by encoding directly as `ClientMessage::Subscribe { subscription_id, query }`.
+
+3. **`ts()` timestamp** — The old function returned a raw millisecond modulus (e.g. `47293821`) which was unreadable in the watch output. Fixed to format as `HH:MM:SS.mmm` (e.g. `13:24:05.821`) using UTC wall clock arithmetic.
+
+**Additional**: `handle_watch_frame` field extraction updated to read named fields (`table_name`, `row_key`, `operation`, `row_data`, `subscription_ids`) from the serde map-encoded struct variants, with positional array fallback for forward compatibility.
+
+**File: `README.md`**
+
+- `neondb build` CLI reference section: replaced `cargo install javy` with the correct download instructions (javy is a standalone binary, not a Rust crate).
+- Writing Reducers section: same correction.
+
+---
+
 ## What Remains (Roadmap)
 
 ### 1. Two-frame protocol for subscription delivery
