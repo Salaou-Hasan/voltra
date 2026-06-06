@@ -5,6 +5,7 @@ pub mod migrations;
 pub mod network;
 pub mod reducer;
 pub mod schema;
+pub mod sql;
 pub mod subscriptions;
 pub mod table;
 pub mod wal;
@@ -16,6 +17,7 @@ pub use network::{
 };
 pub use reducer::{increment_reducer, IncrementResult, ReducerContext, ReducerRegistry};
 pub use schema::{SchemaRegistry, TableSchema, ColumnDef, ColumnType};
+pub use sql::{Executor as SqlExecutor, QueryResult as SqlQueryResult};
 pub use subscriptions::{ClientId, SubscriptionManager};
 pub use table::TableStore;
 pub use wal::{SnapshotMeta, WalEntry, WalReader, WalWriter};

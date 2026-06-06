@@ -38,6 +38,8 @@ hdrhistogram = "7.5"                     # latency percentile tracking (bench + 
 arc-swap = "1.6"                         # atomic Arc swaps for hot config
 flume = "0.11"                           # backup MPSC channel
 
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+
 # JS reducer backend (pure-Rust engine, compiles on Windows/Linux/macOS)
 boa_engine = { version = "0.19", features = ["annex-b"] }
 boa_gc = "0.19"

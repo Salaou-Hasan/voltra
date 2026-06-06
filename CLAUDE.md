@@ -186,6 +186,33 @@ Remove-Item -Recurse -Force target\criterion
 ### Sessions 1–26
 (See previous CLAUDE.md for full detail. Summary: TableStore, kanal channel, N-worker dispatch, BatchedWalWriter, snapshots, auth, query engine, indexes, scheduled reducers, TypeScript/Rust SDKs, schema migrations, WASM-first JS, columnar storage, end-to-end bench, templates, typed schema, React hooks.)
 
+### Session 32 — v8.rs complete rewrite + scheduler name fixes
+
+**Root cause fixed**: `src/reducer/v8.rs` was fundamentally broken in three ways:
+1. `__neondb_set` only called `.as_number()` on the third argument — every call with a JSON object (all game reducers) silently wrote `0` and discarded the object. All game reducers (spawn, attack, buy_item, etc.) were broken.
+2. Scheduler calls with no `args_json` passed empty bytes `[]` to `rmp_serde::from_slice` which crashed with `MessagePack decode error: IO error while reading marker: failed to fill whole buffer`.
+3. `__neondb_get` only pre-fetched counters — calling `__neondb_get("players", "alice")` always returned `null`.
+
+**Fixes applied** (`src/reducer/v8.rs` — complete rewrite):
+- `__neondb_set` now accepts any JS value (objects, arrays, strings, numbers). Objects → `ctx.set_row()`. Plain numbers in `"counters"` table → `ctx.set_counter()` for backward compat.
+- `__neondb_get` now calls `ctx.get_row()` for any table — full read-your-writes support.
+- Empty args bytes → default to `Value::Array(vec![])` instead of crashing.
+- Added `__neondb_delete(table, key)` — JS reducers can now delete rows.
+- Added `__neondb_get_all(table)` — returns all rows as a JS array.
+- Added `__neondb_caller_id` and `__neondb_caller_role` as JS globals — reducers can gate logic on who called them.
+
+**Scheduler name fixes** (`src/main.rs` — targeted edit):
+- Template was generating `cleanup_expired_sessions` → fixed to `cleanup_sessions` (matches registered reducer).
+- Template was generating `refresh_matchmaking` → fixed to `refresh` (matches registered reducer).
+
+**Verified working**:
+- `neondb start` → no more MessagePack errors, all 3 schedulers fire cleanly.
+- `neondb call spawn '["player1", 0, 0, "warrior"]'` → returns correct player object with stats.
+- `neondb watch "players WHERE zone = 'zone_0_0'"` → initial_snapshot delivers full player row.
+- 6 new unit tests added to v8.rs.
+
+**Known remaining issue**: `neondb call attack '["player1", "enemy1", "sword", 25]'` returns `{"error": "Target not found"}` — correct behavior since `enemy1` was never spawned. Attack logic itself is fine.
+
 ### Session 27 — PowerShell Args Fix + TODO-022 partial
 - `parse_args_json()` auto-quotes bare words in brackets for PowerShell compatibility.
 - `PermissionsConfig`, `caller_role`, and websocket permissions check all wired.
@@ -238,11 +265,15 @@ Remove-Item -Recurse -Force target\criterion
 
 ## Current Build Status
 
-After Session 31:
-- `cargo test` → **101 tests passing** (7 new ORDER BY unit tests + existing 94).
+After Session 32:
+- `cargo test` → **107 tests passing** (6 new v8.rs unit tests + existing 101).
 - `cargo build --release` → zero errors, zero warnings.
 - `neondb-client-rust/`: `cargo build` → zero errors, zero warnings.
 - TypeScript SDK: `node --test neondb-client-ts/dist/tests/client.test.js` → **3 tests pass**.
+- `neondb start` (game-ready template) → all 3 schedulers fire with zero errors.
+- `neondb call spawn '["player1", 0, 0, "warrior"]'` → full player object returned correctly.
+- `neondb watch "players WHERE zone = 'zone_0_0'"` → initial_snapshot delivers full row data.
+- `neondb call attack '["player1", "enemy1", "sword", 25]'` → `{"error": "Target not found"}` — **fixed in Session 33** by adding `spawn_npc` reducer. Run `spawn_npc` first to create the enemy row.
 
 ---
 
@@ -270,3 +301,8 @@ After Session 31:
 20. **Template slash paths** — template names contain `/` (e.g. `rust/basic`). The `--template` flag accepts them as-is.
 21. **Optimistic cache in TS SDK** — `snapshotCache()` deep-clones (new Map per table). `applyOptimisticCache()` clears then rebuilds. Both are private. Never mutate the snapshot returned by the `optimistic` callback's input.
 22. **Optimistic cache in Rust SDK** — `call_optimistic` sends `Command::ApplyOptimistic` (snapshot registration) then `Command::Call` (network frame). The background task processes them in order; `ApplyOptimistic` always arrives before `Call`'s ReducerResponse.
+23. **`__neondb_set` accepts full JSON objects** — v8.rs rewritten in Session 32. For `counters` table with a plain number it calls `set_counter()`; for everything else `set_row()`. Never revert to `.as_number()` only.
+24. **Scheduler empty args** — schedulers with no `args_json` send empty bytes. `execute()` in v8.rs defaults to `Value::Array(vec![])`. Never call `rmp_serde::from_slice` on potentially empty bytes without this guard.
+25. **`__neondb_get` reads any table** — uses `ctx.get_row()` with read-your-writes support. Do not revert to counter-only pre-fetch.
+26. **Scheduler reducer names must match registered names exactly** — use `refresh` not `refresh_matchmaking`, `cleanup_sessions` not `cleanup_expired_sessions`.
+27. **`edit_file` for modifications, full write only for new files** — never rewrite a large file to change two lines.

@@ -1025,7 +1025,7 @@ mod tests {
     fn limit_caps_initial_snapshot() {
         let tables = Arc::new(TableStore::new());
         for i in 0..10usize {
-            tables.set_counter(format!("c{}", i), i as i64, 0).unwrap();
+            tables.set_counter(format!("c{}", i), i as i32, 0).unwrap();
         }
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
@@ -1123,15 +1123,15 @@ mod tests {
         // Insert scores: p_a=10, p_b=30, p_c=20
         tables.set_row(
             "scores".to_string(), "p_a".to_string(),
-            serde_json::json!({"score": 10}), 0,
+            serde_json::json!({"score": 10}),
         ).unwrap();
         tables.set_row(
             "scores".to_string(), "p_b".to_string(),
-            serde_json::json!({"score": 30}), 0,
+            serde_json::json!({"score": 30}),
         ).unwrap();
         tables.set_row(
             "scores".to_string(), "p_c".to_string(),
-            serde_json::json!({"score": 20}), 0,
+            serde_json::json!({"score": 20}),
         ).unwrap();
 
         let mgr = SubscriptionManager::new();
@@ -1154,9 +1154,9 @@ mod tests {
     #[test]
     fn order_by_asc_sorts_snapshot_numeric() {
         let tables = Arc::new(TableStore::new());
-        tables.set_row("scores".to_string(), "p_a".to_string(), serde_json::json!({"score": 10}), 0).unwrap();
-        tables.set_row("scores".to_string(), "p_b".to_string(), serde_json::json!({"score": 30}), 0).unwrap();
-        tables.set_row("scores".to_string(), "p_c".to_string(), serde_json::json!({"score": 20}), 0).unwrap();
+        tables.set_row("scores".to_string(), "p_a".to_string(), serde_json::json!({"score": 10})).unwrap();
+        tables.set_row("scores".to_string(), "p_b".to_string(), serde_json::json!({"score": 30})).unwrap();
+        tables.set_row("scores".to_string(), "p_c".to_string(), serde_json::json!({"score": 20})).unwrap();
 
         let mgr = SubscriptionManager::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
@@ -1183,7 +1183,6 @@ mod tests {
                 "scores".to_string(),
                 format!("p{}", i),
                 serde_json::json!({"score": i * 10}),
-                0,
             ).unwrap();
         }
 

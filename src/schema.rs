@@ -100,7 +100,10 @@ impl ColumnType {
             ColumnType::F64 => {
                 // Accept integer JSON values as f64
                 if let Some(i) = value.as_i64() {
-                    Some(Value::from(i as f64))
+                    // Force a true f64 representation so is_f64() returns true
+                    Some(serde_json::Number::from_f64(i as f64)
+                        .map(Value::Number)
+                        .unwrap_or(value))
                 } else if value.is_f64() {
                     Some(value)
                 } else {

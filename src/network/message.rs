@@ -37,7 +37,49 @@ impl ReducerResponse {
     }
 }
 
-/// A client command for managing subscriptions or running reducer calls.
+/// On-demand SQL query from the client.
+///
+/// The client sends this to run a full SQL statement (SELECT/INSERT/UPDATE/DELETE)
+/// directly against the live TableStore, bypassing the reducer pipeline.
+/// Results are returned as a `SqlResult` server message with the same `query_id`.
+///
+/// The SQL engine is fully capable: JOINs, GROUP BY, HAVING, ORDER BY,
+/// LIMIT/OFFSET, DISTINCT, aggregates, subqueries, CASE, scalar functions.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SqlQuery {
+    /// Client-assigned ID for correlating the response.
+    pub query_id: u64,
+    /// The raw SQL string.
+    pub sql: String,
+}
+
+/// Server response to a `SqlQuery`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SqlResult {
+    pub query_id: u64,
+    pub success: bool,
+    /// Column names in the order they appear in each row.
+    pub columns: Vec<String>,
+    /// Rows as JSON objects (column → value).
+    pub rows: Vec<serde_json::Value>,
+    /// For INSERT / UPDATE / DELETE: number of rows affected.
+    pub rows_affected: usize,
+    /// Error message if `success` is false.
+    pub error: Option<String>,
+}
+
+impl SqlResult {
+    pub fn ok(query_id: u64, columns: Vec<String>, rows: Vec<serde_json::Value>, rows_affected: usize) -> Self {
+        SqlResult { query_id, success: true, columns, rows, rows_affected, error: None }
+    }
+
+    pub fn err(query_id: u64, error: String) -> Self {
+        SqlResult { query_id, success: false, columns: vec![], rows: vec![], rows_affected: 0, error: Some(error) }
+    }
+}
+
+/// A client command for managing subscriptions, running reducer calls,
+/// or executing ad-hoc SQL.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
     ReducerCall(ReducerCall),
@@ -48,6 +90,8 @@ pub enum ClientMessage {
     Unsubscribe {
         subscription_id: String,
     },
+    /// Ad-hoc SQL query — full read/write SQL against the live TableStore.
+    SqlQuery(SqlQuery),
 }
 
 /// A diff for subscribed clients.
@@ -61,13 +105,6 @@ pub struct SubscriptionDiff {
 }
 
 /// Two-frame subscription protocol: the routing header (per client).
-///
-/// When enabled, the server sends:
-/// 1) `SubscriptionRoute { subscription_ids }`
-/// 2) `SubscriptionBody { ... }`
-///
-/// The client must associate the immediately following `SubscriptionBody`
-/// with all `subscription_ids` in the route message.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubscriptionRoute {
     pub subscription_ids: Vec<String>,
@@ -94,6 +131,8 @@ pub enum ServerMessage {
     SubscriptionDiff(SubscriptionDiff),
     SubscriptionRoute(SubscriptionRoute),
     SubscriptionBody(SubscriptionBody),
+    /// Response to a `ClientMessage::SqlQuery`.
+    SqlResult(SqlResult),
     Error { message: String },
 }
 
@@ -129,5 +168,35 @@ mod tests {
         let response = ReducerResponse::error(1, "test error".to_string());
         assert_eq!(response.success, false);
         assert_eq!(response.error, Some("test error".to_string()));
+    }
+
+    #[test]
+    fn test_sql_query_roundtrip() {
+        let q = ClientMessage::SqlQuery(SqlQuery {
+            query_id: 42,
+            sql: "SELECT * FROM players WHERE zone = 'north'".to_string(),
+        });
+        let bytes = rmp_serde::to_vec(&q).unwrap();
+        let q2: ClientMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match q2 {
+            ClientMessage::SqlQuery(sq) => {
+                assert_eq!(sq.query_id, 42);
+                assert!(sq.sql.contains("players"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_sql_result_ok() {
+        let r = SqlResult::ok(
+            1,
+            vec!["id".into(), "score".into()],
+            vec![serde_json::json!({"id": "alice", "score": 200})],
+            1,
+        );
+        assert!(r.success);
+        assert_eq!(r.columns.len(), 2);
+        assert_eq!(r.rows.len(), 1);
     }
 }

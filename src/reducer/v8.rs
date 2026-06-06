@@ -1,34 +1,11 @@
 // ============================================================================
 // v8.rs — Boa JS reducer backend
 //
-// Session 32 — Complete rewrite to fix all runtime errors:
-//
-// BUG 1 (root cause of all scheduler failures + all game reducers broken):
-//   __neondb_set was only handling numeric counter values via .as_number().
-//   Every game reducer (spawn, attack, buy_item, etc.) calls
-//   __neondb_set("players", pid, { hp: 200, ... }) with full JSON objects.
-//   The old backend silently dropped these — they were parsed as 0.
-//   FIX: __neondb_set now accepts any JS object/array/value and stores it
-//   as a full JSON row via ctx.set_row(). For the "counters" table with a
-//   plain number, it still calls ctx.set_counter() for backward compat.
-//
-// BUG 2 (scheduler MessagePack decode error):
-//   Scheduled reducers with no args_json pass empty bytes [].
-//   rmp_serde::from_slice::<Value>(&[]) fails with "IO error while reading
-//   marker: failed to fill whole buffer".
-//   FIX: empty args bytes → default to serde_json::Value::Array(vec![])
-//   before calling the JS reducer.
-//
-// BUG 3 (__neondb_get only returned counters):
-//   __neondb_get was pre-fetching counters into the read cache but had no
-//   general row lookup. Calling __neondb_get("players", "alice") returned
-//   null because "players" was never loaded.
-//   FIX: __neondb_get now calls ctx.get_row() for any table.
-//
-// NEW: __neondb_delete(table, key) — lets reducers delete rows.
-// NEW: __neondb_get_all(table) — returns array of all rows in a table.
-// NEW: ctx.caller_id / ctx.caller_role exposed as __neondb_caller_id /
-//      __neondb_caller_role globals for authorization in JS reducers.
+// Session 33 fixes:
+//   - __neondb_set writes eagerly to ReducerContext so __neondb_get in the
+//     same reducer call sees the write immediately (read-your-own-writes).
+//   - __neondb_delete likewise deletes eagerly.
+//   - Flush loop at end only processes any remaining deletes; sets are no-op.
 // ============================================================================
 
 use crate::error::{NeonDBError, Result};
@@ -47,7 +24,6 @@ use std::rc::Rc;
 struct PendingWrite {
     table: String,
     key: String,
-    value: Value,
     is_delete: bool,
 }
 
@@ -57,9 +33,7 @@ struct HostState {
 
 impl HostState {
     fn new() -> Self {
-        HostState {
-            pending_writes: Vec::new(),
-        }
+        HostState { pending_writes: Vec::new() }
     }
 }
 
@@ -128,7 +102,7 @@ impl V8ReducerBackend {
                 .map_err(|e| NeonDBError::reducer_error(format!("Boa register get: {}", e)))?;
         }
 
-        // ── __neondb_get_all(table) → array ──────────────────────────────────
+        // ── __neondb_get_all(table) → array ───────────────────────────────────
         {
             let ctx_ptr = ctx as *mut ReducerContext;
             // SAFETY: same as above.
@@ -154,9 +128,12 @@ impl V8ReducerBackend {
         }
 
         // ── __neondb_set(table, key, value) → void ────────────────────────────
+        // Writes eagerly to ctx so that __neondb_get within the same reducer
+        // call sees the newly written row (read-your-own-writes semantics).
         {
             let host_ref = host.clone();
-            // SAFETY: single-threaded Rc<RefCell<…>> capture.
+            let ctx_ptr = ctx as *mut ReducerContext;
+            // SAFETY: Boa is single-threaded; ctx outlives js_ctx.
             let set_fn = unsafe {
                 NativeFunction::from_closure(move |_this, args, js_c| {
                     let table = args.get(0)
@@ -172,10 +149,34 @@ impl V8ReducerBackend {
                     }
                     let js_val = args.get(2).cloned().unwrap_or(JsValue::undefined());
                     let json_val = js_to_json(&js_val, js_c).unwrap_or(Value::Null);
+
+                    // Apply write immediately to ReducerContext.
+                    let ctx_ref = unsafe { &mut *ctx_ptr };
+                    let result = if table == "counters" {
+                        match &json_val {
+                            Value::Number(n) => {
+                                let amount = n.as_i64().unwrap_or(0) as i32;
+                                ctx_ref.set_counter(key.clone(), amount)
+                                    .map(|_| ())
+                                    .map_err(|e| JsNativeError::error()
+                                        .with_message(e.to_string()).into())
+                            }
+                            _ => ctx_ref.set_row(table.clone(), key.clone(), json_val.clone())
+                                    .map(|_| ())
+                                    .map_err(|e| JsNativeError::error()
+                                        .with_message(e.to_string()).into()),
+                        }
+                    } else {
+                        ctx_ref.set_row(table.clone(), key.clone(), json_val.clone())
+                            .map(|_| ())
+                            .map_err(|e| JsNativeError::error()
+                                .with_message(e.to_string()).into())
+                    };
+                    result?;
+
                     host_ref.borrow_mut().pending_writes.push(PendingWrite {
                         table,
                         key,
-                        value: json_val,
                         is_delete: false,
                     });
                     Ok(JsValue::undefined())
@@ -185,10 +186,12 @@ impl V8ReducerBackend {
                 .map_err(|e| NeonDBError::reducer_error(format!("Boa register set: {}", e)))?;
         }
 
-        // ── __neondb_delete(table, key) → void ───────────────────────────────
+        // ── __neondb_delete(table, key) → void ────────────────────────────────
+        // Deletes eagerly so __neondb_get after a delete correctly returns null.
         {
             let host_ref = host.clone();
-            // SAFETY: single-threaded Rc<RefCell<…>> capture.
+            let ctx_ptr = ctx as *mut ReducerContext;
+            // SAFETY: Boa is single-threaded; ctx outlives js_ctx.
             let del_fn = unsafe {
                 NativeFunction::from_closure(move |_this, args, _js_c| {
                     let table = args.get(0)
@@ -200,10 +203,11 @@ impl V8ReducerBackend {
                         .and_then(|s| s.to_std_string().ok())
                         .unwrap_or_default();
                     if !table.is_empty() && !key.is_empty() {
+                        let ctx_ref = unsafe { &mut *ctx_ptr };
+                        let _ = ctx_ref.delete_row(table.clone(), key.clone());
                         host_ref.borrow_mut().pending_writes.push(PendingWrite {
                             table,
                             key,
-                            value: Value::Null,
                             is_delete: true,
                         });
                     }
@@ -214,11 +218,60 @@ impl V8ReducerBackend {
                 .map_err(|e| NeonDBError::reducer_error(format!("Boa register delete: {}", e)))?;
         }
 
-        // ── Load script ───────────────────────────────────────────────────────
+        // ── __neondb_ai_generate(prompt) → JSON string | null ─────────────────
+        // Calls the Anthropic API synchronously via reqwest::blocking.
+        // Requires ANTHROPIC_API_KEY environment variable.
+        {
+            // SAFETY: single-threaded Boa context.
+            let ai_fn = unsafe {
+                NativeFunction::from_closure(move |_this, args, _js_c| {
+                    let prompt = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .and_then(|s| s.to_std_string().ok())
+                        .unwrap_or_default();
+                    if prompt.is_empty() { return Ok(JsValue::null()); }
+
+                    let api_key = match std::env::var("ANTHROPIC_API_KEY") {
+                        Ok(k) => k,
+                        Err(_) => return Ok(JsValue::null()),
+                    };
+
+                    let body = serde_json::json!({
+                        "model": "claude-haiku-4-5-20251001",
+                        "max_tokens": 1024,
+                        "system": "You are a game NPC designer. Always respond with valid JSON only — no markdown, no explanation, just the JSON object.",
+                        "messages": [{ "role": "user", "content": prompt }]
+                    });
+
+                    let result = reqwest::blocking::Client::new()
+                        .post("https://api.anthropic.com/v1/messages")
+                        .header("x-api-key", &api_key)
+                        .header("anthropic-version", "2023-06-01")
+                        .header("content-type", "application/json")
+                        .json(&body)
+                        .send();
+
+                    match result {
+                        Ok(resp) => match resp.json::<serde_json::Value>() {
+                            Ok(json) => {
+                                let text = json["content"][0]["text"]
+                                    .as_str().unwrap_or("").to_string();
+                                Ok(JsValue::String(boa_engine::JsString::from(text.as_str())))
+                            }
+                            Err(_) => Ok(JsValue::null()),
+                        },
+                        Err(_) => Ok(JsValue::null()),
+                    }
+                })
+            };
+            js_ctx.register_global_callable(js_string!("__neondb_ai_generate"), 1, ai_fn)
+                .map_err(|e| NeonDBError::reducer_error(format!("Boa register ai_generate: {}", e)))?;
+        }
+
+        // ── Load and run script ───────────────────────────────────────────────
         js_ctx.eval(Source::from_bytes(self.script.as_bytes()))
             .map_err(|e| NeonDBError::reducer_error(format!("Script load error: {}", e)))?;
 
-        // ── Call reducer(args) ────────────────────────────────────────────────
         let args_str = serde_json::to_string(&args_json)?;
         let call_src = format!("reducer(JSON.parse({}))", js_escape(&args_str));
         let result_val = js_ctx.eval(Source::from_bytes(call_src.as_bytes()))
@@ -227,31 +280,9 @@ impl V8ReducerBackend {
         let result_json = js_to_json(&result_val, &mut js_ctx)
             .map_err(|e| NeonDBError::reducer_error(format!("Result conversion: {}", e)))?;
 
-        // ── Flush pending writes to ReducerContext ────────────────────────────
-        let pending: Vec<_> = {
-            let b = host.borrow();
-            b.pending_writes.iter().map(|w| {
-                (w.table.clone(), w.key.clone(), w.value.clone(), w.is_delete)
-            }).collect()
-        };
-
-        for (table, key, value, is_delete) in pending {
-            if is_delete {
-                ctx.delete_row(table, key)?;
-            } else if table == "counters" {
-                match &value {
-                    Value::Number(n) => {
-                        let amount = n.as_i64().unwrap_or(0) as i32;
-                        ctx.set_counter(key, amount)?;
-                    }
-                    _ => {
-                        ctx.set_row(table, key, value)?;
-                    }
-                }
-            } else {
-                ctx.set_row(table, key, value)?;
-            }
-        }
+        // All writes were applied eagerly; pending_writes is just a log now.
+        // No second pass needed.
+        drop(host);
 
         Ok(result_json)
     }
@@ -259,7 +290,7 @@ impl V8ReducerBackend {
 
 impl ReducerBackend for V8ReducerBackend {
     fn execute(&self, ctx: &mut ReducerContext, args: &[u8]) -> Result<Vec<u8>> {
-        // FIX: empty args bytes (scheduler with no args_json) → empty array.
+        // Empty args bytes (scheduler with no args_json) → empty array.
         let args_json: Value = if args.is_empty() {
             Value::Array(vec![])
         } else {

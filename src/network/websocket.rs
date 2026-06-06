@@ -15,17 +15,19 @@
 //     calls get an immediate error response without touching the reducer queue.
 //   - `start_listener` now accepts `permissions: Arc<PermissionsConfig>`.
 //
-// Previous sessions:
-//  1. SubscriptionManager in Arc (no Mutex) — DashMap inside.
-//  2. kanal::AsyncSender<PendingCall> — true async send with back-pressure.
-//  3. Arc<Bytes> pre-encoded frames — zero re-encoding per subscriber.
-//  4. Dedicated write task owns the sink — no AsyncMutex contention.
+// Session 33 — Full SQL engine wired in.
+//   - New `ClientMessage::SqlQuery` variant handled here.
+//   - SQL is executed synchronously in a `spawn_blocking` task so the async
+//     WebSocket loop is never blocked.
+//   - Results serialised as `ServerMessage::SqlResult` and sent back.
+//   - Rows are converted to `serde_json::Value::Object` for the wire format.
 // ============================================================================
 
-use super::message::{ClientMessage, ReducerResponse, ServerMessage};
+use super::message::{ClientMessage, ReducerResponse, ServerMessage, SqlResult};
 use super::protocol;
 use crate::config::PermissionsConfig;
 use crate::error::{NeonDBError, Result};
+use crate::sql::{Executor as SqlExecutor};
 use crate::subscriptions::{OutboundFrames, SubscriptionManager};
 use crate::table::TableStore;
 use futures::{SinkExt, StreamExt};
@@ -63,12 +65,8 @@ impl Drop for ConnectionGuard {
 ///
 /// Format: `Bearer <key>` → key = full value, role = ""
 /// Format: `Bearer <key>:<role>` → key = part before last ':', role = part after
-///
-/// The split is on the LAST colon so that keys that happen to contain colons
-/// still work as long as the role is appended after the rightmost one.
 fn parse_bearer(header: &str) -> Option<(String, String)> {
     let token = header.strip_prefix("Bearer ")?;
-    // Split on the last colon to allow roles like "admin" appended as :<role>.
     match token.rsplit_once(':') {
         Some((key, role)) if !role.is_empty() && !role.contains('/') => {
             Some((key.to_string(), role.to_string()))
@@ -143,7 +141,6 @@ async fn handle_client(
     peer_addr: String,
 ) -> Result<()> {
     // ── WebSocket handshake with optional Bearer auth ─────────────────────────
-    // Capture the X-NeonDB-Identity header and the caller role from the token.
     let caller_id_cell   = Arc::new(std::sync::Mutex::new(String::new()));
     let caller_role_cell = Arc::new(std::sync::Mutex::new(String::new()));
     let caller_id_capture   = caller_id_cell.clone();
@@ -160,37 +157,24 @@ async fn handle_client(
                 .unwrap_or("");
 
             if let Some(required_key) = auth_key.as_ref() {
-                // Parse the presented token — accept both `Bearer <key>` and
-                // `Bearer <key>:<role>`.  Only the key part is validated here.
                 let (presented_key, role) = parse_bearer(auth_header)
                     .unwrap_or_else(|| (String::new(), String::new()));
-
                 if &presented_key != required_key {
                     return Err(ErrorResponse::new(Some("Unauthorized".to_string())));
                 }
-
-                // Store the role for use inside the message loop.
-                if let Ok(mut cell) = caller_role_capture.lock() {
-                    *cell = role;
-                }
+                if let Ok(mut cell) = caller_role_capture.lock() { *cell = role; }
             } else if !auth_header.is_empty() {
-                // No server key required — still parse and store role if provided.
                 if let Some((_key, role)) = parse_bearer(auth_header) {
-                    if let Ok(mut cell) = caller_role_capture.lock() {
-                        *cell = role;
-                    }
+                    if let Ok(mut cell) = caller_role_capture.lock() { *cell = role; }
                 }
             }
 
-            // Extract per-connection identity from X-NeonDB-Identity header.
             if let Some(id) = request
                 .headers()
                 .get("x-neondb-identity")
                 .and_then(|v| v.to_str().ok())
             {
-                if let Ok(mut cell) = caller_id_capture.lock() {
-                    *cell = id.to_string();
-                }
+                if let Ok(mut cell) = caller_id_capture.lock() { *cell = id.to_string(); }
             }
             Ok(response)
         },
@@ -198,7 +182,6 @@ async fn handle_client(
     .await
     .map_err(|e| NeonDBError::network_error(format!("WebSocket handshake error: {}", e)))?;
 
-    // Resolve caller_id and caller_role for the lifetime of this connection.
     let caller_id: String = {
         let g = caller_id_cell.lock().unwrap_or_else(|e| e.into_inner());
         if g.is_empty() { peer_addr.clone() } else { g.clone() }
@@ -234,9 +217,7 @@ async fn handle_client(
     let response_task = tokio::spawn(async move {
         while let Some(response) = response_rx.recv().await {
             match protocol::encode_response(&response) {
-                Ok(data) => {
-                    let _ = write_tx_response.send(Message::Binary(data));
-                }
+                Ok(data) => { let _ = write_tx_response.send(Message::Binary(data)); }
                 Err(e) => log::warn!("Failed to encode response: {}", e),
             }
         }
@@ -298,10 +279,8 @@ async fn handle_client(
                             log::warn!("Reducer queue send failed: {}", e);
                         }
                     }
-                    Ok(ClientMessage::Subscribe {
-                        subscription_id,
-                        query,
-                    }) => {
+
+                    Ok(ClientMessage::Subscribe { subscription_id, query }) => {
                         let result = subscription_manager.subscribe_with_snapshot(
                             client_id,
                             subscription_id.clone(),
@@ -324,6 +303,7 @@ async fn handle_client(
                             let _ = write_tx.send(Message::Binary(encoded));
                         }
                     }
+
                     Ok(ClientMessage::Unsubscribe { subscription_id }) => {
                         let result = subscription_manager.unsubscribe(client_id, &subscription_id);
                         let ack = match result {
@@ -347,49 +327,71 @@ async fn handle_client(
                             let _ = write_tx.send(Message::Binary(encoded));
                         }
                     }
-                    Err(_) => match protocol::decode_reducer_call(&data) {
-                        Ok(call) => {
-                            // Permission check on fallback decoder path too.
-                            if !permissions.is_allowed(&call.reducer_name, &caller_role) {
-                                log::warn!(
-                                    "Permission denied (fallback): role='{}' tried '{}'",
-                                    caller_role, call.reducer_name
-                                );
-                                let denied = ReducerResponse::error(
-                                    call.call_id,
-                                    format!(
-                                        "Permission denied: role '{}' is not allowed to call '{}'",
+
+                    // ── Full SQL query ────────────────────────────────────────
+                    Ok(ClientMessage::SqlQuery(sq)) => {
+                        let query_id  = sq.query_id;
+                        let sql       = sq.sql.clone();
+                        let tables_q  = tables.clone();
+                        let write_tx_q = write_tx.clone();
+
+                        // Run the SQL in a blocking thread so we don't hold the
+                        // async executor while doing potentially expensive work.
+                        tokio::task::spawn_blocking(move || {
+                            let result = execute_sql_query(&sql, &tables_q, query_id);
+                            let msg = ServerMessage::SqlResult(result);
+                            match protocol::encode_server_message(&msg) {
+                                Ok(bytes) => { let _ = write_tx_q.send(Message::Binary(bytes)); }
+                                Err(e)    => log::warn!("SQL result encode error: {}", e),
+                            }
+                        });
+                    }
+
+                    Err(_) => {
+                        // Fallback: try old ReducerCall-only decode path
+                        match protocol::decode_reducer_call(&data) {
+                            Ok(call) => {
+                                if !permissions.is_allowed(&call.reducer_name, &caller_role) {
+                                    log::warn!(
+                                        "Permission denied (fallback): role='{}' tried '{}'",
                                         caller_role, call.reducer_name
-                                    ),
-                                );
-                                if let Ok(encoded) = protocol::encode_response(&denied) {
+                                    );
+                                    let denied = ReducerResponse::error(
+                                        call.call_id,
+                                        format!(
+                                            "Permission denied: role '{}' is not allowed to call '{}'",
+                                            caller_role, call.reducer_name
+                                        ),
+                                    );
+                                    if let Ok(encoded) = protocol::encode_response(&denied) {
+                                        let _ = write_tx.send(Message::Binary(encoded));
+                                    }
+                                    continue;
+                                }
+
+                                let pending = PendingCall {
+                                    call_id: call.call_id,
+                                    reducer_name: call.reducer_name,
+                                    args: call.args,
+                                    caller_id: caller_id.clone(),
+                                    caller_role: caller_role.clone(),
+                                    response_tx: response_tx.clone(),
+                                };
+                                if let Err(e) = reducer_tx.send(pending).await {
+                                    log::warn!("Reducer queue send failed: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to decode client message: {}", e);
+                                let error = ServerMessage::Error {
+                                    message: format!("Decode error: {}", e),
+                                };
+                                if let Ok(encoded) = protocol::encode_server_message(&error) {
                                     let _ = write_tx.send(Message::Binary(encoded));
                                 }
-                                continue;
-                            }
-
-                            let pending = PendingCall {
-                                call_id: call.call_id,
-                                reducer_name: call.reducer_name,
-                                args: call.args,
-                                caller_id: caller_id.clone(),
-                                caller_role: caller_role.clone(),
-                                response_tx: response_tx.clone(),
-                            };
-                            if let Err(e) = reducer_tx.send(pending).await {
-                                log::warn!("Reducer queue send failed: {}", e);
                             }
                         }
-                        Err(e) => {
-                            log::warn!("Failed to decode client message: {}", e);
-                            let error = ServerMessage::Error {
-                                message: format!("Decode error: {}", e),
-                            };
-                            if let Ok(encoded) = protocol::encode_server_message(&error) {
-                                let _ = write_tx.send(Message::Binary(encoded));
-                            }
-                        }
-                    },
+                    }
                 }
             }
             Ok(Message::Close(_)) => {
@@ -412,6 +414,36 @@ async fn handle_client(
     let _ = response_task.await;
     let _ = sub_task.await;
     Ok(())
+}
+
+// ── SQL execution helper ──────────────────────────────────────────────────────
+
+/// Parse and execute a SQL string against the live TableStore.
+/// Returns a `SqlResult` ready to send over the wire.
+fn execute_sql_query(
+    sql: &str,
+    tables: &Arc<TableStore>,
+    query_id: u64,
+) -> SqlResult {
+    // Parse
+    let stmt = match crate::sql::parser::parse(sql) {
+        Ok(s) => s,
+        Err(e) => return SqlResult::err(query_id, format!("Parse error: {}", e)),
+    };
+
+    // Execute
+    let exec = SqlExecutor::new(tables.clone());
+    match exec.execute_statement(&stmt) {
+        Err(e) => SqlResult::err(query_id, format!("Execution error: {}", e)),
+        Ok(result) => {
+            // Convert each Row (Map<String, Value>) into a plain JSON object Value
+            let rows: Vec<serde_json::Value> = result.rows
+                .into_iter()
+                .map(serde_json::Value::Object)
+                .collect();
+            SqlResult::ok(query_id, result.columns, rows, result.rows_affected)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -462,9 +494,49 @@ mod tests {
 
     #[test]
     fn test_parse_bearer_key_with_colons() {
-        // Key itself contains colons; role is appended after the rightmost one.
         let (key, role) = parse_bearer("Bearer key:with:colons:admin").unwrap();
         assert_eq!(key, "key:with:colons");
         assert_eq!(role, "admin");
+    }
+
+    #[test]
+    fn test_execute_sql_query_select() {
+        let tables = Arc::new(TableStore::new());
+        tables.set_row(
+            "players".into(),
+            "alice".into(),
+            serde_json::json!({"id": "alice", "score": 200}),
+        ).unwrap();
+        let result = execute_sql_query(
+            "SELECT * FROM players WHERE id = 'alice'",
+            &tables,
+            1,
+        );
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn test_execute_sql_query_parse_error() {
+        let tables = Arc::new(TableStore::new());
+        let result = execute_sql_query("NOT VALID SQL %%", &tables, 1);
+        assert!(!result.success);
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn test_execute_sql_query_insert_select() {
+        let tables = Arc::new(TableStore::new());
+        let ins = execute_sql_query(
+            "INSERT INTO items (id, name, power) VALUES ('sword', 'Iron Sword', 30)",
+            &tables,
+            1,
+        );
+        assert!(ins.success, "{:?}", ins.error);
+        assert_eq!(ins.rows_affected, 1);
+
+        let sel = execute_sql_query("SELECT * FROM items", &tables, 2);
+        assert!(sel.success);
+        assert_eq!(sel.rows.len(), 1);
     }
 }

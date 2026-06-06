@@ -129,6 +129,15 @@ enum Commands {
         #[arg(long, default_value = "ws://127.0.0.1:3000")] url: String,
         #[arg(long)] api_key: Option<String>,
     },
+    /// AI-generate an NPC template and cache it in the running server
+    GenerateNpc {
+        #[arg(value_name = "NPC_TYPE", help = "e.g. goblin, dragon, shadow_assassin")]
+        npc_type: String,
+        #[arg(long, help = "Extra context for the AI, e.g. 'volcanic dungeon boss'")]
+        context: Option<String>,
+        #[arg(long, default_value = "ws://127.0.0.1:3000")] url: String,
+        #[arg(long)] api_key: Option<String>,
+    },
     /// Run a WebSocket throughput benchmark against a running server
     Bench {
         #[arg(long, default_value = "ws://127.0.0.1:3000")] url: String,
@@ -166,6 +175,7 @@ async fn main() -> Result<()> {
         Commands::Get { table, key, metrics_url } => neondb::cli::cmd_get(&metrics_url, &table, key.as_deref()).await,
         Commands::Call { reducer, args, url, api_key } => neondb::cli::cmd_call(&url, &reducer, args.as_deref(), api_key.as_deref()).await,
         Commands::Watch { query, url, api_key } => neondb::cli::cmd_watch(&url, &query, api_key.as_deref()).await,
+        Commands::GenerateNpc { npc_type, context, url, api_key } => neondb::cli::cmd_generate_npc(&url, &npc_type, context.as_deref(), api_key.as_deref()).await,
         Commands::Bench { url, clients, calls, warmup, api_key } => run_cli_bench(&url, clients, calls, warmup, api_key.as_deref()).await,
     }
 }
@@ -375,6 +385,7 @@ fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
     wf(p, "modules/players/move.js",            GAME_MOVE_JS)?;
     wf(p, "modules/players/update_stats.js",    GAME_UPDATE_STATS_JS)?;
     // Combat
+    wf(p, "modules/combat/spawn_npc.js",        GAME_SPAWN_NPC_JS)?;
     wf(p, "modules/combat/attack.js",           GAME_ATTACK_JS)?;
     wf(p, "modules/combat/use_ability.js",      GAME_USE_ABILITY_JS)?;
     wf(p, "modules/combat/apply_damage.js",     GAME_APPLY_DAMAGE_JS)?;
@@ -412,7 +423,7 @@ fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
 
     print_success(name, "rust/game-ready", &[
         ("modules/players/",    "spawn, despawn, move, update_stats"),
-        ("modules/combat/",     "attack, use_ability, apply_damage, respawn"),
+        ("modules/combat/",     "spawn_npc, attack, use_ability, apply_damage, respawn"),
         ("modules/economy/",    "buy_item, sell_item, transfer_currency, loot_box"),
         ("modules/quests/",     "accept, complete, update_progress"),
         ("modules/matchmaking/","queue, dequeue, create_match, refresh (scheduled)"),
@@ -428,6 +439,7 @@ fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
     println!("    neondb start");
     println!("    neondb call spawn '[\"player1\", 0, 0, \"warrior\"]'");
     println!("    neondb watch \"players WHERE zone = 'zone_0_0'\"");
+    println!("    neondb call spawn_npc '[\"enemy1\", 50, 50, \"goblin\", 80, 15]'");
     println!("    neondb call attack '[\"player1\", \"enemy1\", \"sword\", 25]'");
     println!("    # See GENRE_GUIDE.md to adapt this to your game type.");
     println!();
@@ -865,6 +877,108 @@ function reducer(args) {
   player.last_action = Date.now();
   __neondb_set("players", pid, player);
   return { ok: true, player_id: pid, level: player.level, xp: player.xp };
+}
+"#;
+
+const GAME_SPAWN_NPC_JS: &str = r#"// spawn_npc(npc_id, x, y, npc_type, hp_override, atk_override)
+//
+// AI-POWERED NPC SPAWNING:
+//   1. Checks npc_templates table for a cached template for npc_type.
+//   2. If no template found, calls __neondb_ai_generate to ask Claude to
+//      design the NPC (stats, abilities, loot table, behavior description).
+//   3. Caches the generated template in npc_templates for all future spawns.
+//   4. Spawns the NPC entity in the players table so attack() works on it.
+//
+// Pre-generate templates (faster, no latency on spawn):
+//   neondb generate-npc goblin
+//   neondb generate-npc dragon --context "volcanic dungeon boss"
+//
+// Or just spawn — template is auto-generated and cached on first use:
+//   neondb call spawn_npc '["e1", 50, 50, "goblin"]'
+function reducer(args) {
+  var nid = args[0]; var x = args[1] || 0; var y = args[2] || 0;
+  var npc_type = args[3] || "goblin"; var hp_override = args[4]; var atk_override = args[5];
+  if (!nid) return { error: "npc_id required" };
+  if (__neondb_get("players", nid)) return { error: "NPC already exists — use a unique id" };
+
+  // Step 1: look up cached template
+  var tmpl = __neondb_get("npc_templates", npc_type);
+
+  // Step 2: auto-generate via Claude if not cached
+  if (!tmpl) {
+    var prompt = 'Design a game NPC of type "' + npc_type + '" for an action RPG.\n' +
+      'Return a JSON object with these exact keys:\n' +
+      '{\n' +
+      '  "npc_type": string,\n' +
+      '  "display_name": string,\n' +
+      '  "description": string (1-2 sentences of lore/flavor),\n' +
+      '  "behavior": string (one of: aggressive, passive, patrol, boss),\n' +
+      '  "hp": number,\n' +
+      '  "atk": number,\n' +
+      '  "def": number,\n' +
+      '  "speed": number (1-10),\n' +
+      '  "xp_reward": number,\n' +
+      '  "currency_reward": number,\n' +
+      '  "abilities": [ { "id": string, "name": string, "damage": number, "mp_cost": number, "effect": string } ],\n' +
+      '  "loot_table": [ { "item_id": string, "item_name": string, "weight": number (0-100) } ]\n' +
+      '}';
+    var raw = __neondb_ai_generate(prompt);
+    if (raw) {
+      try {
+        tmpl = JSON.parse(raw);
+        tmpl.generated_at = Date.now();
+        tmpl.source = "claude";
+        __neondb_set("npc_templates", npc_type, tmpl);
+      } catch(e) { tmpl = null; }
+    }
+  }
+
+  // Step 3: fall back to hardcoded defaults if AI unavailable
+  if (!tmpl) {
+    var defaults = {
+      goblin:   { hp: 60,  atk: 12, def: 4,  xp_reward: 20,  currency_reward: 5 },
+      orc:      { hp: 120, atk: 20, def: 10, xp_reward: 50,  currency_reward: 15 },
+      skeleton: { hp: 80,  atk: 16, def: 6,  xp_reward: 35,  currency_reward: 8 },
+      boss:     { hp: 500, atk: 45, def: 25, xp_reward: 500, currency_reward: 200 },
+      dragon:   { hp: 800, atk: 70, def: 40, xp_reward: 1000, currency_reward: 500 }
+    };
+    var d = defaults[npc_type] || { hp: 60, atk: 12, def: 4, xp_reward: 20, currency_reward: 5 };
+    tmpl = {
+      npc_type: npc_type, display_name: npc_type,
+      description: "A " + npc_type + ".", behavior: "aggressive",
+      hp: d.hp, atk: d.atk, def: d.def, speed: 5,
+      xp_reward: d.xp_reward, currency_reward: d.currency_reward,
+      abilities: [], loot_table: [], source: "default"
+    };
+  }
+
+  // Step 4: spawn the NPC entity
+  var hp  = hp_override  || tmpl.hp  || 50;
+  var atk = atk_override || tmpl.atk || 10;
+  var def = tmpl.def || Math.floor(atk * 0.3);
+  var zone = "zone_" + Math.floor(x / 100) + "_" + Math.floor(y / 100);
+
+  __neondb_set("players", nid, {
+    id: nid, x: x, y: y, zone: zone,
+    class: npc_type, display_name: tmpl.display_name || npc_type,
+    hp: hp, max_hp: hp, mp: 0, max_mp: 0,
+    atk: atk, def: def, speed: tmpl.speed || 5,
+    level: 1, xp: 0, status: "alive",
+    is_npc: true, behavior: tmpl.behavior || "aggressive",
+    xp_reward: tmpl.xp_reward || 20,
+    currency_reward: tmpl.currency_reward || 5,
+    abilities: tmpl.abilities || [],
+    loot_table: tmpl.loot_table || [],
+    spawned_at: Date.now(), last_action: Date.now()
+  });
+
+  return {
+    ok: true, npc_id: nid, npc_type: npc_type, zone: zone,
+    hp: hp, atk: atk, def: def,
+    display_name: tmpl.display_name || npc_type,
+    behavior: tmpl.behavior || "aggressive",
+    template_source: tmpl.source || "cached"
+  };
 }
 "#;
 
@@ -1476,7 +1590,7 @@ const GAME_README: &str = r#"## Systems included
 | System       | Reducers                                                    |
 |--------------|-------------------------------------------------------------|
 | Players      | spawn, despawn, move, update_stats                          |
-| Combat       | attack, use_ability, apply_damage, respawn                  |
+| Combat       | spawn_npc, attack, use_ability, apply_damage, respawn              |
 | Economy      | buy_item, sell_item, transfer_currency, open_loot_box       |
 | Quests       | accept_quest, complete_quest, update_progress               |
 | Matchmaking  | queue, dequeue, create_match, refresh (scheduled 5s)        |
@@ -2618,4 +2732,5 @@ fn recover_from_wal(wal_path: &Path, tables: &Arc<TableStore>, min_seq: u64) -> 
     }
     Ok((replayed, max_seq))
 }
+
 
