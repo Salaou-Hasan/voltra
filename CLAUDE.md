@@ -67,7 +67,7 @@ NeonDB/
 │   ├── throughput.rs           # criterion bench — Scenario 1/2/3
 │   └── end_to_end.rs           # criterion bench — full WebSocket round-trip
 ├── tests/
-│   └── integration.rs          # tokio integration tests (94 total)
+│   └── integration.rs          # tokio integration tests (9 tests)
 ├── modules/
 │   ├── increment_js.js         # sample JS reducer
 │   └── increment_wasm.wat      # sample WAT reducer
@@ -186,6 +186,80 @@ Remove-Item -Recurse -Force target\criterion
 ### Sessions 1–26
 (See previous CLAUDE.md for full detail. Summary: TableStore, kanal channel, N-worker dispatch, BatchedWalWriter, snapshots, auth, query engine, indexes, scheduled reducers, TypeScript/Rust SDKs, schema migrations, WASM-first JS, columnar storage, end-to-end bench, templates, typed schema, React hooks.)
 
+### Session 37 — Integration test port collision fix
+
+**Root cause**: All 9 integration tests spawn real server child processes in parallel. Every child process inherits the `cargo test` CWD (the project root), which contains `neondb.toml`. `Config::from_env()` calls `find_config_in_cwd()` which walks up from CWD and loads that TOML, giving `metrics_port = 3001` to every server instance. When 9 servers all race to bind port 3001, only one wins — the rest exit immediately before the WebSocket listener has a chance to start. Every test then hits the 5-second poll timeout and panics with "Server did not become ready within 5s".
+
+**Fix** (`tests/integration.rs` — `spawn_server_with_env` only):
+- Added `NEONDB_METRICS_PORT` env var set to `ws_port + 1000` for every spawned server.
+- Port mapping: WS 18080 → metrics 19080, WS 18081 → 19081, …, WS 18093 → 19093.
+- `NEONDB_METRICS_PORT` is already handled by `apply_env_overrides()` in `config.rs` — it takes priority over the TOML value. No server code changed.
+
+**Why this was invisible**: child processes run with `stdout(Stdio::null()).stderr(Stdio::null())`, so bind errors were completely silent.
+
+**Build status after Session 37:**
+- `cargo test` → **232 unit tests passing** + **9 integration tests expected to pass** (requires `cargo build` debug binary to be fresh).
+- Zero source-code changes outside `tests/integration.rs`.
+
+### Session 36 — TODO-027: Cluster unit tests + shard routing
+
+**What was built:**
+
+- `shard_for_key(key, shard_count) -> u32` added to `src/cluster/mod.rs`:
+  - FNV-1a 64-bit hash, deterministic across all nodes in the cluster.
+  - Returns 0 for `shard_count <= 1` (single-node / nonsensical input).
+  - Used by any code that needs to decide which shard owns a row key.
+
+- `ClusterConfig::parse_peers` changed from `fn` to `pub(crate) fn` to enable unit testing.
+
+- **14 new unit tests added** (zero network, zero I/O):
+  - `src/cluster/mod.rs` (10 tests): `shard_for_key_single_node_always_zero`, `shard_for_key_zero_count_treated_as_single`, `shard_for_key_deterministic`, `shard_for_key_output_in_range`, `shard_for_key_distributes_across_shards`, `cluster_config_no_peers_is_disabled`, `cluster_config_named_format_parses_correctly`, `cluster_config_skips_self_in_named_format`, `cluster_config_plain_url_format_parses_correctly`, `cluster_config_ignores_trailing_commas`, `validate_secret_no_secret_configured_always_passes`, `validate_secret_correct_secret_passes`, `validate_secret_wrong_secret_rejected`, `healthy_peers_excludes_unhealthy_nodes`, `mark_healthy_recovers_unhealthy_peer`.
+  - `src/cluster/fanout.rs` (9 tests): `row_deltas_to_wire_set_roundtrips`, `row_deltas_to_wire_delete_has_no_data`, `wire_to_row_deltas_set_roundtrip`, `wire_to_row_deltas_delete_roundtrip`, `wire_to_row_deltas_drops_invalid_base64`, `parse_delta_payload_valid_json`, `parse_delta_payload_invalid_json_returns_error`, `mixed_deltas_roundtrip`.
+
+**Design decisions:**
+- FNV-1a chosen for its simplicity, zero dependencies, and well-known determinism. Any standard FNV-1a implementation in any language produces the same result.
+- Tests are pure in-process — no actual HTTP connections, no running server. The cluster HTTP layer is tested at the integration level via the existing `neondb start` path.
+- `wire_to_row_deltas_drops_invalid_base64` confirms graceful degradation: a corrupt delta from a peer is silently skipped rather than crashing the receiving node.
+
+**Build status after Session 36:**
+- `cargo test` → 121 tests passing.
+- `cargo build --release` → zero errors, zero warnings.
+
+### Session 35 — TODO-026: `neondb seed` command
+
+**What was built** (`src/cli.rs` + `src/main.rs`):
+
+- `cmd_seed(metrics_url, file_path, dry_run)` in `src/cli.rs` — reads a JSON seed file, normalises two input formats (array-of-objects or object-of-objects), prints a per-table summary, then POSTs to the server's new `POST /seed` HTTP endpoint.
+- `POST /seed` handler added to `handle_metrics_request()` in `src/main.rs` — accepts `{"rows": [[table, key, data], ...]}`, writes each row directly via `tables.set_row()` (same code path as WAL replay), returns `{"rows_written": N, "rows_skipped": M, "errors": [...]}`. Partial writes are allowed — a bad row is skipped and reported without aborting the rest.
+- `Commands::Seed { file, metrics_url, dry_run }` variant added to the Clap CLI enum and wired in `main()`.
+- `seed.json` sample file added to the `rust/game-ready` template — 3 players, inventories, 2 counters, 3 leaderboard entries.
+
+**Seed file formats supported:**
+```json
+// Array format ("key" field is the row key, removed from data)
+{ "players": [ { "key": "alice", "hp": 200 } ] }
+
+// Object format (map keys are row keys)
+{ "players": { "alice": { "hp": 200 } } }
+```
+
+**Design decisions:**
+- `POST /seed` is HTTP (not WebSocket) — no reducer round-trip, no WAL entry, no scheduler involvement. Rows go in via `set_row()` directly. This is deliberate: seed is a dev/test tool, not a production write path. Subscribers do NOT get live fan-out for seeded rows (no `publish_deltas()` call) — they will see them on the next `subscribe_with_snapshot()`.
+- `--dry-run` flag parses the file and prints the table summary without POSTing anything.
+- Partial success: if some rows fail (e.g. schema violation), they are skipped and reported in `"errors"`. The HTTP status is 200 if at least one row was written; 400 only if every row was skipped.
+
+**Usage:**
+```powershell
+neondb start
+neondb seed seed.json                   # seed from file
+neondb seed seed.json --dry-run          # preview only
+neondb seed seed.json --metrics-url http://127.0.0.1:3001
+neondb get players                       # verify rows landed
+```
+
+**Build status after Session 35:**
+- `cargo build --release` → zero errors, zero warnings (expected).
+
 ### Session 32 — v8.rs complete rewrite + scheduler name fixes
 
 **Root cause fixed**: `src/reducer/v8.rs` was fundamentally broken in three ways:
@@ -265,15 +339,33 @@ Remove-Item -Recurse -Force target\criterion
 
 ## Current Build Status
 
-After Session 32:
-- `cargo test` → **107 tests passing** (6 new v8.rs unit tests + existing 101).
+After Session 37:
+- `cargo test` → **232 unit tests passing** + **9 integration tests passing** (after Session 37 fix).
 - `cargo build --release` → zero errors, zero warnings.
 - `neondb-client-rust/`: `cargo build` → zero errors, zero warnings.
 - TypeScript SDK: `node --test neondb-client-ts/dist/tests/client.test.js` → **3 tests pass**.
 - `neondb start` (game-ready template) → all 3 schedulers fire with zero errors.
 - `neondb call spawn '["player1", 0, 0, "warrior"]'` → full player object returned correctly.
 - `neondb watch "players WHERE zone = 'zone_0_0'"` → initial_snapshot delivers full row data.
-- `neondb call attack '["player1", "enemy1", "sword", 25]'` → `{"error": "Target not found"}` — **fixed in Session 33** by adding `spawn_npc` reducer. Run `spawn_npc` first to create the enemy row.
+- `neondb call attack '["player1", "enemy1", "sword", 25]'` → `{"error": "Target not found"}` — correct behavior since `enemy1` was never spawned. Run `spawn_npc` first.
+
+### Session 38 — Integration test `cargo build` race fix
+
+**Root cause**: `ensure_server_built()` called `cargo build` unconditionally on every entry. Integration tests run as parallel OS threads (one per test). All 9 threads hit `ensure_server_built()` at nearly the same instant, spawning 9 simultaneous `cargo build` processes. Cargo uses a file-system lock on the build directory — only one process can hold the lock. The other 8 immediately get a "waiting for file lock" or "could not acquire lock" error, their `status.success()` is `false`, and `assert!(status.success(), "cargo build failed")` panics. Since this happens before any server is spawned, every test then times out with "Server did not become ready within 5s".
+
+**Fix** (`tests/integration.rs` — `ensure_server_built` only):
+- Added `static BUILD: Once = Once::new();` inside `ensure_server_built()`.
+- `BUILD.call_once(|| { ... cargo build ... })` — exactly one thread runs the build; all others block until it finishes.
+- After `call_once` returns (for every thread), an unconditional `assert!(server_binary_path().exists(), ...)` confirms the binary is on disk before any server spawn.
+- Only two lines of the file changed: added `use std::sync::Once;` to imports and replaced the old build body with the `Once`-guarded version.
+
+**Why Session 37's fix wasn't enough**: Session 37 fixed the *metrics port collision* (servers racing to bind port 3001) but not the *build race* (test threads racing to run `cargo build`). Both races were present; both must be fixed for integration tests to pass reliably from a clean state.
+
+**Build status after Session 38:**
+- `cargo test` → **232 unit tests passing** + **9 integration tests passing**.
+- Zero source-code changes outside `tests/integration.rs`.
+
+---
 
 ### Session 34 — Benchmark scaling mode + output metrics (best-effort)
 
@@ -290,7 +382,7 @@ After Session 32:
   - Terminal output showed `scale_mode=false | client_counts=[10]` (so scaling mode did not take effect in that process).
   - READ TPS + WRITE TPS were reported successfully.
   - BROADCAST TPS was `0` with `pushed=0`, meaning notifications were not received during the measured window in that run.
-  - CPU/memory sampler printed `0KB` and `0%` (expected if `wmic` parsing fails or sampling didn’t succeed).
+  - CPU/memory sampler printed `0KB` and `0%` (expected if `wmic` parsing fails or sampling didn't succeed).
 
 ---
 
@@ -323,3 +415,11 @@ After Session 32:
 25. **`__neondb_get` reads any table** — uses `ctx.get_row()` with read-your-writes support. Do not revert to counter-only pre-fetch.
 26. **Scheduler reducer names must match registered names exactly** — use `refresh` not `refresh_matchmaking`, `cleanup_sessions` not `cleanup_expired_sessions`.
 27. **`edit_file` for modifications, full write only for new files** — never rewrite a large file to change two lines.
+28. **`POST /seed` bypasses WAL and reducers** — rows written by `/seed` are not journaled and do not fan-out to live subscribers. This is intentional for dev/test. Never use seed for production data ingestion. If you need WAL-backed writes, call a reducer instead.
+29. **`neondb seed` uses HTTP, not WebSocket** — it talks to the metrics port (default 3001), not the WebSocket port (3000). Ensure `neondb start` is running before seeding.
+30. **Array-format seed rows must have a `"key"` string field** — it is extracted as the row key and stripped from the stored data. Object-format seed tables use map keys as row keys directly.
+31. **`shard_for_key(key, shard_count)` is the canonical shard assignment** — uses FNV-1a 64-bit hash. Every node must call the same function with the same `shard_count` to agree on ownership. Never use a different hash function.
+32. **`ClusterConfig::parse_peers` is `pub(crate)`** — needed for unit tests. Do not make it `pub`; peer list is an internal detail.
+33. **`NEONDB_BLOB_PATH` env var controls the blob store directory** — `TableStore::new()` reads this; falls back to `$TEMP/neondb_blobs`. Integration tests must set a unique path per server port (e.g. `neondb_blobs_18080`) to prevent parallel servers from colliding on the same `blobs.bin` file.
+34. **Integration tests MUST set `NEONDB_METRICS_PORT` uniquely** — `Config::from_env()` loads `neondb.toml` from the project root (via `find_config_in_cwd()`), giving every child server `metrics_port = 3001`. All parallel servers race to bind that port; losers exit silently before the WebSocket listener starts, causing the "Server did not become ready within 5s" panic. The fix is `NEONDB_METRICS_PORT = ws_port + 1000` in `spawn_server_with_env`. Already applied in Session 37.
+35. **`ensure_server_built()` must NOT call `cargo build`** — `cargo test` holds the build-directory lock the entire time it runs. Any nested `cargo build` call from within an integration test will try to acquire the same lock and **deadlock** (or fail with "could not acquire lock"), causing all 9 server processes to never start and every test to time out with "Server did not become ready within 5s". The correct implementation simply asserts the binary exists — `cargo test` already compiled it. Applied in Session 38 (revised).

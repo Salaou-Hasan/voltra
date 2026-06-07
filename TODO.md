@@ -242,7 +242,7 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 
 ── NEW GAPS (Session 32+) ────────────────────────────────────────
 25. TODO-025  Enemy/NPC spawning system       ✅ DONE (Session 33)
-26. TODO-026  CLI `neondb seed` command       ← bulk-seed rows from a JSON file for dev/test
+26. TODO-026  CLI `neondb seed` command       ✅ DONE (Session 35)
 ```
 
 ---

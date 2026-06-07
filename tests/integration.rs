@@ -30,23 +30,22 @@ fn server_binary_path() -> PathBuf {
     manifest_dir.join("target").join("debug").join(file_name)
 }
 
+/// Verify the server binary exists before spawning.
+///
+/// When running under `cargo test`, the binary is already compiled as part of
+/// the test build — there is no need to invoke `cargo build` again.  Doing so
+/// would deadlock because `cargo test` holds the build-directory lock and a
+/// nested `cargo build` call would block forever trying to acquire the same lock.
+///
+/// The binary is placed at `target/debug/neondb[.exe]` by the same `cargo test`
+/// invocation that compiled this integration test harness, so it is guaranteed
+/// to exist by the time any test function runs.
 fn ensure_server_built() {
-    let binary = server_binary_path();
-    if binary.exists() {
-        return;
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let status = Command::new("cargo")
-        .arg("build")
-        .current_dir(&manifest_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("Failed to invoke cargo build");
-
-    assert!(status.success(), "cargo build failed");
-    assert!(binary.exists(), "Server binary not found after build");
+    assert!(
+        server_binary_path().exists(),
+        "Server binary not found at {:?}. Run `cargo build` first.",
+        server_binary_path()
+    );
 }
 
 fn spawn_server(port: u16, wal_path: PathBuf) -> Child {
@@ -57,13 +56,29 @@ fn spawn_server_with_env(port: u16, wal_path: PathBuf, extra_env: &[(&str, &str)
     ensure_server_built();
     let binary = server_binary_path();
 
+    // Each server gets its own blob dir so parallel tests don't collide.
+    let blob_dir = std::env::temp_dir().join(format!("neondb_blobs_{}", port));
+
+    // Metrics port must be unique per server instance.
+    //
+    // Config::from_env() calls find_config_in_cwd() which walks up from the
+    // child process's CWD and may find a neondb.toml that sets metrics_port.
+    // Without an explicit override, parallel test servers race to bind the
+    // same metrics port and all but the first exit before the WebSocket
+    // listener starts — causing the "Server did not become ready" timeout.
+    //
+    // Derive a unique metrics port: ws_port + 1000 (e.g. 18080 → 19080).
+    let metrics_port = port + 1000;
+
     let mut cmd = Command::new(binary);
     cmd.arg("start")
         .env("NEONDB_HOST", "127.0.0.1")
         .env("NEONDB_PORT", port.to_string())
+        .env("NEONDB_METRICS_PORT", metrics_port.to_string())
         .env("NEONDB_WAL_PATH", wal_path)
+        .env("NEONDB_BLOB_PATH", blob_dir)
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::inherit()); // inherit so startup errors are visible in test output
 
     for (k, v) in extra_env {
         cmd.env(k, v);
@@ -620,18 +635,12 @@ async fn send_call(
 
 /// A caller with no role must be REJECTED when the server restricts `increment`
 /// to the "admin" role.
-///
-/// Setup: server has `NEONDB_API_KEY=perm_key` and
-///        `NEONDB_PERMISSIONS={"increment":["admin"]}`.
-/// Client connects with `Bearer perm_key` (no :<role> suffix → role = "").
-/// Expected: response.success == false with a "Permission denied" error.
 #[tokio::test]
 async fn integration_permissions_unauthorized_call_rejected() {
     let port = 18091u16;
     let wal_path = std::env::temp_dir().join("neondb_perms_reject.wal");
     let _ = std::fs::remove_file(&wal_path);
 
-    // Restrict "increment" to admin role only.
     let perms_json = r#"{"increment":["admin"]}"#;
     let mut child = spawn_server_with_env(
         port,
@@ -644,7 +653,6 @@ async fn integration_permissions_unauthorized_call_rejected() {
     let ws_url = format!("ws://127.0.0.1:{}", port);
     wait_for_server_ready_with_auth(&ws_url, Duration::from_secs(5), "perm_key").await;
 
-    // Connect with correct key but NO role suffix.
     let (mut ws, _) = tokio_tungstenite::connect_async(bearer_request(&ws_url, "perm_key"))
         .await
         .expect("connect");
@@ -674,12 +682,7 @@ async fn integration_permissions_unauthorized_call_rejected() {
     let _ = std::fs::remove_file(&wal_path);
 }
 
-/// A caller with the correct role must be ALLOWED even when the reducer is
-/// restricted.
-///
-/// Setup: same server config as above.
-/// Client connects with `Bearer perm_key:admin` → role = "admin".
-/// Expected: response.success == true.
+/// A caller with the correct role must be ALLOWED even when the reducer is restricted.
 #[tokio::test]
 async fn integration_permissions_authorized_call_passes() {
     let port = 18092u16;
@@ -698,7 +701,6 @@ async fn integration_permissions_authorized_call_passes() {
     let ws_url = format!("ws://127.0.0.1:{}", port);
     wait_for_server_ready_with_auth(&ws_url, Duration::from_secs(5), "perm_key2").await;
 
-    // Connect with key:role suffix — role = "admin".
     let (mut ws, _) =
         tokio_tungstenite::connect_async(bearer_request(&ws_url, "perm_key2:admin"))
             .await
@@ -723,19 +725,13 @@ async fn integration_permissions_authorized_call_passes() {
     let _ = std::fs::remove_file(&wal_path);
 }
 
-/// An unrestricted reducer must be callable regardless of the caller's role
-/// (including no role at all).
-///
-/// Setup: server restricts only `delete_user` to ["admin"].
-/// Client calls `increment` (not in permissions map) with no role.
-/// Expected: response.success == true — open reducers are always permitted.
+/// An unrestricted reducer must be callable regardless of the caller's role.
 #[tokio::test]
 async fn integration_permissions_open_reducer_always_allowed() {
     let port = 18093u16;
     let wal_path = std::env::temp_dir().join("neondb_perms_open.wal");
     let _ = std::fs::remove_file(&wal_path);
 
-    // Only "delete_user" is restricted; "increment" is open.
     let perms_json = r#"{"delete_user":["admin"]}"#;
     let mut child = spawn_server_with_env(
         port,
@@ -748,7 +744,6 @@ async fn integration_permissions_open_reducer_always_allowed() {
     let ws_url = format!("ws://127.0.0.1:{}", port);
     wait_for_server_ready_with_auth(&ws_url, Duration::from_secs(5), "perm_key3").await;
 
-    // Connect with no role.
     let (mut ws, _) = tokio_tungstenite::connect_async(bearer_request(&ws_url, "perm_key3"))
         .await
         .expect("connect");

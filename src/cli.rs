@@ -15,6 +15,12 @@
 //!     booleans, and null are left unquoted to preserve their types.
 //!   - Error message rewritten: shows the raw input received and two concrete
 //!     working examples instead of the misleading old tip.
+//!
+//! Session 32 fixes:
+//!   - cmd_seed: BUG-1 fix — dry-run format string produced malformed output.
+//!     "{}Seeding {} row(s)..." with dry_run=true emitted the prefix and body
+//!     concatenated without a separator: "[dry-run] Would seedSeeding 3 row(s)...".
+//!     Fixed by splitting into two separate println! calls.
 
 use crate::error::{NeonDBError, Result};
 use crate::network::message::{ClientMessage, ReducerCall};
@@ -288,8 +294,6 @@ async fn generate_via_anthropic(prompt: &str) -> std::result::Result<serde_json:
         }]
     });
 
-    // Use hyper for the HTTPS request.
-    // Build a minimal HTTPS client via hyper-tls / native-tls.
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -316,7 +320,6 @@ async fn generate_via_anthropic(prompt: &str) -> std::result::Result<serde_json:
         .await
         .map_err(|e| format!("JSON decode error: {}", e))?;
 
-    // Extract the text from content[0].text
     let text = data
         .get("content")
         .and_then(|c| c.get(0))
@@ -324,7 +327,6 @@ async fn generate_via_anthropic(prompt: &str) -> std::result::Result<serde_json:
         .and_then(|t| t.as_str())
         .ok_or_else(|| "Unexpected API response shape".to_string())?;
 
-    // Strip markdown fences if present
     let cleaned = text
         .trim()
         .trim_start_matches("```json")
@@ -344,7 +346,7 @@ fn built_in_npc_template(npc_type: &str) -> serde_json::Value {
         "skeleton" => ("Skeleton", "An undead archer, silent and relentless.", "patrol",     80,  16,  6, 5, 35,   8),
         "dragon"   => ("Dragon",   "An ancient dragon of immense power.",       "boss",       800, 70, 40, 3, 1000, 500),
         "boss"     => ("Boss",     "A powerful dungeon guardian.",              "boss",       500, 45, 25, 4, 500, 200),
-        _          => (npc_type,   &format!("A {}.", npc_type) as &str,          "aggressive",  60,  12,  4, 5,  20,   5),
+        _          => (npc_type,   "A dangerous enemy.",                        "aggressive",  60,  12,  4, 5,  20,   5),
     };
     serde_json::json!({
         "npc_type": npc_type,
@@ -359,6 +361,181 @@ fn built_in_npc_template(npc_type: &str) -> serde_json::Value {
     })
 }
 
+
+// ── seed ─────────────────────────────────────────────────────────────────────
+
+/// Bulk-seed rows from a JSON file into a running NeonDB server.
+///
+/// # Seed file format
+///
+/// Object-of-arrays (list of rows per table):
+/// ```json
+/// {
+///   "players": [
+///     { "key": "alice", "hp": 200, "level": 1 },
+///     { "key": "bob",   "hp": 150, "level": 2 }
+///   ]
+/// }
+/// ```
+///
+/// Object-of-objects (keyed map per table):
+/// ```json
+/// {
+///   "players": {
+///     "alice": { "hp": 200, "level": 1 },
+///     "bob":   { "hp": 150, "level": 2 }
+///   }
+/// }
+/// ```
+pub async fn cmd_seed(
+    metrics_url: &str,
+    file_path: &str,
+    dry_run: bool,
+) -> Result<()> {
+    // ── 1. Read and parse the seed file ──────────────────────────────────────
+    let raw = std::fs::read_to_string(file_path).map_err(|e| {
+        NeonDBError::invalid_argument(format!("Cannot read seed file '{}': {}", file_path, e))
+    })?;
+    let seed: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| {
+            NeonDBError::invalid_argument(format!("Seed file is not valid JSON: {}", e))
+        })?;
+
+    let tables_map = seed.as_object().ok_or_else(|| {
+        NeonDBError::invalid_argument("Seed file root must be a JSON object mapping table names to rows")
+    })?;
+
+    // ── 2. Normalize into a flat Vec<(table, key, data)> ─────────────────────
+    let mut rows: Vec<(String, String, serde_json::Value)> = Vec::new();
+
+    for (table_name, table_value) in tables_map {
+        match table_value {
+            serde_json::Value::Array(arr) => {
+                for (idx, item) in arr.iter().enumerate() {
+                    let obj = item.as_object().ok_or_else(|| {
+                        NeonDBError::invalid_argument(format!(
+                            "{}[{}]: each array element must be a JSON object",
+                            table_name, idx
+                        ))
+                    })?;
+                    let row_key = obj
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            NeonDBError::invalid_argument(format!(
+                                "{}[{}]: array-format rows must have a \"key\" string field",
+                                table_name, idx
+                            ))
+                        })?;
+                    let mut data = obj.clone();
+                    data.remove("key");
+                    rows.push((table_name.clone(), row_key.to_string(), serde_json::Value::Object(data)));
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for (row_key, data) in map {
+                    rows.push((table_name.clone(), row_key.clone(), data.clone()));
+                }
+            }
+            _ => {
+                return Err(NeonDBError::invalid_argument(format!(
+                    "Table '{}': value must be an array or object of rows",
+                    table_name
+                )));
+            }
+        }
+    }
+
+    if rows.is_empty() {
+        println!("Seed file contains no rows — nothing to do.");
+        return Ok(());
+    }
+
+    // ── 3. Summary / dry-run ─────────────────────────────────────────────────
+    // BUG-1 FIX: split into two separate println! calls instead of using a
+    // format string with an embedded conditional prefix.  The old single-call
+    // approach concatenated "[dry-run] Would seed" and "Seeding" without a
+    // separator, producing malformed output in non-dry-run mode.
+    let mut by_table: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for (table, _, _) in &rows {
+        *by_table.entry(table.as_str()).or_insert(0) += 1;
+    }
+
+    if dry_run {
+        println!(
+            "[dry-run] Would seed {} row(s) across {} table(s):",
+            rows.len(),
+            by_table.len()
+        );
+    } else {
+        println!(
+            "Seeding {} row(s) across {} table(s):",
+            rows.len(),
+            by_table.len()
+        );
+    }
+
+    for (table, count) in &by_table {
+        println!("  {:<30} {} row(s)", table, count);
+    }
+
+    if dry_run {
+        println!("\nDry-run complete — no data was written.");
+        return Ok(());
+    }
+
+    // ── 4. POST to /seed ──────────────────────────────────────────────────────
+    let seed_url = format!("{}/seed", metrics_url.trim_end_matches('/'));
+
+    let payload = serde_json::json!({
+        "rows": rows.iter().map(|(t, k, d)| serde_json::json!([t, k, d])).collect::<Vec<_>>()
+    });
+    let payload_str = serde_json::to_string(&payload)
+        .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+
+    let uri: hyper::Uri = seed_url.parse().map_err(|e| {
+        NeonDBError::network_error(format!("Invalid URL '{}': {}", seed_url, e))
+    })?;
+    let req = hyper::Request::builder()
+        .method(hyper::Method::POST)
+        .uri(uri)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .body(hyper::Body::from(payload_str))
+        .map_err(|e| NeonDBError::network_error(format!("Build request: {}", e)))?;
+
+    let client = hyper::Client::new();
+    let resp = client.request(req).await.map_err(|e| {
+        NeonDBError::network_error(format!(
+            "POST /seed failed: {}. Is the server running at {}?",
+            e, metrics_url
+        ))
+    })?;
+
+    let status = resp.status();
+    let bytes = hyper::body::to_bytes(resp.into_body())
+        .await
+        .map_err(|e| NeonDBError::network_error(format!("Read response: {}", e)))?;
+    let body = String::from_utf8_lossy(&bytes);
+
+    if !status.is_success() {
+        eprintln!("Server returned {}: {}", status, body);
+        return Err(NeonDBError::network_error(format!(
+            "Seed failed with HTTP {}",
+            status
+        )));
+    }
+
+    // ── 5. Print result ───────────────────────────────────────────────────────
+    match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(v) => {
+            let written = v.get("rows_written").and_then(|n| n.as_u64()).unwrap_or(rows.len() as u64);
+            let skipped = v.get("rows_skipped").and_then(|n| n.as_u64()).unwrap_or(0);
+            println!("\n✓ Seed complete: {} row(s) written, {} skipped.", written, skipped);
+        }
+        Err(_) => println!("\n✓ Seed complete.\n{}", body),
+    }
+    Ok(())
+}
 
 pub async fn cmd_status(metrics_url: &str) -> Result<()> {
     let health_url = format!("{}/healthz", metrics_url.trim_end_matches('/'));
@@ -384,8 +561,6 @@ pub async fn cmd_status(metrics_url: &str) -> Result<()> {
         }
     }
 }
-
-// ── tables ───────────────────────────────────────────────────────────────────
 
 pub async fn cmd_tables(metrics_url: &str) -> Result<()> {
     let url = format!("{}/tables", metrics_url.trim_end_matches('/'));
@@ -418,8 +593,6 @@ pub async fn cmd_tables(metrics_url: &str) -> Result<()> {
     println!("{:<24} {:>10}", "TOTAL", total);
     Ok(())
 }
-
-// ── get ────────────────────────────────────────────────────────────────────────
 
 pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Result<()> {
     let url = format!("{}/tables/{}", metrics_url.trim_end_matches('/'), table);
@@ -461,8 +634,6 @@ pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Resul
     }
     Ok(())
 }
-
-// ── call ───────────────────────────────────────────────────────────────────────
 
 pub async fn cmd_call(
     ws_url: &str,
@@ -535,8 +706,6 @@ pub async fn cmd_call(
     let _ = ws.close(None).await;
     Ok(())
 }
-
-// ── watch ──────────────────────────────────────────────────────────────────────
 
 pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Result<()> {
     let request = ws_request(ws_url, api_key)?;

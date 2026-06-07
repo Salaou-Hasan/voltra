@@ -262,7 +262,9 @@ pub struct TableStore {
 
 impl TableStore {
     pub fn new() -> Self {
-        let data_dir = std::env::temp_dir().join("neondb_blobs");
+        let data_dir = std::env::var("NEONDB_BLOB_PATH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("neondb_blobs"));
         let blob_path = data_dir.join("blobs.bin");
         let blob_store = BlobStore::open(blob_path).expect("Failed to open blob store");
 
