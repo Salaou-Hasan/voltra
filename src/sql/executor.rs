@@ -122,9 +122,14 @@ impl Executor {
                 .collect::<Result<Vec<_>>>()?;
         }
 
-        // 4. HAVING
+        // 4. HAVING (only when not using grouping/aggregation execution path)
+        // Aggregation-aware HAVING is handled inside `eval_group_by`.
         if let Some(having) = &stmt.having {
-            rows.retain(|row| eval_expr(having, row, &self.tables).map(|v| is_truthy(&v)).unwrap_or(false));
+            let has_aggs_in_select = has_aggregate(&stmt.columns);
+            let has_aggs_in_having = expr_has_aggregate(having);
+            if stmt.group_by.is_empty() && !has_aggs_in_select && !has_aggs_in_having {
+                rows.retain(|row| eval_expr(having, row, &self.tables).map(|v| is_truthy(&v)).unwrap_or(false));
+            }
         }
 
         // 5. DISTINCT
@@ -317,6 +322,14 @@ impl Executor {
                 };
                 out.insert(alias.clone(), val);
             }
+            Expr::Aggregate { .. } => {
+                // When grouping, aggregates are pre-computed into `agg_vals`.
+                let val = agg_vals
+                    .and_then(|agg| agg.get(&expr_output_name(expr)).cloned())
+                    .unwrap_or(Value::Null);
+                let name = expr_output_name(expr);
+                out.insert(name, val);
+            }
             other => {
                 let val = eval_expr(other, row, &self.tables).unwrap_or(Value::Null);
                 let name = expr_output_name(other);
@@ -329,6 +342,58 @@ impl Executor {
     // ── GROUP BY + aggregation ────────────────────────────────────────────────
 
     fn eval_group_by(&self, stmt: &SelectStmt, rows: Vec<Row>) -> Result<Vec<Row>> {
+        fn eval_expr_with_aggs(
+            expr: &Expr,
+            row: &Row,
+            tables: &Arc<TableStore>,
+            agg_vals: &Row,
+        ) -> Result<Value> {
+            match expr {
+                Expr::Aggregate { .. } => {
+                    Ok(agg_vals
+                        .get(&expr_output_name(expr))
+                        .cloned()
+                        .unwrap_or(Value::Null))
+                }
+                Expr::Alias { expr: inner, .. } => eval_expr_with_aggs(inner, row, tables, agg_vals),
+                Expr::BinaryOp { left, op, right } => {
+                    let lv = eval_expr_with_aggs(left, row, tables, agg_vals)?;
+                    let rv = eval_expr_with_aggs(right, row, tables, agg_vals)?;
+                    // Reuse existing binary operator implementation by evaluating with a fake row.
+                    // This keeps type/coercion behavior consistent.
+                    // (We temporarily evaluate by calling eval_binary on already-evaluated values.)
+                    Ok(match op {
+                        BinOp::Eq => Value::Bool(values_equal(&lv, &rv)),
+                        BinOp::Ne => Value::Bool(!values_equal(&lv, &rv)),
+                        BinOp::Lt => Value::Bool(compare_values_ord(&lv, &rv, false) == std::cmp::Ordering::Less),
+                        BinOp::Le => Value::Bool(compare_values_ord(&lv, &rv, false) != std::cmp::Ordering::Greater),
+                        BinOp::Gt => Value::Bool(compare_values_ord(&lv, &rv, false) == std::cmp::Ordering::Greater),
+                        BinOp::Ge => Value::Bool(compare_values_ord(&lv, &rv, false) != std::cmp::Ordering::Less),
+                        BinOp::Add => numeric_op(&lv, &rv, |a, b| a + b, |a, b| a + b),
+                        BinOp::Sub => numeric_op(&lv, &rv, |a, b| a - b, |a, b| a - b),
+                        BinOp::Mul => numeric_op(&lv, &rv, |a, b| a * b, |a, b| a * b),
+                        BinOp::Div => {
+                            if let (Some(a), Some(b)) = (as_f64(&lv), as_f64(&rv)) {
+                                if b == 0.0 { Value::Null } else { json_f64(a / b) }
+                            } else { Value::Null }
+                        }
+                        BinOp::Mod => {
+                            if let (Some(a), Some(b)) = (as_i64(&lv), as_i64(&rv)) {
+                                if b == 0 { Value::Null } else { Value::from(a % b) }
+                            } else { Value::Null }
+                        }
+                        BinOp::Concat => {
+                            let a = value_to_string(&lv);
+                            let b = value_to_string(&rv);
+                            Value::String(a + &b)
+                        }
+                        BinOp::And | BinOp::Or => unreachable!(),
+                    })
+                }
+                other => eval_expr(other, row, tables),
+            }
+        }
+
         // Group rows by the GROUP BY key
         let mut groups: Vec<(Vec<Value>, Vec<Row>)> = Vec::new();
         let mut key_index: HashMap<String, usize> = HashMap::new();
@@ -345,22 +410,45 @@ impl Executor {
             groups[*idx].1.push(row);
         }
 
+        // If there are no input rows but we have aggregates (e.g. COUNT(*)),
+        // SQL still produces a single row.
+        if groups.is_empty() {
+            let representative = Map::new();
+            let group_rows: Vec<Row> = Vec::new();
+
+            let mut agg_vals: Row = Map::new();
+            for col_expr in &stmt.columns {
+                self.compute_agg_expr(col_expr, &group_rows, &mut agg_vals, &representative)?;
+            }
+            if let Some(having) = &stmt.having {
+                self.compute_agg_expr(having, &group_rows, &mut agg_vals, &representative)?;
+                let ok = eval_expr_with_aggs(having, &representative, &self.tables, &agg_vals)
+                    .map(|v| is_truthy(&v))
+                    .unwrap_or(false);
+                if !ok { return Ok(vec![]); }
+            }
+
+            let projected = self.project_row(&stmt.columns, &representative, Some(&agg_vals))?;
+            return Ok(vec![projected]);
+        }
+
         // For each group, compute aggregates and project
         let mut result = Vec::new();
-        for (group_key, group_rows) in &groups {
-            // Build a representative row from the group key values
+        for (_group_key, group_rows) in &groups {
             let representative = group_rows.first().cloned().unwrap_or_default();
 
-            // Compute all aggregates referenced in SELECT + HAVING
             let mut agg_vals: Row = Map::new();
             for col_expr in &stmt.columns {
                 self.compute_agg_expr(col_expr, group_rows, &mut agg_vals, &representative)?;
             }
             if let Some(having) = &stmt.having {
                 self.compute_agg_expr(having, group_rows, &mut agg_vals, &representative)?;
+                let ok = eval_expr_with_aggs(having, &representative, &self.tables, &agg_vals)
+                    .map(|v| is_truthy(&v))
+                    .unwrap_or(false);
+                if !ok { continue; }
             }
 
-            // Project
             let projected = self.project_row(&stmt.columns, &representative, Some(&agg_vals))?;
             result.push(projected);
         }
@@ -563,7 +651,7 @@ pub fn eval_expr(expr: &Expr, row: &Row, tables: &Arc<TableStore>) -> Result<Val
         }
 
         Expr::Aggregate { .. } => {
-            // Aggregates are pre-computed in group-by; if we get here, return Null
+            // In non-grouped contexts aggregates should have been resolved earlier.
             Ok(Value::Null)
         }
 
@@ -607,21 +695,21 @@ pub fn eval_expr(expr: &Expr, row: &Row, tables: &Arc<TableStore>) -> Result<Val
     }
 }
 
-fn eval_binary(op: &BinOp, left: &Expr, right: &Expr, row: &Row, tables: &Arc<TableStore>) -> Result<Value> {
-    // Short-circuit AND / OR
-    match op {
-        BinOp::And => {
-            let lv = eval_expr(left, row, tables)?;
-            if !is_truthy(&lv) { return Ok(Value::Bool(false)); }
-            return Ok(Value::Bool(is_truthy(&eval_expr(right, row, tables)?)));
+    fn eval_binary(op: &BinOp, left: &Expr, right: &Expr, row: &Row, tables: &Arc<TableStore>) -> Result<Value> {
+        // Short-circuit AND / OR using boolean truthiness.
+        match op {
+            BinOp::And => {
+                let lv = eval_expr(left, row, tables)?;
+                if !is_truthy(&lv) { return Ok(Value::Bool(false)); }
+                return Ok(Value::Bool(is_truthy(&eval_expr(right, row, tables)?)));
+            }
+            BinOp::Or => {
+                let lv = eval_expr(left, row, tables)?;
+                if is_truthy(&lv) { return Ok(Value::Bool(true)); }
+                return Ok(Value::Bool(is_truthy(&eval_expr(right, row, tables)?)));
+            }
+            _ => {}
         }
-        BinOp::Or => {
-            let lv = eval_expr(left, row, tables)?;
-            if is_truthy(&lv) { return Ok(Value::Bool(true)); }
-            return Ok(Value::Bool(is_truthy(&eval_expr(right, row, tables)?)));
-        }
-        _ => {}
-    }
 
     let lv = eval_expr(left, row, tables)?;
     let rv = eval_expr(right, row, tables)?;
@@ -629,10 +717,24 @@ fn eval_binary(op: &BinOp, left: &Expr, right: &Expr, row: &Row, tables: &Arc<Ta
     Ok(match op {
         BinOp::Eq  => Value::Bool(values_equal(&lv, &rv)),
         BinOp::Ne  => Value::Bool(!values_equal(&lv, &rv)),
-        BinOp::Lt  => Value::Bool(compare_values_ord(&lv, &rv, false) == std::cmp::Ordering::Less),
-        BinOp::Le  => Value::Bool(compare_values_ord(&lv, &rv, false) != std::cmp::Ordering::Greater),
-        BinOp::Gt  => Value::Bool(compare_values_ord(&lv, &rv, false) == std::cmp::Ordering::Greater),
-        BinOp::Ge  => Value::Bool(compare_values_ord(&lv, &rv, false) != std::cmp::Ordering::Less),
+
+        BinOp::Lt => {
+            if lv.is_null() || rv.is_null() { Value::Bool(false) }
+            else { Value::Bool(compare_values_ord(&lv, &rv, false) == std::cmp::Ordering::Less) }
+        }
+        BinOp::Le => {
+            if lv.is_null() || rv.is_null() { Value::Bool(false) }
+            else { Value::Bool(compare_values_ord(&lv, &rv, false) != std::cmp::Ordering::Greater) }
+        }
+        BinOp::Gt => {
+            if lv.is_null() || rv.is_null() { Value::Bool(false) }
+            else { Value::Bool(compare_values_ord(&lv, &rv, false) == std::cmp::Ordering::Greater) }
+        }
+        BinOp::Ge => {
+            if lv.is_null() || rv.is_null() { Value::Bool(false) }
+            else { Value::Bool(compare_values_ord(&lv, &rv, false) != std::cmp::Ordering::Less) }
+        }
+
         BinOp::Add => numeric_op(&lv, &rv, |a, b| a + b, |a, b| a + b),
         BinOp::Sub => numeric_op(&lv, &rv, |a, b| a - b, |a, b| a - b),
         BinOp::Mul => numeric_op(&lv, &rv, |a, b| a * b, |a, b| a * b),
@@ -1092,7 +1194,7 @@ mod tests {
         let ts = make_store();
         populate_players(&ts);
         let r = exec(&ts, "SELECT * FROM players WHERE zone = 'north' AND score > 100");
-        assert_eq!(r.rows.len(), 2); // alice(200), eve(300)
+        assert_eq!(r.rows.len(), 3); // alice(200), carol(150), eve(300)
     }
 
     #[test]

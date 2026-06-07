@@ -275,6 +275,23 @@ After Session 32:
 - `neondb watch "players WHERE zone = 'zone_0_0'"` → initial_snapshot delivers full row data.
 - `neondb call attack '["player1", "enemy1", "sword", 25]'` → `{"error": "Target not found"}` — **fixed in Session 33** by adding `spawn_npc` reducer. Run `spawn_npc` first to create the enemy row.
 
+### Session 34 — Benchmark scaling mode + output metrics (best-effort)
+
+- Updated `benches/end_to_end.rs` to support scaling mode via env:
+  - `BENCH_SCALE_MODE=1` enables multiple concurrency runs (default client counts: 10,25,50,100,200,500,1000)
+  - `BENCH_CLIENT_COUNTS=...` can override the list
+  - `BENCH_CALLS=...` controls calls per client
+- Output includes:
+  - Number of cores used
+  - CPU usage during server lifetime (Windows `wmic`, best-effort)
+  - Memory usage via Windows WorkingSet (best-effort)
+  - READ/WRITE/BROADCAST TPS per concurrency level
+- Critical observation from a run attempting `BENCH_SCALE_MODE=1`:
+  - Terminal output showed `scale_mode=false | client_counts=[10]` (so scaling mode did not take effect in that process).
+  - READ TPS + WRITE TPS were reported successfully.
+  - BROADCAST TPS was `0` with `pushed=0`, meaning notifications were not received during the measured window in that run.
+  - CPU/memory sampler printed `0KB` and `0%` (expected if `wmic` parsing fails or sampling didn’t succeed).
+
 ---
 
 ## Common Pitfalls for Future Agents

@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 // ── Shared host state ─────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 struct PendingWrite {
     table: String,
     key: String,
@@ -91,7 +92,7 @@ impl V8ReducerBackend {
                     if table.is_empty() || key.is_empty() {
                         return Ok(JsValue::null());
                     }
-                    let ctx_ref = unsafe { &mut *ctx_ptr };
+                    let ctx_ref = &mut *ctx_ptr;
                     match ctx_ref.get_row(&table, &key) {
                         Ok(Some(v)) => json_to_js(&v, js_c),
                         _ => Ok(JsValue::null()),
@@ -113,7 +114,7 @@ impl V8ReducerBackend {
                         .and_then(|s| s.to_std_string().ok())
                         .unwrap_or_default();
                     if table.is_empty() { return Ok(JsValue::null()); }
-                    let ctx_ref = unsafe { &mut *ctx_ptr };
+                    let ctx_ref = &mut *ctx_ptr;
                     match ctx_ref.tables.list_rows_with_keys(&table) {
                         Ok(rows) => {
                             let arr = Value::Array(rows.into_iter().map(|(_, v)| v).collect());
@@ -151,28 +152,27 @@ impl V8ReducerBackend {
                     let json_val = js_to_json(&js_val, js_c).unwrap_or(Value::Null);
 
                     // Apply write immediately to ReducerContext.
-                    let ctx_ref = unsafe { &mut *ctx_ptr };
-                    let result = if table == "counters" {
+                    let ctx_ref = &mut *ctx_ptr;
+
+                    if table == "counters" {
                         match &json_val {
                             Value::Number(n) => {
                                 let amount = n.as_i64().unwrap_or(0) as i32;
-                                ctx_ref.set_counter(key.clone(), amount)
-                                    .map(|_| ())
-                                    .map_err(|e| JsNativeError::error()
-                                        .with_message(e.to_string()).into())
+                                ctx_ref
+                                    .set_counter(key.clone(), amount)
+                                    .map_err(|e| JsNativeError::error().with_message(e.to_string()))?;
                             }
-                            _ => ctx_ref.set_row(table.clone(), key.clone(), json_val.clone())
-                                    .map(|_| ())
-                                    .map_err(|e| JsNativeError::error()
-                                        .with_message(e.to_string()).into()),
+                            _ => {
+                                ctx_ref
+                                    .set_row(table.clone(), key.clone(), json_val.clone())
+                                    .map_err(|e| JsNativeError::error().with_message(e.to_string()))?;
+                            }
                         }
                     } else {
-                        ctx_ref.set_row(table.clone(), key.clone(), json_val.clone())
-                            .map(|_| ())
-                            .map_err(|e| JsNativeError::error()
-                                .with_message(e.to_string()).into())
-                    };
-                    result?;
+                        ctx_ref
+                            .set_row(table.clone(), key.clone(), json_val.clone())
+                            .map_err(|e| JsNativeError::error().with_message(e.to_string()))?;
+                    }
 
                     host_ref.borrow_mut().pending_writes.push(PendingWrite {
                         table,
@@ -203,7 +203,7 @@ impl V8ReducerBackend {
                         .and_then(|s| s.to_std_string().ok())
                         .unwrap_or_default();
                     if !table.is_empty() && !key.is_empty() {
-                        let ctx_ref = unsafe { &mut *ctx_ptr };
+                        let ctx_ref = &mut *ctx_ptr;
                         let _ = ctx_ref.delete_row(table.clone(), key.clone());
                         host_ref.borrow_mut().pending_writes.push(PendingWrite {
                             table,

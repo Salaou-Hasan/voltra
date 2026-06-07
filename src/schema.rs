@@ -86,7 +86,7 @@ impl ColumnType {
         match self {
             ColumnType::String => value.is_string(),
             ColumnType::I64    => value.is_i64() || value.is_u64(),
-            ColumnType::F64    => value.is_f64() || value.is_i64() || value.is_u64(),
+            ColumnType::F64    => value.is_f64(),
             ColumnType::Bool   => value.is_boolean(),
             ColumnType::Bytes  => value.is_string() || value.is_array(), // base64 string or byte array
             ColumnType::Any    => true,
@@ -98,12 +98,11 @@ impl ColumnType {
     fn coerce(&self, value: Value) -> Option<Value> {
         match self {
             ColumnType::F64 => {
-                // Accept integer JSON values as f64
+                // Accept integer JSON values as f64 (and store them as an f64
+                // JSON number so `Value::is_f64()` becomes true).
                 if let Some(i) = value.as_i64() {
-                    // Force a true f64 representation so is_f64() returns true
-                    Some(serde_json::Number::from_f64(i as f64)
-                        .map(Value::Number)
-                        .unwrap_or(value))
+                    let f = i as f64;
+                    serde_json::Number::from_f64(f).map(Value::Number)
                 } else if value.is_f64() {
                     Some(value)
                 } else {

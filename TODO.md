@@ -99,6 +99,26 @@ Tests: `initial_snapshot_delivered_on_subscribe`, `initial_snapshot_respects_pre
 ### TODO-016 — End-to-End Benchmark (WebSocket round-trip)
 **Status**: ✅ DONE (Session 23)
 
+#### TODO-016b — Verify end_to_end benchmark scaling mode + metrics output (env-driven)
+**Status**: ❗ PARTIALLY VALIDATED
+- `benches/end_to_end.rs` supports scaling via:
+  - `BENCH_SCALE_MODE=1`
+  - `BENCH_CLIENT_COUNTS=10,25,50,100,200,500,1000` (default list)
+  - `BENCH_CALLS=<calls per client>`
+- Ensure runtime actually reports `scale_mode=true` and iterates over requested concurrency levels (100–1000 must be exercised).
+- Confirm required query/subscription strings are used under load:
+  - Read SQL: `SELECT * FROM players WHERE zone = 'north' LIMIT 1`
+  - Broadcast subscription: `players WHERE zone = 'north'`
+- Confirm output includes (per concurrency level):
+  - CPU usage during benchmark (avg/peak normalized/core; Windows `wmic`, best-effort)
+  - Memory usage (WorkingSet avg/peak in KB; best-effort)
+  - Number of cores used
+  - READ/WRITE/BROADCAST TPS
+- Known observation to address:
+  - A run attempting `BENCH_SCALE_MODE=1` printed `scale_mode=false` and used only `client_counts=[10]`.
+  - In that same run, `BROADCAST TPS=0` (`pushed=0`).
+  - CPU/memory samples printed `0KB/0%` (sampling likely failed or parsing didn’t yield values).
+
 ---
 
 ## NEW GAPS — Added Session 25 (vs SpacetimeDB feature parity)
