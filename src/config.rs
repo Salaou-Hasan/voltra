@@ -114,6 +114,15 @@ pub struct Config {
     /// A misbehaving reducer otherwise could stage a multi-GB inventory and balloon
     /// memory.  Default 16 MiB.  Env: `NEONDB_MAX_BLOB_SIZE`.
     pub max_blob_size_bytes: usize,
+    /// Maximum linear memory (bytes) a WASM reducer instance may grow to.
+    /// Enforced via Wasmtime's `ResourceLimiter`.  When exceeded, the WASM
+    /// `memory.grow` instruction returns -1 and the reducer typically traps.
+    /// Default 64 MiB.  Env: `NEONDB_REDUCER_MAX_MEMORY_BYTES`.
+    pub reducer_max_memory_bytes: usize,
+    /// Maximum size (bytes) of args bytes passed INTO a reducer and result
+    /// bytes returned FROM it.  Applies to all backends.  Default 1 MiB.
+    /// Env: `NEONDB_REDUCER_MAX_IO_BYTES`.
+    pub reducer_max_io_bytes: usize,
 }
 
 // These structs mirror the TOML schema. Fields that are not yet wired into
@@ -164,6 +173,8 @@ struct ConfigServer {
     permissions_default_policy: Option<String>,
     sql_timeout_ms: Option<u64>,
     max_blob_size_bytes: Option<usize>,
+    reducer_max_memory_bytes: Option<usize>,
+    reducer_max_io_bytes: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -206,6 +217,8 @@ impl Config {
             permissions: PermissionsConfig::default(),
             sql_timeout_ms: 5_000,
             max_blob_size_bytes: 16 * 1024 * 1024,
+            reducer_max_memory_bytes: 64 * 1024 * 1024,
+            reducer_max_io_bytes: 1 * 1024 * 1024,
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -257,6 +270,8 @@ impl Config {
     /// default (16 MiB).
     pub fn apply_global_limits(&self) {
         crate::table::set_max_blob_size(self.max_blob_size_bytes);
+        crate::reducer::set_max_memory_bytes(self.reducer_max_memory_bytes);
+        crate::reducer::set_max_io_bytes(self.reducer_max_io_bytes);
     }
 }
 
@@ -343,6 +358,12 @@ fn apply_server_section(cfg: &mut Config, server: Option<ConfigServer>) {
     }
     if let Some(b) = s.max_blob_size_bytes {
         cfg.max_blob_size_bytes = b;
+    }
+    if let Some(m) = s.reducer_max_memory_bytes {
+        cfg.reducer_max_memory_bytes = m;
+    }
+    if let Some(i) = s.reducer_max_io_bytes {
+        cfg.reducer_max_io_bytes = i;
     }
 }
 
@@ -469,6 +490,16 @@ fn apply_env_overrides(cfg: &mut Config) {
         .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
     {
         cfg.max_blob_size_bytes = b;
+    }
+    if let Ok(m) = env::var("NEONDB_REDUCER_MAX_MEMORY_BYTES")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.reducer_max_memory_bytes = m;
+    }
+    if let Ok(i) = env::var("NEONDB_REDUCER_MAX_IO_BYTES")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.reducer_max_io_bytes = i;
     }
 }
 
@@ -620,5 +651,25 @@ mod tests {
     fn test_config_default_sql_timeout() {
         let config = Config::from_env();
         assert_eq!(config.sql_timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn test_config_default_reducer_limits_sane() {
+        // The defaults must be large enough to support real reducers but small
+        // enough to prevent a single misbehaving module from exhausting host RAM.
+        let config = Config::from_env();
+        assert!(
+            config.reducer_max_memory_bytes >= 1 * 1024 * 1024,
+            "max_memory_bytes too small: {}",
+            config.reducer_max_memory_bytes
+        );
+        assert!(
+            config.reducer_max_io_bytes >= 64 * 1024,
+            "max_io_bytes too small: {}",
+            config.reducer_max_io_bytes
+        );
+        // Sanity caps: defaults shouldn't be absurd.
+        assert!(config.reducer_max_memory_bytes <= 1 * 1024 * 1024 * 1024);
+        assert!(config.reducer_max_io_bytes <= 64 * 1024 * 1024);
     }
 }

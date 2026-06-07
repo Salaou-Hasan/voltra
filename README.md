@@ -694,6 +694,15 @@ NeonDB/
 
 ---
 
+## Production Deployment
+
+- [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) — 100% free hosting options (Oracle Cloud, Fly.io, Cloudflare Tunnel, Coolify/Dokploy)
+- [OPERATIONS.md](OPERATIONS.md) — operator runbook: backups, health checks, tuning, disaster recovery
+- [DEPLOYMENT.md](DEPLOYMENT.md) — Docker-based deployment (existing)
+- [DOKPLOY_DEPLOYMENT.md](DOKPLOY_DEPLOYMENT.md) — Dokploy-specific guide (existing)
+
+---
+
 ## License
 
 MIT

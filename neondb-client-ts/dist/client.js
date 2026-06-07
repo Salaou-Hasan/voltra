@@ -21,6 +21,14 @@ async function getWebSocketCtor() {
         throw new Error("WebSocket is not available. In Node.js, install the 'ws' package: npm install ws");
     }
 }
+const ROLLBACK_KEY_SEP = "\x00";
+function rkey(table, rowKey) {
+    return `${table}${ROLLBACK_KEY_SEP}${rowKey}`;
+}
+function unrkey(key) {
+    const idx = key.indexOf(ROLLBACK_KEY_SEP);
+    return [key.slice(0, idx), key.slice(idx + 1)];
+}
 export class NeonDBClient {
     opts;
     ws = null;
@@ -104,20 +112,33 @@ export class NeonDBClient {
             const callId = this.nextCallId++;
             const encodedArgs = encodeArgs(args);
             const frame = encodeReducerCall(callId, reducerName, encodedArgs);
-            // ── Optimistic: snapshot + apply before sending ──────────────────────
-            let rollbackSnapshot = null;
+            // ── Optimistic: targeted snapshot + apply before sending ─────────────
+            //
+            // The previous implementation snapshotted the ENTIRE rowCache and
+            // restored it on rollback.  That has a race: any subscription diff
+            // arriving between send and error would be wiped by the rollback.
+            //
+            // Instead, we now:
+            //   1. Hand the callback a deep clone of the current cache.
+            //   2. Diff the returned cache against the current cache to find the
+            //      exact (table, rowKey) coordinates the callback mutated.
+            //   3. Snapshot only those pre-call values into `rollbackTouched`.
+            //   4. Apply the new values at those coordinates in the live cache,
+            //      leaving every other row untouched.
+            //   5. On rollback: restore each touched coordinate to its pre-call
+            //      value; rows not in the touched set keep whatever value they
+            //      hold right now (so mid-flight subscription diffs are preserved).
+            let rollbackTouched = null;
             if (optimisticOpts?.optimistic) {
-                // Deep-clone the current cache so rollback can restore it exactly.
-                rollbackSnapshot = this.snapshotCache();
-                // Apply the speculative state.
-                const newCache = optimisticOpts.optimistic(rollbackSnapshot);
-                this.applyOptimisticCache(newCache);
+                const preCacheClone = this.snapshotCache();
+                const proposed = optimisticOpts.optimistic(preCacheClone);
+                rollbackTouched = this.applyTargetedOptimistic(proposed);
             }
             const timer = setTimeout(() => {
                 this.pendingCalls.delete(callId);
                 // Timeout: roll back if we made an optimistic update.
-                if (rollbackSnapshot !== null) {
-                    this.applyOptimisticCache(rollbackSnapshot);
+                if (rollbackTouched !== null) {
+                    this.rollbackTouchedRows(rollbackTouched);
                     optimisticOpts?.onRollback?.(`call "${reducerName}" timed out`, this.snapshotCache());
                 }
                 reject(new Error(`call "${reducerName}" timed out after ${this.opts.callTimeout}ms`));
@@ -129,9 +150,9 @@ export class NeonDBClient {
                         resolve(result.resultBytes);
                     }
                     else {
-                        // Server error: roll back optimistic cache if present.
-                        if (rollbackSnapshot !== null) {
-                            this.applyOptimisticCache(rollbackSnapshot);
+                        // Server error: roll back ONLY the rows we touched.
+                        if (rollbackTouched !== null) {
+                            this.rollbackTouchedRows(rollbackTouched);
                             optimisticOpts?.onRollback?.(result.error ?? "Reducer returned an error", this.snapshotCache());
                         }
                         reject(new Error(result.error ?? "Reducer returned an error"));
@@ -139,13 +160,13 @@ export class NeonDBClient {
                 },
                 reject: (err) => {
                     clearTimeout(timer);
-                    if (rollbackSnapshot !== null) {
-                        this.applyOptimisticCache(rollbackSnapshot);
+                    if (rollbackTouched !== null) {
+                        this.rollbackTouchedRows(rollbackTouched);
                     }
                     reject(err);
                 },
                 timer,
-                rollbackSnapshot,
+                rollbackTouched,
                 onRollback: optimisticOpts?.onRollback,
             });
             this.send(frame);
@@ -207,7 +228,8 @@ export class NeonDBClient {
     // ── Optimistic helpers ────────────────────────────────────────────────────
     /**
      * Deep-snapshot the current row cache into an OptimisticCache
-     * (Map<tableName, Map<rowKey, rowData>>).
+     * (Map<tableName, Map<rowKey, rowData>>).  Used for handing the callback a
+     * safe-to-mutate copy and for the `onRollback` payload.
      */
     snapshotCache() {
         const snap = new Map();
@@ -217,13 +239,79 @@ export class NeonDBClient {
         return snap;
     }
     /**
-     * Replace the live rowCache with the contents of an OptimisticCache.
-     * Used both to apply speculative states and to restore rollback snapshots.
+     * Compare `proposed` against the live `rowCache`, find the (table, rowKey)
+     * coordinates that DIFFER, snapshot their pre-call values, then apply the
+     * proposed value at each one.  Returns the targeted rollback snapshot.
+     *
+     * A coordinate is "touched" if any of:
+     *   - it exists in proposed but not in liveCache (an insert)
+     *   - it exists in liveCache but not in proposed (a delete)
+     *   - both exist but the row data is not referentially identical AND not
+     *     deeply equal (an update)
+     *
+     * NOTE: deep equality here is JSON-string based — fast enough for the
+     * typical small game row, and avoids false-positive rollbacks when the
+     * callback re-clones an unchanged row.
      */
-    applyOptimisticCache(cache) {
-        this.rowCache.clear();
-        for (const [table, rows] of cache) {
-            this.rowCache.set(table, new Map(rows));
+    applyTargetedOptimistic(proposed) {
+        const touched = new Map();
+        // 1. Walk the proposed cache to find inserts and updates.
+        for (const [table, proposedRows] of proposed) {
+            const liveRows = this.rowCache.get(table);
+            for (const [rowKey, newRow] of proposedRows) {
+                const preValue = liveRows?.get(rowKey);
+                if (!rowsEqual(preValue, newRow)) {
+                    touched.set(rkey(table, rowKey), preValue);
+                    // Apply the new value.
+                    if (!this.rowCache.has(table)) {
+                        this.rowCache.set(table, new Map());
+                    }
+                    this.rowCache.get(table).set(rowKey, newRow);
+                }
+            }
+        }
+        // 2. Walk the live cache to find deletes (rows present live, absent in proposed).
+        for (const [table, liveRows] of this.rowCache) {
+            const proposedRows = proposed.get(table);
+            for (const rowKey of liveRows.keys()) {
+                if (!proposedRows || !proposedRows.has(rowKey)) {
+                    const preValue = liveRows.get(rowKey);
+                    const k = rkey(table, rowKey);
+                    // Skip if we already recorded this coordinate above (defensive).
+                    if (!touched.has(k)) {
+                        touched.set(k, preValue);
+                    }
+                }
+            }
+        }
+        // 3. Apply deletes (do this after recording so we don't lose pre-values).
+        for (const [k] of touched) {
+            const [table, rowKey] = unrkey(k);
+            const proposedRows = proposed.get(table);
+            if (!proposedRows || !proposedRows.has(rowKey)) {
+                this.rowCache.get(table)?.delete(rowKey);
+            }
+        }
+        return touched;
+    }
+    /**
+     * Restore every (table, rowKey) pair recorded in `touched` to its pre-call
+     * value.  Rows NOT in `touched` are left at whatever value they hold right
+     * now — this is what preserves subscription diffs that arrived mid-flight.
+     */
+    rollbackTouchedRows(touched) {
+        for (const [k, preValue] of touched) {
+            const [table, rowKey] = unrkey(k);
+            if (preValue === undefined) {
+                // Row didn't exist before the call — delete it.
+                this.rowCache.get(table)?.delete(rowKey);
+            }
+            else {
+                if (!this.rowCache.has(table)) {
+                    this.rowCache.set(table, new Map());
+                }
+                this.rowCache.get(table).set(rowKey, preValue);
+            }
         }
     }
     // ── Internal ──────────────────────────────────────────────────────────────
@@ -359,13 +447,56 @@ export class NeonDBClient {
     rejectAllPending(err) {
         for (const pending of this.pendingCalls.values()) {
             clearTimeout(pending.timer);
-            // Roll back any in-flight optimistic updates on disconnect.
-            if (pending.rollbackSnapshot !== null) {
-                this.applyOptimisticCache(pending.rollbackSnapshot);
+            // Roll back any in-flight optimistic updates on disconnect — but only
+            // the rows each call actually touched.
+            if (pending.rollbackTouched !== null) {
+                this.rollbackTouchedRows(pending.rollbackTouched);
             }
             pending.reject(err);
         }
         this.pendingCalls.clear();
     }
+}
+/**
+ * Shallow-then-deep equality for row data.  Identical references short-circuit
+ * to true; otherwise we compare via JSON.stringify with stable key ordering.
+ *
+ * `undefined` vs anything-defined is treated as unequal (the touched-set logic
+ * uses `undefined` to mean "did not exist").
+ */
+function rowsEqual(a, b) {
+    if (a === b)
+        return true;
+    if (a === undefined || b === undefined)
+        return false;
+    // Fast path: same number of keys and shallow identity per key.
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length === bKeys.length) {
+        let allShallowEqual = true;
+        for (const k of aKeys) {
+            if (!(k in b) || a[k] !== b[k]) {
+                allShallowEqual = false;
+                break;
+            }
+        }
+        if (allShallowEqual)
+            return true;
+    }
+    // Fallback: deep compare via stable JSON.
+    return stableStringify(a) === stableStringify(b);
+}
+function stableStringify(value) {
+    if (value === null || typeof value !== "object") {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return "[" + value.map(stableStringify).join(",") + "]";
+    }
+    const obj = value;
+    const keys = Object.keys(obj).sort();
+    return ("{" +
+        keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") +
+        "}");
 }
 //# sourceMappingURL=client.js.map

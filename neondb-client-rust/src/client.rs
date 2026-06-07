@@ -44,16 +44,22 @@ enum Command {
     Unsubscribe {
         sub_id: String,
     },
-    /// Apply an optimistic cache snapshot (before the call is sent).
+    /// Register a targeted rollback set for a pending optimistic call.
+    ///
+    /// `touched` maps (table, row_key) → the pre-call row value (`None` means
+    /// "row did not exist before the call").  On a server error the worker
+    /// restores ONLY these coordinates; rows not in `touched` are left at
+    /// whatever value they hold at error time — preserving any subscription
+    /// diffs that arrived mid-flight.
     ApplyOptimistic {
         call_id: u64,
-        snapshot: HashMap<String, HashMap<String, serde_json::Value>>,
-        optimistic: HashMap<String, HashMap<String, serde_json::Value>>,
-        reply: oneshot::Sender<Result<Vec<u8>>>,
-        inner_call_id: u64,
+        touched: TouchedRollback,
     },
     Shutdown,
 }
+
+/// Targeted rollback snapshot.  `None` value = "row did not exist pre-call".
+pub type TouchedRollback = HashMap<(String, String), Option<serde_json::Value>>;
 
 /// A handle to a subscription.  Drop or call `.unsubscribe()` to cancel.
 pub struct Subscription {

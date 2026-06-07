@@ -6,6 +6,28 @@
 //     same reducer call sees the write immediately (read-your-own-writes).
 //   - __neondb_delete likewise deletes eagerly.
 //   - Flush loop at end only processes any remaining deletes; sets are no-op.
+//
+// SANDBOX LIMITS (Session 40 — Reducer Sandbox Engineer):
+//   Boa 0.19 does NOT expose a hard heap cap.  There is no public API on
+//   `boa_engine::Context` to set a maximum JS heap size; the engine simply
+//   uses the host allocator.  This means a pathological JS reducer that
+//   constructs a 4 GiB string or fills a giant array CAN grow process
+//   memory beyond what we would like.
+//
+//   What we DO enforce here:
+//     1. A wall-clock timeout (`timeout_ms`) is the primary defence against
+//        runaway JS — see the `tokio::time::timeout` wrapping the worker
+//        dispatch in `src/network/websocket.rs`.
+//     2. Args byte cap (`crate::reducer::max_io_bytes`) — reject oversize
+//        input BEFORE handing it to Boa.
+//     3. Result byte cap (same) — reject oversize output BEFORE encoding
+//        the reply.  This bounds the bytes that cross the JS↔Rust boundary,
+//        even if Boa's heap grew during execution.
+//
+//   For UNTRUSTED JavaScript, the WASM backend is the only runtime in this
+//   project that enforces a hard memory cap (via Wasmtime's `ResourceLimiter`
+//   in `wasm.rs`).  Treat JS reducers as semi-trusted code authored by the
+//   operator, not as a sandbox for hostile uploads.
 // ============================================================================
 
 use crate::error::{NeonDBError, Result};
@@ -290,6 +312,17 @@ impl V8ReducerBackend {
 
 impl ReducerBackend for V8ReducerBackend {
     fn execute(&self, ctx: &mut ReducerContext, args: &[u8]) -> Result<Vec<u8>> {
+        // Sandbox: cap input size.  See the file header for the limitations
+        // of Boa 0.19 — this is one of the few hard guards we can enforce.
+        let max_io = crate::reducer::max_io_bytes();
+        if args.len() > max_io {
+            return Err(NeonDBError::reducer_error(format!(
+                "Reducer args too large: {} bytes (limit {})",
+                args.len(),
+                max_io
+            )));
+        }
+
         // Empty args bytes (scheduler with no args_json) → empty array.
         let args_json: Value = if args.is_empty() {
             Value::Array(vec![])
@@ -297,7 +330,17 @@ impl ReducerBackend for V8ReducerBackend {
             rmp_serde::from_slice(args).unwrap_or(Value::Array(vec![]))
         };
         let result = self.run(ctx, args_json)?;
-        Ok(rmp_serde::to_vec(&result)?)
+        let encoded = rmp_serde::to_vec(&result)?;
+
+        // Sandbox: cap output size BEFORE returning it through the dispatcher.
+        if encoded.len() > max_io {
+            return Err(NeonDBError::reducer_error(format!(
+                "Reducer result too large: {} bytes (limit {})",
+                encoded.len(),
+                max_io
+            )));
+        }
+        Ok(encoded)
     }
 }
 
@@ -459,6 +502,39 @@ function reducer(args) {
         assert_eq!(res["caller_id"],   "player-42");
         assert_eq!(res["caller_role"], "admin");
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_v8_args_oversize_rejected() {
+        // Set a tiny I/O cap and verify that a payload above it is rejected
+        // BEFORE the script is loaded.  This is the only practical heap-style
+        // defence we have in the Boa backend — the file-level doc comment
+        // explains why.
+        let _g = crate::reducer::SANDBOX_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // The setter clamps to a 4 KiB minimum (production sanity floor);
+        // use 5 KiB args so we land clearly above the effective cap.
+        crate::reducer::set_max_io_bytes(4 * 1024);
+
+        let path = write_tmp("test_v8_args_cap.js", r#"
+function reducer(args) { return { ok: true }; }
+"#);
+        let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
+        let mut ctx = make_ctx();
+        let big = vec![0u8; 5 * 1024];
+        let res = backend.execute(&mut ctx, &big);
+        std::fs::remove_file(&path).ok();
+
+        // Restore default so we don't poison other tests in the same process.
+        crate::reducer::set_max_io_bytes(1024 * 1024);
+
+        let err = res.expect_err("expected oversize args to be rejected");
+        assert!(
+            err.to_string().to_lowercase().contains("too large"),
+            "expected 'too large' message, got: {}",
+            err
+        );
     }
 
     #[test]

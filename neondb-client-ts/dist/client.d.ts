@@ -77,14 +77,32 @@ export declare class NeonDBClient {
     isConnected(): boolean;
     /**
      * Deep-snapshot the current row cache into an OptimisticCache
-     * (Map<tableName, Map<rowKey, rowData>>).
+     * (Map<tableName, Map<rowKey, rowData>>).  Used for handing the callback a
+     * safe-to-mutate copy and for the `onRollback` payload.
      */
     private snapshotCache;
     /**
-     * Replace the live rowCache with the contents of an OptimisticCache.
-     * Used both to apply speculative states and to restore rollback snapshots.
+     * Compare `proposed` against the live `rowCache`, find the (table, rowKey)
+     * coordinates that DIFFER, snapshot their pre-call values, then apply the
+     * proposed value at each one.  Returns the targeted rollback snapshot.
+     *
+     * A coordinate is "touched" if any of:
+     *   - it exists in proposed but not in liveCache (an insert)
+     *   - it exists in liveCache but not in proposed (a delete)
+     *   - both exist but the row data is not referentially identical AND not
+     *     deeply equal (an update)
+     *
+     * NOTE: deep equality here is JSON-string based — fast enough for the
+     * typical small game row, and avoids false-positive rollbacks when the
+     * callback re-clones an unchanged row.
      */
-    private applyOptimisticCache;
+    private applyTargetedOptimistic;
+    /**
+     * Restore every (table, rowKey) pair recorded in `touched` to its pre-call
+     * value.  Rows NOT in `touched` are left at whatever value they hold right
+     * now — this is what preserves subscription diffs that arrived mid-flight.
+     */
+    private rollbackTouchedRows;
     private openSocket;
     private handleFrame;
     private applyToCache;
