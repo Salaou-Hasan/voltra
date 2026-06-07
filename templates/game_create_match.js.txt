@@ -1,0 +1,7 @@
+// create_match — pair two queued players into a match.
+// args: [match_id, player_a, player_b]
+const [match_id, a, b] = args;
+__neondb_delete("matchmaking", a);
+__neondb_delete("matchmaking", b);
+__neondb_set("matches", match_id, { match_id, players: [a, b], status: "starting", created_at: 0 });
+result = { ok: true, match_id };

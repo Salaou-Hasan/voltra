@@ -1,0 +1,11 @@
+// update_progress — bump quest progress by `delta`.
+// args: [player_id, quest_id, delta]
+const [pid, quest_id, delta] = args;
+const k = pid + ":" + quest_id;
+const q = __neondb_get("quests", k);
+if (!q) { result = { error: "not_found" }; }
+else {
+  q.progress += (delta || 1);
+  __neondb_set("quests", k, q);
+  result = { ok: true, progress: q.progress };
+}

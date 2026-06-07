@@ -1,0 +1,12 @@
+{
+  "rows": [
+    ["players", "alice", { "player_id": "alice", "x": 0, "y": 0, "zone": "zone_0_0", "hp": 200, "max_hp": 200, "currency": 500 }],
+    ["players", "bob",   { "player_id": "bob",   "x": 50, "y": 25, "zone": "zone_0_0", "hp": 150, "max_hp": 150, "currency": 100 }],
+    ["players", "carol", { "player_id": "carol", "x": 200, "y": 200, "zone": "zone_2_2", "hp": 175, "max_hp": 175, "currency": 750 }],
+    ["inventory", "alice:sword",  { "player_id": "alice", "item_id": "sword",  "qty": 1 }],
+    ["inventory", "alice:potion", { "player_id": "alice", "item_id": "potion", "qty": 5 }],
+    ["leaderboard", "alice", { "player_id": "alice", "score": 9500 }],
+    ["leaderboard", "bob",   { "player_id": "bob",   "score": 8200 }],
+    ["leaderboard", "carol", { "player_id": "carol", "score": 9100 }]
+  ]
+}

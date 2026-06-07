@@ -1,0 +1,11 @@
+// delete_message — author or moderator deletes a message.
+// args: [message_id]
+const [mid] = args;
+const m = __neondb_get("messages", mid);
+if (!m) { result = { error: "no_such_message" }; }
+else if (m.user_id !== __neondb_caller_id && __neondb_caller_role !== "moderator" && __neondb_caller_role !== "admin") {
+  result = { error: "forbidden" };
+} else {
+  __neondb_delete("messages", mid);
+  result = { ok: true };
+}

@@ -1,0 +1,8 @@
+// cleanup_sessions — scheduled GC for stale match rows.
+// args: []
+const matches = __neondb_get_all("matches") || [];
+let removed = 0;
+for (const m of matches) {
+  if (m.status === "complete") { __neondb_delete("matches", m.match_id); removed++; }
+}
+result = { ok: true, removed };

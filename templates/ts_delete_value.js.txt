@@ -1,0 +1,5 @@
+// delete_value — remove a row from the kv table.
+// args: [key]
+const [key] = args;
+if (!__neondb_get("kv", key)) { result = { error: "not_found" }; }
+else { __neondb_delete("kv", key); result = { ok: true }; }

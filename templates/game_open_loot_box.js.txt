@@ -1,0 +1,15 @@
+// open_loot_box — deterministic loot roll.
+// args: [player_id, box_id, seed]
+const [pid, box_id, seed] = args;
+const p = __neondb_get("players", pid);
+if (!p) { result = { error: "not_found" }; }
+else {
+  const items = ["sword", "potion", "shield", "gold"];
+  const idx = ((seed || 0) % items.length + items.length) % items.length;
+  const reward = items[idx];
+  const k = pid + ":" + reward;
+  const inv = __neondb_get("inventory", k) || { player_id: pid, item_id: reward, qty: 0 };
+  inv.qty += 1;
+  __neondb_set("inventory", k, inv);
+  result = { ok: true, reward, qty: inv.qty };
+}

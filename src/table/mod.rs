@@ -41,7 +41,7 @@ use serde_json::Value;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Compute the optimal DashMap inner-shard count for the current machine.
@@ -49,6 +49,32 @@ fn optimal_row_shard_count() -> usize {
     let cpus = num_cpus::get();
     let target = (cpus * 4).next_power_of_two();
     target.max(16)
+}
+
+// ── Blob-size guard ──────────────────────────────────────────────────────────
+//
+// Bounds the maximum size of a single blob written through `BlobStore::store_blob`.
+// A misbehaving reducer (or a malicious client) could otherwise stage a multi-GB
+// inventory array and balloon both the on-disk blob file and the in-memory copy.
+//
+// The limit is a global process-wide AtomicUsize so it can be configured at
+// startup from Config (see `Config::apply_global_limits`) without threading
+// through every TableStore method.
+//
+// Default: 16 MiB.
+const DEFAULT_MAX_BLOB_SIZE_BYTES: usize = 16 * 1024 * 1024;
+static MAX_BLOB_SIZE_BYTES: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_BLOB_SIZE_BYTES);
+
+/// Set the maximum permitted blob size (in bytes) for all subsequent
+/// `BlobStore::store_blob` calls in this process.  Typically called once
+/// from `main()` via `Config::apply_global_limits`.
+pub fn set_max_blob_size(bytes: usize) {
+    MAX_BLOB_SIZE_BYTES.store(bytes.max(1), Ordering::Relaxed);
+}
+
+/// Current maximum blob size in bytes.
+pub fn max_blob_size() -> usize {
+    MAX_BLOB_SIZE_BYTES.load(Ordering::Relaxed)
 }
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -151,6 +177,14 @@ impl BlobStore {
     }
 
     fn store_blob(&mut self, payload: &[u8]) -> Result<u64> {
+        let max = MAX_BLOB_SIZE_BYTES.load(Ordering::Relaxed);
+        if payload.len() > max {
+            return Err(NeonDBError::invalid_argument(format!(
+                "Blob size {} exceeds max {}",
+                payload.len(),
+                max
+            )));
+        }
         let offset = self.next_offset;
         let len = payload.len() as u64;
         self.file.write_all(&len.to_le_bytes())?;
@@ -755,6 +789,40 @@ impl TableStore {
     /// Return all table names currently in the store.
     pub fn list_tables(&self) -> Vec<String> {
         self.tables.iter().map(|e| e.key().clone()).collect()
+    }
+
+    // ── Migration tracking helpers ───────────────────────────────────────────────
+    //
+    // Migrations record themselves in the `__migrations` system table. The
+    // row key is the migration filename; the value is
+    // `{"applied_at": <unix_nanos>, "version": <u64>}`. These helpers are
+    // intentionally thin wrappers around set_row / list_rows_with_keys so
+    // they go through the same write path as everything else.
+
+    /// Returns the set of migration filenames that have already been applied.
+    /// Returns an empty vec if the `__migrations` table does not exist yet.
+    pub fn applied_migration_versions(&self) -> Result<Vec<String>> {
+        let rows = self.list_rows_with_keys("__migrations")?;
+        Ok(rows.into_iter().map(|(k, _)| k).collect())
+    }
+
+    /// Records a migration as applied. `filename` is the migration file's
+    /// basename (e.g. `001_add_score.toml`); `version` is the numeric version
+    /// declared inside the file.
+    pub fn mark_migration_applied(&self, filename: String, version: u64) -> Result<()> {
+        let now_nanos: u128 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        self.set_row(
+            "__migrations".to_string(),
+            filename,
+            serde_json::json!({
+                "applied_at": now_nanos as u64,
+                "version": version,
+            }),
+        )?;
+        Ok(())
     }
 
     /// Return all rows in `table_name` as (row_key, decoded_value) pairs.
@@ -1392,6 +1460,36 @@ mod tests {
         .unwrap();
 
         assert_eq!(ts.total_row_count(), 3);
+    }
+
+    #[test]
+    fn test_blob_size_limit_rejects_oversized_payload() {
+        // Sequence the test against any other tests that mutate the global limit
+        // by snapshotting and restoring it.
+        let original = max_blob_size();
+        set_max_blob_size(1024);
+
+        let ts = Arc::new(TableStore::new());
+        // Build an inventory value larger than 1024 bytes when JSON-encoded.
+        let big_items: Vec<serde_json::Value> = (0..256)
+            .map(|i| serde_json::json!({"id": i, "name": format!("item_{}", i), "padding": "xxxxxxxxxxxxxxxxxxxxxxxx"}))
+            .collect();
+        let row = serde_json::json!({"inventory": big_items, "hp": 100});
+
+        let result = ts.set_row("players".to_string(), "alice".to_string(), row);
+        assert!(
+            result.is_err(),
+            "store_blob must reject payloads larger than the configured max"
+        );
+        let err_msg = format!("{:?}", result.err().unwrap());
+        assert!(
+            err_msg.contains("exceeds max") || err_msg.contains("Blob size"),
+            "error should mention the size limit, got: {}",
+            err_msg
+        );
+
+        // Restore for any subsequent tests.
+        set_max_blob_size(original);
     }
 
     #[test]

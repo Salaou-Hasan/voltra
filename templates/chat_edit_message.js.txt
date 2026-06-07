@@ -1,0 +1,11 @@
+// edit_message — edit a message you authored.
+// args: [message_id, new_text]
+const [mid, text] = args;
+const m = __neondb_get("messages", mid);
+if (!m) { result = { error: "no_such_message" }; }
+else if (m.user_id !== __neondb_caller_id) { result = { error: "forbidden" }; }
+else {
+  m.text = text; m.edited = true;
+  __neondb_set("messages", mid, m);
+  result = { ok: true };
+}

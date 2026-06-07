@@ -1,0 +1,14 @@
+// refresh — scheduled matchmaking pass. Pairs the first two queued players.
+// args: []  (called by scheduler)
+const queued = __neondb_get_all("matchmaking") || [];
+if (queued.length >= 2) {
+  const a = queued[0].player_id;
+  const b = queued[1].player_id;
+  const match_id = "m_" + a + "_" + b;
+  __neondb_delete("matchmaking", a);
+  __neondb_delete("matchmaking", b);
+  __neondb_set("matches", match_id, { match_id, players: [a, b], status: "starting", created_at: 0 });
+  result = { ok: true, match_id };
+} else {
+  result = { ok: true, paired: 0 };
+}

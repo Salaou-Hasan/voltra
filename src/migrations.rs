@@ -75,10 +75,19 @@ struct MigrationStep {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// System table that tracks which migration files have already been applied.
+/// Each row's key is the migration filename; the value is
+/// `{"applied_at": <unix_nanos>, "version": <u64>}`.
+const MIGRATIONS_TABLE: &str = "__migrations";
+
 /// Scan `migrations_dir` for `*.toml` files, sort them lexicographically
 /// (so `001_…` < `002_…`), and apply each migration to `tables`.
 ///
-/// Returns the number of migration files applied.
+/// Migration files that already appear in the `__migrations` system table
+/// are skipped — so re-running this on startup is idempotent.
+///
+/// Returns the number of migration files applied **this call** (skipped
+/// migrations do not count).
 /// Missing or empty directory is treated as "no migrations" (returns `Ok(0)`).
 pub fn apply_migrations(migrations_dir: &Path, tables: &Arc<TableStore>) -> Result<usize> {
     if !migrations_dir.is_dir() {
@@ -102,6 +111,20 @@ pub fn apply_migrations(migrations_dir: &Path, tables: &Arc<TableStore>) -> Resu
 
     let mut applied = 0usize;
     for path in &paths {
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| {
+                NeonDBError::internal(format!("Migration path has no filename: {:?}", path))
+            })?
+            .to_string();
+
+        // Idempotency check: skip migrations that have already been applied.
+        if tables.get_row(MIGRATIONS_TABLE, &filename)?.is_some() {
+            log::info!("Migration {} already applied, skipping", filename);
+            continue;
+        }
+
         let contents = std::fs::read_to_string(path).map_err(|e| {
             NeonDBError::internal(format!("Failed to read migration {:?}: {}", path, e))
         })?;
@@ -109,6 +132,21 @@ pub fn apply_migrations(migrations_dir: &Path, tables: &Arc<TableStore>) -> Resu
             NeonDBError::internal(format!("Failed to parse migration {:?}: {}", path, e))
         })?;
         apply_migration(&mig, tables, path)?;
+
+        // Mark applied so the next startup skips it.
+        let now_nanos: u128 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        tables.set_row(
+            MIGRATIONS_TABLE.to_string(),
+            filename.clone(),
+            serde_json::json!({
+                "applied_at": now_nanos as u64,
+                "version": mig.version,
+            }),
+        )?;
+
         applied += 1;
     }
     Ok(applied)
@@ -366,6 +404,95 @@ default = 0
         assert_eq!(row["points"], 10, "pts should be renamed to points");
         assert_eq!(row["score"], 0, "score should be added with default 0");
         assert!(row.get("pts").is_none(), "old pts field should be gone");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_apply_migrations_records_in_system_table() {
+        let ts = store();
+        let tmp = std::env::temp_dir().join("neondb_mig_idempotent_record_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+
+        let mig_content = r#"
+version = 1
+description = "add score field"
+
+[[steps]]
+table = "players"
+op = "add_field"
+field = "score"
+default = 0
+"#;
+        std::fs::write(tmp.join("001_add_score.toml"), mig_content).unwrap();
+
+        let applied = apply_migrations(&tmp, &ts).unwrap();
+        assert_eq!(applied, 1, "first run should apply the migration");
+
+        // Confirm the row landed in the __migrations system table.
+        let row = ts
+            .get_row(MIGRATIONS_TABLE, "001_add_score.toml")
+            .unwrap()
+            .expect("migration should be recorded in __migrations");
+        assert_eq!(row["version"], 1);
+        assert!(
+            row.get("applied_at").map(|v| v.as_u64().unwrap_or(0) > 0).unwrap_or(false),
+            "applied_at should be a non-zero unix nanos value"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_apply_migrations_is_idempotent() {
+        let ts = store();
+        ts.set_row(
+            "players".to_string(),
+            "p1".to_string(),
+            serde_json::json!({"name": "Bob"}),
+        )
+        .unwrap();
+
+        let tmp = std::env::temp_dir().join("neondb_mig_idempotent_skip_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+
+        // First migration: add `score` with default 0.
+        let mig_content = r#"
+version = 1
+
+[[steps]]
+table = "players"
+op = "add_field"
+field = "score"
+default = 0
+"#;
+        std::fs::write(tmp.join("001_add_score.toml"), mig_content).unwrap();
+
+        let applied_first = apply_migrations(&tmp, &ts).unwrap();
+        assert_eq!(applied_first, 1, "first run applies one migration");
+
+        // Manually mutate the row so we can detect whether the migration runs again.
+        // (If it did, `add_field` would skip since the field already exists — but
+        // we want to confirm the apply_migration path is not even entered.)
+        ts.set_row(
+            "players".to_string(),
+            "p1".to_string(),
+            serde_json::json!({"name": "Bob", "score": 999}),
+        )
+        .unwrap();
+
+        let applied_second = apply_migrations(&tmp, &ts).unwrap();
+        assert_eq!(
+            applied_second, 0,
+            "second run should skip already-applied migration"
+        );
+
+        // Confirm the user-set value of 999 was NOT clobbered — proving the
+        // migration step truly did not re-execute.
+        let row = ts.get_row("players", "p1").unwrap().unwrap();
+        assert_eq!(row["score"], 999);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

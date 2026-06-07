@@ -1,0 +1,13 @@
+// transfer_currency — send coins from one player to another.
+// args: [from_id, to_id, amount]
+const [from, to, amount] = args;
+const a = __neondb_get("players", from);
+const b = __neondb_get("players", to);
+if (!a || !b) { result = { error: "missing_player" }; }
+else if (a.currency < amount) { result = { error: "insufficient_funds" }; }
+else {
+  a.currency -= amount; b.currency += amount;
+  __neondb_set("players", from, a);
+  __neondb_set("players", to, b);
+  result = { ok: true, from_balance: a.currency, to_balance: b.currency };
+}

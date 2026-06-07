@@ -1,0 +1,10 @@
+// join_room — add a user to a room.
+// args: [room_id, user_id]
+const [rid, uid] = args;
+const r = __neondb_get("rooms", rid);
+if (!r) { result = { error: "no_such_room" }; }
+else {
+  if (r.members.indexOf(uid) === -1) r.members.push(uid);
+  __neondb_set("rooms", rid, r);
+  result = { ok: true, members: r.members };
+}

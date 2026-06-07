@@ -1,0 +1,10 @@
+// login — verify credentials and mark the session.
+// args: [username, password_hash]
+const [username, password_hash] = args;
+const user = __neondb_get("users", username);
+if (!user) { result = { error: "no_such_user" }; }
+else if (user.password_hash !== password_hash) { result = { error: "bad_password" }; }
+else {
+  __neondb_set("sessions", username, { username, last_seen: 0, online: true });
+  result = { ok: true, username, role: user.role };
+}

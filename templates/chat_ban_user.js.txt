@@ -1,0 +1,9 @@
+// ban_user — moderator-only room ban.
+// args: [room_id, user_id]
+const [rid, uid] = args;
+if (__neondb_caller_role !== "moderator" && __neondb_caller_role !== "admin") {
+  result = { error: "forbidden" };
+} else {
+  __neondb_set("bans", rid + ":" + uid, { room_id: rid, user_id: uid, banned_at: 0 });
+  result = { ok: true };
+}

@@ -1,0 +1,9 @@
+// create_thread — start a reply thread on a message.
+// args: [thread_id, parent_message_id, user_id]
+const [tid, parent, uid] = args;
+const m = __neondb_get("messages", parent);
+if (!m) { result = { error: "no_such_message" }; }
+else {
+  __neondb_set("threads", tid, { thread_id: tid, parent_message_id: parent, created_by: uid, created_at: 0 });
+  result = { ok: true, thread_id: tid };
+}

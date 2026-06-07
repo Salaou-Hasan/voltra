@@ -1,0 +1,11 @@
+// apply_damage — server-authoritative damage application.
+// args: [target_id, amount]
+const [tgt, amount] = args;
+let target = __neondb_get("players", tgt) || __neondb_get("npcs", tgt);
+if (!target) { result = { error: "not_found" }; }
+else {
+  target.hp = Math.max(0, target.hp - (amount || 0));
+  const table = __neondb_get("players", tgt) ? "players" : "npcs";
+  __neondb_set(table, tgt, target);
+  result = { ok: true, hp: target.hp };
+}

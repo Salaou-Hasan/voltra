@@ -1,0 +1,16 @@
+// sell_item — sell one of an inventory item back for currency.
+// args: [player_id, item_id, price]
+const [pid, item_id, price] = args;
+const k = pid + ":" + item_id;
+const inv = __neondb_get("inventory", k);
+const p = __neondb_get("players", pid);
+if (!p) { result = { error: "no_player" }; }
+else if (!inv || inv.qty <= 0) { result = { error: "no_such_item" }; }
+else {
+  inv.qty -= 1;
+  if (inv.qty === 0) __neondb_delete("inventory", k);
+  else __neondb_set("inventory", k, inv);
+  p.currency += price;
+  __neondb_set("players", pid, p);
+  result = { ok: true, currency: p.currency, qty: inv.qty };
+}

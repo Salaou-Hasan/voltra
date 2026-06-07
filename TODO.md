@@ -282,3 +282,49 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 | Scheduled reducers | Every N ms, args_json, graceful shutdown | ✅ | ✅ Done |
 | Indexes | Lock-free hash index, O(1) lookup, auto-maintained | B-tree + hash | ✅ Done |
 | Schema migrations | migrations/*.toml, idempotent, 3 ops | ✅ | ✅ Done |
+
+---
+
+## Remaining for Production (post-Session-39 wave)
+
+The 5-agent Session-39 wave landed schema hardening, new WAL unit tests, and integration-style
+schema tests, but the following gaps remain before NeonDB is production-ready. They are listed
+in roughly decreasing order of severity.
+
+### Build & Test Plumbing (BLOCKING)
+- **`cargo build` (bin) is broken.** `src/main.rs:783` calls `start_listener` with 10 arguments
+  but `src/network/websocket.rs:104` now requires 11. The missing argument is a `u64`.  This
+  blocks every `cargo test` invocation that needs the bin (including the new
+  `tests/wal_recovery_test.rs` and `tests/schema_validation_test.rs` files Agent 5 wrote — they
+  type-check fine via `cargo check --test <name>` but cannot RUN until the bin compiles).
+  Fix is owned by whichever agent introduced the new `start_listener` parameter.
+
+### Data Reliability
+- **Full WAL crash recovery on a REAL server.** Session 39 added unit-level WAL recovery tests
+  (`tests/wal_recovery_test.rs`) covering checksum corruption, mid-entry truncation, and
+  snapshot+replay. We do NOT yet have a test that starts a real `neondb start` process, kills it
+  mid-write, restarts it, and verifies the state matches expectations end-to-end. The integration
+  test infrastructure exists (see Sessions 37–38) but no test exercises crash recovery.
+- **CRDT / HLC for cross-shard write conflict resolution** (Wave 4 of the original plan). With
+  multiple shards there is no causal ordering for concurrent writes that touch the same row on
+  different nodes. Either pick a single-writer-per-key strategy or introduce a Hybrid Logical
+  Clock + CRDT-merge layer. Not designed.
+
+### Concurrency Bugs
+- **TS / Rust SDK optimistic-update concurrent-diff race** (Wave 3 of the original plan).
+  When two `call_optimistic()` calls overlap and the server's diff for the FIRST call arrives
+  AFTER the optimistic state of the SECOND call has been applied, the rollback path can clobber
+  the second call's speculative state. Reproducer + fix needed for both `neondb-client-ts/src/client.ts`
+  and `neondb-client-rust/src/client.rs`.
+
+### Cluster
+- **Cluster integration tests (two-node loopback).** `src/cluster/mod.rs` has solid unit tests
+  for `shard_for_key` and config parsing (Session 36) but no test spins up two nodes on
+  loopback, fans out a write, and verifies the peer received it. The cluster HTTP layer is
+  effectively untested at the integration level.
+
+### Lower-priority
+- C# / Unity client SDK (TODO-024) — explicit deferral.
+- Dokploy live deployment validation (TODO-017) — checklist exists, no live run.
+- End-to-end benchmark scaling mode (TODO-016b) — `BENCH_SCALE_MODE=1` was observed to print
+  `scale_mode=false` in one run; needs reproduction + fix.

@@ -1,0 +1,11 @@
+// spawn — create a player in the world.
+// args: [player_id, x, y, class_name]
+const [player_id, x, y, cls] = args;
+const zone = "zone_" + Math.floor((x || 0) / 100) + "_" + Math.floor((y || 0) / 100);
+const player = {
+  player_id, x: x || 0, y: y || 0, zone,
+  class: cls || "warrior",
+  hp: 100, max_hp: 100, mp: 50, max_mp: 50, level: 1, xp: 0, currency: 0,
+};
+__neondb_set("players", player_id, player);
+result = { ok: true, player };

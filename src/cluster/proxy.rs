@@ -38,6 +38,11 @@ pub struct ProxyCallRequest {
     pub args_b64: String,
     pub caller_id: String,
     pub caller_role: String,
+    /// Shard ownership hint. If `Some`, the receiver MUST verify it owns this
+    /// shard before executing; mismatch returns HTTP 421 (Misdirected). `None`
+    /// preserves backward compat with older callers that did not include it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_shard_id: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -87,6 +92,7 @@ pub fn proxy_call(
         args_b64: B64.encode(args),
         caller_id: caller_id.to_string(),
         caller_role: caller_role.to_string(),
+        target_shard_id: Some(peer.shard_id),
     };
 
     let body_json = serde_json::to_vec(&req_body).map_err(|e| {

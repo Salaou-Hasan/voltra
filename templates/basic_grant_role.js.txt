@@ -1,0 +1,13 @@
+// grant_role — admin-only role change.
+// args: [target_username, new_role]
+const [target, new_role] = args;
+if (__neondb_caller_role !== "admin") { result = { error: "forbidden" }; }
+else {
+  const user = __neondb_get("users", target);
+  if (!user) { result = { error: "no_such_user" }; }
+  else {
+    user.role = new_role;
+    __neondb_set("users", target, user);
+    result = { ok: true, username: target, role: new_role };
+  }
+}

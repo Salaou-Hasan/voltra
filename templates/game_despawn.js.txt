@@ -1,0 +1,5 @@
+// despawn — remove a player from the world.
+// args: [player_id]
+const [player_id] = args;
+if (!__neondb_get("players", player_id)) { result = { error: "not_found" }; }
+else { __neondb_delete("players", player_id); result = { ok: true }; }

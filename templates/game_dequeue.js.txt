@@ -1,0 +1,5 @@
+// dequeue — remove a player from the matchmaking queue.
+// args: [player_id]
+const [pid] = args;
+if (!__neondb_get("matchmaking", pid)) { result = { error: "not_queued" }; }
+else { __neondb_delete("matchmaking", pid); result = { ok: true }; }

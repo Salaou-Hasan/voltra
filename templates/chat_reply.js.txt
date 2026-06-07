@@ -1,0 +1,9 @@
+// reply — post a reply inside a thread.
+// args: [thread_id, message_id, user_id, text]
+const [tid, mid, uid, text] = args;
+const t = __neondb_get("threads", tid);
+if (!t) { result = { error: "no_such_thread" }; }
+else {
+  __neondb_set("messages", mid, { message_id: mid, thread_id: tid, user_id: uid, text, edited: false, created_at: 0 });
+  result = { ok: true, message_id: mid };
+}

@@ -40,12 +40,38 @@ pub mod gossip;
 pub mod proxy;
 
 use std::env;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use reqwest::blocking::Client as BlockingClient;
 use serde::{Deserialize, Serialize};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lazy global HTTP client.
+//
+// Why a static, not a field?
+//   reqwest::blocking::Client owns a Tokio runtime. Constructing it inside an
+//   async context (e.g. `async fn run_server`) is fine, but DROPPING it inside
+//   an async context panics with "Cannot drop a runtime in a context where
+//   blocking is not allowed".  Holding the client in a never-dropped static
+//   sidesteps this entirely.  The client is built lazily on first use, which
+//   happens inside `spawn_blocking` tasks in fanout/gossip/proxy — well clear
+//   of any async stack.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static GLOBAL_HTTP_CLIENT: OnceLock<BlockingClient> = OnceLock::new();
+
+/// Returns the process-wide blocking HTTP client.  Constructed on first call
+/// with `timeout_ms` (later callers' timeouts are ignored; the first wins).
+pub(crate) fn global_http_client(timeout_ms: u64) -> &'static BlockingClient {
+    GLOBAL_HTTP_CLIENT.get_or_init(|| {
+        BlockingClient::builder()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .unwrap_or_default()
+    })
+}
 
 use crate::subscriptions::SubscriptionManager;
 use crate::table::{RowDelta, TableStore};
@@ -91,6 +117,16 @@ pub struct PeerEntry {
 }
 
 impl PeerEntry {
+    /// Public constructor — initialises health to default (healthy, no last_seen).
+    /// Use this instead of constructing the struct literal, which would fail
+    /// because `health` is private.
+    pub fn new(node: NodeInfo) -> Self {
+        Self {
+            node,
+            health: std::sync::Mutex::new(PeerHealth::default()),
+        }
+    }
+
     /// Returns true when the peer is currently considered healthy.
     pub fn is_healthy(&self) -> bool {
         self.health.lock().map(|h| h.healthy).unwrap_or(true)
@@ -174,8 +210,24 @@ impl ClusterConfig {
         }
 
         let peers = Self::parse_peers(&peers_raw, my_shard_id);
+        let enabled = !peers.is_empty();
+
+        // Security warning: clustering enabled without a shared secret leaves
+        // every /cluster/* endpoint unauthenticated.  Any host that can reach
+        // the metrics port can write arbitrary rows via /cluster/deltas.
+        if enabled && cluster_secret.is_none() {
+            log::warn!(
+                "SECURITY WARNING: clustering is enabled (NEONDB_PEERS is set) but \
+                 NEONDB_CLUSTER_SECRET is not set — peer endpoints (/cluster/deltas, \
+                 /cluster/call, /cluster/health) are unauthenticated and will accept \
+                 requests from any host that can reach this node's metrics port. \
+                 Set NEONDB_CLUSTER_SECRET=<long-random-secret> on every node before \
+                 deploying to production."
+            );
+        }
+
         ClusterConfig {
-            enabled: !peers.is_empty(),
+            enabled,
             my_shard_id,
             shard_count,
             peers,
@@ -229,26 +281,16 @@ pub struct ClusterBus {
     /// Per-peer entry (node info + health), keyed by shard_id.
     /// Public so the GET /cluster/peers HTTP endpoint can iterate it.
     pub peers: Arc<DashMap<u32, PeerEntry>>,
-    /// Shared blocking HTTP client (reqwest).
-    http: BlockingClient,
 }
 
 impl ClusterBus {
     pub fn new(config: ClusterConfig) -> Arc<Self> {
-        let http = BlockingClient::builder()
-            .timeout(Duration::from_millis(config.http_timeout_ms))
-            .build()
-            .unwrap_or_default();
-
         let peers: Arc<DashMap<u32, PeerEntry>> = Arc::new(DashMap::new());
         for peer in &config.peers {
-            peers.insert(peer.shard_id, PeerEntry {
-                node: peer.clone(),
-                health: std::sync::Mutex::new(PeerHealth::default()),
-            });
+            peers.insert(peer.shard_id, PeerEntry::new(peer.clone()));
         }
 
-        Arc::new(ClusterBus { config, peers, http })
+        Arc::new(ClusterBus { config, peers })
     }
 
     // ── Active check ─────────────────────────────────────────────────────────
@@ -289,8 +331,8 @@ impl ClusterBus {
         }
     }
 
-    pub fn http_client(&self) -> &BlockingClient {
-        &self.http
+    pub fn http_client(&self) -> &'static BlockingClient {
+        global_http_client(self.config.http_timeout_ms)
     }
 
     pub fn healthy_peers(&self) -> Vec<NodeInfo> {
@@ -363,6 +405,7 @@ unsafe impl Sync for ClusterBus {}
 ///
 /// # Example
 /// ```
+/// use neondb::cluster::shard_for_key;
 /// assert_eq!(shard_for_key("alice", 3), shard_for_key("alice", 3));
 /// ```
 pub fn shard_for_key(key: &str, shard_count: u32) -> u32 {

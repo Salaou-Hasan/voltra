@@ -1,0 +1,13 @@
+// attack — player attacks a target.
+// args: [attacker_id, target_id, weapon, damage]
+const [att, tgt, weapon, dmg] = args;
+const attacker = __neondb_get("players", att);
+let target = __neondb_get("players", tgt) || __neondb_get("npcs", tgt);
+if (!attacker) { result = { error: "Attacker not found" }; }
+else if (!target) { result = { error: "Target not found" }; }
+else {
+  target.hp = Math.max(0, target.hp - (dmg || 10));
+  const table = __neondb_get("players", tgt) ? "players" : "npcs";
+  __neondb_set(table, tgt, target);
+  result = { ok: true, target_id: tgt, hp: target.hp, dead: target.hp === 0 };
+}

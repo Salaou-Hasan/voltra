@@ -1,0 +1,31 @@
+// React hooks for NeonDB. Requires React 18+.
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { NeonDBClient } from "neondb-client";
+
+const NeonDBContext = createContext<NeonDBClient | null>(null);
+
+export function NeonDBProvider({ client, children }: { client: NeonDBClient; children: ReactNode }) {
+  return <NeonDBContext.Provider value={client}>{children}</NeonDBContext.Provider>;
+}
+
+export function useNeonDB(): NeonDBClient {
+  const c = useContext(NeonDBContext);
+  if (!c) throw new Error("NeonDBProvider missing");
+  return c;
+}
+
+export function useNeonDBQuery<T = unknown>(query: string): T[] {
+  const client = useNeonDB();
+  const [rows, setRows] = useState<T[]>([]);
+  useEffect(() => {
+    let live = true;
+    const unsub = client.subscribe(query, (next: T[]) => { if (live) setRows(next); });
+    return () => { live = false; unsub?.then?.((u: () => void) => u()); };
+  }, [query]);
+  return rows;
+}
+
+export function useNeonDBReducer<R = unknown>(name: string) {
+  const client = useNeonDB();
+  return (args: unknown[]) => client.call(name, args) as Promise<R>;
+}

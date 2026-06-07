@@ -1,0 +1,28 @@
+// Example React app using the NeonDB hooks.
+import { useState } from "react";
+import { NeonDBClient } from "neondb-client";
+import { NeonDBProvider, useNeonDBQuery, useNeonDBReducer } from "../hooks";
+
+const client = new NeonDBClient({ url: "ws://127.0.0.1:3000", auth: "dev-key" });
+await client.connect();
+
+function CounterView() {
+  const rows = useNeonDBQuery<{ name: string; value: number }>("counters");
+  const hello = useNeonDBReducer<{ name: string; value: number }>("hello");
+  const [name, setName] = useState("clicks");
+  return (
+    <div>
+      <input value={name} onChange={(e) => setName(e.target.value)} />
+      <button onClick={() => hello([name, 1])}>+1</button>
+      <ul>{rows.map((r) => <li key={r.name}>{r.name}: {r.value}</li>)}</ul>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <NeonDBProvider client={client}>
+      <CounterView />
+    </NeonDBProvider>
+  );
+}

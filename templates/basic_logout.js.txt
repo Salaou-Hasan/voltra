@@ -1,0 +1,9 @@
+// logout — end a session.
+// args: [username]
+const [username] = args;
+const session = __neondb_get("sessions", username);
+if (!session) { result = { error: "no_session" }; }
+else {
+  __neondb_delete("sessions", username);
+  result = { ok: true };
+}

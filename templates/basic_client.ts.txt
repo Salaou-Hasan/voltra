@@ -1,0 +1,23 @@
+// Minimal NeonDB client for the basic template.
+// Run `npm install neondb-client` or copy from neondb-client-ts/.
+import { NeonDBClient } from "neondb-client";
+
+async function main() {
+  const client = new NeonDBClient({
+    url: "ws://127.0.0.1:3000",
+    auth: "dev-key",
+  });
+  await client.connect();
+
+  const reg = await client.call("register", ["alice", "hashed-pw"]);
+  console.log("register:", reg);
+
+  const login = await client.call("login", ["alice", "hashed-pw"]);
+  console.log("login:", login);
+
+  await client.subscribe("users", (rows) => {
+    console.log("users update:", rows);
+  });
+}
+
+main().catch(console.error);

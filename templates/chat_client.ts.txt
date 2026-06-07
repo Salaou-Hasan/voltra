@@ -1,0 +1,19 @@
+// Example chat client.
+import { NeonDBClient } from "neondb-client";
+
+async function main() {
+  const client = new NeonDBClient({ url: "ws://127.0.0.1:3000", auth: "dev-key" });
+  await client.connect();
+
+  await client.call("create_room", ["general", "General", "alice"]);
+  await client.call("join_room",   ["general", "bob"]);
+
+  await client.subscribe(
+    "messages WHERE room_id = 'general' ORDER BY created_at DESC LIMIT 100",
+    (rows) => console.log("messages:", rows),
+  );
+
+  await client.call("send_message", ["general", "m1", "alice", "Hello!"]);
+}
+
+main().catch(console.error);

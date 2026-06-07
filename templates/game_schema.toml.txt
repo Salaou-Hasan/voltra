@@ -1,0 +1,117 @@
+# Game-ready template schema.
+
+[[tables]]
+name = "players"
+[[tables.columns]]
+name = "player_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "x"
+type = "f64"
+required = true
+[[tables.columns]]
+name = "y"
+type = "f64"
+required = true
+[[tables.columns]]
+name = "zone"
+type = "string"
+required = true
+[[tables.columns]]
+name = "hp"
+type = "i64"
+required = true
+[[tables.columns]]
+name = "max_hp"
+type = "i64"
+required = true
+[[tables.columns]]
+name = "currency"
+type = "i64"
+required = true
+
+[[tables]]
+name = "npcs"
+[[tables.columns]]
+name = "npc_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "hp"
+type = "i64"
+required = true
+
+[[tables]]
+name = "inventory"
+[[tables.columns]]
+name = "player_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "item_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "qty"
+type = "i64"
+required = true
+
+[[tables]]
+name = "quests"
+[[tables.columns]]
+name = "player_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "quest_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "progress"
+type = "i64"
+required = true
+
+[[tables]]
+name = "matchmaking"
+[[tables.columns]]
+name = "player_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "rating"
+type = "i64"
+required = true
+
+[[tables]]
+name = "matches"
+[[tables.columns]]
+name = "match_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "status"
+type = "string"
+required = true
+
+[[tables]]
+name = "guilds"
+[[tables.columns]]
+name = "guild_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "name"
+type = "string"
+required = true
+
+[[tables]]
+name = "leaderboard"
+[[tables.columns]]
+name = "player_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "score"
+type = "i64"
+required = true

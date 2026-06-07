@@ -1,0 +1,12 @@
+// Minimal NeonDB TypeScript client wrapper.
+import { NeonDBClient } from "neondb-client";
+
+export function createClient(url = "ws://127.0.0.1:3000", auth = "dev-key") {
+  return new NeonDBClient({ url, auth });
+}
+
+export async function bootstrap() {
+  const client = createClient();
+  await client.connect();
+  return client;
+}

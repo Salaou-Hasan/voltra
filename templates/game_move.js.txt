@@ -1,0 +1,11 @@
+// move — update a player's position.
+// args: [player_id, x, y]
+const [player_id, x, y] = args;
+const p = __neondb_get("players", player_id);
+if (!p) { result = { error: "not_found" }; }
+else {
+  p.x = x; p.y = y;
+  p.zone = "zone_" + Math.floor(x / 100) + "_" + Math.floor(y / 100);
+  __neondb_set("players", player_id, p);
+  result = { ok: true, x, y, zone: p.zone };
+}

@@ -1,0 +1,11 @@
+// guild_kick — remove a member. Owner-only.
+// args: [guild_id, member_id]
+const [gid, member] = args;
+const g = __neondb_get("guilds", gid);
+if (!g) { result = { error: "no_such_guild" }; }
+else if (g.owner !== __neondb_caller_id) { result = { error: "forbidden" }; }
+else {
+  g.members = g.members.filter((m) => m !== member);
+  __neondb_set("guilds", gid, g);
+  result = { ok: true, members: g.members };
+}

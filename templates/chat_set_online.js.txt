@@ -1,0 +1,5 @@
+// set_online — update presence status.
+// args: [user_id, online]
+const [uid, online] = args;
+__neondb_set("presence", uid, { user_id: uid, online: !!online, last_seen: 0 });
+result = { ok: true };

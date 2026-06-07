@@ -1,0 +1,9 @@
+// guild_invite — record a pending invite.
+// args: [guild_id, invitee_id]
+const [gid, invitee] = args;
+const g = __neondb_get("guilds", gid);
+if (!g) { result = { error: "no_such_guild" }; }
+else {
+  __neondb_set("guild_invites", gid + ":" + invitee, { guild_id: gid, invitee, status: "pending" });
+  result = { ok: true };
+}

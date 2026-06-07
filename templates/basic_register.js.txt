@@ -1,0 +1,15 @@
+// register — create a new user account.
+// args: [username, password_hash]
+const [username, password_hash] = args;
+if (!username || !password_hash) { result = { error: "missing_fields" }; }
+else if (__neondb_get("users", username)) { result = { error: "user_exists" }; }
+else {
+  __neondb_set("users", username, {
+    username,
+    password_hash,
+    role: "player",
+    created_at: 0,
+    profile: {},
+  });
+  result = { ok: true, username };
+}

@@ -61,21 +61,46 @@ impl Drop for ConnectionGuard {
     }
 }
 
+/// Returns true if `role` is a syntactically valid role name.
+///
+/// Constraints:
+/// - 1..=32 characters
+/// - Only ASCII alphanumerics, underscore, or dash
+/// - No control characters, no `/`, `\`, `:`, `..`, no whitespace.
+fn is_valid_role(role: &str) -> bool {
+    if role.is_empty() || role.len() > 32 {
+        return false;
+    }
+    role.bytes().all(|b| {
+        b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+    })
+}
+
 /// Parse a Bearer token into (api_key_part, role_part).
 ///
 /// Format: `Bearer <key>` → key = full value, role = ""
-/// Format: `Bearer <key>:<role>` → key = part before last ':', role = part after
+/// Format: `Bearer <key>:<role>` → key = part before LAST ':' (so the key may
+///   itself contain colons), role = part after.
+///
+/// The role suffix is only honoured when it passes [`is_valid_role`].  If the
+/// role part fails validation (bad chars, too long, etc.) the entire token is
+/// treated as the api_key and the role is set to empty — degrade gracefully
+/// rather than refusing the connection.
 fn parse_bearer(header: &str) -> Option<(String, String)> {
     let token = header.strip_prefix("Bearer ")?;
-    match token.rsplit_once(':') {
-        Some((key, role)) if !role.is_empty() && !role.contains('/') => {
-            Some((key.to_string(), role.to_string()))
+    if let Some((key, role)) = token.rsplit_once(':') {
+        if is_valid_role(role) {
+            return Some((key.to_string(), role.to_string()));
         }
-        _ => Some((token.to_string(), String::new())),
     }
+    Some((token.to_string(), String::new()))
 }
 
 /// Start the WebSocket listener.
+///
+/// `sql_timeout_ms` caps how long a single SQL query may run on the blocking
+/// pool before the result is replaced with a timeout error.  Use 0 to disable
+/// the timeout (not recommended in production).
 pub async fn start_listener(
     addr: String,
     port: u16,
@@ -86,6 +111,7 @@ pub async fn start_listener(
     api_key: Option<String>,
     active_connections: Arc<AtomicUsize>,
     permissions: Arc<PermissionsConfig>,
+    sql_timeout_ms: u64,
     mut shutdown: Receiver<()>,
 ) -> Result<()> {
     let bind_addr = format!("{}:{}", addr, port);
@@ -111,9 +137,10 @@ pub async fn start_listener(
                         let api_key = api_key.clone();
                         let conns   = active_connections.clone();
                         let perms   = permissions.clone();
+                        let sql_to  = sql_timeout_ms;
 
                         tokio::spawn(async move {
-                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, peer_addr.to_string()).await {
+                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, sql_to, peer_addr.to_string()).await {
                                 log::warn!("Client error: {}", e);
                             }
                         });
@@ -138,6 +165,7 @@ async fn handle_client(
     api_key: Option<String>,
     active_connections: Arc<AtomicUsize>,
     permissions: Arc<PermissionsConfig>,
+    sql_timeout_ms: u64,
     peer_addr: String,
 ) -> Result<()> {
     // ── WebSocket handshake with optional Bearer auth ─────────────────────────
@@ -163,11 +191,11 @@ async fn handle_client(
                     return Err(ErrorResponse::new(Some("Unauthorized".to_string())));
                 }
                 if let Ok(mut cell) = caller_role_capture.lock() { *cell = role; }
-            } else if !auth_header.is_empty() {
-                if let Some((_key, role)) = parse_bearer(auth_header) {
-                    if let Ok(mut cell) = caller_role_capture.lock() { *cell = role; }
-                }
             }
+            // NOTE: when no api_key is configured (open mode) we deliberately
+            // ignore any Bearer role suffix.  Accepting unauthenticated role
+            // assertions would let any client claim role="admin" without
+            // proving anything — a textbook role-injection vector.
 
             if let Some(id) = request
                 .headers()
@@ -334,11 +362,49 @@ async fn handle_client(
                         let sql       = sq.sql.clone();
                         let tables_q  = tables.clone();
                         let write_tx_q = write_tx.clone();
+                        let timeout_ms = sql_timeout_ms;
 
                         // Run the SQL in a blocking thread so we don't hold the
-                        // async executor while doing potentially expensive work.
-                        tokio::task::spawn_blocking(move || {
-                            let result = execute_sql_query(&sql, &tables_q, query_id);
+                        // async executor while doing potentially expensive work,
+                        // then race it against `timeout_ms` so a runaway query
+                        // can't tie up an executor task forever.
+                        tokio::spawn(async move {
+                            let work = tokio::task::spawn_blocking(move || {
+                                execute_sql_query(&sql, &tables_q, query_id)
+                            });
+                            let result = if timeout_ms == 0 {
+                                match work.await {
+                                    Ok(r) => r,
+                                    Err(e) => SqlResult::err(
+                                        query_id,
+                                        format!("SQL task join error: {}", e),
+                                    ),
+                                }
+                            } else {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_millis(timeout_ms),
+                                    work,
+                                ).await {
+                                    Ok(Ok(r)) => r,
+                                    Ok(Err(e)) => SqlResult::err(
+                                        query_id,
+                                        format!("SQL task join error: {}", e),
+                                    ),
+                                    Err(_) => {
+                                        log::warn!(
+                                            "SQL query {} cancelled after {}ms timeout",
+                                            query_id, timeout_ms
+                                        );
+                                        SqlResult::err(
+                                            query_id,
+                                            format!(
+                                                "SQL query exceeded timeout of {}ms",
+                                                timeout_ms
+                                            ),
+                                        )
+                                    }
+                                }
+                            };
                             let msg = ServerMessage::SqlResult(result);
                             match protocol::encode_server_message(&msg) {
                                 Ok(bytes) => { let _ = write_tx_q.send(Message::Binary(bytes)); }
@@ -497,6 +563,89 @@ mod tests {
         let (key, role) = parse_bearer("Bearer key:with:colons:admin").unwrap();
         assert_eq!(key, "key:with:colons");
         assert_eq!(role, "admin");
+    }
+
+    // ── role validation tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_valid_role_basic() {
+        assert!(is_valid_role("admin"));
+        assert!(is_valid_role("user"));
+        assert!(is_valid_role("guest_1"));
+        assert!(is_valid_role("svc-bot"));
+        assert!(is_valid_role("A"));
+        assert!(is_valid_role("a1b2c3"));
+    }
+
+    #[test]
+    fn test_is_valid_role_rejects_bad_chars() {
+        assert!(!is_valid_role(""));
+        assert!(!is_valid_role(".."));
+        assert!(!is_valid_role("admin/root"));
+        assert!(!is_valid_role("ad\\min"));
+        assert!(!is_valid_role("ad min"));
+        assert!(!is_valid_role("ad:min"));
+        assert!(!is_valid_role("ad\nmin"));
+        assert!(!is_valid_role("emoji😀"));
+        assert!(!is_valid_role("../etc"));
+    }
+
+    #[test]
+    fn test_is_valid_role_length_cap() {
+        // 32 chars = max allowed.
+        let max = "a".repeat(32);
+        assert!(is_valid_role(&max));
+        // 33 chars = rejected.
+        let over = "a".repeat(33);
+        assert!(!is_valid_role(&over));
+    }
+
+    #[test]
+    fn test_parse_bearer_invalid_role_chars_degrades_to_full_key() {
+        // Role contains '/', so the colon is NOT treated as a role separator;
+        // the whole thing becomes the key.
+        let (key, role) = parse_bearer("Bearer mykey:bad/role").unwrap();
+        assert_eq!(key, "mykey:bad/role");
+        assert_eq!(role, "");
+    }
+
+    #[test]
+    fn test_parse_bearer_too_long_role_degrades() {
+        let long_role = "a".repeat(50);
+        let header = format!("Bearer mykey:{}", long_role);
+        let (key, role) = parse_bearer(&header).unwrap();
+        assert_eq!(key, format!("mykey:{}", long_role));
+        assert_eq!(role, "");
+    }
+
+    #[test]
+    fn test_parse_bearer_no_colon() {
+        let (key, role) = parse_bearer("Bearer plainkey").unwrap();
+        assert_eq!(key, "plainkey");
+        assert_eq!(role, "");
+    }
+
+    #[test]
+    fn test_parse_bearer_multiple_colons_takes_last() {
+        // rsplit_once → split on the LAST colon.  Role is "admin".
+        let (key, role) = parse_bearer("Bearer aa:bb:cc:admin").unwrap();
+        assert_eq!(key, "aa:bb:cc");
+        assert_eq!(role, "admin");
+    }
+
+    #[test]
+    fn test_parse_bearer_trailing_colon_empty_role() {
+        // Empty role suffix fails validation → whole token becomes key.
+        let (key, role) = parse_bearer("Bearer mykey:").unwrap();
+        assert_eq!(key, "mykey:");
+        assert_eq!(role, "");
+    }
+
+    #[test]
+    fn test_parse_bearer_control_char_in_role() {
+        let (key, role) = parse_bearer("Bearer mykey:ad\x01min").unwrap();
+        assert_eq!(key, "mykey:ad\x01min");
+        assert_eq!(role, "");
     }
 
     #[test]

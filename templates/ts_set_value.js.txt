@@ -1,0 +1,5 @@
+// set_value — write an arbitrary value into the kv table.
+// args: [key, value]
+const [key, value] = args;
+__neondb_set("kv", key, { key, value });
+result = { ok: true, key, value };

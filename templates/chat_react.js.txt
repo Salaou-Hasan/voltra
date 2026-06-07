@@ -1,0 +1,9 @@
+// react — add an emoji reaction to a message.
+// args: [message_id, user_id, emoji]
+const [mid, uid, emoji] = args;
+const k = mid + ":" + uid + ":" + emoji;
+if (__neondb_get("reactions", k)) { result = { error: "duplicate" }; }
+else {
+  __neondb_set("reactions", k, { message_id: mid, user_id: uid, emoji });
+  result = { ok: true };
+}

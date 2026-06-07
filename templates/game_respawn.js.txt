@@ -1,0 +1,10 @@
+// respawn — revive a dead player at spawn point.
+// args: [player_id]
+const [pid] = args;
+const p = __neondb_get("players", pid);
+if (!p) { result = { error: "not_found" }; }
+else {
+  p.hp = p.max_hp; p.mp = p.max_mp; p.x = 0; p.y = 0; p.zone = "zone_0_0";
+  __neondb_set("players", pid, p);
+  result = { ok: true, player: p };
+}

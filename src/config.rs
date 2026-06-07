@@ -16,14 +16,34 @@ pub struct ScheduledReducerConfig {
     pub args_json: Option<String>,
 }
 
+/// Default policy for reducers that are NOT listed in `PermissionsConfig.rules`.
+///
+/// - `Open`   (default): unlisted reducers are callable by any role (fail-open).
+/// - `Closed`: unlisted reducers are denied unless the caller is the scheduler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionsPolicy {
+    Open,
+    Closed,
+}
+
+impl Default for PermissionsPolicy {
+    fn default() -> Self {
+        PermissionsPolicy::Open
+    }
+}
+
 /// Role-based access control configuration.
 ///
 /// Maps reducer names to the list of roles that are allowed to call them.
-/// A reducer not listed here is callable by ANY authenticated client (open).
+/// A reducer not listed here is callable by ANY authenticated client (open) by default,
+/// unless `default_policy` is set to `Closed`.
 /// An empty `Vec` means NO role can call it (effectively disabled).
 ///
 /// Example in `neondb.toml`:
 /// ```toml
+/// [server]
+/// permissions_default_policy = "closed"
+///
 /// [permissions]
 /// delete_player = ["admin"]
 /// reset_scores  = ["admin", "moderator"]
@@ -31,27 +51,32 @@ pub struct ScheduledReducerConfig {
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct PermissionsConfig {
-    /// reducer_name → allowed roles.  `None` entry means no restriction.
+    /// reducer_name → allowed roles.
     pub rules: HashMap<String, Vec<String>>,
+    /// Default policy for unlisted reducers.  Defaults to `Open` for backward compat.
+    pub default_policy: PermissionsPolicy,
 }
 
 impl PermissionsConfig {
     /// Returns `true` if `role` is allowed to call `reducer`.
     ///
     /// Rules:
-    /// - Reducer not in the map → allowed for everyone (open).
-    /// - Reducer in the map     → caller's role must be in the allowed list.
     /// - Scheduler calls (`caller_role == "scheduler"`) always bypass checks.
+    /// - Reducer listed in the map → caller's role must be in the allowed list,
+    ///   regardless of `default_policy`.
+    /// - Reducer NOT in the map:
+    ///     * `default_policy == Open`   → allowed.
+    ///     * `default_policy == Closed` → denied.
     pub fn is_allowed(&self, reducer: &str, caller_role: &str) -> bool {
         // Scheduler is always trusted — it runs inside the server process.
         if caller_role == "scheduler" {
             return true;
         }
         match self.rules.get(reducer) {
-            // Not restricted — open to all.
-            None => true,
-            // Restricted — role must be in the list.
+            // Listed → strict role check, ignore default_policy.
             Some(roles) => roles.iter().any(|r| r == caller_role),
+            // Not listed → honor default_policy.
+            None => matches!(self.default_policy, PermissionsPolicy::Open),
         }
     }
 }
@@ -83,6 +108,12 @@ pub struct Config {
     pub scheduled_reducers: Vec<ScheduledReducerConfig>,
     /// Role-based access control rules.  Empty = no restrictions.
     pub permissions: PermissionsConfig,
+    /// Maximum time (ms) a single SQL query may run before being cancelled.
+    pub sql_timeout_ms: u64,
+    /// Maximum size (bytes) of a single blob written through `BlobStore::store_blob`.
+    /// A misbehaving reducer otherwise could stage a multi-GB inventory and balloon
+    /// memory.  Default 16 MiB.  Env: `NEONDB_MAX_BLOB_SIZE`.
+    pub max_blob_size_bytes: usize,
 }
 
 // These structs mirror the TOML schema. Fields that are not yet wired into
@@ -94,6 +125,13 @@ struct ConfigFile {
     server: Option<ConfigServer>,
     scheduler: Option<Vec<ConfigScheduler>>,
     permissions: Option<HashMap<String, Vec<String>>>,
+    #[serde(rename = "permissions_meta")]
+    permissions_meta: Option<ConfigPermissionsMeta>,
+}
+
+#[derive(Deserialize)]
+struct ConfigPermissionsMeta {
+    default_policy: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -123,6 +161,9 @@ struct ConfigServer {
     two_frame_protocol: Option<bool>,
     snapshot_interval: Option<u64>,
     snapshot_dir: Option<String>,
+    permissions_default_policy: Option<String>,
+    sql_timeout_ms: Option<u64>,
+    max_blob_size_bytes: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -163,6 +204,8 @@ impl Config {
             snapshot_dir: env::temp_dir().join("neondb_snapshots"),
             scheduled_reducers: vec![],
             permissions: PermissionsConfig::default(),
+            sql_timeout_ms: 5_000,
+            max_blob_size_bytes: 16 * 1024 * 1024,
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -171,11 +214,26 @@ impl Config {
                     apply_server_section(&mut cfg, parsed.server);
                     apply_scheduler_section(&mut cfg, parsed.scheduler);
                     apply_permissions_section(&mut cfg, parsed.permissions);
+                    apply_permissions_meta(&mut cfg, parsed.permissions_meta);
                 }
             }
         }
 
         apply_env_overrides(&mut cfg);
+
+        // Security warning: api_key=None on a non-loopback host means the
+        // WebSocket port accepts unauthenticated connections from the network.
+        if cfg.api_key.is_none() && cfg.host != "127.0.0.1" && cfg.host != "localhost" {
+            log::warn!(
+                "SECURITY WARNING: NeonDB is binding to '{}' with NO api_key set. \
+                 Any client on the network can call reducers. \
+                 Set NEONDB_API_KEY=<long-random-secret> or `[server] api_key = \"...\"` \
+                 in neondb.toml before exposing this port. \
+                 Use 127.0.0.1 for local-only development.",
+                cfg.host
+            );
+        }
+
         cfg
     }
 
@@ -186,7 +244,35 @@ impl Config {
         apply_server_section(&mut cfg, parsed.server);
         apply_scheduler_section(&mut cfg, parsed.scheduler);
         apply_permissions_section(&mut cfg, parsed.permissions);
+        apply_permissions_meta(&mut cfg, parsed.permissions_meta);
         Some(cfg)
+    }
+
+    /// Apply process-wide limits derived from this Config to the global state.
+    ///
+    /// Currently sets the maximum blob size accepted by `BlobStore::store_blob`.
+    /// The caller (typically `main.rs::run_server`) is expected to call this
+    /// once at startup, after the Config has been loaded but before any
+    /// reducer can run.  If never called, the table layer keeps its compile-time
+    /// default (16 MiB).
+    pub fn apply_global_limits(&self) {
+        crate::table::set_max_blob_size(self.max_blob_size_bytes);
+    }
+}
+
+fn parse_policy_str(s: &str) -> Option<PermissionsPolicy> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "open" => Some(PermissionsPolicy::Open),
+        "closed" | "close" | "deny" | "default-deny" => Some(PermissionsPolicy::Closed),
+        _ => None,
+    }
+}
+
+fn apply_permissions_meta(cfg: &mut Config, meta: Option<ConfigPermissionsMeta>) {
+    if let Some(m) = meta {
+        if let Some(p) = m.default_policy.as_deref().and_then(parse_policy_str) {
+            cfg.permissions.default_policy = p;
+        }
     }
 }
 
@@ -249,6 +335,15 @@ fn apply_server_section(cfg: &mut Config, server: Option<ConfigServer>) {
     if let Some(d) = s.snapshot_dir {
         cfg.snapshot_dir = PathBuf::from(d);
     }
+    if let Some(p) = s.permissions_default_policy.as_deref().and_then(parse_policy_str) {
+        cfg.permissions.default_policy = p;
+    }
+    if let Some(t) = s.sql_timeout_ms {
+        cfg.sql_timeout_ms = t;
+    }
+    if let Some(b) = s.max_blob_size_bytes {
+        cfg.max_blob_size_bytes = b;
+    }
 }
 
 fn apply_scheduler_section(cfg: &mut Config, scheduler: Option<Vec<ConfigScheduler>>) {
@@ -269,7 +364,9 @@ fn apply_permissions_section(
     permissions: Option<HashMap<String, Vec<String>>>,
 ) {
     if let Some(rules) = permissions {
-        cfg.permissions = PermissionsConfig { rules };
+        // Preserve any previously-applied default_policy.
+        let policy = cfg.permissions.default_policy;
+        cfg.permissions = PermissionsConfig { rules, default_policy: policy };
     }
 }
 
@@ -354,8 +451,24 @@ fn apply_env_overrides(cfg: &mut Config) {
     // NEONDB_PERMISSIONS accepts a JSON object: {"delete_player":["admin"],"increment":["user","admin"]}
     if let Ok(json) = env::var("NEONDB_PERMISSIONS") {
         if let Ok(rules) = serde_json::from_str::<HashMap<String, Vec<String>>>(&json) {
-            cfg.permissions = PermissionsConfig { rules };
+            let policy = cfg.permissions.default_policy;
+            cfg.permissions = PermissionsConfig { rules, default_policy: policy };
         }
+    }
+    if let Ok(v) = env::var("NEONDB_PERMISSIONS_DEFAULT_POLICY") {
+        if let Some(p) = parse_policy_str(&v) {
+            cfg.permissions.default_policy = p;
+        }
+    }
+    if let Ok(t) = env::var("NEONDB_SQL_TIMEOUT_MS")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.sql_timeout_ms = t;
+    }
+    if let Ok(b) = env::var("NEONDB_MAX_BLOB_SIZE")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.max_blob_size_bytes = b;
     }
 }
 
@@ -400,7 +513,7 @@ mod tests {
         let mut rules = HashMap::new();
         rules.insert("delete_player".to_string(), vec!["admin".to_string()]);
         rules.insert("increment".to_string(), vec!["user".to_string(), "admin".to_string()]);
-        let p = PermissionsConfig { rules };
+        let p = PermissionsConfig { rules, default_policy: PermissionsPolicy::Open };
 
         assert!(p.is_allowed("delete_player", "admin"));
         assert!(!p.is_allowed("delete_player", "user"));
@@ -416,7 +529,7 @@ mod tests {
     fn test_permissions_scheduler_always_allowed() {
         let mut rules = HashMap::new();
         rules.insert("reset_scores".to_string(), vec!["admin".to_string()]);
-        let p = PermissionsConfig { rules };
+        let p = PermissionsConfig { rules, default_policy: PermissionsPolicy::Open };
         // Scheduler bypasses all role checks.
         assert!(p.is_allowed("reset_scores", "scheduler"));
     }
@@ -425,10 +538,87 @@ mod tests {
     fn test_permissions_empty_roles_blocks_all() {
         let mut rules = HashMap::new();
         rules.insert("disabled_reducer".to_string(), vec![]);
-        let p = PermissionsConfig { rules };
+        let p = PermissionsConfig { rules, default_policy: PermissionsPolicy::Open };
         assert!(!p.is_allowed("disabled_reducer", "admin"));
         assert!(!p.is_allowed("disabled_reducer", "user"));
         // Scheduler still gets through.
         assert!(p.is_allowed("disabled_reducer", "scheduler"));
+    }
+
+    // ── default_policy tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_policy_open_unlisted_allowed() {
+        let p = PermissionsConfig {
+            rules: HashMap::new(),
+            default_policy: PermissionsPolicy::Open,
+        };
+        assert!(p.is_allowed("anything", "user"));
+        assert!(p.is_allowed("anything", ""));
+    }
+
+    #[test]
+    fn test_policy_closed_unlisted_denied() {
+        let p = PermissionsConfig {
+            rules: HashMap::new(),
+            default_policy: PermissionsPolicy::Closed,
+        };
+        assert!(!p.is_allowed("unlisted", "user"));
+        assert!(!p.is_allowed("unlisted", "admin"));
+        // Scheduler is always allowed even under closed policy.
+        assert!(p.is_allowed("unlisted", "scheduler"));
+    }
+
+    #[test]
+    fn test_policy_closed_listed_still_strict() {
+        // When listed, role must match — closed policy does NOT auto-allow listed reducers.
+        let mut rules = HashMap::new();
+        rules.insert("delete_player".to_string(), vec!["admin".to_string()]);
+        let p = PermissionsConfig {
+            rules,
+            default_policy: PermissionsPolicy::Closed,
+        };
+        assert!(p.is_allowed("delete_player", "admin"));
+        assert!(!p.is_allowed("delete_player", "user"));
+        // Unlisted reducer is denied.
+        assert!(!p.is_allowed("hello", "user"));
+    }
+
+    #[test]
+    fn test_policy_open_listed_still_strict() {
+        // Listed rules always win, regardless of open default.
+        let mut rules = HashMap::new();
+        rules.insert("delete_player".to_string(), vec!["admin".to_string()]);
+        let p = PermissionsConfig {
+            rules,
+            default_policy: PermissionsPolicy::Open,
+        };
+        assert!(p.is_allowed("delete_player", "admin"));
+        assert!(!p.is_allowed("delete_player", "user"));
+        // Unlisted is open.
+        assert!(p.is_allowed("hello", "user"));
+    }
+
+    #[test]
+    fn test_parse_policy_str_accepts_variants() {
+        assert_eq!(parse_policy_str("open"), Some(PermissionsPolicy::Open));
+        assert_eq!(parse_policy_str("OPEN"), Some(PermissionsPolicy::Open));
+        assert_eq!(parse_policy_str("closed"), Some(PermissionsPolicy::Closed));
+        assert_eq!(parse_policy_str("Closed"), Some(PermissionsPolicy::Closed));
+        assert_eq!(parse_policy_str("deny"), Some(PermissionsPolicy::Closed));
+        assert_eq!(parse_policy_str("bogus"), None);
+    }
+
+    #[test]
+    fn test_config_from_env_default_policy_is_open() {
+        // Default policy must remain Open for backward compatibility.
+        let config = Config::from_env();
+        assert_eq!(config.permissions.default_policy, PermissionsPolicy::Open);
+    }
+
+    #[test]
+    fn test_config_default_sql_timeout() {
+        let config = Config::from_env();
+        assert_eq!(config.sql_timeout_ms, 5_000);
     }
 }

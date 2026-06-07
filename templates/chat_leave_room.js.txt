@@ -1,0 +1,10 @@
+// leave_room — remove a user from a room.
+// args: [room_id, user_id]
+const [rid, uid] = args;
+const r = __neondb_get("rooms", rid);
+if (!r) { result = { error: "no_such_room" }; }
+else {
+  r.members = r.members.filter((m) => m !== uid);
+  __neondb_set("rooms", rid, r);
+  result = { ok: true, members: r.members };
+}

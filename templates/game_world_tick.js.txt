@@ -1,0 +1,10 @@
+// world_tick — scheduled per-tick world update. Regenerates HP/MP a bit.
+// args: []
+const players = __neondb_get_all("players") || [];
+let healed = 0;
+for (const p of players) {
+  if (p.hp < p.max_hp) { p.hp = Math.min(p.max_hp, p.hp + 1); healed++; }
+  if (p.mp < p.max_mp) p.mp = Math.min(p.max_mp, p.mp + 1);
+  __neondb_set("players", p.player_id, p);
+}
+result = { ok: true, ticked: players.length, healed };

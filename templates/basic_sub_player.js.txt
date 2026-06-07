@@ -1,0 +1,5 @@
+// sub_player — fetch a single user record for the client subscription.
+// args: [username]
+const [username] = args;
+const user = __neondb_get("users", username);
+result = user ? { ok: true, user } : { error: "no_such_user" };

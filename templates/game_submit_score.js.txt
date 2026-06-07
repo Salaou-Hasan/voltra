@@ -1,0 +1,10 @@
+// submit_score — append/update leaderboard entry.
+// args: [player_id, score]
+const [pid, score] = args;
+const existing = __neondb_get("leaderboard", pid);
+if (!existing || existing.score < score) {
+  __neondb_set("leaderboard", pid, { player_id: pid, score, submitted_at: 0 });
+  result = { ok: true, score, new_best: true };
+} else {
+  result = { ok: true, score: existing.score, new_best: false };
+}

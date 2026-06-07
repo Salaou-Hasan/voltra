@@ -339,15 +339,31 @@ neondb get players                       # verify rows landed
 
 ## Current Build Status
 
-After Session 37:
-- `cargo test` → **232 unit tests passing** + **9 integration tests passing** (after Session 37 fix).
-- `cargo build --release` → zero errors, zero warnings.
-- `neondb-client-rust/`: `cargo build` → zero errors, zero warnings.
-- TypeScript SDK: `node --test neondb-client-ts/dist/tests/client.test.js` → **3 tests pass**.
-- `neondb start` (game-ready template) → all 3 schedulers fire with zero errors.
-- `neondb call spawn '["player1", 0, 0, "warrior"]'` → full player object returned correctly.
-- `neondb watch "players WHERE zone = 'zone_0_0'"` → initial_snapshot delivers full row data.
-- `neondb call attack '["player1", "enemy1", "sword", 25]'` → `{"error": "Target not found"}` — correct behavior since `enemy1` was never spawned. Run `spawn_npc` first.
+After Session 39 (5-agent production-readiness wave):
+- `cargo build --lib` → **zero errors, zero warnings**.
+- `cargo test --lib` → **264 lib unit tests passing** (was 232 before the wave; +32 from the wave, of which Agent 5 contributed 7 new schema tests).
+- `cargo check --test schema_validation_test` and `cargo check --test wal_recovery_test` → both pass, confirming the new integration-style test files type-check against the public API.
+- `cargo build` (full bin) → ❗ STILL BROKEN: pre-existing argument-count mismatch at `src/main.rs:783` calling `start_listener` (10 args supplied, signature now requires 11 — likely a peer agent's incomplete `start_listener` signature change). This blocks `cargo test` (full), `cargo test --tests`, and any `cargo test --test <name>` for tests/ files because they need the `bin "neondb"` to compile. The lib alone is healthy.
+- `neondb-client-rust/`: untouched in this session.
+- TypeScript SDK: untouched in this session.
+
+### Session 39 — Production-readiness wave (5-agent)
+
+Five agents worked in parallel on disjoint file sets. Agent 5 (this agent) covered QA and schema-validator architecture.
+
+**Agent 5 changes (this session):**
+- `src/schema.rs`: `TableSchema::validate_and_fill` now rejects explicit JSON null for required columns with the message `"Required column '<name>' must not be null"`. Previously a payload like `{"id": null, "score": 10}` slipped through because the validator only checked `!obj.contains_key(name)`. The fix uses `obj.get(name).map(|v| v.is_null()).unwrap_or(true)` and rejects in step 1, then skips explicit-null type checks for optional columns in step 2 so `{ "name": null }` on an optional `name: String` column is still accepted.
+- `src/schema.rs`: 7 new unit tests added (`test_required_column_missing_rejected`, `test_required_column_with_value_ok`, `test_required_column_explicit_null_rejected`, `test_optional_column_with_null_ok`, `test_required_column_explicit_null_rejected_even_when_others_valid`, `test_required_column_null_with_default_uses_default`, `test_nested_object_schema_required_field_null_rejected`). All pass under `cargo test --lib schema::`.
+- `tests/wal_recovery_test.rs` (NEW): 4 integration-style tests for the WAL persistence layer — write/read roundtrip, last-entry checksum corruption, mid-entry truncation, snapshot+WAL replay only applies post-snapshot entries. Pure in-process, no server spawn.
+- `tests/schema_validation_test.rs` (NEW): 13 integration tests constructing `SchemaRegistry` directly and exercising every column type, defaults, required-vs-optional, explicit nulls, the open-schema fallback, and the new "required must not be null" rule.
+
+**Known still-broken / partial after Session 39:**
+- `src/main.rs:783` `start_listener` call has 10 args; `src/network/websocket.rs:104` `start_listener` signature requires 11. The missing argument is a `u64`. This is owned by another agent in the wave; it must be fixed before `cargo build` or any `cargo test` against the integration tests/* files will work.
+- The new `tests/wal_recovery_test.rs` and `tests/schema_validation_test.rs` files compile cleanly (`cargo check --test <name>` succeeds) but cannot RUN until the bin builds.
+- WAL crash-recovery testing is unit-level only — a real-server crash + restart round-trip is still NOT covered.
+- Cluster two-node loopback integration tests are still NOT implemented.
+- CRDT/HLC for cross-shard conflict resolution: NOT designed.
+- TS/Rust SDK optimistic-update concurrent-diff race: NOT addressed.
 
 ### Session 38 — Integration test `cargo build` race fix
 
@@ -423,3 +439,4 @@ After Session 37:
 33. **`NEONDB_BLOB_PATH` env var controls the blob store directory** — `TableStore::new()` reads this; falls back to `$TEMP/neondb_blobs`. Integration tests must set a unique path per server port (e.g. `neondb_blobs_18080`) to prevent parallel servers from colliding on the same `blobs.bin` file.
 34. **Integration tests MUST set `NEONDB_METRICS_PORT` uniquely** — `Config::from_env()` loads `neondb.toml` from the project root (via `find_config_in_cwd()`), giving every child server `metrics_port = 3001`. All parallel servers race to bind that port; losers exit silently before the WebSocket listener starts, causing the "Server did not become ready within 5s" panic. The fix is `NEONDB_METRICS_PORT = ws_port + 1000` in `spawn_server_with_env`. Already applied in Session 37.
 35. **`ensure_server_built()` must NOT call `cargo build`** — `cargo test` holds the build-directory lock the entire time it runs. Any nested `cargo build` call from within an integration test will try to acquire the same lock and **deadlock** (or fail with "could not acquire lock"), causing all 9 server processes to never start and every test to time out with "Server did not become ready within 5s". The correct implementation simply asserts the binary exists — `cargo test` already compiled it. Applied in Session 38 (revised).
+36. **Required columns must check both missing AND null** — explicit JSON null was previously accepted for required fields. The schema validator now rejects both cases (`obj.contains_key(name) == false` OR `obj.get(name).map(|v| v.is_null()).unwrap_or(true)`), returning `"Required column '<name>' must not be null"` for the explicit-null case. Optional columns with explicit null are still accepted; required columns with a default fall back to the default even when the row supplied an explicit null. Applied in Session 39.

@@ -1,0 +1,5 @@
+// reset_weekly — scheduled weekly leaderboard reset.
+// args: []
+const entries = __neondb_get_all("leaderboard") || [];
+for (const e of entries) __neondb_delete("leaderboard", e.player_id);
+result = { ok: true, cleared: entries.length };

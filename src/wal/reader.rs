@@ -36,8 +36,17 @@ impl WalReader {
 
         let mut pos = 0;
         while pos < all_data.len() {
+            let entry_start = pos;
+
             if pos + 4 > all_data.len() {
-                break; // Not enough data for length prefix
+                // Trailing bytes that are too short to even hold a length prefix.
+                // This is almost certainly a torn write from a crash mid-fsync.
+                log::warn!(
+                    "WAL has partial trailing entry at byte offset {} after {} valid entries",
+                    entry_start,
+                    entries.len()
+                );
+                break;
             }
 
             let len = u32::from_le_bytes([
@@ -50,7 +59,14 @@ impl WalReader {
             pos += 4;
 
             if pos + len > all_data.len() {
-                break; // Not enough data for message
+                // Length prefix is fine, but the body was truncated. Same root
+                // cause as above — log it but don't fail recovery.
+                log::warn!(
+                    "WAL has partial trailing entry at byte offset {} after {} valid entries",
+                    entry_start,
+                    entries.len()
+                );
+                break;
             }
 
             let msg_data = &all_data[pos..pos + len];
@@ -60,8 +76,9 @@ impl WalReader {
                 Ok(entry) => entries.push(entry),
                 Err(e) => {
                     log::warn!(
-                        "Failed to decode WAL entry at position {}: {}",
-                        pos - len,
+                        "WAL has partial trailing entry at byte offset {} after {} valid entries (decode error: {})",
+                        entry_start,
+                        entries.len(),
                         e
                     );
                     break;
@@ -78,6 +95,7 @@ mod tests {
     use super::*;
     use crate::wal::writer::WalWriter;
     use std::fs;
+    use std::io::Write;
 
     #[test]
     fn test_wal_roundtrip() {
@@ -93,6 +111,80 @@ mod tests {
 
         // We can verify the file exists
         assert!(fs::metadata(&tmp_path).is_ok());
+
+        let _ = fs::remove_file(&tmp_path);
+    }
+
+    #[test]
+    fn test_wal_partial_trailing_entry_is_tolerated() {
+        // Simulate a crash mid-write: two complete entries followed by a torn
+        // third entry. read_all_entries should return the two complete ones,
+        // log a warning about the trailing tear, and not surface an error.
+        let tmp_path = std::env::temp_dir().join(format!(
+            "test_wal_partial_trailing_{}_{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0),
+        ));
+        let _ = fs::remove_file(&tmp_path);
+
+        let mut writer = WalWriter::open(&tmp_path).unwrap();
+        let e1 = WalEntry::new(1000, 1, "inc".to_string(), vec![1, 2, 3], vec![]);
+        let e2 = WalEntry::new(1001, 2, "inc".to_string(), vec![4, 5, 6], vec![]);
+        writer.append(&e1).unwrap();
+        writer.append(&e2).unwrap();
+        writer.fsync().unwrap();
+        drop(writer);
+
+        // Append a corrupt/incomplete trailer: a length prefix that promises
+        // 1024 bytes of payload, plus only 3 actual bytes. read_all_entries
+        // should treat it as a torn write.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&tmp_path)
+                .unwrap();
+            let phantom_len: u32 = 1024;
+            f.write_all(&phantom_len.to_le_bytes()).unwrap();
+            f.write_all(&[0xAA, 0xBB, 0xCC]).unwrap();
+        }
+
+        let mut reader = WalReader::open(&tmp_path).unwrap();
+        let entries = reader.read_all_entries().expect("partial tail must not error");
+        assert_eq!(entries.len(), 2, "should recover both complete entries");
+        assert_eq!(entries[0].header.sequence_number, 1);
+        assert_eq!(entries[1].header.sequence_number, 2);
+
+        let _ = fs::remove_file(&tmp_path);
+    }
+
+    #[test]
+    fn test_wal_truncated_mid_length_prefix() {
+        // Two complete entries plus a single trailing byte — not even enough
+        // for the 4-byte length prefix.
+        let tmp_path = std::env::temp_dir().join(format!(
+            "test_wal_partial_len_prefix_{}_{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0),
+        ));
+        let _ = fs::remove_file(&tmp_path);
+
+        let mut writer = WalWriter::open(&tmp_path).unwrap();
+        writer.append(&WalEntry::new(1000, 1, "inc".to_string(), vec![1], vec![])).unwrap();
+        writer.append(&WalEntry::new(1001, 2, "inc".to_string(), vec![2], vec![])).unwrap();
+        writer.fsync().unwrap();
+        drop(writer);
+
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&tmp_path)
+                .unwrap();
+            f.write_all(&[0x42]).unwrap(); // 1 byte; less than the 4-byte length prefix
+        }
+
+        let mut reader = WalReader::open(&tmp_path).unwrap();
+        let entries = reader.read_all_entries().expect("must not error on stub trailer");
+        assert_eq!(entries.len(), 2);
 
         let _ = fs::remove_file(&tmp_path);
     }

@@ -1,0 +1,11 @@
+// remove_item — decrement (or delete) an inventory row.
+// args: [username, item_id, qty]
+const [username, item_id, qty] = args;
+const key = username + ":" + item_id;
+const row = __neondb_get("inventory", key);
+if (!row) { result = { error: "no_such_item" }; }
+else {
+  const remaining = row.qty - (qty || 1);
+  if (remaining <= 0) { __neondb_delete("inventory", key); result = { ok: true, qty: 0 }; }
+  else { row.qty = remaining; __neondb_set("inventory", key, row); result = { ok: true, qty: remaining }; }
+}

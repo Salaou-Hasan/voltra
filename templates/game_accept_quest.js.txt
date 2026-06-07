@@ -1,0 +1,9 @@
+// accept_quest — assign a quest to a player.
+// args: [player_id, quest_id]
+const [pid, quest_id] = args;
+const k = pid + ":" + quest_id;
+if (__neondb_get("quests", k)) { result = { error: "already_active" }; }
+else {
+  __neondb_set("quests", k, { player_id: pid, quest_id, progress: 0, status: "active" });
+  result = { ok: true, quest_id };
+}

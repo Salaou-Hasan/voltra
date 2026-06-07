@@ -1,0 +1,9 @@
+// unban_user — moderator-only.
+// args: [room_id, user_id]
+const [rid, uid] = args;
+if (__neondb_caller_role !== "moderator" && __neondb_caller_role !== "admin") {
+  result = { error: "forbidden" };
+} else {
+  __neondb_delete("bans", rid + ":" + uid);
+  result = { ok: true };
+}

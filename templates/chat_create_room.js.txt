@@ -1,0 +1,8 @@
+// create_room — open a new chat room.
+// args: [room_id, name, owner_id]
+const [rid, name, owner] = args;
+if (__neondb_get("rooms", rid)) { result = { error: "exists" }; }
+else {
+  __neondb_set("rooms", rid, { room_id: rid, name, owner, members: [owner], created_at: 0 });
+  result = { ok: true, room_id: rid };
+}

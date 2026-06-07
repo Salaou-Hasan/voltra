@@ -1,0 +1,8 @@
+// guild_create — found a guild.
+// args: [guild_id, name, owner_id]
+const [gid, name, owner] = args;
+if (__neondb_get("guilds", gid)) { result = { error: "exists" }; }
+else {
+  __neondb_set("guilds", gid, { guild_id: gid, name, owner, members: [owner], created_at: 0 });
+  result = { ok: true, guild_id: gid };
+}

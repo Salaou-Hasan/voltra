@@ -1,0 +1,14 @@
+// complete_quest — finalise a quest and grant rewards.
+// args: [player_id, quest_id, xp_reward, currency_reward]
+const [pid, quest_id, xp, gold] = args;
+const k = pid + ":" + quest_id;
+const q = __neondb_get("quests", k);
+const p = __neondb_get("players", pid);
+if (!q || !p) { result = { error: "not_found" }; }
+else {
+  q.status = "complete";
+  __neondb_set("quests", k, q);
+  p.xp += (xp || 0); p.currency += (gold || 0);
+  __neondb_set("players", pid, p);
+  result = { ok: true, xp: p.xp, currency: p.currency };
+}

@@ -1,0 +1,11 @@
+// send_message — post a message to a room.
+// args: [room_id, message_id, user_id, text]
+const [rid, mid, uid, text] = args;
+const r = __neondb_get("rooms", rid);
+if (!r) { result = { error: "no_such_room" }; }
+else if (r.members.indexOf(uid) === -1) { result = { error: "not_member" }; }
+else if (__neondb_get("bans", rid + ":" + uid)) { result = { error: "banned" }; }
+else {
+  __neondb_set("messages", mid, { message_id: mid, room_id: rid, user_id: uid, text, edited: false, created_at: 0 });
+  result = { ok: true, message_id: mid };
+}

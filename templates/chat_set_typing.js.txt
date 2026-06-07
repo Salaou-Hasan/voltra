@@ -1,0 +1,7 @@
+// set_typing — broadcast a typing indicator.
+// args: [user_id, room_id, typing]
+const [uid, rid, typing] = args;
+const k = rid + ":" + uid;
+if (typing) { __neondb_set("typing", k, { user_id: uid, room_id: rid, started_at: 0 }); }
+else { __neondb_delete("typing", k); }
+result = { ok: true, typing: !!typing };

@@ -35,7 +35,7 @@ use hyper::{
 };
 use neondb::{
     config::{Config, ScheduledReducerConfig},
-    cluster::{ClusterBus, ClusterConfig, NodeInfo, PeerEntry, PeerHealth},
+    cluster::{ClusterBus, ClusterConfig, NodeInfo, PeerEntry},
     error::Result,
     network::{start_listener, PendingCall, ReducerResponse},
     reducer::{ReducerContext, ReducerRegistry},
@@ -697,6 +697,9 @@ async fn run_server(config: Config) -> Result<()> {
 
     log::info!("Starting NeonDB Server");
 
+    // Apply global runtime limits (e.g. max blob size) before any data is written.
+    config.apply_global_limits();
+
     let mut ts = TableStore::new();
     ts.set_shard(config.shard_id, config.shard_count);
     let tables = Arc::new(ts);
@@ -783,25 +786,13 @@ async fn run_server(config: Config) -> Result<()> {
             if let Err(e) = start_listener(
                 config_c.host, config_c.port, tx_c, subs_c, tables_c,
                 config_c.max_connections, config_c.api_key.clone(),
-                conns_c, perms_c, rx_shutdown,
+                conns_c, perms_c, config_c.sql_timeout_ms, rx_shutdown,
             ).await { log::error!("Listener error: {}", e); }
         })
     };
 
-    let metrics_handle = {
-        let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
-        let rx_shutdown = shutdown_rx.clone();
-        let host_c = config.host.clone(); let mport = config.metrics_port;
-        let bus_c = cluster_bus.clone();
-        let registry_c = registry.clone();
-        tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, rx_shutdown).await {
-                log::error!("Metrics server error: {}", e);
-            }
-        })
-    };
-
     let gossip_handle = neondb::cluster::gossip::start_gossip(cluster_bus.clone(), shutdown_rx.clone());
+    let _fanout_retry_handle = neondb::cluster::fanout::start_fanout_retry(cluster_bus.clone(), shutdown_rx.clone());
 
     let wal_writer = Arc::new(BatchedWalWriter::open(
         &config.wal_path, config.wal_batch_interval_ms, config.wal_batch_size, config.unsafe_no_fsync,
@@ -813,6 +804,21 @@ async fn run_server(config: Config) -> Result<()> {
     let snapshot_interval = config.snapshot_interval;
     let snapshot_dir_w    = config.snapshot_dir.clone();
     let global_seq        = Arc::new(std::sync::atomic::AtomicU64::new(initial_seq));
+
+    let metrics_handle = {
+        let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
+        let rx_shutdown = shutdown_rx.clone();
+        let host_c = config.host.clone(); let mport = config.metrics_port;
+        let bus_c = cluster_bus.clone();
+        let registry_c = registry.clone();
+        let wal_c = wal_writer.clone();
+        let seq_c = global_seq.clone();
+        tokio::spawn(async move {
+            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, rx_shutdown).await {
+                log::error!("Metrics server error: {}", e);
+            }
+        })
+    };
 
     let mut worker_handles = Vec::with_capacity(worker_count);
     for worker_id in 0..worker_count {
@@ -989,10 +995,7 @@ async fn cluster_seed(
         if shard_id == my_shard_id || metrics_url.is_empty() { continue; }
         if !bus.peers.contains_key(&shard_id) {
             let node = NodeInfo { shard_id, metrics_url };
-            bus.peers.insert(shard_id, PeerEntry {
-                node,
-                health: std::sync::Mutex::new(PeerHealth::default()),
-            });
+            bus.peers.insert(shard_id, PeerEntry::new(node));
             added += 1;
         }
     }
@@ -1070,6 +1073,8 @@ async fn start_metrics_server(
     tables: Arc<TableStore>,
     cluster_bus: Arc<ClusterBus>,
     registry: Arc<ReducerRegistry>,
+    wal_writer: Arc<BatchedWalWriter>,
+    global_seq: Arc<std::sync::atomic::AtomicU64>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse()
@@ -1080,11 +1085,14 @@ async fn start_metrics_server(
         let tbl  = tables.clone();
         let bus  = cluster_bus.clone();
         let reg  = registry.clone();
+        let wal  = wal_writer.clone();
+        let seq  = global_seq.clone();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 let subs = subs.clone(); let tbl = tbl.clone();
                 let bus  = bus.clone();  let reg = reg.clone();
-                async move { handle_metrics_request(req, subs, tbl, bus, reg).await }
+                let wal  = wal.clone();  let seq = seq.clone();
+                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq).await }
             }))
         }
     });
@@ -1107,6 +1115,8 @@ async fn handle_metrics_request(
     tables: Arc<TableStore>,
     cluster_bus: Arc<ClusterBus>,
     registry: Arc<ReducerRegistry>,
+    wal_writer: Arc<BatchedWalWriter>,
+    global_seq: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<Response<Body>> {
     let path = req.uri().path().to_string();
 
@@ -1207,6 +1217,12 @@ async fn handle_metrics_request(
         }
 
         (&Method::GET, "/cluster/peers") => {
+            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
+            if !cluster_bus.validate_secret(secret) {
+                let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
+            }
             let peers: Vec<_> = cluster_bus.peers.iter().map(|e| {
                 let p = e.value();
                 serde_json::json!({ "shard_id": p.node.shard_id, "metrics_url": p.node.metrics_url, "healthy": p.is_healthy() })
@@ -1247,10 +1263,7 @@ async fn handle_metrics_request(
 
             if !cluster_bus.peers.contains_key(&new_shard_id) {
                 let node = NodeInfo { shard_id: new_shard_id, metrics_url: new_url.clone() };
-                cluster_bus.peers.insert(new_shard_id, PeerEntry {
-                    node,
-                    health: std::sync::Mutex::new(PeerHealth::default()),
-                });
+                cluster_bus.peers.insert(new_shard_id, PeerEntry::new(node));
                 log::info!("[cluster] New peer joined: shard{} @ {}", new_shard_id, new_url);
             }
 
@@ -1282,7 +1295,26 @@ async fn handle_metrics_request(
                 Ok(payload) => {
                     let deltas = neondb::cluster::fanout::wire_to_row_deltas(payload.deltas);
                     match ClusterBus::apply_peer_deltas(&deltas, &tables, &subscription_manager) {
-                        Ok(()) => Ok(json_response(serde_json::json!({ "ok": true, "applied": deltas.len() }))),
+                        Ok(()) => {
+                            // Journal peer-applied deltas to the local WAL so they survive
+                            // a restart on this receiver node. Without this, peer fan-outs
+                            // are in-memory only.
+                            if !deltas.is_empty() {
+                                let seq_num = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let ts = current_timestamp_nanos();
+                                let entry = WalEntry::new(
+                                    ts,
+                                    seq_num,
+                                    "__cluster_replication".to_string(),
+                                    Vec::new(),
+                                    deltas.clone(),
+                                );
+                                if let Err(e) = wal_writer.append(&entry, seq_num) {
+                                    log::error!("[cluster] WAL append for replicated deltas failed: {}", e);
+                                }
+                            }
+                            Ok(json_response(serde_json::json!({ "ok": true, "applied": deltas.len() })))
+                        }
                         Err(e) => {
                             let mut r = json_response(serde_json::json!({ "error": e.to_string() }));
                             *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR; Ok(r)
@@ -1310,6 +1342,25 @@ async fn handle_metrics_request(
                         return Ok(r);
                     }
                 };
+
+            // Shard ownership validation: if the caller specified a target shard,
+            // reject mis-routed requests with HTTP 421 (Misdirected) so the caller
+            // can refresh its peer table and retry against the correct owner.
+            if let Some(target) = proxy_req.target_shard_id {
+                let me = cluster_bus.config.my_shard_id;
+                if target != me {
+                    log::warn!(
+                        "[cluster] Misrouted /cluster/call: reducer='{}' target_shard={} but I am shard{}",
+                        proxy_req.reducer_name, target, me
+                    );
+                    let mut r = json_response(serde_json::json!({
+                        "error": "wrong_shard",
+                        "owner_shard": me,
+                    }));
+                    *r.status_mut() = StatusCode::MISDIRECTED_REQUEST;
+                    return Ok(r);
+                }
+            }
 
             use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
             let args = match B64.decode(&proxy_req.args_b64) {
@@ -1346,6 +1397,7 @@ async fn handle_metrics_request(
                     Err(e)     => neondb::cluster::proxy::ProxyCallResponse::error_response(format!("Commit error: {}", e)),
                     Ok(deltas) => {
                         subscription_manager.publish_deltas(&deltas);
+                        cluster_bus.fanout_deltas(&deltas);
                         neondb::cluster::proxy::ProxyCallResponse::success_response(&result_bytes)
                     }
                 },

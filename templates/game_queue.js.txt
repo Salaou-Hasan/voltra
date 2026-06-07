@@ -1,0 +1,5 @@
+// queue — put a player in the matchmaking queue.
+// args: [player_id, rating]
+const [pid, rating] = args;
+__neondb_set("matchmaking", pid, { player_id: pid, rating: rating || 1000, queued_at: 0 });
+result = { ok: true };
