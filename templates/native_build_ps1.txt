@@ -56,7 +56,7 @@ foreach ($crate in $crates) {
 
     # Cargo outputs snake_case names; crate names with hyphens become underscores.
     $wasmName = $crate.Replace("-", "_") + ".wasm"
-    $wasmSrc  = Join-Path $PSScriptRoot "target" $target $profile $wasmName
+    $wasmSrc  = [System.IO.Path]::Combine($PSScriptRoot, "target", $target, $profile, $wasmName)
     $wasmDst  = Join-Path $modulesDir ($crate.Replace("-", "_") + ".wasm")
 
     if (Test-Path $wasmSrc) {

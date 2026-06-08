@@ -385,6 +385,7 @@ fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -
     let toml = format!(
         "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\n\
         [server]\nhost = \"127.0.0.1\"\nport = 3000\nmetrics_port = 3001\n\
+        wal_path = \"./wal\"\n\
         # api_key = \"change-me\"\nfsync_interval_ms = 0\n\
         # snapshot_interval = 1000000\n\
         {scheduler}{permissions}\n",
@@ -760,7 +761,7 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
     for js_path in &js_files {
         let wasm_path = js_path.with_extension("wasm");
         print!("  JS→WASM  {} ... ", js_path.display());
-        match std::process::Command::new("javy").arg("compile").arg(js_path).arg("-o").arg(&wasm_path).status() {
+        match std::process::Command::new("javy").arg("build").arg(js_path).arg("-o").arg(&wasm_path).status() {
             Ok(s) if s.success() => { println!("ok"); compiled += 1; wasm_paths.push(wasm_path); }
             Ok(s) => { println!("FAILED (exit {})", s.code().unwrap_or(-1)); failed += 1; }
             Err(e) => { println!("FAILED ({})", e); failed += 1; }

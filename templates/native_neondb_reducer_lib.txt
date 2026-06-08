@@ -79,11 +79,10 @@ pub type Result<T> = std::result::Result<T, NeonError>;
 // Host ABI — WASM import declarations (wasm32 only)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Raw host functions imported from the NeonDB runtime when targeting
-/// `wasm32-unknown-unknown`. On other targets a set of stub implementations is
-/// used so the crate (and any unit tests) can compile on the host machine.
-///
-/// All pointer/length pairs reference bytes inside WASM linear memory.
+// Raw host functions imported from the NeonDB runtime when targeting
+// `wasm32-unknown-unknown`. On other targets a set of stub implementations is
+// used so the crate (and any unit tests) can compile on the host machine.
+// All pointer/length pairs reference bytes inside WASM linear memory.
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "env")]
 extern "C" {

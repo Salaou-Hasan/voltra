@@ -8,6 +8,6 @@ description = "NeonDB reducer — update player world position"
 crate-type = ["cdylib"]
 
 [dependencies]
-neondb-reducer = { path = "../../neondb-reducer" }
+neondb-reducer = { path = "../neondb-reducer" }
 serde_json = "1"
 rmp-serde = "1"
