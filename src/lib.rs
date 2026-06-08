@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod raft;
 pub mod chat;
 pub mod cli;
 pub mod cluster;

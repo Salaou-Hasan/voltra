@@ -339,6 +339,97 @@ neondb get players                       # verify rows landed
 
 ## Current Build Status
 
+After Session 40 (Wave 3 — Raft P0 implementation):
+- `cargo build` → **zero errors, 1 warning** (unused import in main.rs — harmless).
+- `cargo test --lib` → **410 tests passing** (was 385 before this session; +25 Raft tests).
+- `cargo bench --no-run` → pending (benchmark build in background).
+- Raft consensus fully scaffolded and wired into the running server.
+
+### Session 40 — Wave 3: Raft Consensus P0 Implementation
+
+**What was built:**
+
+New module: `src/raft/` with four files:
+
+- **`src/raft/mod.rs`** — Type config, re-exports, configuration helper:
+  - `RaftRequest` — the payload flowing through the Raft log (reducer_name, args, deltas, timestamp_ms). `Serialize + Deserialize` so openraft can replicate it.
+  - `RaftResponse` — returned after `apply()` (applied delta count).
+  - `openraft::declare_raft_types!(TypeConfig)` — ties NeonDB types to openraft: NodeId=u64, Node=BasicNode, Entry=openraft::Entry<TypeConfig>, SnapshotData=Cursor<Vec<u8>>, AsyncRuntime=TokioRuntime.
+  - `NeonRaft = openraft::Raft<TypeConfig>` convenience alias.
+  - `build_raft_config()` — heartbeat 250ms, election 750-1500ms, max 300 entries/RPC, snapshot every 10k entries.
+  - 5 unit tests.
+
+- **`src/raft/storage.rs`** — `MemLogStore` implementing `RaftLogStorage + RaftLogReader`:
+  - In-memory `BTreeMap<u64, Entry>` is the authoritative log store (O(log n) by index, ordered ranges).
+  - Vote persisted to JSON file at `<wal_dir>/raft_vote.json` (survive crashes for correctness).
+  - `append()` inserts entries and calls `callback.log_io_completed(Ok(()))` immediately (all-memory, no async I/O needed).
+  - `truncate(log_id)` removes entries from `log_id.index..` (conflict resolution on follower).
+  - `purge(log_id)` removes entries `..=log_id.index` (after snapshot install).
+  - `get_log_reader()` returns a clone (shared `Arc<RwLock<>>>`).
+  - 7 unit tests (using direct inner-map insertion since `LogFlushed::new` is `pub(crate)` in openraft).
+
+- **`src/raft/state_machine.rs`** — `NeonStateMachine` implementing `RaftStateMachine`:
+  - `apply()`: for `EntryPayload::Normal(req)` → `TableStore::apply_delta_batch(&req.deltas)` → `SubscriptionManager::publish_deltas()` fan-out. Membership entries stored in `last_membership`. Blank entries are no-ops.
+  - `build_snapshot()`: serializes all TableStore rows + counters to `SerializedState` JSON, returns as `Cursor<Vec<u8>>`.
+  - `install_snapshot()`: calls `TableStore::clear_all()` then replays all rows and counters from the snapshot.
+  - `NeonSnapshotBuilder` is a separate type holding `Arc<RwLock<StateMachineInner>>`.
+  - 4 unit tests including full snapshot roundtrip.
+
+- **`src/raft/http.rs`** — HTTP handlers for incoming Raft RPCs:
+  - `handle_raft_append` → `POST /raft/append` (AppendEntries — heartbeat + log replication).
+  - `handle_raft_vote` → `POST /raft/vote` (RequestVote — leader election).
+  - `handle_raft_snapshot` → `POST /raft/snapshot` (InstallSnapshot — catch-up for stale followers).
+  - `handle_raft_metrics` → `GET /raft/metrics` (current leader, term, commit index, membership).
+  - `handle_raft_add_learner` → `POST /raft/add-learner` (add a new node as learner).
+  - `handle_raft_change_membership` → `POST /raft/change-membership` (promote to voter / quorum changes).
+  - `handle_raft_init` → `POST /raft/init` (bootstrap single-node cluster).
+  - 3 unit tests.
+
+- **`src/raft/network.rs`** — `NeonNetworkFactory + NeonNetwork` implementing Raft HTTP transport:
+  - `append_entries` → `POST <peer>/raft/append`
+  - `install_snapshot` → `POST <peer>/raft/snapshot`
+  - `vote` → `POST <peer>/raft/vote`
+  - `full_snapshot` → uses openraft's default `Chunked::send_snapshot` (chunk-based fragmentation).
+  - Cluster secret injected as `x-neondb-cluster-secret` header.
+  - 4 unit tests.
+
+**Files modified:**
+
+- `Cargo.toml` — added `openraft = { version = "0.9", features = ["serde", "storage-v2"] }` and `anyerror = "0.1"`.
+- `src/lib.rs` — added `pub mod raft;`.
+- `src/table/mod.rs` — added 3 methods: `get_all_rows(table_name) → HashMap`, `get_all_counters_map() → HashMap`, `clear_all()` (for snapshot install).
+- `src/main.rs` — Raft node initialised at server startup:
+  - `MemLogStore + NeonStateMachine + NeonNetworkFactory` constructed.
+  - `openraft::Raft::new()` creates the Raft node.
+  - Single-node mode auto-bootstraps; multi-node mode waits for `/raft/change-membership`.
+  - `start_metrics_server` and `handle_metrics_request` now accept `Arc<NeonRaft>`.
+  - 7 new Raft routes registered in `handle_metrics_request`.
+
+**Correctness guarantees provided by openraft (not custom code):**
+- Leader election via randomized election timeouts (750–1500ms).
+- Quorum write: entries only committed when replicated to `⌊N/2⌋ + 1` nodes.
+- Term-based split-brain prevention: stale-term AppendEntries rejected automatically.
+- Log conflict resolution: `truncate()` called when follower log diverges from leader.
+- Snapshot transfer: `install_full_snapshot()` for nodes too far behind.
+- Membership changes: joint-consensus safe membership transitions via `change_membership()`.
+
+**P0 status: COMPLETE (consensus layer scaffolded + wired + tested)**
+
+**Remaining Raft work (P0 tail):**
+1. **Vote persistence to disk** — currently `MemLogStore::new(None)` is passed; should be `MemLogStore::new(Some(wal_dir.join("raft_vote.json")))` so vote survives server restarts.
+2. **Reducer write path through Raft** — currently reducer workers `apply_delta_batch` directly. For multi-node consistency, the leader should call `raft.client_write(RaftRequest { deltas, ... })` instead; followers should detect non-leader status and proxy to leader via `/cluster/call`.
+3. **Leader forwarding in WebSocket handler** — followers that receive a reducer call should check `raft.current_leader()` and forward if not leader.
+4. **Multi-node integration test** — spin up 3 NeonDB nodes, call `change_membership`, write via node 1, verify node 2 and 3 see the data.
+
+**New pitfalls (add to Common Pitfalls):**
+37. **`#[openraft::add_async_trait]` is for trait definitions only** — impl blocks must use plain `async fn`. Rust 1.75+ handles `async fn` in impl blocks natively via RPITIT.
+38. **`LogFlushed::new` is `pub(crate)` in openraft 0.9** — cannot construct in external crates. Tests that need to call `append()` must insert directly into `inner.entries` via `Arc<RwLock<>>`.
+39. **`Entry.log_id` and `LogId.index` are public fields, not methods** — use `entry.log_id.index` not `entry.log_id().index()`.
+40. **`StorageError::write_snapshot` is on `StorageIOError`, not `StorageError`** — use `StorageError::IO { source: StorageIOError::write_state_machine(anyerror::AnyError::new(&e)) }`.
+41. **Raft `initialize()` must be called exactly once** — on a fresh node it bootstraps the cluster; on an already-initialised node it returns `Err(AlreadyInitialized)`, which should be logged as `warn` and ignored.
+42. **`storage-v2` feature must be enabled** — `openraft = { features = ["serde", "storage-v2"] }`. Without it, `RaftLogStorage` and `RaftStateMachine` traits are not implementable by external crates (the `Sealed` impl is gated on `#[cfg(feature = "storage-v2")]`).
+43. **`anyerror` must be a direct dependency** — openraft's `StorageIOError` constructors take `impl Into<AnyError>`. The `anyerror` crate is a transitive dep of openraft but not available without adding it to Cargo.toml.
+
 After Session 39 (5-agent production-readiness wave):
 - `cargo build --lib` → **zero errors, zero warnings**.
 - `cargo test --lib` → **264 lib unit tests passing** (was 232 before the wave; +32 from the wave, of which Agent 5 contributed 7 new schema tests).

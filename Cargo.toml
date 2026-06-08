@@ -41,7 +41,10 @@ flume = "0.11"                           # backup MPSC channel
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 
 # Raft consensus (distributed leader election + log replication)
-openraft = { version = "0.9", features = ["serde"] }
+# storage-v2 enables the split RaftLogStorage + RaftStateMachine traits
+# (replaces the deprecated monolithic RaftStorage trait).
+openraft = { version = "0.9", features = ["serde", "storage-v2"] }
+anyerror = "0.1"   # error type used by openraft's StorageError constructors
 base64 = "0.21"
 jsonwebtoken = "9"
 

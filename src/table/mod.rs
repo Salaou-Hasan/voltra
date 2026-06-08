@@ -973,6 +973,35 @@ impl TableStore {
     pub fn total_row_count(&self) -> usize {
         self.tables.iter().map(|t| t.value().rows.len()).sum()
     }
+
+    // ── Snapshot helpers ──────────────────────────────────────────────────────
+
+    /// Return all rows in `table_name` as a `HashMap<key, value>`.
+    /// Used by the Raft snapshot builder.
+    pub fn get_all_rows(
+        &self,
+        table_name: &str,
+    ) -> std::collections::HashMap<String, Value> {
+        match self.list_rows_with_keys(table_name) {
+            Ok(pairs) => pairs.into_iter().collect(),
+            Err(_) => std::collections::HashMap::new(),
+        }
+    }
+
+    /// Return all counter values as a `HashMap<name, value>`.
+    /// Used by the Raft snapshot builder.
+    pub fn get_all_counters_map(&self) -> std::collections::HashMap<String, i32> {
+        match self.list_counters() {
+            Ok(counters) => counters.into_iter().map(|c| (c.name, c.value)).collect(),
+            Err(_) => std::collections::HashMap::new(),
+        }
+    }
+
+    /// Remove all rows from all tables.
+    /// Called when installing a Raft snapshot to reset state before reload.
+    pub fn clear_all(&self) {
+        self.tables.clear();
+    }
 }
 
 /// Convert a JSON Value to the canonical string key used inside a FieldIndex.

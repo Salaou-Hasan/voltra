@@ -33,6 +33,8 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Method, Request, Response, Server, StatusCode,
 };
+use openraft;
+
 use neondb::{
     auth::AuthValidator,
     config::{Config, ScheduledReducerConfig},
@@ -833,6 +835,52 @@ async fn run_server(config: Config) -> Result<()> {
     let global_seq        = Arc::new(std::sync::atomic::AtomicU64::new(initial_seq));
 
     let startup_instant = std::time::Instant::now();
+
+    // ── Raft consensus engine ─────────────────────────────────────────────────
+    // Initialise openraft. In single-node mode this is a no-op cluster of 1.
+    // In multi-node mode other peers call POST /raft/add-learner and
+    // POST /raft/change-membership to form the cluster.
+    let raft_node_id: u64 = config.shard_id as u64;
+    let raft_node_addr = format!("http://{}:{}", config.host, config.metrics_port);
+    let raft_handle: Arc<neondb::raft::NeonRaft> = {
+        use neondb::raft::{
+            build_raft_config, NeonRaft, TypeConfig,
+            network::NeonNetworkFactory,
+            state_machine::NeonStateMachine,
+            storage::MemLogStore,
+        };
+        use openraft::Raft;
+
+        let raft_config  = build_raft_config();
+        let log_store    = MemLogStore::new(None); // TODO: persist vote to WAL dir
+        let state_machine = NeonStateMachine::new(tables.clone(), subscription_manager.clone());
+        let network_factory = NeonNetworkFactory::new();
+
+        let raft = Raft::<TypeConfig>::new(
+            raft_node_id,
+            raft_config,
+            network_factory,
+            log_store,
+            state_machine,
+        ).await.expect("Failed to create Raft node");
+
+        // Bootstrap: initialise as a single-node cluster unless peers are known.
+        // A multi-node cluster is formed by calling /raft/change-membership after
+        // all nodes are started.
+        if config.shard_count <= 1 {
+            let mut members = std::collections::BTreeMap::new();
+            members.insert(raft_node_id, openraft::BasicNode { addr: raft_node_addr.clone() });
+            match raft.initialize(members).await {
+                Ok(_)  => log::info!("[raft] bootstrapped single-node cluster (id={})", raft_node_id),
+                Err(e) => log::warn!("[raft] init skipped (already initialised?): {}", e),
+            }
+        } else {
+            log::info!("[raft] multi-node mode: shard_count={}; call /raft/change-membership to form cluster", config.shard_count);
+        }
+
+        Arc::new(raft)
+    };
+
     let metrics_handle = {
         let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
         let rx_shutdown = shutdown_rx.clone();
@@ -843,8 +891,11 @@ async fn run_server(config: Config) -> Result<()> {
         let seq_c = global_seq.clone();
         let pres_m = presence.clone();
         let ttl_m = ttl_manager.clone();
+        let raft_c = raft_handle.clone();
+        let raft_node_id_c = raft_node_id;
+        let raft_node_addr_c = raft_node_addr.clone();
         tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, rx_shutdown).await {
+            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, raft_c, raft_node_id_c, raft_node_addr_c, rx_shutdown).await {
                 log::error!("Metrics server error: {}", e);
             }
         })
@@ -1197,28 +1248,35 @@ async fn start_metrics_server(
     startup_instant: std::time::Instant,
     presence_manager: Arc<PresenceManager>,
     ttl_manager: Arc<TtlManager>,
+    raft: Arc<neondb::raft::NeonRaft>,
+    raft_node_id: u64,
+    raft_node_addr: String,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse()
         .map_err(|e| neondb::error::NeonDBError::invalid_argument(format!("Invalid metrics address: {}", e)))?;
 
     let make_service = make_service_fn(move |_| {
-        let subs = subscription_manager.clone();
-        let tbl  = tables.clone();
-        let bus  = cluster_bus.clone();
-        let reg  = registry.clone();
-        let wal  = wal_writer.clone();
-        let seq  = global_seq.clone();
+        let subs  = subscription_manager.clone();
+        let tbl   = tables.clone();
+        let bus   = cluster_bus.clone();
+        let reg   = registry.clone();
+        let wal   = wal_writer.clone();
+        let seq   = global_seq.clone();
         let start = startup_instant;
-        let pres = presence_manager.clone();
-        let ttl  = ttl_manager.clone();
+        let pres  = presence_manager.clone();
+        let ttl   = ttl_manager.clone();
+        let raft_svc = raft.clone();
+        let nid   = raft_node_id;
+        let naddr = raft_node_addr.clone();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 let subs = subs.clone(); let tbl = tbl.clone();
                 let bus  = bus.clone();  let reg = reg.clone();
                 let wal  = wal.clone();  let seq = seq.clone();
                 let pres = pres.clone(); let ttl = ttl.clone();
-                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq, start, pres, ttl).await }
+                let raft_r = raft_svc.clone(); let nid_r = nid; let naddr_r = naddr.clone();
+                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq, start, pres, ttl, raft_r, nid_r, naddr_r).await }
             }))
         }
     });
@@ -1246,6 +1304,9 @@ async fn handle_metrics_request(
     startup_instant: std::time::Instant,
     presence_manager: Arc<PresenceManager>,
     ttl_manager: Arc<TtlManager>,
+    raft: Arc<neondb::raft::NeonRaft>,
+    raft_node_id: u64,
+    raft_node_addr: String,
 ) -> Result<Response<Body>> {
     let path = req.uri().path().to_string();
 
@@ -1568,6 +1629,37 @@ async fn handle_metrics_request(
             };
 
             Ok(json_response(serde_json::to_value(resp_body).unwrap_or(serde_json::json!({}))))
+        }
+
+        // ── Raft RPC endpoints (called by peer nodes) ─────────────────────
+        // These receive openraft RPCs from other NeonDB nodes in the cluster.
+
+        (&Method::POST, "/raft/append") => {
+            Ok(neondb::raft::http::handle_raft_append(raft, req).await)
+        }
+
+        (&Method::POST, "/raft/vote") => {
+            Ok(neondb::raft::http::handle_raft_vote(raft, req).await)
+        }
+
+        (&Method::POST, "/raft/snapshot") => {
+            Ok(neondb::raft::http::handle_raft_snapshot(raft, req).await)
+        }
+
+        (&Method::GET, "/raft/metrics") => {
+            Ok(neondb::raft::http::handle_raft_metrics(raft).await)
+        }
+
+        (&Method::POST, "/raft/add-learner") => {
+            Ok(neondb::raft::http::handle_raft_add_learner(raft, req).await)
+        }
+
+        (&Method::POST, "/raft/change-membership") => {
+            Ok(neondb::raft::http::handle_raft_change_membership(raft, req).await)
+        }
+
+        (&Method::POST, "/raft/init") => {
+            Ok(neondb::raft::http::handle_raft_init(raft, raft_node_id, raft_node_addr).await)
         }
 
         _ => {
