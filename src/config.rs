@@ -123,6 +123,21 @@ pub struct Config {
     /// bytes returned FROM it.  Applies to all backends.  Default 1 MiB.
     /// Env: `NEONDB_REDUCER_MAX_IO_BYTES`.
     pub reducer_max_io_bytes: usize,
+    /// Rate limiter burst capacity per client (0 = disabled).
+    /// Env: `NEONDB_RATE_LIMIT_CAPACITY`.  Default 100.
+    pub rate_limit_capacity: u32,
+    /// Rate limiter sustained calls/sec per client.
+    /// Env: `NEONDB_RATE_LIMIT_RATE`.  Default 50.0.
+    pub rate_limit_refill_rate: f64,
+    /// Presence heartbeat timeout (ms) before marking idle. 0 = presence disabled.
+    /// Env: `NEONDB_PRESENCE_HEARTBEAT_TIMEOUT_MS`.  Default 30000.
+    pub presence_heartbeat_timeout_ms: u64,
+    /// Presence offline timeout (ms) before removing user entirely.
+    /// Env: `NEONDB_PRESENCE_OFFLINE_TIMEOUT_MS`.  Default 60000.
+    pub presence_offline_timeout_ms: u64,
+    /// TTL sweep interval (ms) — how often the background task checks for expired rows.
+    /// Env: `NEONDB_TTL_SWEEP_INTERVAL_MS`.  Default 5000.
+    pub ttl_sweep_interval_ms: u64,
 }
 
 // These structs mirror the TOML schema. Fields that are not yet wired into
@@ -175,6 +190,11 @@ struct ConfigServer {
     max_blob_size_bytes: Option<usize>,
     reducer_max_memory_bytes: Option<usize>,
     reducer_max_io_bytes: Option<usize>,
+    rate_limit_capacity: Option<u32>,
+    rate_limit_refill_rate: Option<f64>,
+    presence_heartbeat_timeout_ms: Option<u64>,
+    presence_offline_timeout_ms: Option<u64>,
+    ttl_sweep_interval_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -219,6 +239,11 @@ impl Config {
             max_blob_size_bytes: 16 * 1024 * 1024,
             reducer_max_memory_bytes: 64 * 1024 * 1024,
             reducer_max_io_bytes: 1 * 1024 * 1024,
+            rate_limit_capacity: 100,
+            rate_limit_refill_rate: 50.0,
+            presence_heartbeat_timeout_ms: 30_000,
+            presence_offline_timeout_ms: 60_000,
+            ttl_sweep_interval_ms: 5_000,
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -365,6 +390,21 @@ fn apply_server_section(cfg: &mut Config, server: Option<ConfigServer>) {
     if let Some(i) = s.reducer_max_io_bytes {
         cfg.reducer_max_io_bytes = i;
     }
+    if let Some(c) = s.rate_limit_capacity {
+        cfg.rate_limit_capacity = c;
+    }
+    if let Some(r) = s.rate_limit_refill_rate {
+        cfg.rate_limit_refill_rate = r;
+    }
+    if let Some(h) = s.presence_heartbeat_timeout_ms {
+        cfg.presence_heartbeat_timeout_ms = h;
+    }
+    if let Some(o) = s.presence_offline_timeout_ms {
+        cfg.presence_offline_timeout_ms = o;
+    }
+    if let Some(t) = s.ttl_sweep_interval_ms {
+        cfg.ttl_sweep_interval_ms = t;
+    }
 }
 
 fn apply_scheduler_section(cfg: &mut Config, scheduler: Option<Vec<ConfigScheduler>>) {
@@ -500,6 +540,31 @@ fn apply_env_overrides(cfg: &mut Config) {
         .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
     {
         cfg.reducer_max_io_bytes = i;
+    }
+    if let Ok(c) = env::var("NEONDB_RATE_LIMIT_CAPACITY")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.rate_limit_capacity = c;
+    }
+    if let Ok(r) = env::var("NEONDB_RATE_LIMIT_RATE")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.rate_limit_refill_rate = r;
+    }
+    if let Ok(h) = env::var("NEONDB_PRESENCE_HEARTBEAT_TIMEOUT_MS")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.presence_heartbeat_timeout_ms = h;
+    }
+    if let Ok(o) = env::var("NEONDB_PRESENCE_OFFLINE_TIMEOUT_MS")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.presence_offline_timeout_ms = o;
+    }
+    if let Ok(t) = env::var("NEONDB_TTL_SWEEP_INTERVAL_MS")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.ttl_sweep_interval_ms = t;
     }
 }
 

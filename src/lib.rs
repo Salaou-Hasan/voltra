@@ -1,14 +1,20 @@
+pub mod auth;
+pub mod chat;
 pub mod cli;
 pub mod cluster;
 pub mod config;
 pub mod error;
+pub mod leaderboard;
+pub mod matchmaking;
 pub mod migrations;
 pub mod network;
+pub mod presence;
 pub mod reducer;
 pub mod schema;
 pub mod sql;
 pub mod subscriptions;
 pub mod table;
+pub mod ttl;
 pub mod wal;
 
 pub use error::{NeonDBError, Result};

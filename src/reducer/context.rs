@@ -52,6 +52,8 @@ pub struct ReducerContext {
     /// Empty string when no role was supplied (open / anonymous access).
     pub caller_role: String,
     pub schema: Option<Arc<SchemaRegistry>>,
+    /// Optional TTL manager — lets reducers set row expiration times.
+    pub ttl: Option<Arc<crate::ttl::TtlManager>>,
     pending_deltas: Vec<RowDelta>,
     pub pending_diffs: Vec<SubscriptionDiff>,
 }
@@ -64,6 +66,7 @@ impl ReducerContext {
             caller_id: String::new(),
             caller_role: String::new(),
             schema: None,
+            ttl: None,
             pending_deltas: Vec::with_capacity(4),
             pending_diffs: Vec::with_capacity(4),
         }
@@ -72,6 +75,31 @@ impl ReducerContext {
     pub fn with_schema(mut self, schema: Arc<SchemaRegistry>) -> Self {
         self.schema = Some(schema);
         self
+    }
+
+    pub fn with_ttl(mut self, ttl: Arc<crate::ttl::TtlManager>) -> Self {
+        self.ttl = Some(ttl);
+        self
+    }
+
+    /// Set a TTL on a row so it expires after `ttl_ms` milliseconds from now.
+    /// No-op if the TTL manager is not wired.
+    pub fn set_ttl(&self, table_name: &str, row_key: &str, ttl_ms: u64) {
+        if let Some(ttl) = &self.ttl {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            ttl.set_ttl(table_name, row_key, now, ttl_ms);
+        }
+    }
+
+    /// Cancel the TTL on a row, making it permanent.
+    /// No-op if the TTL manager is not wired.
+    pub fn cancel_ttl(&self, table_name: &str, row_key: &str) {
+        if let Some(ttl) = &self.ttl {
+            ttl.cancel_ttl(table_name, row_key);
+        }
     }
 
     // ── Reads (check pending deltas first for read-your-writes) ──────────────

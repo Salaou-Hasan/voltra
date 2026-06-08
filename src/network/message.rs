@@ -92,6 +92,24 @@ pub enum ClientMessage {
     },
     /// Ad-hoc SQL query — full read/write SQL against the live TableStore.
     SqlQuery(SqlQuery),
+    /// Client heartbeat — keeps presence alive.
+    Heartbeat,
+    /// Client sets their presence status.
+    SetPresence {
+        status: String,
+        metadata: Option<serde_json::Value>,
+    },
+    /// Client sets a TTL on a row.
+    SetTtl {
+        table_name: String,
+        row_key: String,
+        ttl_ms: u64,
+    },
+    /// Client cancels a TTL on a row.
+    CancelTtl {
+        table_name: String,
+        row_key: String,
+    },
 }
 
 /// A diff for subscribed clients.

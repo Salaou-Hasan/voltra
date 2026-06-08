@@ -37,7 +37,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 pub type ClientId = u64;
 
@@ -158,7 +158,7 @@ pub enum OutboundFrames {
 }
 
 struct ClientInfo {
-    tx: UnboundedSender<OutboundFrames>,
+    tx: Sender<OutboundFrames>,
     subscriptions: DashMap<String, Subscription>,
 }
 
@@ -249,7 +249,7 @@ impl SubscriptionManager {
         }
     }
 
-    pub fn register_client(&self, tx: UnboundedSender<OutboundFrames>) -> ClientId {
+    pub fn register_client(&self, tx: Sender<OutboundFrames>) -> ClientId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.clients.insert(
             id,
@@ -367,10 +367,13 @@ impl SubscriptionManager {
                             route_bytes.clone(),
                             encode_snapshot_body(&table_name, &row_key, row_value),
                         ) {
-                            let _ = tx.send(OutboundFrames::Two {
+                            if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(OutboundFrames::Two {
                                 first: route,
                                 second: body,
-                            });
+                            }) {
+                                log::warn!("Client send buffer full during snapshot delivery, truncating");
+                                break;
+                            }
                         }
                     } else if let Some(frame) = encode_legacy_snapshot(
                         &subscription_id,
@@ -378,7 +381,10 @@ impl SubscriptionManager {
                         &row_key,
                         row_value,
                     ) {
-                        let _ = tx.send(OutboundFrames::One(frame));
+                        if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(OutboundFrames::One(frame)) {
+                            log::warn!("Client send buffer full during snapshot delivery, truncating");
+                            break;
+                        }
                     }
                 }
             }
@@ -437,7 +443,7 @@ impl SubscriptionManager {
                     continue;
                 };
 
-                let mut per_client: HashMap<ClientId, (UnboundedSender<OutboundFrames>, Vec<String>)> =
+                let mut per_client: HashMap<ClientId, (Sender<OutboundFrames>, Vec<String>)> =
                     HashMap::new();
 
                 for client_entry in table_entry.iter() {
@@ -464,16 +470,23 @@ impl SubscriptionManager {
                     }
                 }
 
-                for (_cid, (tx, sub_ids)) in per_client {
-                    if let Some(route) = encode_route(sub_ids) {
-                        let _ = tx.send(OutboundFrames::Two {
+                let mut clients_to_remove: Vec<ClientId> = Vec::new();
+                for (cid, (tx, sub_ids)) in &per_client {
+                    if let Some(route) = encode_route(sub_ids.clone()) {
+                        if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(OutboundFrames::Two {
                             first: route,
                             second: body.clone(),
-                        });
+                        }) {
+                            log::warn!("Subscription send buffer full for client {}, removing subscriptions", cid);
+                            clients_to_remove.push(*cid);
+                        }
                     }
                 }
+                for cid in clients_to_remove {
+                    self.unregister_client(cid);
+                }
             } else {
-                let mut matching: Vec<(UnboundedSender<OutboundFrames>, String)> = Vec::new();
+                let mut matching: Vec<(ClientId, Sender<OutboundFrames>, String)> = Vec::new();
 
                 for client_entry in table_entry.iter() {
                     let client_id = *client_entry.key();
@@ -491,7 +504,7 @@ impl SubscriptionManager {
                         };
 
                         if sub.filter.matches(delta) {
-                            matching.push((client.tx.clone(), sub_id.clone()));
+                            matching.push((client_id, client.tx.clone(), sub_id.clone()));
                         }
                     }
                 }
@@ -500,25 +513,32 @@ impl SubscriptionManager {
                     continue;
                 }
 
-                matching.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                matching.sort_unstable_by(|a, b| a.2.cmp(&b.2));
 
+                let mut clients_to_remove: Vec<ClientId> = Vec::new();
                 let mut i = 0;
                 while i < matching.len() {
-                    let sub_id = &matching[i].1;
+                    let sub_id = &matching[i].2;
 
                     let run_end = matching[i..]
                         .iter()
-                        .position(|(_, sid)| sid != sub_id)
+                        .position(|(_, _, sid)| sid != sub_id)
                         .map(|p| i + p)
                         .unwrap_or(matching.len());
 
                     if let Some(frame) = encode_legacy_diff(sub_id, delta) {
-                        for (tx, _) in &matching[i..run_end] {
-                            let _ = tx.send(OutboundFrames::One(frame.clone()));
+                        for (cid, tx, _) in &matching[i..run_end] {
+                            if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(OutboundFrames::One(frame.clone())) {
+                                log::warn!("Subscription send buffer full for client {}, removing subscriptions", cid);
+                                clients_to_remove.push(*cid);
+                            }
                         }
                     }
 
                     i = run_end;
+                }
+                for cid in clients_to_remove {
+                    self.unregister_client(cid);
                 }
             }
         }
@@ -808,6 +828,7 @@ fn parse_predicate_value(value: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::websocket::CLIENT_SEND_BUFFER_CAPACITY;
     use crate::table::{RowDelta, TableStore};
 
     fn make_delta(table: &str, key: &str, data: Value) -> RowDelta {
@@ -825,7 +846,7 @@ mod tests {
     }
 
     fn recv_one(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutboundFrames>,
+        rx: &mut tokio::sync::mpsc::Receiver<OutboundFrames>,
     ) -> Arc<Bytes> {
         match rx.try_recv().expect("expected a frame") {
             OutboundFrames::One(b) => b,
@@ -834,7 +855,7 @@ mod tests {
     }
 
     /// Drain all frames from rx and decode each as SubscriptionDiff, returning row_keys in order.
-    fn drain_snapshot_keys(rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutboundFrames>) -> Vec<String> {
+    fn drain_snapshot_keys(rx: &mut tokio::sync::mpsc::Receiver<OutboundFrames>) -> Vec<String> {
         let mut keys = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let bytes = match frame {
@@ -984,7 +1005,7 @@ mod tests {
     #[test]
     fn or_delivers_delta_to_subscriber() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(
             cid,
@@ -1028,7 +1049,7 @@ mod tests {
             tables.set_counter(format!("c{}", i), i as i32, 0).unwrap();
         }
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(
             cid,
@@ -1047,7 +1068,7 @@ mod tests {
     #[test]
     fn limit_does_not_affect_live_deltas() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(
             cid,
@@ -1072,7 +1093,7 @@ mod tests {
         tables.set_counter("x".to_string(), 1, 0).unwrap();
         tables.set_counter("y".to_string(), 2, 0).unwrap();
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(
             cid,
@@ -1135,7 +1156,7 @@ mod tests {
         ).unwrap();
 
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(
             cid,
@@ -1159,7 +1180,7 @@ mod tests {
         tables.set_row("scores".to_string(), "p_c".to_string(), serde_json::json!({"score": 20})).unwrap();
 
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(
             cid,
@@ -1187,7 +1208,7 @@ mod tests {
         }
 
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         // Top 3 scores descending
         mgr.subscribe_with_snapshot(
@@ -1210,7 +1231,7 @@ mod tests {
     fn order_by_does_not_affect_live_deltas() {
         // Live deltas must be delivered as they arrive, regardless of ORDER BY.
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(
             cid,
@@ -1234,8 +1255,8 @@ mod tests {
     #[test]
     fn publish_deltas_arc_clone_count() {
         let mgr = SubscriptionManager::new();
-        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
-        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx1, _rx1) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx2, _rx2) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
         mgr.subscribe(id1, "s1".to_string(), "counters".to_string()).unwrap();
@@ -1247,8 +1268,8 @@ mod tests {
     #[test]
     fn publish_deltas_shared_sub_id_encodes_once() {
         let mgr = SubscriptionManager::new();
-        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
-        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx1, mut rx1) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
         mgr.subscribe(id1, "world_sync".to_string(), "players".to_string()).unwrap();
@@ -1264,8 +1285,8 @@ mod tests {
     #[test]
     fn publish_deltas_unique_sub_ids_receive_correct_data() {
         let mgr = SubscriptionManager::new();
-        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
-        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx1, mut rx1) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
         mgr.subscribe(id1, "sub_client_1".to_string(), "counters".to_string()).unwrap();
@@ -1284,7 +1305,7 @@ mod tests {
     #[test]
     fn two_frame_protocol_groups_route_and_body() {
         let mgr = SubscriptionManager::new_with_options(true);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "s".to_string(), "players".to_string()).unwrap();
         let deltas = vec![make_delta("players", "p1", serde_json::json!({"hp": 99}))];
@@ -1304,8 +1325,8 @@ mod tests {
     #[test]
     fn publish_deltas_predicate_filters_correctly() {
         let mgr = SubscriptionManager::new();
-        let (tx_match, mut rx_match) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
-        let (tx_skip, mut rx_skip) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx_match, mut rx_match) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx_skip, mut rx_skip) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id_match = mgr.register_client(tx_match);
         let id_skip = mgr.register_client(tx_skip);
         mgr.subscribe(id_match, "high".to_string(), "counters WHERE value >= 10".to_string()).unwrap();
@@ -1326,7 +1347,7 @@ mod tests {
     #[test]
     fn publish_deltas_wrong_table_not_delivered() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "s".to_string(), "players".to_string()).unwrap();
         let deltas = vec![make_delta("counters", "k", serde_json::json!({"v": 1}))];
@@ -1337,8 +1358,8 @@ mod tests {
     #[test]
     fn reverse_index_skips_unrelated_table_entirely() {
         let mgr = SubscriptionManager::new();
-        let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
-        let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id_a = mgr.register_client(tx_a);
         let id_b = mgr.register_client(tx_b);
         mgr.subscribe(id_a, "sa".to_string(), "table_alpha".to_string()).unwrap();
@@ -1352,7 +1373,7 @@ mod tests {
     #[test]
     fn reverse_index_cleaned_up_on_unsubscribe() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "sub1".to_string(), "counters".to_string()).unwrap();
         mgr.unsubscribe(cid, "sub1").unwrap();
@@ -1365,7 +1386,7 @@ mod tests {
     #[test]
     fn reverse_index_cleaned_up_on_unregister() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "s1".to_string(), "players".to_string()).unwrap();
         mgr.subscribe(cid, "s2".to_string(), "counters".to_string()).unwrap();
@@ -1385,13 +1406,13 @@ mod tests {
         let mut rxs_players = Vec::new();
         let mut rxs_counters = Vec::new();
         for i in 0..25 {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+            let (tx, rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
             let cid = mgr.register_client(tx);
             mgr.subscribe(cid, format!("ps_{}", i), "players".to_string()).unwrap();
             rxs_players.push(rx);
         }
         for i in 0..25 {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+            let (tx, rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
             let cid = mgr.register_client(tx);
             mgr.subscribe(cid, format!("cs_{}", i), "counters".to_string()).unwrap();
             rxs_counters.push(rx);
@@ -1405,7 +1426,7 @@ mod tests {
     #[test]
     fn client_with_multi_table_subscriptions() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "watch_players".to_string(), "players".to_string()).unwrap();
         mgr.subscribe(cid, "watch_counters".to_string(), "counters".to_string()).unwrap();
@@ -1423,7 +1444,7 @@ mod tests {
         tables.set_counter("alpha".to_string(), 10, 0).unwrap();
         tables.set_counter("beta".to_string(), 20, 0).unwrap();
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(cid, "snap_all".to_string(), "counters".to_string(), Some(&tables)).unwrap();
         let mut received = 0;
@@ -1441,7 +1462,7 @@ mod tests {
         tables.set_counter("low".to_string(), 5, 0).unwrap();
         tables.set_counter("high".to_string(), 50, 0).unwrap();
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(cid, "snap_high".to_string(), "counters WHERE value > 10".to_string(), Some(&tables)).unwrap();
         let mut received = 0;
@@ -1452,7 +1473,7 @@ mod tests {
     #[test]
     fn subscribe_without_tables_sends_no_snapshot() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "no_snap".to_string(), "counters".to_string()).unwrap();
         assert!(rx.try_recv().is_err(), "no snapshot should be sent without tables");
@@ -1461,7 +1482,7 @@ mod tests {
     #[test]
     fn predicate_in_matches_member_value() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "s".to_string(), "players WHERE status IN ('active', 'pending')".to_string()).unwrap();
         let d = make_delta("players", "p1", serde_json::json!({"status": "active"}));
@@ -1475,7 +1496,7 @@ mod tests {
     #[test]
     fn predicate_in_with_numbers() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "s".to_string(), "players WHERE level IN (1, 5, 10)".to_string()).unwrap();
         let match_delta = make_delta("players", "p1", serde_json::json!({"level": 5}));
@@ -1489,7 +1510,7 @@ mod tests {
     #[test]
     fn predicate_and_both_must_match() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "s".to_string(), "players WHERE score > 100 AND level > 5".to_string()).unwrap();
         let both = make_delta("players", "p1", serde_json::json!({"score": 200, "level": 10}));
@@ -1506,7 +1527,7 @@ mod tests {
     #[test]
     fn predicate_in_and_comparison_combined() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, "s".to_string(), "players WHERE status IN ('active', 'vip') AND score >= 50".to_string()).unwrap();
         let hit = make_delta("players", "p1", serde_json::json!({"status": "active", "score": 100}));

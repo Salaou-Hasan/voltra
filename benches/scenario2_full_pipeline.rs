@@ -35,7 +35,7 @@ use neondb::{
 };
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -56,10 +56,10 @@ fn new_store() -> Arc<TableStore> {
 fn register_n_subscribers(
     mgr: &Arc<SubscriptionManager>,
     n: usize,
-) -> Vec<tokio::sync::mpsc::UnboundedReceiver<OutboundFrames>> {
+) -> Vec<tokio::sync::mpsc::Receiver<OutboundFrames>> {
     let mut rxs = Vec::with_capacity(n);
     for i in 0..n {
-        let (tx, rx) = unbounded_channel::<OutboundFrames>();
+        let (tx, rx) = mpsc::channel::<OutboundFrames>(4096);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, format!("sub_{}", i), "counters".to_string())
             .unwrap();
@@ -234,7 +234,7 @@ fn bench_predicate_fanout(c: &mut Criterion) {
     // half don't (value >= 999999).
     let mut rxs = Vec::new();
     for i in 0..20usize {
-        let (tx, rx) = unbounded_channel::<OutboundFrames>();
+        let (tx, rx) = mpsc::channel::<OutboundFrames>(4096);
         let cid = mgr.register_client(tx);
         let query = if i < 10 {
             "counters WHERE value >= 0".to_string()

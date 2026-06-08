@@ -34,13 +34,16 @@ use hyper::{
     Body, Method, Request, Response, Server, StatusCode,
 };
 use neondb::{
+    auth::AuthValidator,
     config::{Config, ScheduledReducerConfig},
     cluster::{ClusterBus, ClusterConfig, NodeInfo, PeerEntry},
     error::Result,
-    network::{start_listener, PendingCall, ReducerResponse},
+    network::{start_listener, PendingCall, RateLimiterConfig, RateLimiterRegistry, ReducerResponse},
+    presence::PresenceManager,
     reducer::{ReducerContext, ReducerRegistry},
     subscriptions::SubscriptionManager,
     table::TableStore,
+    ttl::TtlManager,
     wal::{
         snapshot::{find_latest_snapshot, load_snapshot, save_snapshot},
         BatchedWalWriter, WalEntry, WalReader,
@@ -777,16 +780,40 @@ async fn run_server(config: Config) -> Result<()> {
     let active_connections = Arc::new(AtomicUsize::new(0));
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
+    // ── Auth validator (JWT / API key / open) ────────────────────────────────
+    let auth_validator = Arc::new(AuthValidator::from_env());
+
+    // ── Rate limiter ─────────────────────────────────────────────────────────
+    let rate_limiter = Arc::new(RateLimiterRegistry::new(RateLimiterConfig {
+        capacity: config.rate_limit_capacity,
+        refill_rate: config.rate_limit_refill_rate,
+        enabled: config.rate_limit_capacity > 0,
+    }));
+
+    // ── Presence manager ─────────────────────────────────────────────────────
+    let presence = Arc::new(PresenceManager::new(
+        config.presence_heartbeat_timeout_ms,
+        config.presence_offline_timeout_ms,
+    ));
+
+    // ── TTL manager ──────────────────────────────────────────────────────────
+    let ttl_manager = Arc::new(TtlManager::new());
+
     let listener_handle = {
         let config_c = config.clone(); let tx_c = reducer_tx.clone();
         let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
         let conns_c = active_connections.clone(); let rx_shutdown = shutdown_rx.clone();
         let perms_c = permissions.clone();
+        let auth_c = auth_validator.clone();
+        let rl_c = rate_limiter.clone();
+        let pres_c = presence.clone();
+        let ttl_c = ttl_manager.clone();
         tokio::spawn(async move {
             if let Err(e) = start_listener(
                 config_c.host, config_c.port, tx_c, subs_c, tables_c,
                 config_c.max_connections, config_c.api_key.clone(),
-                conns_c, perms_c, config_c.sql_timeout_ms, rx_shutdown,
+                conns_c, perms_c, config_c.sql_timeout_ms,
+                auth_c, rl_c, pres_c, ttl_c, rx_shutdown,
             ).await { log::error!("Listener error: {}", e); }
         })
     };
@@ -805,6 +832,7 @@ async fn run_server(config: Config) -> Result<()> {
     let snapshot_dir_w    = config.snapshot_dir.clone();
     let global_seq        = Arc::new(std::sync::atomic::AtomicU64::new(initial_seq));
 
+    let startup_instant = std::time::Instant::now();
     let metrics_handle = {
         let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
         let rx_shutdown = shutdown_rx.clone();
@@ -813,8 +841,10 @@ async fn run_server(config: Config) -> Result<()> {
         let registry_c = registry.clone();
         let wal_c = wal_writer.clone();
         let seq_c = global_seq.clone();
+        let pres_m = presence.clone();
+        let ttl_m = ttl_manager.clone();
         tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, rx_shutdown).await {
+            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, rx_shutdown).await {
                 log::error!("Metrics server error: {}", e);
             }
         })
@@ -828,6 +858,7 @@ async fn run_server(config: Config) -> Result<()> {
         let seq_w = global_seq.clone(); let snap_iv = snapshot_interval;
         let snap_dir_ww = snapshot_dir_w.clone(); let schema_w = schema_registry.clone();
         let bus_w = cluster_bus.clone();
+        let ttl_w = ttl_manager.clone();
 
         worker_handles.push(tokio::spawn(async move {
             loop {
@@ -841,11 +872,14 @@ async fn run_server(config: Config) -> Result<()> {
                 let args         = call.args.clone();
                 let ts           = current_timestamp_nanos();
                 let schema_blk   = schema_w.clone();
+                let ttl_blk      = ttl_w.clone();
 
                 let blk = tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
                     tokio::task::spawn_blocking(move || {
-                        let mut ctx = ReducerContext::new(tables_blk, ts).with_schema(schema_blk);
+                        let mut ctx = ReducerContext::new(tables_blk, ts)
+                            .with_schema(schema_blk)
+                            .with_ttl(ttl_blk);
                         ctx.caller_id   = caller_id;
                         ctx.caller_role = caller_role;
                         let exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
@@ -870,9 +904,16 @@ async fn run_server(config: Config) -> Result<()> {
                                         bus_w.fanout_deltas(&deltas);
                                         if snap_iv > 0 && (seq_num + 1) % snap_iv == 0 {
                                             let tbl = tables_w.clone(); let dir = snap_dir_ww.clone(); let ts2 = current_timestamp_nanos();
+                                            let wal_rotate = wal_w.clone();
                                             tokio::spawn(async move {
                                                 match tokio::task::spawn_blocking(move || save_snapshot(&tbl, &dir, seq_num, ts2)).await {
-                                                    Ok(Ok(())) => log::info!("Snapshot written at seq {}", seq_num),
+                                                    Ok(Ok(())) => {
+                                                        log::info!("Snapshot written at seq {}", seq_num);
+                                                        // Rotate WAL: entries <= seq_num are now in the snapshot
+                                                        if let Err(e) = wal_rotate.truncate_before(seq_num) {
+                                                            log::error!("WAL rotation after snapshot failed: {}", e);
+                                                        }
+                                                    }
                                                     Ok(Err(e)) => log::error!("Snapshot failed: {}", e),
                                                     Err(e)     => log::error!("Snapshot panicked: {}", e),
                                                 }
@@ -893,6 +934,82 @@ async fn run_server(config: Config) -> Result<()> {
             log::debug!("Reducer worker {} stopped", worker_id);
         }));
     }
+
+    // ── Presence sweep background task ─────────────────────────────────────────
+    let presence_handle = {
+        let pres = presence.clone();
+        let mut rx_pres = shutdown_rx.clone();
+        let sweep_interval = if config.presence_heartbeat_timeout_ms > 0 {
+            config.presence_heartbeat_timeout_ms / 2
+        } else {
+            30_000 // default to 30s if disabled (task will be a no-op)
+        };
+        tokio::spawn(async move {
+            if sweep_interval == 0 { return; }
+            let mut ticker = tokio::time::interval(Duration::from_millis(sweep_interval.max(1)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // skip first immediate tick
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let now_ms = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let (newly_idle, removed) = pres.sweep(now_ms);
+                        for uid in &newly_idle {
+                            log::debug!("Presence: user '{}' is now idle", uid);
+                        }
+                        for uid in &removed {
+                            log::debug!("Presence: user '{}' removed (offline timeout)", uid);
+                        }
+                    }
+                    _ = rx_pres.changed() => break,
+                }
+            }
+        })
+    };
+
+    // ── TTL sweep background task ────────────────────────────────────────────
+    let ttl_handle = {
+        let ttl_mgr = ttl_manager.clone();
+        let tables_ttl = tables.clone();
+        let subs_ttl = subscription_manager.clone();
+        let mut rx_ttl = shutdown_rx.clone();
+        let sweep_ms = config.ttl_sweep_interval_ms;
+        tokio::spawn(async move {
+            if sweep_ms == 0 { return; }
+            let mut ticker = tokio::time::interval(Duration::from_millis(sweep_ms));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // skip first immediate tick
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let now_ms = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let expired = ttl_mgr.collect_expired(now_ms);
+                        if expired.is_empty() { continue; }
+                        let mut deltas = Vec::new();
+                        for entry in &expired {
+                            match tables_ttl.delete_row(&entry.table_name, &entry.row_key) {
+                                Ok(delta) => deltas.push(delta),
+                                Err(e) => {
+                                    log::warn!("TTL delete {}.{} failed: {}", entry.table_name, entry.row_key, e);
+                                }
+                            }
+                        }
+                        if !deltas.is_empty() {
+                            log::debug!("TTL sweep: deleted {} expired rows", deltas.len());
+                            subs_ttl.publish_deltas(&deltas);
+                        }
+                    }
+                    _ = rx_ttl.changed() => break,
+                }
+            }
+        })
+    };
 
     let mut scheduler_handles = Vec::new();
     let sched_seq = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX / 2));
@@ -949,6 +1066,8 @@ async fn run_server(config: Config) -> Result<()> {
     let _ = listener_handle.await;
     let _ = metrics_handle.await;
     let _ = gossip_handle.await;
+    let _ = presence_handle.await;
+    let _ = ttl_handle.await;
     log::info!("Shutdown complete");
     Ok(())
 }
@@ -1075,6 +1194,9 @@ async fn start_metrics_server(
     registry: Arc<ReducerRegistry>,
     wal_writer: Arc<BatchedWalWriter>,
     global_seq: Arc<std::sync::atomic::AtomicU64>,
+    startup_instant: std::time::Instant,
+    presence_manager: Arc<PresenceManager>,
+    ttl_manager: Arc<TtlManager>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse()
@@ -1087,12 +1209,16 @@ async fn start_metrics_server(
         let reg  = registry.clone();
         let wal  = wal_writer.clone();
         let seq  = global_seq.clone();
+        let start = startup_instant;
+        let pres = presence_manager.clone();
+        let ttl  = ttl_manager.clone();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 let subs = subs.clone(); let tbl = tbl.clone();
                 let bus  = bus.clone();  let reg = reg.clone();
                 let wal  = wal.clone();  let seq = seq.clone();
-                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq).await }
+                let pres = pres.clone(); let ttl = ttl.clone();
+                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq, start, pres, ttl).await }
             }))
         }
     });
@@ -1117,17 +1243,20 @@ async fn handle_metrics_request(
     registry: Arc<ReducerRegistry>,
     wal_writer: Arc<BatchedWalWriter>,
     global_seq: Arc<std::sync::atomic::AtomicU64>,
+    startup_instant: std::time::Instant,
+    presence_manager: Arc<PresenceManager>,
+    ttl_manager: Arc<TtlManager>,
 ) -> Result<Response<Body>> {
     let path = req.uri().path().to_string();
 
     match (req.method(), path.as_str()) {
         (&Method::GET, "/metrics") => {
             let body = format!(
-                "# NeonDB metrics\nactive_subscriptions {}\nactive_connections {}\ntotal_rows {}\nuptime_nanos {}\n",
+                "# NeonDB metrics\nactive_subscriptions {}\nactive_connections {}\ntotal_rows {}\nuptime_seconds {}\n",
                 subscription_manager.active_subscriptions(),
                 subscription_manager.active_connections(),
                 tables.total_row_count(),
-                current_timestamp_nanos(),
+                startup_instant.elapsed().as_secs(),
             );
             Ok(Response::new(Body::from(body)))
         }
@@ -1136,7 +1265,42 @@ async fn handle_metrics_request(
             "status": "ok",
             "total_rows": tables.total_row_count(),
             "active_connections": subscription_manager.active_connections(),
+            "active_subscriptions": subscription_manager.active_subscriptions(),
+            "wal_sequence": global_seq.load(std::sync::atomic::Ordering::Relaxed),
+            "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
+            "uptime_seconds": startup_instant.elapsed().as_secs(),
+            "reducer_queue_depth": 0,
+            "memory_usage_bytes": get_memory_usage_bytes(),
+            "presence_tracked": presence_manager.count(),
+            "ttl_active": ttl_manager.count(),
         }))),
+
+        (&Method::GET, "/stats") => {
+            let table_list: Vec<_> = tables.list_tables().into_iter().map(|name| {
+                let count = tables.list_rows_with_keys(&name).map(|r| r.len()).unwrap_or(0);
+                let indexes = tables.list_indexes(&name);
+                serde_json::json!({ "name": name, "rows": count, "indexes": indexes })
+            }).collect();
+            let indexes: Vec<_> = tables.list_tables().into_iter().flat_map(|name| {
+                tables.list_indexes(&name).into_iter().map(move |field| {
+                    serde_json::json!({ "table": name.clone(), "field": field })
+                })
+            }).collect();
+            let peers: Vec<_> = cluster_bus.peers.iter().map(|e| {
+                let p = e.value();
+                serde_json::json!({ "shard_id": p.node.shard_id, "healthy": p.is_healthy() })
+            }).collect();
+            Ok(json_response(serde_json::json!({
+                "tables": table_list,
+                "total_rows": tables.total_row_count(),
+                "indexes": indexes,
+                "wal_sequence": global_seq.load(std::sync::atomic::Ordering::Relaxed),
+                "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
+                "snapshot_last_seq": 0u64, // Not easily queryable without scanning snapshot dir
+                "cluster_enabled": cluster_bus.is_active(),
+                "peers": peers,
+            })))
+        },
 
         (&Method::POST, "/seed") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
@@ -1417,6 +1581,44 @@ async fn handle_metrics_request(
 
 fn current_timestamp_nanos() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+}
+
+/// Best-effort memory usage query (WorkingSetSize on Windows, /proc/self/statm on Linux).
+/// Returns 0 if the platform does not support the query or if parsing fails.
+fn get_memory_usage_bytes() -> u64 {
+    #[cfg(target_os = "windows")]
+    {
+        let pid = std::process::id();
+        if let Ok(output) = std::process::Command::new("wmic")
+            .args(["process", "where", &format!("ProcessId={}", pid), "get", "WorkingSetSize"])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if let Ok(val) = trimmed.parse::<u64>() {
+                    return val; // WorkingSetSize is already in bytes
+                }
+            }
+        }
+        0
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(data) = std::fs::read_to_string("/proc/self/statm") {
+            // statm fields are in pages; second field is resident set size
+            if let Some(rss_pages) = data.split_whitespace().nth(1) {
+                if let Ok(pages) = rss_pages.parse::<u64>() {
+                    return pages * 4096; // Assume 4KB page size
+                }
+            }
+        }
+        0
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        0
+    }
 }
 
 fn recover_from_wal(wal_path: &Path, tables: &Arc<TableStore>, min_seq: u64) -> Result<(usize, u64)> {

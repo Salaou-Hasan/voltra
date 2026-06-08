@@ -33,7 +33,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc;
 
 // ── shared test infrastructure ────────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ struct GameServer {
     wal: Arc<BatchedWalWriter>,
     seq: Arc<AtomicU64>,
     /// Keep subscription receivers alive so channels stay open.
-    _rxs: Vec<tokio::sync::mpsc::UnboundedReceiver<OutboundFrames>>,
+    _rxs: Vec<tokio::sync::mpsc::Receiver<OutboundFrames>>,
 }
 
 impl GameServer {
@@ -53,7 +53,7 @@ impl GameServer {
 
         let mut rxs = Vec::with_capacity(n_subs);
         for i in 0..n_subs {
-            let (tx, rx) = unbounded_channel::<OutboundFrames>();
+            let (tx, rx) = mpsc::channel::<OutboundFrames>(4096);
             let cid = mgr.register_client(tx);
             mgr.subscribe(cid, format!("sub_{}", i), sub_table.to_string())
                 .unwrap();

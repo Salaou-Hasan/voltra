@@ -54,12 +54,12 @@ fn build_sub_manager(
     table: &str,
 ) -> (
     Arc<SubscriptionManager>,
-    Vec<mpsc::UnboundedReceiver<OutboundFrames>>,
+    Vec<mpsc::Receiver<OutboundFrames>>,
 ) {
     let mgr = Arc::new(SubscriptionManager::new());
     let mut rxs = Vec::with_capacity(n);
     for i in 0..n {
-        let (tx, rx) = mpsc::unbounded_channel::<OutboundFrames>();
+        let (tx, rx) = mpsc::channel::<OutboundFrames>(4096);
         let cid = mgr.register_client(tx);
         mgr.subscribe(cid, format!("sub_{}", i), table.to_string())
             .unwrap();

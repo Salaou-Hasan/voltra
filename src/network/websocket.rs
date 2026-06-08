@@ -25,8 +25,12 @@
 
 use super::message::{ClientMessage, ReducerResponse, ServerMessage, SqlResult};
 use super::protocol;
+use super::rate_limiter::RateLimiterRegistry;
+use crate::auth::{AuthResult, AuthValidator};
 use crate::config::PermissionsConfig;
 use crate::error::{NeonDBError, Result};
+use crate::presence::PresenceManager;
+use crate::ttl::TtlManager;
 use crate::sql::{Executor as SqlExecutor};
 use crate::subscriptions::{OutboundFrames, SubscriptionManager};
 use crate::table::TableStore;
@@ -39,6 +43,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch::Receiver};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::Message;
+
+/// Maximum queued outbound frames per client before the connection is forcibly closed.
+/// 4096 frames × ~512 bytes average ≈ 2 MB per slow client (bounded).
+pub const CLIENT_SEND_BUFFER_CAPACITY: usize = 4096;
 
 /// A pending reducer call with response channel.
 pub struct PendingCall {
@@ -67,6 +75,7 @@ impl Drop for ConnectionGuard {
 /// - 1..=32 characters
 /// - Only ASCII alphanumerics, underscore, or dash
 /// - No control characters, no `/`, `\`, `:`, `..`, no whitespace.
+#[cfg(test)]
 fn is_valid_role(role: &str) -> bool {
     if role.is_empty() || role.len() > 32 {
         return false;
@@ -86,6 +95,7 @@ fn is_valid_role(role: &str) -> bool {
 /// role part fails validation (bad chars, too long, etc.) the entire token is
 /// treated as the api_key and the role is set to empty — degrade gracefully
 /// rather than refusing the connection.
+#[cfg(test)]
 fn parse_bearer(header: &str) -> Option<(String, String)> {
     let token = header.strip_prefix("Bearer ")?;
     if let Some((key, role)) = token.rsplit_once(':') {
@@ -112,6 +122,10 @@ pub async fn start_listener(
     active_connections: Arc<AtomicUsize>,
     permissions: Arc<PermissionsConfig>,
     sql_timeout_ms: u64,
+    auth_validator: Arc<AuthValidator>,
+    rate_limiter: Arc<RateLimiterRegistry>,
+    presence: Arc<PresenceManager>,
+    ttl_manager: Arc<TtlManager>,
     mut shutdown: Receiver<()>,
 ) -> Result<()> {
     let bind_addr = format!("{}:{}", addr, port);
@@ -138,9 +152,13 @@ pub async fn start_listener(
                         let conns   = active_connections.clone();
                         let perms   = permissions.clone();
                         let sql_to  = sql_timeout_ms;
+                        let auth_v  = auth_validator.clone();
+                        let rl      = rate_limiter.clone();
+                        let pres    = presence.clone();
+                        let ttl     = ttl_manager.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, sql_to, peer_addr.to_string()).await {
+                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, sql_to, auth_v, rl, pres, ttl, peer_addr.to_string()).await {
                                 log::warn!("Client error: {}", e);
                             }
                         });
@@ -162,19 +180,23 @@ async fn handle_client(
     reducer_tx: kanal::AsyncSender<PendingCall>,
     subscription_manager: Arc<SubscriptionManager>,
     tables: Arc<TableStore>,
-    api_key: Option<String>,
+    _api_key: Option<String>,
     active_connections: Arc<AtomicUsize>,
     permissions: Arc<PermissionsConfig>,
     sql_timeout_ms: u64,
+    auth_validator: Arc<AuthValidator>,
+    rate_limiter: Arc<RateLimiterRegistry>,
+    presence: Arc<PresenceManager>,
+    ttl_manager: Arc<TtlManager>,
     peer_addr: String,
 ) -> Result<()> {
-    // ── WebSocket handshake with optional Bearer auth ─────────────────────────
+    // ── WebSocket handshake with JWT / API-key auth ───────────────────────────
     let caller_id_cell   = Arc::new(std::sync::Mutex::new(String::new()));
     let caller_role_cell = Arc::new(std::sync::Mutex::new(String::new()));
     let caller_id_capture   = caller_id_cell.clone();
     let caller_role_capture = caller_role_cell.clone();
 
-    let auth_key = api_key.clone();
+    let auth_v = auth_validator.clone();
     let ws_stream = tokio_tungstenite::accept_hdr_async(
         stream,
         move |request: &Request, response: Response| {
@@ -184,19 +206,36 @@ async fn handle_client(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
 
-            if let Some(required_key) = auth_key.as_ref() {
-                let (presented_key, role) = parse_bearer(auth_header)
-                    .unwrap_or_else(|| (String::new(), String::new()));
-                if &presented_key != required_key {
-                    return Err(ErrorResponse::new(Some("Unauthorized".to_string())));
+            // Use AuthValidator for all auth modes (JWT, API key, or open)
+            if auth_header.is_empty() {
+                // No auth header provided.
+                // If auth is configured (api_key is Some, or AuthValidator is not in None mode),
+                // check if we should reject or allow anonymous.
+                match auth_v.validate("Bearer ") {
+                    AuthResult::Anonymous => {
+                        // No auth configured — allow anonymous
+                    }
+                    _ => {
+                        // Auth is configured but no header provided — reject.
+                        return Err(ErrorResponse::new(Some("Unauthorized: missing Authorization header".to_string())));
+                    }
                 }
-                if let Ok(mut cell) = caller_role_capture.lock() { *cell = role; }
+            } else {
+                match auth_v.validate(auth_header) {
+                    AuthResult::Authenticated { user_id, role, .. } => {
+                        if let Ok(mut cell) = caller_id_capture.lock() { *cell = user_id; }
+                        if let Ok(mut cell) = caller_role_capture.lock() { *cell = role; }
+                    }
+                    AuthResult::Denied(reason) => {
+                        return Err(ErrorResponse::new(Some(format!("Unauthorized: {}", reason))));
+                    }
+                    AuthResult::Anonymous => {
+                        // No auth configured — allow with default identity
+                    }
+                }
             }
-            // NOTE: when no api_key is configured (open mode) we deliberately
-            // ignore any Bearer role suffix.  Accepting unauthenticated role
-            // assertions would let any client claim role="admin" without
-            // proving anything — a textbook role-injection vector.
 
+            // Also check X-NeonDB-Identity header as override for caller_id
             if let Some(id) = request
                 .headers()
                 .get("x-neondb-identity")
@@ -218,6 +257,9 @@ async fn handle_client(
         caller_role_cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
     };
 
+    // ── Presence: mark user online ───────────────────────────────────────────
+    presence.set_online(&caller_id, None);
+
     let _conn_guard = ConnectionGuard(active_connections.clone());
     let current = active_connections.fetch_add(1, Ordering::SeqCst);
     log::debug!("Active WebSocket clients: {}", current + 1);
@@ -225,7 +267,7 @@ async fn handle_client(
     let (ws_sink, mut ws_rx) = ws_stream.split();
 
     // ── Dedicated write task ──────────────────────────────────────────────────
-    let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Message>();
+    let (write_tx, mut write_rx) = mpsc::channel::<Message>(CLIENT_SEND_BUFFER_CAPACITY);
 
     let write_task = {
         let mut sink = ws_sink;
@@ -245,37 +287,76 @@ async fn handle_client(
     let response_task = tokio::spawn(async move {
         while let Some(response) = response_rx.recv().await {
             match protocol::encode_response(&response) {
-                Ok(data) => { let _ = write_tx_response.send(Message::Binary(data)); }
+                Ok(data) => {
+                    if let Err(mpsc::error::TrySendError::Full(_)) = write_tx_response.try_send(Message::Binary(data)) {
+                        log::warn!("Client send buffer full (response task), dropping connection");
+                        break;
+                    }
+                }
                 Err(e) => log::warn!("Failed to encode response: {}", e),
             }
         }
     });
 
     // ── Register client ───────────────────────────────────────────────────────
-    let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<OutboundFrames>();
+    let (sub_tx, mut sub_rx) = mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
     let client_id = subscription_manager.register_client(sub_tx);
 
     let write_tx_sub = write_tx.clone();
     let sub_task = tokio::spawn(async move {
         while let Some(frames) = sub_rx.recv().await {
-            match frames {
+            let full = match frames {
                 OutboundFrames::One(bytes) => {
-                    let _ = write_tx_sub.send(Message::Binary(bytes.to_vec()));
+                    matches!(
+                        write_tx_sub.try_send(Message::Binary(bytes.to_vec())),
+                        Err(mpsc::error::TrySendError::Full(_))
+                    )
                 }
                 OutboundFrames::Two { first, second } => {
-                    let _ = write_tx_sub.send(Message::Binary(first.to_vec()));
-                    let _ = write_tx_sub.send(Message::Binary(second.to_vec()));
+                    if let Err(mpsc::error::TrySendError::Full(_)) =
+                        write_tx_sub.try_send(Message::Binary(first.to_vec()))
+                    {
+                        true
+                    } else {
+                        matches!(
+                            write_tx_sub.try_send(Message::Binary(second.to_vec())),
+                            Err(mpsc::error::TrySendError::Full(_))
+                        )
+                    }
                 }
+            };
+            if full {
+                log::warn!("Client send buffer full (subscription task), dropping connection");
+                break;
             }
         }
     });
 
     // ── Main read loop ────────────────────────────────────────────────────────
     while let Some(msg) = ws_rx.next().await {
+        // Implicit heartbeat: any message from the client refreshes presence.
+        presence.heartbeat(&caller_id);
+
         match msg {
             Ok(Message::Binary(data)) => {
                 match protocol::decode_client_message(&data) {
                     Ok(ClientMessage::ReducerCall(call)) => {
+                        // ── Rate limit check ─────────────────────────────────
+                        if !rate_limiter.check(&caller_id) {
+                            log::debug!("Rate limited: caller_id='{}'", caller_id);
+                            let limited = ReducerResponse::error(
+                                call.call_id,
+                                "Rate limited".to_string(),
+                            );
+                            if let Ok(encoded) = protocol::encode_response(&limited) {
+                                if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
+                                    log::warn!("Client send buffer full, disconnecting slow client");
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+
                         // ── Permission check ──────────────────────────────────
                         if !permissions.is_allowed(&call.reducer_name, &caller_role) {
                             log::warn!(
@@ -290,7 +371,10 @@ async fn handle_client(
                                 ),
                             );
                             if let Ok(encoded) = protocol::encode_response(&denied) {
-                                let _ = write_tx.send(Message::Binary(encoded));
+                                if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
+                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        break;
+                                    }
                             }
                             continue;
                         }
@@ -328,7 +412,10 @@ async fn handle_client(
                             },
                         };
                         if let Ok(encoded) = protocol::encode_server_message(&ack) {
-                            let _ = write_tx.send(Message::Binary(encoded));
+                            if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
+                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        break;
+                                    }
                         }
                     }
 
@@ -352,7 +439,10 @@ async fn handle_client(
                             },
                         };
                         if let Ok(encoded) = protocol::encode_server_message(&ack) {
-                            let _ = write_tx.send(Message::Binary(encoded));
+                            if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
+                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        break;
+                                    }
                         }
                     }
 
@@ -407,16 +497,64 @@ async fn handle_client(
                             };
                             let msg = ServerMessage::SqlResult(result);
                             match protocol::encode_server_message(&msg) {
-                                Ok(bytes) => { let _ = write_tx_q.send(Message::Binary(bytes)); }
+                                Ok(bytes) => {
+                                if let Err(mpsc::error::TrySendError::Full(_)) = write_tx_q.try_send(Message::Binary(bytes)) {
+                                    log::warn!("Client send buffer full (SQL result), frame dropped");
+                                }
+                            }
                                 Err(e)    => log::warn!("SQL result encode error: {}", e),
                             }
                         });
+                    }
+
+                    // ── Heartbeat ────────────────────────────────────
+                    Ok(ClientMessage::Heartbeat) => {
+                        // Presence heartbeat already handled at top of loop.
+                        // Nothing else to do.
+                    }
+
+                    // ── SetPresence ──────────────────────────────────
+                    Ok(ClientMessage::SetPresence { status, metadata }) => {
+                        presence.set_online(&caller_id, metadata);
+                        log::debug!("Presence update: caller='{}' status='{}'", caller_id, status);
+                    }
+
+                    // ── SetTtl ───────────────────────────────────────
+                    Ok(ClientMessage::SetTtl { table_name, row_key, ttl_ms }) => {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        ttl_manager.set_ttl(&table_name, &row_key, now_ms, ttl_ms);
+                        log::debug!("TTL set: {}.{} expires in {}ms", table_name, row_key, ttl_ms);
+                    }
+
+                    // ── CancelTtl ────────────────────────────────────
+                    Ok(ClientMessage::CancelTtl { table_name, row_key }) => {
+                        ttl_manager.cancel_ttl(&table_name, &row_key);
+                        log::debug!("TTL cancelled: {}.{}", table_name, row_key);
                     }
 
                     Err(_) => {
                         // Fallback: try old ReducerCall-only decode path
                         match protocol::decode_reducer_call(&data) {
                             Ok(call) => {
+                                // ── Rate limit check (fallback path) ──────────
+                                if !rate_limiter.check(&caller_id) {
+                                    log::debug!("Rate limited (fallback): caller_id='{}'", caller_id);
+                                    let limited = ReducerResponse::error(
+                                        call.call_id,
+                                        "Rate limited".to_string(),
+                                    );
+                                    if let Ok(encoded) = protocol::encode_response(&limited) {
+                                        if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
+                                            log::warn!("Client send buffer full, disconnecting slow client");
+                                            break;
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if !permissions.is_allowed(&call.reducer_name, &caller_role) {
                                     log::warn!(
                                         "Permission denied (fallback): role='{}' tried '{}'",
@@ -430,7 +568,10 @@ async fn handle_client(
                                         ),
                                     );
                                     if let Ok(encoded) = protocol::encode_response(&denied) {
-                                        let _ = write_tx.send(Message::Binary(encoded));
+                                        if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
+                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        break;
+                                    }
                                     }
                                     continue;
                                 }
@@ -453,7 +594,10 @@ async fn handle_client(
                                     message: format!("Decode error: {}", e),
                                 };
                                 if let Ok(encoded) = protocol::encode_server_message(&error) {
-                                    let _ = write_tx.send(Message::Binary(encoded));
+                                    if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
+                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -474,6 +618,8 @@ async fn handle_client(
 
     log::debug!("Client disconnected");
     subscription_manager.unregister_client(client_id);
+    presence.set_offline(&caller_id);
+    rate_limiter.remove(&caller_id);
 
     drop(write_tx);
     let _ = write_task.await;
@@ -687,5 +833,46 @@ mod tests {
         let sel = execute_sql_query("SELECT * FROM items", &tables, 2);
         assert!(sel.success);
         assert_eq!(sel.rows.len(), 1);
+    }
+
+    // ── Backpressure tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_bounded_channel_capacity_constant() {
+        // Sanity check: capacity must be at least 1024 to avoid premature disconnects
+        // under normal bursty game traffic.
+        assert!(
+            CLIENT_SEND_BUFFER_CAPACITY >= 1024,
+            "CLIENT_SEND_BUFFER_CAPACITY must be >= 1024, got {}",
+            CLIENT_SEND_BUFFER_CAPACITY
+        );
+    }
+
+    #[test]
+    fn test_slow_client_handling() {
+        // Create a bounded channel with CLIENT_SEND_BUFFER_CAPACITY and fill it
+        // to capacity, then verify the next try_send returns Full.
+        let (tx, _rx) = mpsc::channel::<Message>(CLIENT_SEND_BUFFER_CAPACITY);
+
+        // Fill the channel to capacity
+        for i in 0..CLIENT_SEND_BUFFER_CAPACITY {
+            let msg = Message::Binary(vec![i as u8]);
+            assert!(
+                tx.try_send(msg).is_ok(),
+                "send {} should succeed (capacity={})",
+                i,
+                CLIENT_SEND_BUFFER_CAPACITY
+            );
+        }
+
+        // The next send should fail with Full
+        let overflow_msg = Message::Binary(vec![0xFF]);
+        match tx.try_send(overflow_msg) {
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                // Expected: channel is full, slow client would be disconnected
+            }
+            Ok(_) => panic!("Expected channel to be full after {} sends", CLIENT_SEND_BUFFER_CAPACITY),
+            Err(mpsc::error::TrySendError::Closed(_)) => panic!("Channel unexpectedly closed"),
+        }
     }
 }
