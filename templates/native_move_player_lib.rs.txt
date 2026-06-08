@@ -1,0 +1,50 @@
+//! # move_player reducer
+//!
+//! Updates a player's position in the world and recalculates their zone.
+//! Zones are 100×100 unit grid squares used for spatial partitioning
+//! (e.g. for subscription filters like `WHERE zone = 'zone_2_3'`).
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `player_id: String`
+//! - `args[1]` — `x: f64` — new X coordinate
+//! - `args[2]` — `y: f64` — new Y coordinate
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "x": 150.0, "y": 200.0, "zone": "zone_1_2" }
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Move a player to a new position and update their zone.
+pub fn move_player(ctx: &mut Context, args: Value) -> Result<Value> {
+    let player_id = args[0]
+        .as_str()
+        .ok_or_else(|| "player_id is required".to_string())?;
+
+    let x = args[1]
+        .as_f64()
+        .ok_or_else(|| "x coordinate is required".to_string())?;
+
+    let y = args[2]
+        .as_f64()
+        .ok_or_else(|| "y coordinate is required".to_string())?;
+
+    // Read the current player row so we preserve all existing fields.
+    let mut player = ctx
+        .get_row("players", player_id)
+        .ok_or_else(|| format!("player not found: {player_id}"))?;
+
+    let zone = format!("zone_{}_{}", (x as i64) / 100, (y as i64) / 100);
+
+    player["x"]    = json!(x);
+    player["y"]    = json!(y);
+    player["zone"] = json!(zone.clone());
+
+    ctx.set_row("players", player_id, &player)?;
+
+    Ok(json!({ "ok": true, "x": x, "y": y, "zone": zone }))
+}
+
+neondb_reducer::reducer!(move_player);

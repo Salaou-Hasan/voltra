@@ -1,0 +1,68 @@
+//! # submit_score reducer
+//!
+//! Records a player's score in the `leaderboard` table. Only updates the
+//! stored score if the new value is strictly higher than the previous
+//! personal best (high-score semantics). Stores a separate row per player
+//! under the key `<board_id>:<player_id>`.
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `player_id: String`
+//! - `args[1]` — `score: i64` — the new score to submit
+//! - `args[2]` — `board_id: String` — leaderboard identifier (e.g. `"weekly"`, `"all_time"`)
+//! - `args[3]` — `metadata: object` — optional extra data (level reached, play time, etc.)
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "new_best": true, "score": 4200, "previous_best": 3800 }
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Submit a score to a leaderboard, keeping the personal best.
+pub fn submit_score(ctx: &mut Context, args: Value) -> Result<Value> {
+    let player_id = args[0]
+        .as_str()
+        .ok_or_else(|| "player_id is required".to_string())?;
+
+    let score = args[1]
+        .as_i64()
+        .ok_or_else(|| "score is required".to_string())?;
+
+    let board_id  = args[2].as_str().unwrap_or("all_time");
+    let metadata  = args[3].clone();
+
+    // Composite row key: one row per (board, player) pair.
+    let row_key = format!("{board_id}:{player_id}");
+
+    let previous_best = ctx
+        .get_row("leaderboard", &row_key)
+        .and_then(|r| r["score"].as_i64())
+        .unwrap_or(i64::MIN);
+
+    let new_best = score > previous_best;
+
+    if new_best {
+        let mut entry = json!({
+            "player_id": player_id,
+            "board_id":  board_id,
+            "score":     score,
+        });
+
+        // Attach optional metadata if provided.
+        if metadata.is_object() {
+            entry["metadata"] = metadata;
+        }
+
+        ctx.set_row("leaderboard", &row_key, &entry)?;
+    }
+
+    Ok(json!({
+        "ok":           true,
+        "new_best":     new_best,
+        "score":        score,
+        "previous_best": if previous_best == i64::MIN { json!(null) } else { json!(previous_best) }
+    }))
+}
+
+neondb_reducer::reducer!(submit_score);

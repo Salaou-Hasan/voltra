@@ -254,6 +254,21 @@ impl ReducerContext {
         Ok(committed)
     }
 
+    /// Extract staged deltas WITHOUT applying them to the TableStore.
+    ///
+    /// Used by the Raft write path: the caller forwards the returned deltas to
+    /// `Raft::client_write(RaftRequest { deltas, … })`. The Raft state machine
+    /// then applies the deltas on every node (including the leader) via
+    /// `apply_delta_batch` once the entry is committed.
+    ///
+    /// After calling this, `pending_deltas` is empty and subsequent reads
+    /// will see the old committed state (read-your-writes is now the caller's
+    /// responsibility, since the deltas haven't been applied yet).
+    pub fn drain_pending_deltas(&mut self) -> Vec<RowDelta> {
+        self.pending_diffs.clear();
+        std::mem::take(&mut self.pending_deltas)
+    }
+
     pub fn rollback(&mut self) {
         self.pending_deltas.clear();
         self.pending_diffs.clear();

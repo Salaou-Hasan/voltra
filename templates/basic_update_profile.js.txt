@@ -1,5 +1,24 @@
-// update_profile — change profile fields for the caller.
-// args: [username, profile_patch_object]
+// ═══════════════════════════════════════════════════════════════════════
+// update_profile — change profile fields for the caller (or admin)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [username: string, profile_patch: object]
+// Return: { ok: true, profile: object }
+//         { error: "forbidden" | "no_such_user" }
+//
+// Usage:
+//   neondb call update_profile '["alice", {"avatar": "elf.png"}]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [username, patch] = args;
 if (__neondb_caller_id !== username && __neondb_caller_role !== "admin") {
   result = { error: "forbidden" };

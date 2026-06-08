@@ -1,5 +1,23 @@
-// add_item — append an item to a user's inventory.
-// args: [username, item_id, qty]
+// ═══════════════════════════════════════════════════════════════════════
+// add_item — append an item to a user's inventory
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [username: string, item_id: string, qty: number]
+// Return: { ok: true, item_id: string, qty: number }
+//
+// Usage:
+//   neondb call add_item '["alice", "sword", 1]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [username, item_id, qty] = args;
 const key = username + ":" + item_id;
 const existing = __neondb_get("inventory", key);

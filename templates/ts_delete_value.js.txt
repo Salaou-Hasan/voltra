@@ -1,5 +1,24 @@
-// delete_value — remove a row from the kv table.
-// args: [key]
+// ═══════════════════════════════════════════════════════════════════════
+// delete_value — remove a row from the key-value store
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [key: string]
+// Return: { ok: true }
+//         { error: "not_found" }
+//
+// Usage:
+//   neondb call delete_value '["theme"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [key] = args;
 if (!__neondb_get("kv", key)) { result = { error: "not_found" }; }
 else { __neondb_delete("kv", key); result = { ok: true }; }

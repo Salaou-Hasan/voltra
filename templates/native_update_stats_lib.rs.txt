@@ -1,0 +1,53 @@
+//! # update_stats reducer
+//!
+//! Updates a single named stat field on a player row. Useful for awarding XP,
+//! adjusting currency, changing level, etc. Only numeric and boolean fields
+//! may be updated through this reducer; use `spawn` for initial creation.
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `player_id: String`
+//! - `args[1]` — `field: String` — field name to update (e.g. `"xp"`, `"level"`)
+//! - `args[2]` — `value: any` — new value (number, bool, or string)
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "field": "xp", "value": 250 }
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Blocked fields that must not be changed through this reducer.
+const PROTECTED_FIELDS: &[&str] = &["player_id", "class"];
+
+/// Update one stat field on a player row.
+pub fn update_stats(ctx: &mut Context, args: Value) -> Result<Value> {
+    let player_id = args[0]
+        .as_str()
+        .ok_or_else(|| "player_id is required".to_string())?;
+
+    let field = args[1]
+        .as_str()
+        .ok_or_else(|| "field name is required".to_string())?;
+
+    if PROTECTED_FIELDS.contains(&field) {
+        return Err(format!("field '{field}' is protected and cannot be updated via update_stats"));
+    }
+
+    let value = args[2].clone();
+    if value.is_null() {
+        return Err("value must not be null".to_string());
+    }
+
+    let mut player = ctx
+        .get_row("players", player_id)
+        .ok_or_else(|| format!("player not found: {player_id}"))?;
+
+    player[field] = value.clone();
+
+    ctx.set_row("players", player_id, &player)?;
+
+    Ok(json!({ "ok": true, "field": field, "value": value }))
+}
+
+neondb_reducer::reducer!(update_stats);

@@ -1,5 +1,23 @@
-// create_match — pair two queued players into a match.
-// args: [match_id, player_a, player_b]
+// ═══════════════════════════════════════════════════════════════════════
+// create_match — pair two queued players into a match record
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [match_id: string, player_a: string, player_b: string]
+// Return: { ok: true, match_id: string }
+//
+// Usage:
+//   neondb call create_match '["m_001", "player1", "player2"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [match_id, a, b] = args;
 __neondb_delete("matchmaking", a);
 __neondb_delete("matchmaking", b);

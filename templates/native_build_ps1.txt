@@ -1,0 +1,88 @@
+# build.ps1 — Build all NeonDB reducers and copy .wasm files to modules/
+#
+# Usage:
+#   .\build.ps1              # debug build (faster iteration)
+#   .\build.ps1 -Release     # release build (Cranelift optimisations enabled)
+#
+# Prerequisites:
+#   rustup target add wasm32-unknown-unknown
+
+param(
+    [switch]$Release
+)
+
+$ErrorActionPreference = "Stop"
+$target  = "wasm32-unknown-unknown"
+$profile = if ($Release) { "release" } else { "debug" }
+
+$crates = @(
+    "spawn",
+    "despawn",
+    "move_player",
+    "update_stats",
+    "attack",
+    "spawn_npc",
+    "buy_item",
+    "sell_item",
+    "world_tick",
+    "cleanup_sessions",
+    "submit_score"
+)
+
+# Ensure the modules/ directory exists next to this script.
+$modulesDir = Join-Path $PSScriptRoot "modules"
+if (-not (Test-Path $modulesDir)) {
+    New-Item -ItemType Directory -Path $modulesDir | Out-Null
+    Write-Host "Created $modulesDir"
+}
+
+$built   = 0
+$failed  = 0
+$skipped = 0
+
+foreach ($crate in $crates) {
+    Write-Host ""
+    Write-Host "==> Building $crate ..." -ForegroundColor Cyan
+
+    $buildArgs = @("build", "-p", $crate, "--target", $target)
+    if ($Release) { $buildArgs += "--release" }
+
+    & cargo @buildArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [FAILED] cargo build exited with $LASTEXITCODE" -ForegroundColor Red
+        $failed++
+        continue
+    }
+
+    # Cargo outputs snake_case names; crate names with hyphens become underscores.
+    $wasmName = $crate.Replace("-", "_") + ".wasm"
+    $wasmSrc  = Join-Path $PSScriptRoot "target" $target $profile $wasmName
+    $wasmDst  = Join-Path $modulesDir ($crate.Replace("-", "_") + ".wasm")
+
+    if (Test-Path $wasmSrc) {
+        Copy-Item $wasmSrc $wasmDst -Force
+        $size = (Get-Item $wasmDst).Length
+        Write-Host "  -> modules\$($crate.Replace('-','_')).wasm  ($size bytes)" -ForegroundColor Green
+        $built++
+    } else {
+        Write-Host "  [SKIP] .wasm not found at $wasmSrc" -ForegroundColor Yellow
+        $skipped++
+    }
+}
+
+Write-Host ""
+Write-Host "────────────────────────────────────────────────"
+Write-Host "  Built:   $built / $($crates.Count)"
+if ($failed  -gt 0) { Write-Host "  Failed:  $failed"  -ForegroundColor Red }
+if ($skipped -gt 0) { Write-Host "  Skipped: $skipped" -ForegroundColor Yellow }
+Write-Host "────────────────────────────────────────────────"
+
+if ($failed -gt 0) {
+    Write-Host ""
+    Write-Host "Some crates failed to build. Fix the errors above and re-run." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host ""
+Write-Host "All reducers built. Start the server with:" -ForegroundColor Green
+Write-Host "  neondb start" -ForegroundColor White

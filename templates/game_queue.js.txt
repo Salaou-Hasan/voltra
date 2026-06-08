@@ -1,5 +1,23 @@
-// queue — put a player in the matchmaking queue.
-// args: [player_id, rating]
+// ═══════════════════════════════════════════════════════════════════════
+// queue — put a player in the matchmaking queue
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, rating: number]
+// Return: { ok: true }
+//
+// Usage:
+//   neondb call queue '["player1", 1250]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [pid, rating] = args;
 __neondb_set("matchmaking", pid, { player_id: pid, rating: rating || 1000, queued_at: 0 });
 result = { ok: true };

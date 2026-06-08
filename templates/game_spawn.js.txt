@@ -1,5 +1,23 @@
-// spawn — create a player in the world.
-// args: [player_id, x, y, class_name]
+// ═══════════════════════════════════════════════════════════════════════
+// spawn — create a player in the world
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, x: number, y: number, class_name: string]
+// Return: { ok: true, player: object }
+//
+// Usage:
+//   neondb call spawn '["player1", 0, 0, "warrior"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [player_id, x, y, cls] = args;
 const zone = "zone_" + Math.floor((x || 0) / 100) + "_" + Math.floor((y || 0) / 100);
 const player = {

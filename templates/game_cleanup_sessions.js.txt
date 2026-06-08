@@ -1,5 +1,23 @@
-// cleanup_sessions — scheduled GC for stale match rows.
-// args: []
+// ═══════════════════════════════════════════════════════════════════════
+// cleanup_sessions — scheduled GC; deletes completed match rows
+// ───────────────────────────────────────────────────────────────────────
+// Args:   []  (called automatically by the scheduler every 60 s)
+// Return: { ok: true, removed: number }
+//
+// Usage:
+//   neondb call cleanup_sessions '[]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const matches = __neondb_get_all("matches") || [];
 let removed = 0;
 for (const m of matches) {

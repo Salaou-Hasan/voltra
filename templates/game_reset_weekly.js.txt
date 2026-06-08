@@ -1,5 +1,23 @@
-// reset_weekly — scheduled weekly leaderboard reset.
-// args: []
+// ═══════════════════════════════════════════════════════════════════════
+// reset_weekly — scheduled weekly leaderboard wipe
+// ───────────────────────────────────────────────────────────────────────
+// Args:   []  (called automatically by the scheduler once per week)
+// Return: { ok: true, cleared: number }
+//
+// Usage:
+//   neondb call reset_weekly '[]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const entries = __neondb_get_all("leaderboard") || [];
 for (const e of entries) __neondb_delete("leaderboard", e.player_id);
 result = { ok: true, cleared: entries.length };

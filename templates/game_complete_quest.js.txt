@@ -1,5 +1,24 @@
-// complete_quest — finalise a quest and grant rewards.
-// args: [player_id, quest_id, xp_reward, currency_reward]
+// ═══════════════════════════════════════════════════════════════════════
+// complete_quest — finalise a quest and grant XP + currency rewards
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, quest_id: string, xp_reward: number, currency_reward: number]
+// Return: { ok: true, xp: number, currency: number }
+//         { error: "not_found" }
+//
+// Usage:
+//   neondb call complete_quest '["player1", "q_kill_goblins", 200, 50]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [pid, quest_id, xp, gold] = args;
 const k = pid + ":" + quest_id;
 const q = __neondb_get("quests", k);

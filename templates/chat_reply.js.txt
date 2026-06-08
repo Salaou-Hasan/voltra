@@ -1,5 +1,24 @@
-// reply — post a reply inside a thread.
-// args: [thread_id, message_id, user_id, text]
+// ═══════════════════════════════════════════════════════════════════════
+// reply — post a reply message inside a thread
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [thread_id: string, message_id: string, user_id: string, text: string]
+// Return: { ok: true, message_id: string }
+//         { error: "no_such_thread" }
+//
+// Usage:
+//   neondb call reply '["t_001", "m_002", "bob", "Agreed!"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [tid, mid, uid, text] = args;
 const t = __neondb_get("threads", tid);
 if (!t) { result = { error: "no_such_thread" }; }

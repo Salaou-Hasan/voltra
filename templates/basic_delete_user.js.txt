@@ -1,5 +1,24 @@
-// delete_user — permanently delete a user (admin or self).
-// args: [username]
+// ═══════════════════════════════════════════════════════════════════════
+// delete_user — permanently delete a user (admin or self)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [username: string]
+// Return: { ok: true }
+//         { error: "forbidden" | "no_such_user" }
+//
+// Usage:
+//   neondb call delete_user '["alice"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [username] = args;
 if (__neondb_caller_id !== username && __neondb_caller_role !== "admin") {
   result = { error: "forbidden" };

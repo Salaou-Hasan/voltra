@@ -1,0 +1,102 @@
+//! # attack reducer
+//!
+//! Resolves an attack from a player or NPC against a target. Applies damage
+//! (attacker ATK minus target DEF, minimum 1), marks the target as dead if
+//! HP reaches 0, and awards XP to the attacker on kill.
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `attacker_id: String` — the attacking entity's row key
+//! - `args[1]` — `target_id: String` — the defending entity's row key
+//! - `args[2]` — `weapon: String` — weapon name (informational, stored in event)
+//! - `args[3]` — `bonus_damage: f64` — extra flat damage (0.0 if none)
+//!
+//! Both attacker and target are looked up in the `players` table first; if
+//! not found there, the `npcs` table is checked. This covers PvP, PvE, and
+//! NPC-vs-NPC combat with a single reducer.
+//!
+//! ## Returns
+//! ```json
+//! {
+//!   "ok": true,
+//!   "damage": 14,
+//!   "target_hp": 36,
+//!   "target_alive": true,
+//!   "xp_awarded": 0
+//! }
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Resolve one round of combat between attacker and target.
+pub fn attack(ctx: &mut Context, args: Value) -> Result<Value> {
+    let attacker_id = args[0]
+        .as_str()
+        .ok_or_else(|| "attacker_id is required".to_string())?;
+
+    let target_id = args[1]
+        .as_str()
+        .ok_or_else(|| "target_id is required".to_string())?;
+
+    let weapon = args[2].as_str().unwrap_or("fist");
+    let bonus  = args[3].as_f64().unwrap_or(0.0) as i64;
+
+    // ── load attacker ────────────────────────────────────────────────────────
+    let attacker = ctx
+        .get_row("players", attacker_id)
+        .or_else(|| ctx.get_row("npcs", attacker_id))
+        .ok_or_else(|| format!("attacker not found: {attacker_id}"))?;
+
+    let atk = attacker["atk"].as_i64().unwrap_or(10);
+
+    // ── load target ──────────────────────────────────────────────────────────
+    let (target_table, mut target) = if let Some(p) = ctx.get_row("players", target_id) {
+        ("players", p)
+    } else if let Some(n) = ctx.get_row("npcs", target_id) {
+        ("npcs", n)
+    } else {
+        return Err(format!("target not found: {target_id}"));
+    };
+
+    if !target["alive"].as_bool().unwrap_or(true) {
+        return Err(format!("target {target_id} is already dead"));
+    }
+
+    let def = target["def"].as_i64().unwrap_or(5);
+    let damage = (atk - def + bonus).max(1);
+
+    let hp_before = target["hp"].as_i64().unwrap_or(0);
+    let hp_after  = (hp_before - damage).max(0);
+    let alive     = hp_after > 0;
+
+    target["hp"]    = json!(hp_after);
+    target["alive"] = json!(alive);
+
+    ctx.set_row(target_table, target_id, &target)?;
+
+    // ── award XP on kill ────────────────────────────────────────────────────
+    let xp_awarded = if !alive {
+        let xp_value = target["level"].as_i64().unwrap_or(1) * 10;
+        if let Some(mut atk_row) = ctx.get_row("players", attacker_id) {
+            let current_xp = atk_row["xp"].as_i64().unwrap_or(0);
+            atk_row["xp"] = json!(current_xp + xp_value);
+            let _ = ctx.set_row("players", attacker_id, &atk_row);
+        }
+        xp_value
+    } else {
+        0
+    };
+
+    Ok(json!({
+        "ok":           true,
+        "attacker_id":  attacker_id,
+        "target_id":    target_id,
+        "weapon":       weapon,
+        "damage":       damage,
+        "target_hp":    hp_after,
+        "target_alive": alive,
+        "xp_awarded":   xp_awarded
+    }))
+}
+
+neondb_reducer::reducer!(attack);

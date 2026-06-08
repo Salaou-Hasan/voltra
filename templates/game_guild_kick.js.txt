@@ -1,5 +1,25 @@
-// guild_kick — remove a member. Owner-only.
-// args: [guild_id, member_id]
+// ═══════════════════════════════════════════════════════════════════════
+// guild_kick — remove a member from a guild (owner only)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [guild_id: string, member_id: string]
+// Return: { ok: true, members: string[] }
+//         { error: "no_such_guild" | "forbidden" }
+//
+// Usage:
+//   neondb call guild_kick '["guild_001", "player2"]'
+//   (caller must be the guild owner)
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [gid, member] = args;
 const g = __neondb_get("guilds", gid);
 if (!g) { result = { error: "no_such_guild" }; }

@@ -1,5 +1,23 @@
-// set_online — update presence status.
-// args: [user_id, online]
+// ═══════════════════════════════════════════════════════════════════════
+// set_online — update a user's presence (online / offline)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [user_id: string, online: boolean]
+// Return: { ok: true }
+//
+// Usage:
+//   neondb call set_online '["alice", true]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [uid, online] = args;
 __neondb_set("presence", uid, { user_id: uid, online: !!online, last_seen: 0 });
 result = { ok: true };

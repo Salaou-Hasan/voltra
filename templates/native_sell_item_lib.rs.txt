@@ -1,0 +1,80 @@
+//! # sell_item reducer
+//!
+//! Removes quantity from a player's inventory and refunds currency at 50% of
+//! the shop buy price. If the item is not in the shop the sell is still
+//! allowed but refunds 0 currency (items obtained through other means).
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `player_id: String`
+//! - `args[1]` — `item_id: String` — item to sell
+//! - `args[2]` — `quantity: i64` — how many to sell (default 1)
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "item_id": "sword", "quantity": 1, "refund": 12, "currency": 87 }
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Sell an item from the player's inventory.
+pub fn sell_item(ctx: &mut Context, args: Value) -> Result<Value> {
+    let player_id = args[0]
+        .as_str()
+        .ok_or_else(|| "player_id is required".to_string())?;
+
+    let item_id = args[1]
+        .as_str()
+        .ok_or_else(|| "item_id is required".to_string())?;
+
+    let quantity = args[2].as_i64().unwrap_or(1).max(1);
+
+    // ── check inventory ──────────────────────────────────────────────────────
+    let inv_key = format!("{player_id}:{item_id}");
+    let mut inv = ctx
+        .get_row("inventory", &inv_key)
+        .ok_or_else(|| format!("player {player_id} does not own {item_id}"))?;
+
+    let owned = inv["quantity"].as_i64().unwrap_or(0);
+    if owned < quantity {
+        return Err(format!(
+            "not enough {item_id}: have {owned}, trying to sell {quantity}"
+        ));
+    }
+
+    // ── compute refund (50% of shop price) ───────────────────────────────────
+    let unit_price = ctx
+        .get_row("shop_items", item_id)
+        .and_then(|s| s["price"].as_i64())
+        .unwrap_or(0);
+
+    let refund = (unit_price * quantity) / 2;
+
+    // ── update inventory ─────────────────────────────────────────────────────
+    let new_qty = owned - quantity;
+    if new_qty == 0 {
+        ctx.delete_row("inventory", &inv_key)?;
+    } else {
+        inv["quantity"] = json!(new_qty);
+        ctx.set_row("inventory", &inv_key, &inv)?;
+    }
+
+    // ── credit player ────────────────────────────────────────────────────────
+    let mut player = ctx
+        .get_row("players", player_id)
+        .ok_or_else(|| format!("player not found: {player_id}"))?;
+
+    let new_currency = player["currency"].as_i64().unwrap_or(0) + refund;
+    player["currency"] = json!(new_currency);
+    ctx.set_row("players", player_id, &player)?;
+
+    Ok(json!({
+        "ok":       true,
+        "item_id":  item_id,
+        "quantity": quantity,
+        "refund":   refund,
+        "currency": new_currency
+    }))
+}
+
+neondb_reducer::reducer!(sell_item);

@@ -1,0 +1,83 @@
+//! # buy_item reducer
+//!
+//! Deducts currency from a player and adds an item to their inventory.
+//! Item prices are defined in the `shop_items` table (set via seed or admin
+//! reducers). If the item is not in the shop, the purchase is rejected.
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `player_id: String`
+//! - `args[1]` — `item_id: String` — item to purchase (must exist in `shop_items`)
+//! - `args[2]` — `quantity: i64` — how many to buy (default 1)
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "item_id": "sword", "quantity": 1, "currency_remaining": 75 }
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Purchase an item from the shop.
+pub fn buy_item(ctx: &mut Context, args: Value) -> Result<Value> {
+    let player_id = args[0]
+        .as_str()
+        .ok_or_else(|| "player_id is required".to_string())?;
+
+    let item_id = args[1]
+        .as_str()
+        .ok_or_else(|| "item_id is required".to_string())?;
+
+    let quantity = args[2].as_i64().unwrap_or(1).max(1);
+
+    // ── look up item in shop ─────────────────────────────────────────────────
+    let shop_item = ctx
+        .get_row("shop_items", item_id)
+        .ok_or_else(|| format!("item not in shop: {item_id}"))?;
+
+    let unit_price = shop_item["price"]
+        .as_i64()
+        .ok_or_else(|| format!("shop item {item_id} has no price"))?;
+
+    let total_cost = unit_price * quantity;
+
+    // ── load player ──────────────────────────────────────────────────────────
+    let mut player = ctx
+        .get_row("players", player_id)
+        .ok_or_else(|| format!("player not found: {player_id}"))?;
+
+    let currency = player["currency"].as_i64().unwrap_or(0);
+    if currency < total_cost {
+        return Err(format!(
+            "insufficient currency: have {currency}, need {total_cost}"
+        ));
+    }
+
+    // ── deduct currency ──────────────────────────────────────────────────────
+    let new_currency = currency - total_cost;
+    player["currency"] = json!(new_currency);
+    ctx.set_row("players", player_id, &player)?;
+
+    // ── update inventory (stored as a separate row per player+item) ──────────
+    let inv_key = format!("{player_id}:{item_id}");
+    let new_qty = if let Some(existing) = ctx.get_row("inventory", &inv_key) {
+        existing["quantity"].as_i64().unwrap_or(0) + quantity
+    } else {
+        quantity
+    };
+
+    ctx.set_row("inventory", &inv_key, &json!({
+        "player_id": player_id,
+        "item_id":   item_id,
+        "quantity":  new_qty
+    }))?;
+
+    Ok(json!({
+        "ok":                true,
+        "item_id":           item_id,
+        "quantity":          quantity,
+        "total_cost":        total_cost,
+        "currency_remaining": new_currency
+    }))
+}
+
+neondb_reducer::reducer!(buy_item);

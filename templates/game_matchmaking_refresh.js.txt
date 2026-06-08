@@ -1,5 +1,24 @@
-// refresh — scheduled matchmaking pass. Pairs the first two queued players.
-// args: []  (called by scheduler)
+// ═══════════════════════════════════════════════════════════════════════
+// refresh — scheduled matchmaking pass; pairs the first two queued players
+// ───────────────────────────────────────────────────────────────────────
+// Args:   []  (called automatically by the scheduler every 5 s)
+// Return: { ok: true, match_id: string }  — when a pair is found
+//         { ok: true, paired: 0 }         — when queue has < 2 players
+//
+// Usage:
+//   neondb call refresh '[]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const queued = __neondb_get_all("matchmaking") || [];
 if (queued.length >= 2) {
   const a = queued[0].player_id;

@@ -1,5 +1,24 @@
-// login — verify credentials and mark the session.
-// args: [username, password_hash]
+// ═══════════════════════════════════════════════════════════════════════
+// login — verify credentials and mark the session
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [username: string, password_hash: string]
+// Return: { ok: true, username: string, role: string }
+//         { error: "no_such_user" | "bad_password" }
+//
+// Usage:
+//   neondb call login '["alice", "hashed-pw"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [username, password_hash] = args;
 const user = __neondb_get("users", username);
 if (!user) { result = { error: "no_such_user" }; }

@@ -1,0 +1,69 @@
+//! # spawn_npc reducer
+//!
+//! Creates a new NPC or enemy in the `npcs` table. NPCs use the same combat
+//! stats as players (hp, atk, def) so the `attack` reducer can target them
+//! without special-casing.
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `npc_id: String` — unique NPC identifier (e.g. `"goblin_42"`)
+//! - `args[1]` — `npc_type: String` — type tag (`"goblin"`, `"boss"`, `"guard"`, …)
+//! - `args[2]` — `x: f64` — world X position
+//! - `args[3]` — `y: f64` — world Y position
+//! - `args[4]` — `level: i64` — NPC level (scales stats)
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "npc_id": "goblin_42", "npc_type": "goblin", "level": 3 }
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Scale factor for NPC stats per level above 1.
+const STAT_PER_LEVEL: i64 = 5;
+
+/// Spawn a new NPC into the `npcs` table.
+pub fn spawn_npc(ctx: &mut Context, args: Value) -> Result<Value> {
+    let npc_id = args[0]
+        .as_str()
+        .ok_or_else(|| "npc_id is required".to_string())?;
+
+    let npc_type = args[1].as_str().unwrap_or("generic");
+    let x        = args[2].as_f64().unwrap_or(0.0);
+    let y        = args[3].as_f64().unwrap_or(0.0);
+    let level    = args[4].as_i64().unwrap_or(1).max(1);
+
+    // Type-based base stats
+    let (base_hp, base_atk, base_def) = match npc_type {
+        "boss"   => (500, 30, 20),
+        "elite"  => (200, 20, 15),
+        "guard"  => (150, 15, 18),
+        "goblin" => (40,  12, 4),
+        _        => (60,  10, 6),
+    };
+
+    let scale = (level - 1) * STAT_PER_LEVEL;
+    let hp    = base_hp + scale * 3;
+    let atk   = base_atk + scale;
+    let def   = base_def + scale / 2;
+
+    let zone = format!("zone_{}_{}", (x as i64) / 100, (y as i64) / 100);
+
+    ctx.set_row("npcs", npc_id, &json!({
+        "npc_id":   npc_id,
+        "npc_type": npc_type,
+        "x":        x,
+        "y":        y,
+        "zone":     zone,
+        "level":    level,
+        "hp":       hp,
+        "hp_max":   hp,
+        "atk":      atk,
+        "def":      def,
+        "alive":    true
+    }))?;
+
+    Ok(json!({ "ok": true, "npc_id": npc_id, "npc_type": npc_type, "level": level }))
+}
+
+neondb_reducer::reducer!(spawn_npc);

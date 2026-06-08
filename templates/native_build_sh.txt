@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# build.sh — Build all NeonDB reducers and copy .wasm files to modules/
+#
+# Usage:
+#   ./build.sh            # debug build (faster iteration)
+#   ./build.sh --release  # release build (Cranelift optimisations enabled)
+#
+# Prerequisites:
+#   rustup target add wasm32-unknown-unknown
+
+set -euo pipefail
+
+TARGET="wasm32-unknown-unknown"
+RELEASE=false
+PROFILE="debug"
+
+for arg in "$@"; do
+    case $arg in
+        --release|-r) RELEASE=true; PROFILE="release" ;;
+        *) echo "Unknown argument: $arg"; exit 1 ;;
+    esac
+done
+
+CRATES=(
+    "spawn"
+    "despawn"
+    "move_player"
+    "update_stats"
+    "attack"
+    "spawn_npc"
+    "buy_item"
+    "sell_item"
+    "world_tick"
+    "cleanup_sessions"
+    "submit_score"
+)
+
+# Resolve the script's directory so it works when called from any CWD.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULES_DIR="$SCRIPT_DIR/modules"
+
+mkdir -p "$MODULES_DIR"
+
+BUILT=0
+FAILED=0
+SKIPPED=0
+
+for crate in "${CRATES[@]}"; do
+    echo ""
+    echo "==> Building $crate ..."
+
+    BUILD_ARGS=("build" "-p" "$crate" "--target" "$TARGET")
+    if $RELEASE; then
+        BUILD_ARGS+=("--release")
+    fi
+
+    if cargo "${BUILD_ARGS[@]}"; then
+        # Cargo uses underscores in the output filename even if the crate name
+        # uses hyphens (which it doesn't here, but guard for safety).
+        WASM_NAME="${crate//-/_}.wasm"
+        WASM_SRC="$SCRIPT_DIR/target/$TARGET/$PROFILE/$WASM_NAME"
+        WASM_DST="$MODULES_DIR/$WASM_NAME"
+
+        if [ -f "$WASM_SRC" ]; then
+            cp "$WASM_SRC" "$WASM_DST"
+            SIZE=$(du -h "$WASM_DST" | cut -f1)
+            echo "  -> modules/$WASM_NAME  ($SIZE)"
+            BUILT=$((BUILT + 1))
+        else
+            echo "  [SKIP] .wasm not found at $WASM_SRC"
+            SKIPPED=$((SKIPPED + 1))
+        fi
+    else
+        echo "  [FAILED] cargo build exited with error"
+        FAILED=$((FAILED + 1))
+    fi
+done
+
+echo ""
+echo "────────────────────────────────────────────────"
+echo "  Built:   $BUILT / ${#CRATES[@]}"
+[ $FAILED  -gt 0 ] && echo "  Failed:  $FAILED"
+[ $SKIPPED -gt 0 ] && echo "  Skipped: $SKIPPED"
+echo "────────────────────────────────────────────────"
+
+if [ $FAILED -gt 0 ]; then
+    echo ""
+    echo "Some crates failed to build. Fix the errors above and re-run." >&2
+    exit 1
+fi
+
+echo ""
+echo "All reducers built. Start the server with:"
+echo "  neondb start"

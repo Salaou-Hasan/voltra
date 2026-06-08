@@ -1,5 +1,24 @@
-// register — create a new user account.
-// args: [username, password_hash]
+// ═══════════════════════════════════════════════════════════════════════
+// register — create a new user account
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [username: string, password_hash: string]
+// Return: { ok: true, username: string }
+//         { error: "missing_fields" | "user_exists" }
+//
+// Usage:
+//   neondb call register '["alice", "hashed-pw"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [username, password_hash] = args;
 if (!username || !password_hash) { result = { error: "missing_fields" }; }
 else if (__neondb_get("users", username)) { result = { error: "user_exists" }; }

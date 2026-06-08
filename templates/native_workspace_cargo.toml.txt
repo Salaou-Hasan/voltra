@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "neondb-reducer",
+    "spawn",
+    "despawn",
+    "move_player",
+    "update_stats",
+    "attack",
+    "spawn_npc",
+    "buy_item",
+    "sell_item",
+    "world_tick",
+    "cleanup_sessions",
+    "submit_score",
+]
+resolver = "2"

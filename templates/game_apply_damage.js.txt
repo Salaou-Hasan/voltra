@@ -1,5 +1,24 @@
-// apply_damage — server-authoritative damage application.
-// args: [target_id, amount]
+// ═══════════════════════════════════════════════════════════════════════
+// apply_damage — server-authoritative damage application (players or NPCs)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [target_id: string, amount: number]
+// Return: { ok: true, hp: number }
+//         { error: "not_found" }
+//
+// Usage:
+//   neondb call apply_damage '["goblin_1", 30]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [tgt, amount] = args;
 let target = __neondb_get("players", tgt) || __neondb_get("npcs", tgt);
 if (!target) { result = { error: "not_found" }; }

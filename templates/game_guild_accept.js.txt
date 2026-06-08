@@ -1,5 +1,24 @@
-// guild_accept — accept a guild invite.
-// args: [guild_id, invitee_id]
+// ═══════════════════════════════════════════════════════════════════════
+// guild_accept — accept a pending guild invite and join the guild
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [guild_id: string, invitee_id: string]
+// Return: { ok: true, members: string[] }
+//         { error: "no_invite" }
+//
+// Usage:
+//   neondb call guild_accept '["guild_001", "player2"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [gid, invitee] = args;
 const inv = __neondb_get("guild_invites", gid + ":" + invitee);
 const g = __neondb_get("guilds", gid);

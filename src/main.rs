@@ -65,10 +65,11 @@ struct Template {
 }
 
 const TEMPLATES: &[Template] = &[
-    Template { name: "rust/basic",      category: "Rust",       description: "Foundation — users, sessions, subscribers, inventory, role-based auth" },
-    Template { name: "rust/game-ready", category: "Rust",       description: "Game-ready engine — players, combat, economy, quests, matchmaking, guilds, world" },
-    Template { name: "rust/chat",       category: "Rust",       description: "Production chat — rooms, threads, reactions, presence, moderation" },
-    Template { name: "typescript",      category: "TypeScript", description: "TypeScript-first — React hooks, full client SDK, package.json scaffolding" },
+    Template { name: "rust/basic",      category: "Rust server", description: "Foundation — users, sessions, inventory, role-based auth  (JS reducers → WASM-upgradable)" },
+    Template { name: "rust/game-ready", category: "Rust server", description: "Game-ready engine — players, combat, economy, quests, guilds, world  (JS reducers → WASM-upgradable)" },
+    Template { name: "rust/chat",       category: "Rust server", description: "Production chat — rooms, threads, reactions, presence, moderation  (JS reducers → WASM-upgradable)" },
+    Template { name: "typescript",      category: "TypeScript",  description: "TypeScript-first — React hooks, full client SDK, package.json scaffolding" },
+    Template { name: "native/game-ready", category: "Native Rust", description: "Rust reducers compiled to WASM — near-native throughput, no NeonDB source needed" },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -350,11 +351,12 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
     write_shared_files(&project_path, &project_name, &template_name)?;
 
     match template_name.as_str() {
-        "rust/basic"      => scaffold_rust_basic(&project_path, &project_name)?,
-        "rust/game-ready" => scaffold_rust_game_ready(&project_path, &project_name)?,
-        "rust/chat"       => scaffold_rust_chat(&project_path, &project_name)?,
-        "typescript"      => scaffold_typescript(&project_path, &project_name)?,
-        _                 => unreachable!(),
+        "rust/basic"        => scaffold_rust_basic(&project_path, &project_name)?,
+        "rust/game-ready"   => scaffold_rust_game_ready(&project_path, &project_name)?,
+        "rust/chat"         => scaffold_rust_chat(&project_path, &project_name)?,
+        "typescript"        => scaffold_typescript(&project_path, &project_name)?,
+        "native/game-ready" => scaffold_native_game_ready(&project_path, &project_name)?,
+        _                   => unreachable!(),
     }
     Ok(())
 }
@@ -435,6 +437,7 @@ fn scaffold_rust_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "modules/subscribers/subscribe_to_player.js", BASIC_SUB_PLAYER_JS)?;
     wf(p, "client/example.ts",                BASIC_CLIENT_TS)?;
     wf(p, "schema.toml",                       BASIC_SCHEMA_TOML)?;
+    wf(p, "PERFORMANCE.md",                    PERF_MD)?;
     wf(p, "README.md", &format!("# {} — Basic Template\n\n{}", name, BASIC_README))?;
     print_success(name, "rust/basic", &[
         ("modules/auth/",       "register, login, logout, grant_role"),
@@ -445,7 +448,7 @@ fn scaffold_rust_basic(p: &Path, name: &str) -> Result<()> {
         ("schema.toml",         "typed column definitions"),
         ("neondb.toml",         "server config + [permissions]"),
     ]);
-    println!("  Next steps:\n    cd {}\n    neondb start", name);
+    println!("  Next steps:\n    cd {name}\n    neondb start\n\n  Upgrade to WASM for production throughput:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full native-Rust path.");
     println!();
     Ok(())
 }
@@ -482,6 +485,7 @@ fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
     wf(p, "client/game-client.ts",              GAME_CLIENT_TS)?;
     wf(p, "schema.toml",                        GAME_SCHEMA_TOML)?;
     wf(p, "GENRE_GUIDE.md",                     GAME_GENRE_GUIDE_MD)?;
+    wf(p, "PERFORMANCE.md",                    PERF_MD)?;
     wf(p, "seed.json",                          GAME_SEED_JSON)?;
     wf(p, "README.md", &format!("# {} — Game-Ready Template\n\n{}", name, GAME_README))?;
     print_success(name, "rust/game-ready", &[
@@ -496,7 +500,7 @@ fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
         ("seed.json",           "neondb seed seed.json  — load sample data instantly"),
         ("GENRE_GUIDE.md",      "how to adapt this to any game genre"),
     ]);
-    println!("  Next steps:\n    cd {}\n    neondb start\n    neondb seed seed.json", name);
+    println!("  Next steps:\n    cd {name}\n    neondb start\n    neondb seed seed.json\n\n  Upgrade to WASM for production throughput:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full native-Rust path.");
     println!();
     Ok(())
 }
@@ -519,6 +523,7 @@ fn scaffold_rust_chat(p: &Path, name: &str) -> Result<()> {
     wf(p, "modules/moderation/unban_user.js",   CHAT_UNBAN_USER_JS)?;
     wf(p, "client/chat-client.ts",              CHAT_CLIENT_TS)?;
     wf(p, "schema.toml",                        CHAT_SCHEMA_TOML)?;
+    wf(p, "PERFORMANCE.md",                     PERF_MD)?;
     wf(p, "README.md", &format!("# {} — Chat Template\n\n{}", name, CHAT_README))?;
     print_success(name, "rust/chat", &[
         ("modules/rooms/",      "create, join, leave, delete"),
@@ -527,7 +532,7 @@ fn scaffold_rust_chat(p: &Path, name: &str) -> Result<()> {
         ("modules/presence/",   "set_online, set_typing, cleanup (scheduled 30s)"),
         ("modules/moderation/", "ban_user, unban_user"),
     ]);
-    println!("  Next steps:\n    cd {}\n    neondb start", name);
+    println!("  Next steps:\n    cd {name}\n    neondb start\n\n  Upgrade to WASM for production throughput:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full native-Rust path.");
     println!();
     Ok(())
 }
@@ -642,6 +647,92 @@ const TS_APP_TSX: &str              = include_str!("../templates/ts_app.tsx.txt"
 const TS_PACKAGE_JSON: &str         = include_str!("../templates/ts_package.json.txt");
 const TS_TSCONFIG_JSON: &str        = include_str!("../templates/ts_tsconfig.json.txt");
 const TS_README: &str               = include_str!("../templates/ts_readme.md.txt");
+const PERF_MD: &str                 = include_str!("../templates/performance.md.txt");
+
+// native/game-ready template
+const NATIVE_WORKSPACE_TOML: &str         = include_str!("../templates/native_workspace_cargo.toml.txt");
+const NATIVE_HELPER_TOML: &str            = include_str!("../templates/native_neondb_reducer_cargo.toml.txt");
+const NATIVE_HELPER_LIB: &str             = include_str!("../templates/native_neondb_reducer_lib.txt");
+const NATIVE_SPAWN_TOML: &str             = include_str!("../templates/native_spawn_cargo.toml.txt");
+const NATIVE_SPAWN_LIB: &str              = include_str!("../templates/native_spawn_lib.rs.txt");
+const NATIVE_DESPAWN_TOML: &str           = include_str!("../templates/native_despawn_cargo.toml.txt");
+const NATIVE_DESPAWN_LIB: &str            = include_str!("../templates/native_despawn_lib.rs.txt");
+const NATIVE_MOVE_TOML: &str              = include_str!("../templates/native_move_player_cargo.toml.txt");
+const NATIVE_MOVE_LIB: &str               = include_str!("../templates/native_move_player_lib.rs.txt");
+const NATIVE_UPDATE_STATS_TOML: &str      = include_str!("../templates/native_update_stats_cargo.toml.txt");
+const NATIVE_UPDATE_STATS_LIB: &str       = include_str!("../templates/native_update_stats_lib.rs.txt");
+const NATIVE_ATTACK_TOML: &str            = include_str!("../templates/native_attack_cargo.toml.txt");
+const NATIVE_ATTACK_LIB: &str             = include_str!("../templates/native_attack_lib.rs.txt");
+const NATIVE_SPAWN_NPC_TOML: &str         = include_str!("../templates/native_spawn_npc_cargo.toml.txt");
+const NATIVE_SPAWN_NPC_LIB: &str          = include_str!("../templates/native_spawn_npc_lib.rs.txt");
+const NATIVE_BUY_ITEM_TOML: &str          = include_str!("../templates/native_buy_item_cargo.toml.txt");
+const NATIVE_BUY_ITEM_LIB: &str           = include_str!("../templates/native_buy_item_lib.rs.txt");
+const NATIVE_SELL_ITEM_TOML: &str         = include_str!("../templates/native_sell_item_cargo.toml.txt");
+const NATIVE_SELL_ITEM_LIB: &str          = include_str!("../templates/native_sell_item_lib.rs.txt");
+const NATIVE_WORLD_TICK_TOML: &str        = include_str!("../templates/native_world_tick_cargo.toml.txt");
+const NATIVE_WORLD_TICK_LIB: &str         = include_str!("../templates/native_world_tick_lib.rs.txt");
+const NATIVE_CLEANUP_TOML: &str           = include_str!("../templates/native_cleanup_sessions_cargo.toml.txt");
+const NATIVE_CLEANUP_LIB: &str            = include_str!("../templates/native_cleanup_sessions_lib.rs.txt");
+const NATIVE_SUBMIT_SCORE_TOML: &str      = include_str!("../templates/native_submit_score_cargo.toml.txt");
+const NATIVE_SUBMIT_SCORE_LIB: &str       = include_str!("../templates/native_submit_score_lib.rs.txt");
+const NATIVE_BUILD_PS1: &str              = include_str!("../templates/native_build_ps1.txt");
+const NATIVE_BUILD_SH: &str              = include_str!("../templates/native_build_sh.txt");
+const NATIVE_README: &str                 = include_str!("../templates/native_readme.md.txt");
+
+fn scaffold_native_game_ready(p: &Path, name: &str) -> Result<()> {
+    // Workspace root
+    wf(p, "Cargo.toml",                              NATIVE_WORKSPACE_TOML)?;
+
+    // Bundled helper crate (no crates.io needed — fully self-contained)
+    wf(p, "neondb-reducer/Cargo.toml",               NATIVE_HELPER_TOML)?;
+    wf(p, "neondb-reducer/src/lib.rs",               NATIVE_HELPER_LIB)?;
+
+    // Reducer crates — each compiles to one .wasm file
+    wf(p, "spawn/Cargo.toml",                        NATIVE_SPAWN_TOML)?;
+    wf(p, "spawn/src/lib.rs",                        NATIVE_SPAWN_LIB)?;
+    wf(p, "despawn/Cargo.toml",                      NATIVE_DESPAWN_TOML)?;
+    wf(p, "despawn/src/lib.rs",                      NATIVE_DESPAWN_LIB)?;
+    wf(p, "move_player/Cargo.toml",                  NATIVE_MOVE_TOML)?;
+    wf(p, "move_player/src/lib.rs",                  NATIVE_MOVE_LIB)?;
+    wf(p, "update_stats/Cargo.toml",                 NATIVE_UPDATE_STATS_TOML)?;
+    wf(p, "update_stats/src/lib.rs",                 NATIVE_UPDATE_STATS_LIB)?;
+    wf(p, "attack/Cargo.toml",                       NATIVE_ATTACK_TOML)?;
+    wf(p, "attack/src/lib.rs",                       NATIVE_ATTACK_LIB)?;
+    wf(p, "spawn_npc/Cargo.toml",                    NATIVE_SPAWN_NPC_TOML)?;
+    wf(p, "spawn_npc/src/lib.rs",                    NATIVE_SPAWN_NPC_LIB)?;
+    wf(p, "buy_item/Cargo.toml",                     NATIVE_BUY_ITEM_TOML)?;
+    wf(p, "buy_item/src/lib.rs",                     NATIVE_BUY_ITEM_LIB)?;
+    wf(p, "sell_item/Cargo.toml",                    NATIVE_SELL_ITEM_TOML)?;
+    wf(p, "sell_item/src/lib.rs",                    NATIVE_SELL_ITEM_LIB)?;
+    wf(p, "world_tick/Cargo.toml",                   NATIVE_WORLD_TICK_TOML)?;
+    wf(p, "world_tick/src/lib.rs",                   NATIVE_WORLD_TICK_LIB)?;
+    wf(p, "cleanup_sessions/Cargo.toml",             NATIVE_CLEANUP_TOML)?;
+    wf(p, "cleanup_sessions/src/lib.rs",             NATIVE_CLEANUP_LIB)?;
+    wf(p, "submit_score/Cargo.toml",                 NATIVE_SUBMIT_SCORE_TOML)?;
+    wf(p, "submit_score/src/lib.rs",                 NATIVE_SUBMIT_SCORE_LIB)?;
+
+    // Build scripts + docs
+    wf(p, "build.ps1",                               NATIVE_BUILD_PS1)?;
+    wf(p, "build.sh",                                NATIVE_BUILD_SH)?;
+    wf(p, "PERFORMANCE.md",                          PERF_MD)?;
+    wf(p, "README.md", &format!("# {} — Native Rust Template\n\n{}", name, NATIVE_README))?;
+
+    // Shared server config (reuse game schema)
+    wf(p, "schema.toml",                             GAME_SCHEMA_TOML)?;
+    wf(p, "seed.json",                               GAME_SEED_JSON)?;
+
+    print_success(name, "native/game-ready", &[
+        ("neondb-reducer/",     "bundled Context API (no crates.io needed)"),
+        ("spawn/ … submit_score/", "11 reducer crates, each → one .wasm"),
+        ("build.ps1 / build.sh","cargo build --target wasm32-unknown-unknown"),
+        ("modules/",            "auto-populated by build script"),
+        ("PERFORMANCE.md",      "JS → WASM → native performance guide"),
+    ]);
+    println!("  Prerequisites:\n    rustup target add wasm32-unknown-unknown\n");
+    println!("  Next steps:\n    cd {name}\n    .\\build.ps1          # Windows\n    ./build.sh           # Linux / macOS\n    neondb start");
+    println!();
+    Ok(())
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // neondb build
@@ -665,18 +756,46 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
         return Ok(());
     }
     let mut compiled = 0usize; let mut failed = 0usize;
+    let mut wasm_paths: Vec<std::path::PathBuf> = Vec::new();
     for js_path in &js_files {
         let wasm_path = js_path.with_extension("wasm");
-        print!("  Compiling {} ... ", js_path.display());
+        print!("  JS→WASM  {} ... ", js_path.display());
         match std::process::Command::new("javy").arg("compile").arg(js_path).arg("-o").arg(&wasm_path).status() {
-            Ok(s) if s.success() => { println!("ok"); compiled += 1; }
+            Ok(s) if s.success() => { println!("ok"); compiled += 1; wasm_paths.push(wasm_path); }
             Ok(s) => { println!("FAILED (exit {})", s.code().unwrap_or(-1)); failed += 1; }
             Err(e) => { println!("FAILED ({})", e); failed += 1; }
         }
     }
+
+    // Also AOT-compile any .wasm files that were NOT produced by javy above
+    // (e.g. hand-written WAT compiled externally, or Rust→WASM32 reducers).
+    collect_wasm_files(modules_dir, &mut wasm_paths);
+    wasm_paths.sort(); wasm_paths.dedup();
+
+    let mut aot_ok = 0usize; let mut aot_skip = 0usize;
     println!();
-    if failed == 0 { println!("Build complete: {} compiled.", compiled); Ok(()) }
-    else { Err(neondb::error::NeonDBError::internal(format!("{} files failed", failed))) }
+    println!("  AOT compilation (Cranelift → native machine code):");
+    for wasm_path in &wasm_paths {
+        let cwasm_path = wasm_path.with_extension("cwasm");
+        let fresh = cwasm_path.exists() && {
+            let t_wasm  = wasm_path.metadata().and_then(|m| m.modified()).ok();
+            let t_cwasm = cwasm_path.metadata().and_then(|m| m.modified()).ok();
+            matches!((t_wasm, t_cwasm), (Some(w), Some(c)) if c >= w)
+        };
+        if fresh { aot_skip += 1; continue; }
+        print!("  WASM→AOT {} ... ", wasm_path.display());
+        match neondb::reducer::wasm::aot_compile(wasm_path) {
+            Ok(_) => { println!("ok"); aot_ok += 1; }
+            Err(e) => { println!("FAILED ({})", e); }
+        }
+    }
+    println!();
+    if failed == 0 {
+        println!("Build complete: {} JS→WASM, {} AOT compiled, {} AOT up-to-date.", compiled, aot_ok, aot_skip);
+        Ok(())
+    } else {
+        Err(neondb::error::NeonDBError::internal(format!("{} files failed", failed)))
+    }
 }
 
 fn collect_js_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -685,6 +804,18 @@ fn collect_js_files(dir: &Path, out: &mut Vec<PathBuf>) {
             let p = entry.path();
             if p.is_dir() { collect_js_files(&p, out); }
             else if p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("js")).unwrap_or(false) {
+                out.push(p);
+            }
+        }
+    }
+}
+
+fn collect_wasm_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() { collect_wasm_files(&p, out); }
+            else if p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("wasm")).unwrap_or(false) {
                 out.push(p);
             }
         }
@@ -844,7 +975,7 @@ async fn run_server(config: Config) -> Result<()> {
     let raft_node_addr = format!("http://{}:{}", config.host, config.metrics_port);
     let raft_handle: Arc<neondb::raft::NeonRaft> = {
         use neondb::raft::{
-            build_raft_config, NeonRaft, TypeConfig,
+            build_raft_config, TypeConfig,
             network::NeonNetworkFactory,
             state_machine::NeonStateMachine,
             storage::MemLogStore,
@@ -852,7 +983,17 @@ async fn run_server(config: Config) -> Result<()> {
         use openraft::Raft;
 
         let raft_config  = build_raft_config();
-        let log_store    = MemLogStore::new(None); // TODO: persist vote to WAL dir
+        let vote_path = config.wal_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("raft_vote.json");
+        let persisted_vote = MemLogStore::load_persisted_vote(&vote_path);
+        let mut log_store = MemLogStore::new(Some(vote_path));
+        if let Some(vote) = persisted_vote {
+            use openraft::storage::RaftLogStorage;
+            log_store.save_vote(&vote).await.expect("Failed to restore persisted Raft vote");
+            log::info!("[raft] restored persisted vote from disk (term={})", vote.leader_id.term);
+        }
         let state_machine = NeonStateMachine::new(tables.clone(), subscription_manager.clone());
         let network_factory = NeonNetworkFactory::new();
 
@@ -905,11 +1046,13 @@ async fn run_server(config: Config) -> Result<()> {
     for worker_id in 0..worker_count {
         let rx = reducer_rx.clone(); let tables_w = tables.clone();
         let registry_w = registry.clone();
-        let subs_w = subscription_manager.clone(); let wal_w = wal_writer.clone();
+        let _subs_w = subscription_manager.clone(); let wal_w = wal_writer.clone();
         let seq_w = global_seq.clone(); let snap_iv = snapshot_interval;
         let snap_dir_ww = snapshot_dir_w.clone(); let schema_w = schema_registry.clone();
         let bus_w = cluster_bus.clone();
         let ttl_w = ttl_manager.clone();
+        // Raft handle — every committed reducer result goes through consensus.
+        let raft_w = raft_handle.clone();
 
         worker_handles.push(tokio::spawn(async move {
             loop {
@@ -944,38 +1087,72 @@ async fn run_server(config: Config) -> Result<()> {
                     Err(_) => { log::warn!("call_id={} timed out", call_id); ReducerResponse::error(call_id, "Reducer timed out".to_string()) }
                     Ok(Err(e)) => { log::error!("Join error: {}", e); ReducerResponse::error(call_id, "Internal task error".to_string()) }
                     Ok(Ok((exec_result, mut ctx))) => match exec_result {
-                        Ok(Ok(result_bytes)) => match ctx.commit() {
-                            Ok(deltas) => {
-                                let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas.clone());
-                                match wal_w.append(&entry, seq_num) {
-                                    Err(e) => { log::error!("WAL append failed: {}", e); ReducerResponse::error(call_id, e.to_string()) }
-                                    Ok(_) => {
-                                        subs_w.publish_deltas(&deltas);
-                                        bus_w.fanout_deltas(&deltas);
-                                        if snap_iv > 0 && (seq_num + 1) % snap_iv == 0 {
-                                            let tbl = tables_w.clone(); let dir = snap_dir_ww.clone(); let ts2 = current_timestamp_nanos();
-                                            let wal_rotate = wal_w.clone();
-                                            tokio::spawn(async move {
-                                                match tokio::task::spawn_blocking(move || save_snapshot(&tbl, &dir, seq_num, ts2)).await {
-                                                    Ok(Ok(())) => {
-                                                        log::info!("Snapshot written at seq {}", seq_num);
-                                                        // Rotate WAL: entries <= seq_num are now in the snapshot
-                                                        if let Err(e) = wal_rotate.truncate_before(seq_num) {
-                                                            log::error!("WAL rotation after snapshot failed: {}", e);
-                                                        }
-                                                    }
-                                                    Ok(Err(e)) => log::error!("Snapshot failed: {}", e),
-                                                    Err(e)     => log::error!("Snapshot panicked: {}", e),
-                                                }
-                                            });
-                                        }
-                                        ReducerResponse::success(call_id, result_bytes)
+                        Ok(Ok(result_bytes)) => {
+                            // ── Raft write path ──────────────────────────────────────────────
+                            //
+                            // Drain staged deltas WITHOUT applying them to the local TableStore.
+                            // Forward to Raft consensus: the Raft state machine (NeonStateMachine)
+                            // applies the deltas on EVERY node (including this one) once the entry
+                            // is committed to a quorum.  This guarantees the write is durable and
+                            // replicated before the client receives a success response.
+                            //
+                            // In single-node clusters, Raft commits immediately (no network RTT).
+                            // In multi-node clusters, commit latency ≈ one heartbeat period / 2
+                            // (≈125 ms with the default 250 ms heartbeat).
+                            let deltas = ctx.drain_pending_deltas();
+
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            let raft_req = neondb::raft::RaftRequest {
+                                reducer_name: call.reducer_name.clone(),
+                                args:         call.args.clone(),
+                                deltas:       deltas.clone(),
+                                timestamp_ms: now_ms,
+                            };
+
+                            match raft_w.client_write(raft_req).await {
+                                Ok(_) => {
+                                    // Raft committed — state machine has applied deltas and
+                                    // published fan-out to local subscribers.
+                                    // Also write a WAL entry for crash recovery between
+                                    // snapshots (WAL is the fast-recovery path; Raft log is
+                                    // the authoritative distributed log).
+                                    let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas.clone());
+                                    if let Err(e) = wal_w.append(&entry, seq_num) {
+                                        log::warn!("WAL append failed (non-fatal, Raft is durable): {}", e);
                                     }
+                                    // Cluster fan-out to non-Raft legacy peers (if any).
+                                    if !deltas.is_empty() {
+                                        bus_w.fanout_deltas(&deltas);
+                                    }
+                                    // Periodic snapshot.
+                                    if snap_iv > 0 && (seq_num + 1) % snap_iv == 0 {
+                                        let tbl = tables_w.clone(); let dir = snap_dir_ww.clone(); let ts2 = current_timestamp_nanos();
+                                        let wal_rotate = wal_w.clone();
+                                        tokio::spawn(async move {
+                                            match tokio::task::spawn_blocking(move || save_snapshot(&tbl, &dir, seq_num, ts2)).await {
+                                                Ok(Ok(())) => {
+                                                    log::info!("Snapshot written at seq {}", seq_num);
+                                                    if let Err(e) = wal_rotate.truncate_before(seq_num) {
+                                                        log::error!("WAL rotation after snapshot failed: {}", e);
+                                                    }
+                                                }
+                                                Ok(Err(e)) => log::error!("Snapshot failed: {}", e),
+                                                Err(e)     => log::error!("Snapshot panicked: {}", e),
+                                            }
+                                        });
+                                    }
+                                    ReducerResponse::success(call_id, result_bytes)
+                                }
+                                Err(e) => {
+                                    log::error!("Raft client_write failed call_id={}: {}", call_id, e);
+                                    ReducerResponse::error(call_id, format!("Consensus error: {}", e))
                                 }
                             }
-                            Err(e) => { log::error!("Commit failed: {}", e); ReducerResponse::error(call_id, e.to_string()) }
-                        },
+                        }
                         Ok(Err(e)) => { log::warn!("Reducer error: {}", e); ReducerResponse::error(call_id, e.to_string()) }
                         Err(_) => { log::warn!("Reducer panicked call_id={}", call_id); ReducerResponse::error(call_id, "Reducer panicked".to_string()) }
                     },

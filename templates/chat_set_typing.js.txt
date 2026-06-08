@@ -1,5 +1,23 @@
-// set_typing — broadcast a typing indicator.
-// args: [user_id, room_id, typing]
+// ═══════════════════════════════════════════════════════════════════════
+// set_typing — broadcast or clear a typing indicator for a room
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [user_id: string, room_id: string, typing: boolean]
+// Return: { ok: true, typing: boolean }
+//
+// Usage:
+//   neondb call set_typing '["alice", "general", true]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [uid, rid, typing] = args;
 const k = rid + ":" + uid;
 if (typing) { __neondb_set("typing", k, { user_id: uid, room_id: rid, started_at: 0 }); }

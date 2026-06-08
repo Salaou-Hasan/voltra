@@ -1,5 +1,23 @@
-// submit_score — append/update leaderboard entry.
-// args: [player_id, score]
+// ═══════════════════════════════════════════════════════════════════════
+// submit_score — append or update a leaderboard entry (keeps personal best)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, score: number]
+// Return: { ok: true, score: number, new_best: boolean }
+//
+// Usage:
+//   neondb call submit_score '["player1", 4200]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [pid, score] = args;
 const existing = __neondb_get("leaderboard", pid);
 if (!existing || existing.score < score) {

@@ -1,5 +1,23 @@
-// set_value — write an arbitrary value into the kv table.
-// args: [key, value]
+// ═══════════════════════════════════════════════════════════════════════
+// set_value — write an arbitrary value into the key-value store
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [key: string, value: any]
+// Return: { ok: true, key: string, value: any }
+//
+// Usage:
+//   neondb call set_value '["theme", "dark"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [key, value] = args;
 __neondb_set("kv", key, { key, value });
 result = { ok: true, key, value };

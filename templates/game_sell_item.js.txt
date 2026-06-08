@@ -1,5 +1,24 @@
-// sell_item — sell one of an inventory item back for currency.
-// args: [player_id, item_id, price]
+// ═══════════════════════════════════════════════════════════════════════
+// sell_item — sell one of an inventory item back for currency
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, item_id: string, price: number]
+// Return: { ok: true, currency: number, qty: number }
+//         { error: "no_player" | "no_such_item" }
+//
+// Usage:
+//   neondb call sell_item '["player1", "sword", 25]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [pid, item_id, price] = args;
 const k = pid + ":" + item_id;
 const inv = __neondb_get("inventory", k);

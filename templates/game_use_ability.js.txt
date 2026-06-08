@@ -1,5 +1,24 @@
-// use_ability — consume MP and apply an ability.
-// args: [player_id, ability, target_id]
+// ═══════════════════════════════════════════════════════════════════════
+// use_ability — consume MP and apply an ability effect
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, ability: string, target_id: string]
+// Return: { ok: true, ability: string, target: string, mp_remaining: number }
+//         { error: "not_found" | "insufficient_mp" }
+//
+// Usage:
+//   neondb call use_ability '["player1", "fireball", "goblin_1"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [pid, ability, tgt] = args;
 const p = __neondb_get("players", pid);
 if (!p) { result = { error: "not_found" }; }

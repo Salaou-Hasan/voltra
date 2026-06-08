@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use openraft::storage::LogFlushed;
 use openraft::{
-    Entry, EntryPayload, LogId, LogState, OptionalSend,
+    Entry, LogId, LogState, OptionalSend,
     RaftLogReader, StorageError, Vote,
 };
 use openraft::storage::RaftLogStorage;
@@ -229,7 +229,7 @@ impl RaftLogStorage<TypeConfig> for MemLogStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openraft::{CommittedLeaderId, LogId, EntryPayload, Entry};
+    use openraft::{CommittedLeaderId, Entry, EntryPayload, LogId};
 
     fn make_log_id(term: u64, index: u64) -> LogId<u64> {
         LogId::new(CommittedLeaderId::new(term, 1), index)

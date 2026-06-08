@@ -1,0 +1,64 @@
+//! # spawn reducer
+//!
+//! Creates a new player in the `players` table with default stats for the
+//! given class.
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `player_id: String` — unique player identifier
+//! - `args[1]` — `x: f64` — initial X position in the world
+//! - `args[2]` — `y: f64` — initial Y position in the world
+//! - `args[3]` — `class: String` — player class (`"warrior"`, `"mage"`, `"rogue"`)
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "player_id": "alice" }
+//! ```
+//! or on error:
+//! ```json
+//! { "error": "player_id is required" }
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Spawn a new player at the given position with class-dependent stats.
+pub fn spawn(ctx: &mut Context, args: Value) -> Result<Value> {
+    let player_id = args[0]
+        .as_str()
+        .ok_or_else(|| "player_id is required".to_string())?;
+
+    let x = args[1].as_f64().unwrap_or(0.0);
+    let y = args[2].as_f64().unwrap_or(0.0);
+    let class = args[3].as_str().unwrap_or("warrior");
+
+    // Class-specific starting stats
+    let (hp, mp, atk, def) = match class {
+        "mage"  => (80,  120, 15, 8),
+        "rogue" => (90,  60,  18, 10),
+        _       => (120, 40,  12, 15), // warrior (default)
+    };
+
+    let zone = format!("zone_{}_{}", (x as i64) / 100, (y as i64) / 100);
+
+    ctx.set_row("players", player_id, &json!({
+        "player_id": player_id,
+        "class":     class,
+        "x":         x,
+        "y":         y,
+        "zone":      zone,
+        "hp":        hp,
+        "hp_max":    hp,
+        "mp":        mp,
+        "mp_max":    mp,
+        "atk":       atk,
+        "def":       def,
+        "level":     1,
+        "xp":        0,
+        "currency":  100,
+        "alive":     true
+    }))?;
+
+    Ok(json!({ "ok": true, "player_id": player_id }))
+}
+
+neondb_reducer::reducer!(spawn);

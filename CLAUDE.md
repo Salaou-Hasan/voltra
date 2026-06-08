@@ -339,11 +339,38 @@ neondb get players                       # verify rows landed
 
 ## Current Build Status
 
-After Session 40 (Wave 3 — Raft P0 implementation):
-- `cargo build` → **zero errors, 1 warning** (unused import in main.rs — harmless).
-- `cargo test --lib` → **410 tests passing** (was 385 before this session; +25 Raft tests).
-- `cargo bench --no-run` → pending (benchmark build in background).
-- Raft consensus fully scaffolded and wired into the running server.
+After Session 41 (Wave 3 — Raft P0 complete):
+- `cargo build` → **zero errors, zero warnings**.
+- `cargo test --lib` → **410 lib tests passing**.
+- `cargo test --test raft_consensus_test` → **6/6 Raft consensus integration tests passing**.
+- Total tested: **416 tests, 0 failures**.
+- P0 Raft consensus: **COMPLETE** — leader election, quorum writes, log replication, membership management, failover, and split-brain prevention all verified in-process.
+
+### Session 41 — Wave 3 completion: Raft write path + consensus integration tests
+
+**What was completed in this session:**
+
+- **Raft write path wired into worker loop** (`src/main.rs`):
+  - Replaced `ctx.commit()` + direct `subs.publish_deltas()` + `wal_w.append()` with `ctx.drain_pending_deltas()` + `raft_w.client_write(RaftRequest { ... })`.
+  - `drain_pending_deltas()` extracts staged deltas without applying them locally — the Raft state machine's `apply()` becomes the sole apply path on every node, including the leader.
+  - WAL append is still written after `client_write` succeeds (for fast crash-recovery; Raft log is the authoritative distributed log, WAL is the local fast-recovery path).
+  - Legacy cluster `bus_w.fanout_deltas()` is still called for non-Raft peers.
+  - `subs_w` renamed to `_subs_w` (subscription fan-out now done inside the state machine, not the worker).
+
+- **Zero-warning build achieved**: removed the unused `NeonRaft` import from `main.rs` and the unused `EntryPayload` import from `storage.rs` test module.
+
+- **6 Raft consensus integration tests** (`tests/raft_consensus_test.rs` — NEW):
+  - In-process network: `InProcFactory + InProcNetwork` implementing `RaftNetworkFactory + RaftNetwork` using a `DashMap<NodeId, Arc<NeonRaft>>`. No HTTP, no subprocesses, no ports.
+  - `test_single_node_leader_election_and_write` — bootstrap, elect leader, write, verify state machine applied.
+  - `test_single_node_multiple_writes_ordered` — 5 sequential writes all land correctly.
+  - `test_three_node_membership_change` — `add_learner` × 2 then `change_membership` to `{1,2,3}` voter set.
+  - `test_three_node_log_replication` — write on leader, verify all 3 state machines contain the row within 2 s.
+  - `test_failover_new_leader_elected_after_leader_dies` — shut down node 1, verify nodes 2+3 elect a new leader and accept post-failover writes.
+  - `test_minority_cannot_commit_without_quorum` — partition 2 of 3 nodes away from leader, verify `client_write` does not commit within 1.5 s (timeout) and the row is absent from the state machine.
+
+**P0 Raft consensus is now COMPLETE.**
+
+---
 
 ### Session 40 — Wave 3: Raft Consensus P0 Implementation
 
@@ -429,6 +456,10 @@ New module: `src/raft/` with four files:
 41. **Raft `initialize()` must be called exactly once** — on a fresh node it bootstraps the cluster; on an already-initialised node it returns `Err(AlreadyInitialized)`, which should be logged as `warn` and ignored.
 42. **`storage-v2` feature must be enabled** — `openraft = { features = ["serde", "storage-v2"] }`. Without it, `RaftLogStorage` and `RaftStateMachine` traits are not implementable by external crates (the `Sealed` impl is gated on `#[cfg(feature = "storage-v2")]`).
 43. **`anyerror` must be a direct dependency** — openraft's `StorageIOError` constructors take `impl Into<AnyError>`. The `anyerror` crate is a transitive dep of openraft but not available without adding it to Cargo.toml.
+44. **`Wait::leader()` does not exist in openraft 0.9** — use `wait.current_leader(expected_id, msg)` to block until the given node is leader.
+45. **`change_membership` takes `BTreeSet<NodeId>`, not `BTreeMap<NodeId, Node>`** — `ChangeMembers` implements `From<BTreeSet<NID>>` but NOT `From<BTreeMap<NID, N>>`. Pass `BTreeSet::<u64>::from_iter([1,2,3])`. Node addresses were registered via `add_learner` earlier; they don't need to be re-supplied.
+46. **In-process Raft network: `Raft::append_entries/vote/install_snapshot` are public** — these methods accept the raw RPC structs and return the response structs, allowing a test-only `RaftNetworkFactory` implementation that routes RPCs directly to in-memory `Arc<NeonRaft>` instances. No HTTP needed for unit/integration testing.
+47. **Raft write path is two-phase: drain then `client_write`** — after the reducer executes, call `ctx.drain_pending_deltas()` (NOT `ctx.commit()`). The deltas flow into `RaftRequest`, are replicated by Raft, and applied via the state machine's `apply()`. Double-applying (commit + raft) will cause every row to be written twice on the leader.
 
 After Session 39 (5-agent production-readiness wave):
 - `cargo build --lib` → **zero errors, zero warnings**.

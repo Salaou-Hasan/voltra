@@ -1,0 +1,28 @@
+//! # despawn reducer
+//!
+//! Removes a player from the `players` table. Called when a player logs out,
+//! is defeated permanently, or their session is cleaned up.
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `player_id: String` — the player to remove
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "player_id": "alice" }
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Delete a player row from the `players` table.
+pub fn despawn(ctx: &mut Context, args: Value) -> Result<Value> {
+    let player_id = args[0]
+        .as_str()
+        .ok_or_else(|| "player_id is required".to_string())?;
+
+    ctx.delete_row("players", player_id)?;
+
+    Ok(json!({ "ok": true, "player_id": player_id }))
+}
+
+neondb_reducer::reducer!(despawn);

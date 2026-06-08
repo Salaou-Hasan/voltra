@@ -1,5 +1,24 @@
-// accept_quest — assign a quest to a player.
-// args: [player_id, quest_id]
+// ═══════════════════════════════════════════════════════════════════════
+// accept_quest — assign a quest to a player
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, quest_id: string]
+// Return: { ok: true, quest_id: string }
+//         { error: "already_active" }
+//
+// Usage:
+//   neondb call accept_quest '["player1", "q_kill_goblins"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [pid, quest_id] = args;
 const k = pid + ":" + quest_id;
 if (__neondb_get("quests", k)) { result = { error: "already_active" }; }

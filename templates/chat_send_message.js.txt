@@ -1,5 +1,24 @@
-// send_message — post a message to a room.
-// args: [room_id, message_id, user_id, text]
+// ═══════════════════════════════════════════════════════════════════════
+// send_message — post a message to a room
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [room_id: string, message_id: string, user_id: string, text: string]
+// Return: { ok: true, message_id: string }
+//         { error: "no_such_room" | "not_member" | "banned" }
+//
+// Usage:
+//   neondb call send_message '["general", "m_001", "alice", "Hello!"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [rid, mid, uid, text] = args;
 const r = __neondb_get("rooms", rid);
 if (!r) { result = { error: "no_such_room" }; }

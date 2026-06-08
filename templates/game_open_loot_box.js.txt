@@ -1,5 +1,24 @@
-// open_loot_box — deterministic loot roll.
-// args: [player_id, box_id, seed]
+// ═══════════════════════════════════════════════════════════════════════
+// open_loot_box — deterministic loot roll from a seeded value
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, box_id: string, seed: number]
+// Return: { ok: true, reward: string, qty: number }
+//         { error: "not_found" }
+//
+// Usage:
+//   neondb call open_loot_box '["player1", "box_001", 42]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [pid, box_id, seed] = args;
 const p = __neondb_get("players", pid);
 if (!p) { result = { error: "not_found" }; }

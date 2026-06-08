@@ -1,5 +1,25 @@
-// delete_room — owner-only room deletion.
-// args: [room_id]
+// ═══════════════════════════════════════════════════════════════════════
+// delete_room — permanently delete a room (owner or admin only)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [room_id: string]
+// Return: { ok: true }
+//         { error: "no_such_room" | "forbidden" }
+//
+// Usage:
+//   neondb call delete_room '["general"]'
+//   (caller must be room owner or have admin role)
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [rid] = args;
 const r = __neondb_get("rooms", rid);
 if (!r) { result = { error: "no_such_room" }; }

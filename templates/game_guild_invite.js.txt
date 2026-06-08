@@ -1,5 +1,24 @@
-// guild_invite — record a pending invite.
-// args: [guild_id, invitee_id]
+// ═══════════════════════════════════════════════════════════════════════
+// guild_invite — record a pending guild invite for a player
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [guild_id: string, invitee_id: string]
+// Return: { ok: true }
+//         { error: "no_such_guild" }
+//
+// Usage:
+//   neondb call guild_invite '["guild_001", "player2"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [gid, invitee] = args;
 const g = __neondb_get("guilds", gid);
 if (!g) { result = { error: "no_such_guild" }; }

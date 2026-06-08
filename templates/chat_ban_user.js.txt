@@ -1,5 +1,25 @@
-// ban_user — moderator-only room ban.
-// args: [room_id, user_id]
+// ═══════════════════════════════════════════════════════════════════════
+// ban_user — ban a user from a room (moderator or admin only)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [room_id: string, user_id: string]
+// Return: { ok: true }
+//         { error: "forbidden" }
+//
+// Usage:
+//   neondb call ban_user '["general", "spammer"]'
+//   (requires Authorization: Bearer <key>:moderator or :admin)
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [rid, uid] = args;
 if (__neondb_caller_role !== "moderator" && __neondb_caller_role !== "admin") {
   result = { error: "forbidden" };

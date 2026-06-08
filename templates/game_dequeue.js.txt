@@ -1,5 +1,24 @@
-// dequeue — remove a player from the matchmaking queue.
-// args: [player_id]
+// ═══════════════════════════════════════════════════════════════════════
+// dequeue — remove a player from the matchmaking queue
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string]
+// Return: { ok: true }
+//         { error: "not_queued" }
+//
+// Usage:
+//   neondb call dequeue '["player1"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [pid] = args;
 if (!__neondb_get("matchmaking", pid)) { result = { error: "not_queued" }; }
 else { __neondb_delete("matchmaking", pid); result = { ok: true }; }

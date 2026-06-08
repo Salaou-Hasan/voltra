@@ -1,0 +1,98 @@
+//! # world_tick reducer
+//!
+//! Periodic world simulation step, typically called by the NeonDB scheduler
+//! every few seconds. Regenerates HP and MP for all alive players and
+//! increments the global tick counter in the `world_state` table.
+//!
+//! Because this reducer is called by the scheduler with no arguments, it reads
+//! `args` only for an optional `dry_run` flag (useful in tests).
+//!
+//! ## Arguments (MessagePack array — all optional)
+//! - `args[0]` — `dry_run: bool` — if `true`, compute changes but do not write
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "tick": 42, "players_regenerated": 7 }
+//! ```
+//!
+//! ## neondb.toml scheduler entry
+//! ```toml
+//! [[scheduler]]
+//! reducer  = "world_tick"
+//! interval = "3s"
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// HP and MP regenerated per tick (flat amount).
+const HP_REGEN: i64 = 5;
+const MP_REGEN: i64 = 8;
+
+/// Run the world simulation tick.
+pub fn world_tick(ctx: &mut Context, args: Value) -> Result<Value> {
+    let dry_run = args[0].as_bool().unwrap_or(false);
+
+    // ── increment world tick counter ─────────────────────────────────────────
+    let mut world = ctx.get_row("world_state", "global").unwrap_or(json!({
+        "tick":        0,
+        "started_at":  0
+    }));
+
+    let tick = world["tick"].as_i64().unwrap_or(0) + 1;
+    world["tick"] = json!(tick);
+
+    if !dry_run {
+        ctx.set_row("world_state", "global", &world)?;
+    }
+
+    // ── regenerate all alive players ─────────────────────────────────────────
+    // NOTE: In a real implementation you would maintain a player index or use
+    // a table scan. Here we iterate a known-size player list stored under the
+    // key "index" in the `player_index` table for demonstration purposes.
+    let mut players_regenerated: i64 = 0;
+
+    if let Some(index_row) = ctx.get_row("player_index", "index") {
+        if let Some(ids) = index_row["ids"].as_array() {
+            let player_ids: Vec<String> = ids
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+
+            for pid in &player_ids {
+                if let Some(mut player) = ctx.get_row("players", pid) {
+                    if !player["alive"].as_bool().unwrap_or(false) {
+                        continue;
+                    }
+
+                    let hp     = player["hp"].as_i64().unwrap_or(0);
+                    let hp_max = player["hp_max"].as_i64().unwrap_or(100);
+                    let mp     = player["mp"].as_i64().unwrap_or(0);
+                    let mp_max = player["mp_max"].as_i64().unwrap_or(40);
+
+                    let new_hp = (hp + HP_REGEN).min(hp_max);
+                    let new_mp = (mp + MP_REGEN).min(mp_max);
+
+                    if new_hp != hp || new_mp != mp {
+                        player["hp"] = json!(new_hp);
+                        player["mp"] = json!(new_mp);
+
+                        if !dry_run {
+                            ctx.set_row("players", pid, &player)?;
+                        }
+                        players_regenerated += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(json!({
+        "ok":                  true,
+        "tick":                tick,
+        "dry_run":             dry_run,
+        "players_regenerated": players_regenerated
+    }))
+}
+
+neondb_reducer::reducer!(world_tick);

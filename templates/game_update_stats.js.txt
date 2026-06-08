@@ -1,5 +1,25 @@
-// update_stats — admin-only stat override.
-// args: [player_id, stats_object]
+// ═══════════════════════════════════════════════════════════════════════
+// update_stats — admin-only direct stat override on a player
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, stats: object]
+// Return: { ok: true, player: object }
+//         { error: "forbidden" | "not_found" }
+//
+// Usage:
+//   neondb call update_stats '["player1", {"level": 10, "xp": 5000}]'
+//   (requires Authorization: Bearer <key>:admin)
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [player_id, stats] = args;
 if (__neondb_caller_role !== "admin") { result = { error: "forbidden" }; }
 else {

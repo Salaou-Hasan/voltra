@@ -29,3 +29,42 @@ neondb watch "players WHERE zone = 'zone_0_0'"
 ```
 
 See `GENRE_GUIDE.md` for adapting the template to your genre.
+
+---
+
+## Performance
+
+Reducers in this template run on the **Boa JS engine** (no JIT, ~50 k calls/s).
+High-frequency reducers like `move`, `attack`, and `world_tick` benefit most
+from upgrading to WASM before any production load test.
+
+```bash
+neondb build   # .js → .wasm via Javy; server auto-picks WASM on next start
+neondb start
+```
+
+WASM runs on Wasmtime/Cranelift (~500 k calls/s, 10–50× faster).
+
+For world-tick loops with thousands of players, or sub-millisecond combat
+resolution, consider registering those reducers as native Rust functions
+compiled into the server binary (2 M+ calls/s).
+
+See **PERFORMANCE.md** in this project root for benchmark numbers, the full
+three-tier guide, and native-Rust registration instructions.
+
+---
+
+## Reducer API Quick Reference
+
+These globals are available in every `.js` reducer file:
+
+| Global | Description |
+|--------|-------------|
+| `args` | Array of positional arguments passed by the client |
+| `result` | Assign the return value here before the file ends |
+| `__neondb_get(table, key)` | Read one row → `object \| null` |
+| `__neondb_set(table, key, val)` | Write/upsert one row |
+| `__neondb_delete(table, key)` | Delete one row |
+| `__neondb_get_all(table)` | Read all rows → `object[]` |
+| `__neondb_caller_id` | Identity string of the calling client |
+| `__neondb_caller_role` | Role string (e.g. `"admin"`, `"player"`) |

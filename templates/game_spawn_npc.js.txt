@@ -1,5 +1,23 @@
-// spawn_npc — create a non-player entity.
-// args: [npc_id, x, y, kind]
+// ═══════════════════════════════════════════════════════════════════════
+// spawn_npc — create a non-player entity in the world
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [npc_id: string, x: number, y: number, kind: string]
+// Return: { ok: true, npc: object }
+//
+// Usage:
+//   neondb call spawn_npc '["goblin_1", 50, 50, "goblin"]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [npc_id, x, y, kind] = args;
 const npc = {
   npc_id, x: x || 0, y: y || 0, kind: kind || "goblin",

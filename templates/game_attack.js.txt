@@ -1,5 +1,24 @@
-// attack — player attacks a target.
-// args: [attacker_id, target_id, weapon, damage]
+// ═══════════════════════════════════════════════════════════════════════
+// attack — player attacks a target (player or NPC)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [attacker_id: string, target_id: string, weapon: string, damage: number]
+// Return: { ok: true, target_id: string, hp: number, dead: boolean }
+//         { error: "Attacker not found" | "Target not found" }
+//
+// Usage:
+//   neondb call attack '["player1", "goblin_1", "sword", 25]'
+//
+// NeonDB reducer API:
+//   __neondb_get(table, key)      → object | null
+//   __neondb_set(table, key, val) → void
+//   __neondb_delete(table, key)   → void
+//   __neondb_get_all(table)       → object[]
+//   __neondb_caller_id            → string (client identity)
+//   __neondb_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
 const [att, tgt, weapon, dmg] = args;
 const attacker = __neondb_get("players", att);
 let target = __neondb_get("players", tgt) || __neondb_get("npcs", tgt);

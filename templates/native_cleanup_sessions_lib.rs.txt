@@ -1,0 +1,84 @@
+//! # cleanup_sessions reducer
+//!
+//! Removes expired session rows from the `sessions` table. Called by the
+//! NeonDB scheduler on a regular interval. Sessions are considered expired
+//! when `expires_at < now_ms` (Unix milliseconds stored in the row).
+//!
+//! Because the server does not expose a clock via the host ABI, the current
+//! time is passed as the first argument. The scheduler can supply this via
+//! a JS-evaluated timestamp in `args_json`, or you can call the reducer
+//! directly from a client with `Date.now()`.
+//!
+//! ## Arguments (MessagePack array)
+//! - `args[0]` — `now_ms: i64` — current Unix timestamp in milliseconds
+//!
+//! ## Returns
+//! ```json
+//! { "ok": true, "deleted": 3 }
+//! ```
+//!
+//! ## neondb.toml scheduler entry
+//! ```toml
+//! [[scheduler]]
+//! reducer   = "cleanup_sessions"
+//! interval  = "60s"
+//! args_json = "[0]"   # caller sets now_ms=0 to skip time-based pruning in tests
+//! ```
+
+use neondb_reducer::{Context, Result};
+use serde_json::{json, Value};
+
+/// Clean up expired session rows.
+pub fn cleanup_sessions(ctx: &mut Context, args: Value) -> Result<Value> {
+    let now_ms = args[0].as_i64().unwrap_or(0);
+
+    // Read the session index — a row in `session_index` with key "index"
+    // that stores an array of all active session IDs.
+    let index_row = match ctx.get_row("session_index", "index") {
+        Some(r) => r,
+        None => {
+            // No sessions table yet — nothing to clean up.
+            return Ok(json!({ "ok": true, "deleted": 0 }));
+        }
+    };
+
+    let ids: Vec<String> = index_row["ids"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut deleted = 0i64;
+    let mut remaining: Vec<Value> = Vec::new();
+
+    for session_id in &ids {
+        match ctx.get_row("sessions", session_id) {
+            None => {
+                // Row already gone; remove from index without counting as a delete.
+            }
+            Some(session) => {
+                let expires_at = session["expires_at"].as_i64().unwrap_or(i64::MAX);
+                if now_ms > 0 && expires_at < now_ms {
+                    ctx.delete_row("sessions", session_id)?;
+                    deleted += 1;
+                } else {
+                    remaining.push(json!(session_id));
+                }
+            }
+        }
+    }
+
+    // Update the session index to remove the deleted entries.
+    if deleted > 0 {
+        let mut new_index = index_row.clone();
+        new_index["ids"] = json!(remaining);
+        ctx.set_row("session_index", "index", &new_index)?;
+    }
+
+    Ok(json!({ "ok": true, "deleted": deleted }))
+}
+
+neondb_reducer::reducer!(cleanup_sessions);
