@@ -108,12 +108,33 @@ impl ReducerContext {
         // Read-your-writes: check uncommitted deltas first (reverse order).
         for delta in self.pending_deltas.iter().rev() {
             if delta.table_name == table_name && delta.row_key == row_key {
+                // Pending-delta reads bypass RLS — the caller already passed the
+                // write-time check when staging the delta.
                 return match delta.operation.as_str() {
                     "delete" => Ok(None),
                     _ => Ok(delta.row_data_value()),
                 };
             }
         }
+
+        // ── RLS check on committed rows ────────────────────────────────────────
+        // Schedulers and system callers bypass all policies.
+        if let Some(schema) = &self.schema {
+            if let Some(table_schema) = schema.get(table_name) {
+                if !crate::schema::rls_check(
+                    &table_schema.rls,
+                    // Read the row to evaluate ownership — only possible if
+                    // the policy needs it; for Public this is not called.
+                    self.tables.get_row(table_name, row_key)?.as_ref(),
+                    &self.caller_id,
+                    &self.caller_role,
+                ) {
+                    // Return None — do not leak row existence to unauthorised callers.
+                    return Ok(None);
+                }
+            }
+        }
+
         self.tables.get_row(table_name, row_key)
     }
 
@@ -248,6 +269,58 @@ impl ReducerContext {
     }
 
     pub fn commit(&mut self) -> Result<Vec<RowDelta>> {
+        // ── RLS enforcement ────────────────────────────────────────────────────
+        // Before handing deltas to apply_delta_batch, verify every staged write
+        // passes the table's RLS policy.  This enforces per-row ownership checks
+        // so that e.g. `alice` cannot modify `bob`'s rows.
+        //
+        // Bypass: caller_role == "scheduler" | "system" skips all checks.
+        // (rls_check handles this internally.)
+        if let Some(schema) = &self.schema {
+            let mut denied_keys: Vec<String> = Vec::new();
+
+            for delta in &self.pending_deltas {
+                // counter_add deltas target the "counters" system table which is
+                // schema-free — skip RLS check for counters.
+                if delta.operation == "counter_add" {
+                    continue;
+                }
+
+                let table_schema = match schema.get(&delta.table_name) {
+                    Some(ts) => ts,
+                    None => continue, // No schema → Public policy → allow.
+                };
+
+                // For write RLS: fetch the CURRENT committed row (before this
+                // delta is applied) to check ownership.  This prevents a caller
+                // from modifying another user's row even if the operation would
+                // overwrite the owner field.
+                let current_row = if delta.operation == "insert" {
+                    None // New row — ownership will be set by the reducer.
+                } else {
+                    self.tables.get_row(&delta.table_name, &delta.row_key)?
+                };
+
+                if !crate::schema::rls_check(
+                    &table_schema.rls,
+                    current_row.as_ref(),
+                    &self.caller_id,
+                    &self.caller_role,
+                ) {
+                    denied_keys.push(format!("{}/{}", delta.table_name, delta.row_key));
+                }
+            }
+
+            if !denied_keys.is_empty() {
+                self.pending_deltas.clear();
+                self.pending_diffs.clear();
+                return Err(NeonDBError::PermissionDenied(format!(
+                    "Access denied to rows: {:?}",
+                    denied_keys
+                )));
+            }
+        }
+
         let committed = self.tables.apply_delta_batch(&self.pending_deltas)?;
         self.pending_deltas.clear();
         self.pending_diffs.clear();
