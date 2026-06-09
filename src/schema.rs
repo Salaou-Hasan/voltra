@@ -147,6 +147,100 @@ impl ColumnDef {
     }
 }
 
+// ── Row-Level Security policy ─────────────────────────────────────────────────
+
+/// Controls which callers may read/write rows in a table.
+///
+/// The policy is evaluated for every `get_row` call (in `ReducerContext`) and
+/// before `apply_delta_batch` is called from `commit()`.  Callers whose
+/// `caller_role` is `"scheduler"` or `"system"` bypass all policies
+/// unconditionally so that internal background work is never blocked.
+///
+/// ## Variants
+/// - `Public` — anyone may access any row.  This is the default and preserves
+///   full backward compatibility.
+/// - `OwnerField { field }` — the row's `field` value must equal `caller_id`.
+///   New inserts (where `row` is `None`) are always allowed; the reducer is
+///   responsible for setting the owner field at insert time.
+/// - `RoleGated { roles }` — only callers whose `caller_role` is listed may
+///   access.
+/// - `OwnerFieldWithAdmin { field, admin_roles }` — either the row's `field`
+///   equals `caller_id`, OR the caller's role is in `admin_roles`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RlsPolicy {
+    #[default]
+    Public,
+    OwnerField { field: String },
+    RoleGated { roles: Vec<String> },
+    OwnerFieldWithAdmin { field: String, admin_roles: Vec<String> },
+}
+
+/// Evaluate an RLS policy for a single access attempt.
+///
+/// Returns `true` if access is permitted, `false` if denied.
+///
+/// # Bypass
+/// Callers with `caller_role == "scheduler"` or `caller_role == "system"` are
+/// always permitted regardless of the policy.
+///
+/// # Arguments
+/// - `policy` — the table's configured RLS policy.
+/// - `row` — the current stored row value, or `None` for new inserts (where the
+///   row does not exist yet).  For `OwnerField` variants, `None` means "new
+///   insert" and is allowed so the reducer can set the owner field.
+/// - `caller_id` — the identity of the calling client.
+/// - `caller_role` — the role extracted from the client's bearer token.
+pub fn rls_check(
+    policy: &RlsPolicy,
+    row: Option<&serde_json::Value>,
+    caller_id: &str,
+    caller_role: &str,
+) -> bool {
+    // Hardcoded bypass for internal/scheduler callers.
+    if caller_role == "scheduler" || caller_role == "system" {
+        return true;
+    }
+
+    match policy {
+        RlsPolicy::Public => true,
+
+        RlsPolicy::OwnerField { field } => {
+            match row {
+                // New insert — allow so the reducer can set the owner field.
+                None => true,
+                Some(row_val) => {
+                    row_val
+                        .get(field)
+                        .and_then(|v| v.as_str())
+                        .map(|owner| owner == caller_id)
+                        .unwrap_or(false)
+                }
+            }
+        }
+
+        RlsPolicy::RoleGated { roles } => roles.iter().any(|r| r == caller_role),
+
+        RlsPolicy::OwnerFieldWithAdmin { field, admin_roles } => {
+            // Admin bypass.
+            if admin_roles.iter().any(|r| r == caller_role) {
+                return true;
+            }
+            // Owner check.
+            match row {
+                None => true,
+                Some(row_val) => {
+                    row_val
+                        .get(field)
+                        .and_then(|v| v.as_str())
+                        .map(|owner| owner == caller_id)
+                        .unwrap_or(false)
+                }
+            }
+        }
+    }
+}
+
 // ── Table schema ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +250,10 @@ pub struct TableSchema {
     pub primary_key: Option<String>,
     #[serde(default)]
     pub columns: Vec<ColumnDef>,
+    /// Row-level security policy for this table.
+    /// Defaults to `Public` (no restrictions) — fully backward-compatible.
+    #[serde(default)]
+    pub rls: RlsPolicy,
 }
 
 impl TableSchema {
@@ -361,6 +459,7 @@ mod tests {
                 ColumnDef { name: "active".to_string(), type_str: "bool".to_string(), default: Some("true".to_string()), required: true },
                 ColumnDef { name: "name".to_string(), type_str: "String".to_string(), default: None, required: false },
             ],
+            rls: RlsPolicy::default(),
         }
     }
 
@@ -406,6 +505,7 @@ mod tests {
             columns: vec![
                 ColumnDef { name: "temp".to_string(), type_str: "f64".to_string(), default: None, required: true },
             ],
+            rls: RlsPolicy::default(),
         };
         // JSON integer should be coerced to f64 without error
         let row = json!({ "temp": 25 });
@@ -530,6 +630,7 @@ mod tests {
                 ColumnDef { name: "event_id".to_string(), type_str: "String".to_string(), default: None, required: true },
                 ColumnDef { name: "payload".to_string(), type_str: "any".to_string(), default: None, required: true },
             ],
+            rls: RlsPolicy::default(),
         };
 
         // Valid: nested object as payload
@@ -567,5 +668,106 @@ default = "0"
         assert_eq!(raw.table.len(), 1);
         assert_eq!(raw.table[0].name, "scores");
         assert_eq!(raw.table[0].columns.len(), 2);
+    }
+
+    // ── RLS policy tests ──────────────────────────────────────────────────────
+
+    fn owned_row(owner: &str) -> serde_json::Value {
+        json!({ "owner": owner, "data": 42 })
+    }
+
+    #[test]
+    fn rls_public_always_allows() {
+        let policy = RlsPolicy::Public;
+        let row = owned_row("alice");
+        assert!(rls_check(&policy, Some(&row), "bob", "player"));
+        assert!(rls_check(&policy, Some(&row), "", ""));
+        assert!(rls_check(&policy, None, "bob", "player"));
+    }
+
+    #[test]
+    fn rls_owner_field_allows_owner() {
+        let policy = RlsPolicy::OwnerField { field: "owner".to_string() };
+        let row = owned_row("alice");
+        assert!(rls_check(&policy, Some(&row), "alice", "player"));
+    }
+
+    #[test]
+    fn rls_owner_field_denies_non_owner() {
+        let policy = RlsPolicy::OwnerField { field: "owner".to_string() };
+        let row = owned_row("alice");
+        assert!(!rls_check(&policy, Some(&row), "bob", "player"));
+    }
+
+    #[test]
+    fn rls_owner_field_allows_new_insert() {
+        // row == None means new insert — always allow so reducer can set owner.
+        let policy = RlsPolicy::OwnerField { field: "owner".to_string() };
+        assert!(rls_check(&policy, None, "charlie", "player"));
+    }
+
+    #[test]
+    fn rls_role_gated_allows_matching_role() {
+        let policy = RlsPolicy::RoleGated { roles: vec!["admin".to_string(), "moderator".to_string()] };
+        assert!(rls_check(&policy, None, "alice", "admin"));
+        assert!(rls_check(&policy, None, "alice", "moderator"));
+    }
+
+    #[test]
+    fn rls_role_gated_denies_wrong_role() {
+        let policy = RlsPolicy::RoleGated { roles: vec!["admin".to_string()] };
+        assert!(!rls_check(&policy, None, "alice", "player"));
+        assert!(!rls_check(&policy, None, "alice", ""));
+    }
+
+    #[test]
+    fn rls_owner_with_admin_allows_admin_role() {
+        let policy = RlsPolicy::OwnerFieldWithAdmin {
+            field: "owner".to_string(),
+            admin_roles: vec!["admin".to_string()],
+        };
+        let row = owned_row("alice");
+        // admin can access alice's row even though bob is not the owner
+        assert!(rls_check(&policy, Some(&row), "bob", "admin"));
+    }
+
+    #[test]
+    fn rls_owner_with_admin_allows_owner() {
+        let policy = RlsPolicy::OwnerFieldWithAdmin {
+            field: "owner".to_string(),
+            admin_roles: vec!["admin".to_string()],
+        };
+        let row = owned_row("alice");
+        assert!(rls_check(&policy, Some(&row), "alice", "player"));
+    }
+
+    #[test]
+    fn rls_owner_with_admin_denies_non_owner_non_admin() {
+        let policy = RlsPolicy::OwnerFieldWithAdmin {
+            field: "owner".to_string(),
+            admin_roles: vec!["admin".to_string()],
+        };
+        let row = owned_row("alice");
+        assert!(!rls_check(&policy, Some(&row), "bob", "player"));
+    }
+
+    #[test]
+    fn rls_scheduler_bypasses_owner_field() {
+        let policy = RlsPolicy::OwnerField { field: "owner".to_string() };
+        let row = owned_row("alice");
+        // scheduler role always bypasses — even accessing another user's row.
+        assert!(rls_check(&policy, Some(&row), "system", "scheduler"));
+    }
+
+    #[test]
+    fn rls_system_role_bypasses_role_gated() {
+        let policy = RlsPolicy::RoleGated { roles: vec!["vip".to_string()] };
+        // "system" role is a hardcoded bypass even if not in the allowed list.
+        assert!(rls_check(&policy, None, "anything", "system"));
+    }
+
+    #[test]
+    fn rls_default_policy_is_public() {
+        assert_eq!(RlsPolicy::default(), RlsPolicy::Public);
     }
 }

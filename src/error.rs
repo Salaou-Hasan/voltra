@@ -32,6 +32,9 @@ pub enum NeonDBError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 impl NeonDBError {

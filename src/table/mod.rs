@@ -373,6 +373,45 @@ impl TableStore {
         Ok(Some(value))
     }
 
+    /// RLS-aware row fetch.
+    ///
+    /// Reads the row as normal, then evaluates the table's RLS policy.
+    /// Returns `Ok(None)` if the policy denies the access — this intentionally
+    /// avoids leaking row *existence* to unauthorized callers.
+    ///
+    /// Pass `schema: None` to skip policy evaluation (equivalent to `get_row`).
+    pub fn get_row_rls(
+        &self,
+        table: &str,
+        key: &str,
+        caller_id: &str,
+        caller_role: &str,
+        schema: Option<&crate::schema::SchemaRegistry>,
+    ) -> crate::error::Result<Option<Value>> {
+        let value = self.get_row(table, key)?;
+
+        // If no schema registry is provided there is no policy to evaluate.
+        let schema = match schema {
+            Some(s) => s,
+            None => return Ok(value),
+        };
+
+        // If the table has no registered schema, default to Public (allow all).
+        let table_schema = match schema.get(table) {
+            Some(ts) => ts,
+            None => return Ok(value),
+        };
+
+        // Evaluate the policy against the *current stored* row (may be None for
+        // new-insert callers, but here we are only reading so value==None means
+        // the row doesn't exist — return None regardless of policy).
+        if !crate::schema::rls_check(&table_schema.rls, value.as_ref(), caller_id, caller_role) {
+            return Ok(None);
+        }
+
+        Ok(value)
+    }
+
     pub fn list_rows(&self, table_name: &str) -> Result<Vec<Value>> {
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
