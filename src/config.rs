@@ -81,6 +81,31 @@ impl PermissionsConfig {
     }
 }
 
+/// Eviction policy configuration for the in-memory TableStore.
+///
+/// Controls how NeonDB responds to memory pressure from unlimited row writes.
+///
+/// Example in `neondb.toml`:
+/// ```toml
+/// [eviction]
+/// policy = "lru_row_cap"
+/// max_rows_per_table = 100000
+/// ```
+///
+/// Env vars:
+///   `NEONDB_EVICTION_POLICY`       — "none" | "lru_row_cap" | "lru_byte_cap"
+///   `NEONDB_MAX_ROWS_PER_TABLE`    — usize  (used with lru_row_cap)
+///   `NEONDB_MAX_BYTES_TOTAL`       — usize  (used with lru_byte_cap)
+#[derive(Clone, Debug, Default)]
+pub struct EvictionConfig {
+    /// Eviction policy name: "none" (default), "lru_row_cap", or "lru_byte_cap".
+    pub policy: String,
+    /// Maximum rows per table before LRU eviction triggers (policy = "lru_row_cap").
+    pub max_rows_per_table: usize,
+    /// Maximum total bytes across all tables before eviction triggers (policy = "lru_byte_cap").
+    pub max_bytes_total: usize,
+}
+
 /// Server configuration loaded from `neondb.toml`, environment variables, or defaults.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -138,6 +163,9 @@ pub struct Config {
     /// TTL sweep interval (ms) — how often the background task checks for expired rows.
     /// Env: `NEONDB_TTL_SWEEP_INTERVAL_MS`.  Default 5000.
     pub ttl_sweep_interval_ms: u64,
+    /// In-memory row eviction configuration.
+    /// Policy defaults to `"none"` (unlimited rows).
+    pub eviction: EvictionConfig,
 }
 
 // These structs mirror the TOML schema. Fields that are not yet wired into
@@ -151,6 +179,14 @@ struct ConfigFile {
     permissions: Option<HashMap<String, Vec<String>>>,
     #[serde(rename = "permissions_meta")]
     permissions_meta: Option<ConfigPermissionsMeta>,
+    eviction: Option<ConfigEviction>,
+}
+
+#[derive(Deserialize)]
+struct ConfigEviction {
+    policy: Option<String>,
+    max_rows_per_table: Option<usize>,
+    max_bytes_total: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -244,6 +280,7 @@ impl Config {
             presence_heartbeat_timeout_ms: 30_000,
             presence_offline_timeout_ms: 60_000,
             ttl_sweep_interval_ms: 5_000,
+            eviction: EvictionConfig::default(),
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -253,6 +290,7 @@ impl Config {
                     apply_scheduler_section(&mut cfg, parsed.scheduler);
                     apply_permissions_section(&mut cfg, parsed.permissions);
                     apply_permissions_meta(&mut cfg, parsed.permissions_meta);
+                    apply_eviction_section(&mut cfg, parsed.eviction);
                 }
             }
         }
@@ -283,6 +321,7 @@ impl Config {
         apply_scheduler_section(&mut cfg, parsed.scheduler);
         apply_permissions_section(&mut cfg, parsed.permissions);
         apply_permissions_meta(&mut cfg, parsed.permissions_meta);
+        apply_eviction_section(&mut cfg, parsed.eviction);
         Some(cfg)
     }
 
@@ -565,6 +604,33 @@ fn apply_env_overrides(cfg: &mut Config) {
         .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
     {
         cfg.ttl_sweep_interval_ms = t;
+    }
+    if let Ok(p) = env::var("NEONDB_EVICTION_POLICY") {
+        cfg.eviction.policy = p;
+    }
+    if let Ok(n) = env::var("NEONDB_MAX_ROWS_PER_TABLE")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.eviction.max_rows_per_table = n;
+    }
+    if let Ok(b) = env::var("NEONDB_MAX_BYTES_TOTAL")
+        .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.eviction.max_bytes_total = b;
+    }
+}
+
+fn apply_eviction_section(cfg: &mut Config, eviction: Option<ConfigEviction>) {
+    if let Some(e) = eviction {
+        if let Some(p) = e.policy {
+            cfg.eviction.policy = p;
+        }
+        if let Some(n) = e.max_rows_per_table {
+            cfg.eviction.max_rows_per_table = n;
+        }
+        if let Some(b) = e.max_bytes_total {
+            cfg.eviction.max_bytes_total = b;
+        }
     }
 }
 

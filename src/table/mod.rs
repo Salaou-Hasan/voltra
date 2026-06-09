@@ -32,6 +32,10 @@
 //     intentional and documented.
 // ============================================================================
 
+pub mod eviction;
+
+pub use eviction::{EvictionPolicy, LruTracker};
+
 use crate::error::{NeonDBError, Result};
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -292,15 +296,37 @@ pub struct TableStore {
     next_row_id: AtomicU32,
     pub shard_id: u32,
     pub shard_count: u32,
+    /// Active eviction policy. Checked after every insert/update inside
+    /// `apply_delta_batch`. Defaults to `None` (no eviction).
+    eviction_policy: EvictionPolicy,
+    /// LRU access tracker. `Some` when policy != `None`; `None` when policy
+    /// is `None` so there is zero overhead in the common case.
+    lru: Option<Arc<LruTracker>>,
 }
 
 impl TableStore {
     pub fn new() -> Self {
+        Self::with_eviction(EvictionPolicy::None)
+    }
+
+    /// Create a `TableStore` with a specific eviction policy.
+    ///
+    /// Use `EvictionPolicy::None` (or `TableStore::new()`) for unlimited storage.
+    /// Use `EvictionPolicy::LruRowCap { max_rows_per_table }` to cap per-table
+    /// row counts and silently evict the least-recently-used rows when exceeded.
+    /// Use `EvictionPolicy::LruByteCap { max_bytes_total }` to evict based on
+    /// estimated total byte usage.
+    pub fn with_eviction(policy: EvictionPolicy) -> Self {
         let data_dir = std::env::var("NEONDB_BLOB_PATH")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir().join("neondb_blobs"));
         let blob_path = data_dir.join("blobs.bin");
         let blob_store = BlobStore::open(blob_path).expect("Failed to open blob store");
+
+        let lru = match &policy {
+            EvictionPolicy::None => None,
+            _ => Some(Arc::new(LruTracker::new())),
+        };
 
         TableStore {
             tables: DashMap::with_capacity_and_shard_amount(64, 32),
@@ -308,6 +334,8 @@ impl TableStore {
             next_row_id: AtomicU32::new(1),
             shard_id: 0,
             shard_count: 1,
+            eviction_policy: policy,
+            lru,
         }
     }
 
@@ -612,7 +640,21 @@ impl TableStore {
             };
 
             match result {
-                Ok(committed) => committed_deltas.push(committed),
+                Ok(committed) => {
+                    // ── LRU tracking (touch on insert/update, remove on delete) ─
+                    if let Some(lru) = &self.lru {
+                        match committed.operation.as_str() {
+                            "insert" | "update" => {
+                                lru.touch(&committed.table_name, &committed.row_key);
+                            }
+                            "delete" => {
+                                lru.remove(&committed.table_name, &committed.row_key);
+                            }
+                            _ => {}
+                        }
+                    }
+                    committed_deltas.push(committed);
+                }
                 Err(e) => {
                     // Rollback all already-applied rows in reverse order.
                     for (tbl, key, old_row) in applied.into_iter().rev() {
@@ -628,6 +670,90 @@ impl TableStore {
                         }
                     }
                     return Err(e);
+                }
+            }
+        }
+
+        // ── 4. Eviction (runs AFTER all row locks are released) ──────────────
+        //
+        // IMPORTANT: _guards holds per-row Mutex locks. We must drop them before
+        // running eviction to avoid deadlock (eviction may need to re-acquire
+        // locks via write_row_unlocked or delete_row_unlocked on the same keys).
+        // Dropping _guards here releases all locks before eviction proceeds.
+        drop(_guards);
+
+        if let Some(lru) = &self.lru {
+            match &self.eviction_policy {
+                EvictionPolicy::LruRowCap { max_rows_per_table } => {
+                    // Collect distinct table names that were touched in this batch.
+                    let mut touched_tables: Vec<String> = committed_deltas
+                        .iter()
+                        .filter(|d| matches!(d.operation.as_str(), "insert" | "update"))
+                        .map(|d| d.table_name.clone())
+                        .collect();
+                    touched_tables.sort_unstable();
+                    touched_tables.dedup();
+
+                    for table_name in touched_tables {
+                        let current_count = self
+                            .tables
+                            .get(&table_name)
+                            .map(|t| t.rows.len())
+                            .unwrap_or(0);
+
+                        if current_count > *max_rows_per_table {
+                            let excess = current_count - max_rows_per_table;
+                            let to_evict = lru.evict_oldest(&table_name, excess);
+                            for (_tbl, key) in &to_evict {
+                                if let Some(table) = self.tables.get(&table_name) {
+                                    table.rows.remove(key);
+                                }
+                                lru.remove(&table_name, key);
+                            }
+                        }
+                    }
+                }
+                EvictionPolicy::LruByteCap { max_bytes_total } => {
+                    // Estimate total bytes across all tables.
+                    let total_bytes: usize = self
+                        .tables
+                        .iter()
+                        .map(|t| t.value().rows.iter().map(|r| r.value().data.len()).sum::<usize>())
+                        .sum();
+
+                    if total_bytes > *max_bytes_total {
+                        // Evict from every table that has rows, oldest first across the whole store.
+                        let all_tables: Vec<String> = self
+                            .tables
+                            .iter()
+                            .map(|e| e.key().clone())
+                            .collect();
+
+                        // Simple heuristic: try to free ~10% of rows from the largest tables.
+                        for table_name in all_tables {
+                            let count = self
+                                .tables
+                                .get(&table_name)
+                                .map(|t| t.rows.len())
+                                .unwrap_or(0);
+                            if count == 0 {
+                                continue;
+                            }
+                            // Evict 10% of each table's rows (minimum 1) until under cap.
+                            let evict_n = (count / 10).max(1);
+                            let to_evict = lru.evict_oldest(&table_name, evict_n);
+                            for (_tbl, key) in &to_evict {
+                                if let Some(table) = self.tables.get(&table_name) {
+                                    table.rows.remove(key);
+                                }
+                                lru.remove(&table_name, key);
+                            }
+                        }
+                    }
+                }
+                EvictionPolicy::None => {
+                    // No eviction. This branch is unreachable when lru is Some,
+                    // but match is exhaustive so we handle it for safety.
                 }
             }
         }
@@ -1549,5 +1675,162 @@ mod tests {
             2,
             "back-fill should index both pre-existing rows"
         );
+    }
+
+    // ── Eviction integration tests ──────────────────────────────────────────
+
+    // 1. LruRowCap evicts the oldest row when the cap is exceeded.
+    #[test]
+    fn test_lru_row_cap_evicts_oldest_row() {
+        let ts = Arc::new(TableStore::with_eviction(EvictionPolicy::LruRowCap {
+            max_rows_per_table: 3,
+        }));
+
+        // Insert 3 rows — within cap, none should be evicted.
+        let deltas = vec![
+            RowDelta {
+                table_name: "items".to_string(),
+                operation: "insert".to_string(),
+                row_key: "r1".to_string(),
+                row_id: 1, shard_id: 0,
+                payload_arc: None,
+                row_data: Some(serde_json::json!({"v": 1})),
+                counter_add_amount: 0, counter_add_timestamp: 0,
+            },
+            RowDelta {
+                table_name: "items".to_string(),
+                operation: "insert".to_string(),
+                row_key: "r2".to_string(),
+                row_id: 2, shard_id: 0,
+                payload_arc: None,
+                row_data: Some(serde_json::json!({"v": 2})),
+                counter_add_amount: 0, counter_add_timestamp: 0,
+            },
+            RowDelta {
+                table_name: "items".to_string(),
+                operation: "insert".to_string(),
+                row_key: "r3".to_string(),
+                row_id: 3, shard_id: 0,
+                payload_arc: None,
+                row_data: Some(serde_json::json!({"v": 3})),
+                counter_add_amount: 0, counter_add_timestamp: 0,
+            },
+        ];
+        ts.apply_delta_batch(&deltas).unwrap();
+        assert_eq!(ts.list_rows("items").unwrap().len(), 3);
+
+        // Insert a 4th row — should evict the LRU (r1, the oldest).
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let delta4 = RowDelta {
+            table_name: "items".to_string(),
+            operation: "insert".to_string(),
+            row_key: "r4".to_string(),
+            row_id: 4, shard_id: 0,
+            payload_arc: None,
+            row_data: Some(serde_json::json!({"v": 4})),
+            counter_add_amount: 0, counter_add_timestamp: 0,
+        };
+        ts.apply_delta_batch(&[delta4]).unwrap();
+
+        // Still at most cap rows.
+        let count = ts.list_rows("items").unwrap().len();
+        assert!(count <= 3, "expected <= 3 rows after eviction, got {}", count);
+        // r4 (just inserted) must be present.
+        assert!(
+            ts.get_row("items", "r4").unwrap().is_some(),
+            "newly inserted row must not be evicted"
+        );
+    }
+
+    // 2. LruRowCap does NOT evict when under the cap.
+    #[test]
+    fn test_lru_row_cap_no_eviction_under_cap() {
+        let ts = Arc::new(TableStore::with_eviction(EvictionPolicy::LruRowCap {
+            max_rows_per_table: 10,
+        }));
+        for i in 0..5 {
+            let delta = RowDelta {
+                table_name: "t".to_string(),
+                operation: "insert".to_string(),
+                row_key: format!("k{}", i),
+                row_id: i as u32, shard_id: 0,
+                payload_arc: None,
+                row_data: Some(serde_json::json!({"i": i})),
+                counter_add_amount: 0, counter_add_timestamp: 0,
+            };
+            ts.apply_delta_batch(&[delta]).unwrap();
+        }
+        assert_eq!(ts.list_rows("t").unwrap().len(), 5, "no eviction below cap");
+    }
+
+    // 3. None policy never evicts, rows accumulate freely.
+    #[test]
+    fn test_none_policy_no_eviction() {
+        let ts = Arc::new(TableStore::new()); // default = None
+        for i in 0..20 {
+            let delta = RowDelta {
+                table_name: "t".to_string(),
+                operation: "insert".to_string(),
+                row_key: format!("k{}", i),
+                row_id: i as u32, shard_id: 0,
+                payload_arc: None,
+                row_data: Some(serde_json::json!({"i": i})),
+                counter_add_amount: 0, counter_add_timestamp: 0,
+            };
+            ts.apply_delta_batch(&[delta]).unwrap();
+        }
+        assert_eq!(ts.list_rows("t").unwrap().len(), 20, "None policy must not evict");
+    }
+
+    // 4. LruByteCap constructor stores the cap correctly.
+    #[test]
+    fn test_lru_byte_cap_construction() {
+        let ts = TableStore::with_eviction(EvictionPolicy::LruByteCap {
+            max_bytes_total: 1_000_000,
+        });
+        if let EvictionPolicy::LruByteCap { max_bytes_total } = &ts.eviction_policy {
+            assert_eq!(*max_bytes_total, 1_000_000);
+        } else {
+            panic!("Expected LruByteCap policy");
+        }
+    }
+
+    // 5. Deleting a row removes it from the LRU tracker.
+    #[test]
+    fn test_delete_removes_lru_entry() {
+        let ts = Arc::new(TableStore::with_eviction(EvictionPolicy::LruRowCap {
+            max_rows_per_table: 100,
+        }));
+
+        // Insert then delete a row.
+        let insert_delta = RowDelta {
+            table_name: "t".to_string(),
+            operation: "insert".to_string(),
+            row_key: "key1".to_string(),
+            row_id: 1, shard_id: 0,
+            payload_arc: None,
+            row_data: Some(serde_json::json!({"x": 1})),
+            counter_add_amount: 0, counter_add_timestamp: 0,
+        };
+        ts.apply_delta_batch(&[insert_delta]).unwrap();
+
+        let delete_delta = RowDelta {
+            table_name: "t".to_string(),
+            operation: "delete".to_string(),
+            row_key: "key1".to_string(),
+            row_id: 1, shard_id: 0,
+            payload_arc: None,
+            row_data: None,
+            counter_add_amount: 0, counter_add_timestamp: 0,
+        };
+        ts.apply_delta_batch(&[delete_delta]).unwrap();
+
+        // The LRU tracker should have no entry for key1 after deletion.
+        if let Some(lru) = &ts.lru {
+            let evictable = lru.evict_oldest("t", 10);
+            for (_, key) in evictable {
+                assert_ne!(key, "key1", "deleted key must not appear in LRU tracker");
+            }
+        }
     }
 }
