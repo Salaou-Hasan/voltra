@@ -1,75 +1,44 @@
-# NeonDB Docker Compose — production configuration
-# Compatible with standalone Docker Compose AND Dokploy (Option B deployment).
-#
-# For Dokploy Option B:
-#   1. In Dokploy → Add Service → Docker Compose
-#   2. Paste this file
-#   3. Uncomment the Traefik labels and set your domain
-#   4. Set NEONDB_API_KEY in the Environment tab
-
 services:
-  neondb:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000" # WebSocket — clients connect here
-      - "8001:8001" # Metrics   — keep internal in production
+  neondb-1:
+    build: .
     environment:
-      NEONDB_HOST: "0.0.0.0"
-      NEONDB_PORT: "8000"
-      NEONDB_METRICS_PORT: "8001"
-      NEONDB_WAL_PATH: "/data/wal/neondb.wal"
-      NEONDB_FSYNC_INTERVAL_MS: "0"
-      NEONDB_WAL_BATCH_SIZE: "100000"
-      NEONDB_WAL_BATCH_INTERVAL_MS: "100"
-      NEONDB_UNSAFE_NO_FSYNC: "false"
-      NEONDB_SHARD_ID: "0"
-      NEONDB_SHARD_COUNT: "1"
-      NEONDB_MAX_CONNECTIONS: "200"
-      NEONDB_REDUCER_TIMEOUT_MS: "5000"
-      NEONDB_SNAPSHOT_INTERVAL: "1000000"
-      NEONDB_SNAPSHOT_DIR: "/data/snapshots"
-      RUST_LOG: "info"
-      # NEONDB_API_KEY: "set-this-in-dokploy-env-settings"
+      NEONDB_NODE_ID: "1"
+      NEONDB_SHARD_COUNT: "3"
+      NEONDB_CLUSTER_PEERS: "neondb-1:3000,neondb-2:3000,neondb-3:3000"
+      NEONDB_METRICS_PORT: "3001"
+      NEONDB_WS_PORT: "3000"
     volumes:
-      - neondb-wal:/data/wal
-      - neondb-snapshots:/data/snapshots
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "8000"]
-      interval: 30s
-      timeout: 10s
-      start_period: 10s
-      retries: 3
+      - neondb-1-data:/var/lib/neondb
+    ports:
+      - "3000:3000"
+      - "3001:3001"
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 1G
-        reservations:
-          cpus: "0.5"
-          memory: 256M
-    # ── Dokploy / Traefik labels ─────────────────────────────────────────────
-    # Uncomment and set your domain when deploying via Dokploy Option B.
-    # labels:
-    #   - "traefik.enable=true"
-    #   - "traefik.http.routers.neondb.rule=Host(`db.yourgame.com`)"
-    #   - "traefik.http.routers.neondb.entrypoints=websecure"
-    #   - "traefik.http.routers.neondb.tls=true"
-    #   - "traefik.http.routers.neondb.tls.certresolver=letsencrypt"
-    #   - "traefik.http.services.neondb.loadbalancer.server.port=8000"
-    #   - "traefik.docker.network=dokploy-network"
-    # networks:
-    #   - dokploy-network
+
+  neondb-2:
+    build: .
+    environment:
+      NEONDB_NODE_ID: "2"
+      NEONDB_SHARD_COUNT: "3"
+      NEONDB_CLUSTER_PEERS: "neondb-1:3000,neondb-2:3000,neondb-3:3000"
+      NEONDB_METRICS_PORT: "3001"
+      NEONDB_WS_PORT: "3000"
+    volumes:
+      - neondb-2-data:/var/lib/neondb
+    restart: unless-stopped
+
+  neondb-3:
+    build: .
+    environment:
+      NEONDB_NODE_ID: "3"
+      NEONDB_SHARD_COUNT: "3"
+      NEONDB_CLUSTER_PEERS: "neondb-1:3000,neondb-2:3000,neondb-3:3000"
+      NEONDB_METRICS_PORT: "3001"
+      NEONDB_WS_PORT: "3000"
+    volumes:
+      - neondb-3-data:/var/lib/neondb
+    restart: unless-stopped
 
 volumes:
-  neondb-wal:
-    driver: local
-  neondb-snapshots:
-    driver: local
-
-# Uncomment when using Dokploy network (Option B):
-# networks:
-#   dokploy-network:
-#     external: true
+  neondb-1-data:
+  neondb-2-data:
+  neondb-3-data:

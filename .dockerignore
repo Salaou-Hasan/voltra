@@ -1,0 +1,7 @@
+target/
+.git/
+*.log
+node_modules/
+**/*.bak
+.env
+neondb-client-ts/node_modules/

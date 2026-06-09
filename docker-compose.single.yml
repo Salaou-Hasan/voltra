@@ -1,0 +1,17 @@
+services:
+  neondb:
+    build: .
+    environment:
+      NEONDB_NODE_ID: "1"
+      NEONDB_SHARD_COUNT: "1"
+      NEONDB_METRICS_PORT: "3001"
+      NEONDB_WS_PORT: "3000"
+    volumes:
+      - neondb-data:/var/lib/neondb
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    restart: unless-stopped
+
+volumes:
+  neondb-data:
