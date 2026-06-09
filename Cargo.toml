@@ -47,6 +47,9 @@ openraft = { version = "0.9", features = ["serde", "storage-v2"] }
 anyerror = "0.1"   # error type used by openraft's StorageError constructors
 base64 = "0.21"
 jsonwebtoken = "9"
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8", "pem"] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+rand = "0.8"
 
 # JS reducer backend (pure-Rust engine, compiles on Windows/Linux/macOS)
 boa_engine = { version = "0.19", features = ["annex-b"] }

@@ -36,7 +36,7 @@ use hyper::{
 use openraft;
 
 use neondb::{
-    auth::AuthValidator,
+    auth::{AuthValidator, IdentityIssuer},
     config::{Config, ScheduledReducerConfig},
     cluster::{ClusterBus, ClusterConfig, NodeInfo, PeerEntry},
     error::Result,
@@ -917,6 +917,38 @@ async fn run_server(config: Config) -> Result<()> {
     // ── Auth validator (JWT / API key / open) ────────────────────────────────
     let auth_validator = Arc::new(AuthValidator::from_env());
 
+    // ── Ed25519 identity issuer ───────────────────────────────────────────────
+    // Persist key in <wal_dir>/identity_key.pem.  Generated on first start,
+    // reloaded on subsequent starts so tokens stay valid across restarts.
+    let identity_key_path = config.wal_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("identity_key.pem");
+    let identity_issuer: Arc<IdentityIssuer> = if identity_key_path.exists() {
+        match IdentityIssuer::load_from_file(&identity_key_path) {
+            Ok(iss) => {
+                log::info!("[identity] Loaded Ed25519 key (kid={})", iss.kid);
+                Arc::new(iss)
+            }
+            Err(e) => {
+                log::warn!("[identity] Failed to load key ({}), generating new key", e);
+                let iss = IdentityIssuer::generate();
+                if let Err(e2) = iss.save_to_file(&identity_key_path) {
+                    log::warn!("[identity] Could not persist new key: {}", e2);
+                }
+                Arc::new(iss)
+            }
+        }
+    } else {
+        let iss = IdentityIssuer::generate();
+        if let Err(e) = iss.save_to_file(&identity_key_path) {
+            log::warn!("[identity] Could not persist key: {}", e);
+        }
+        log::info!("[identity] Generated new Ed25519 key (kid={})", iss.kid);
+        Arc::new(iss)
+    };
+    println!("[neondb] Identity public key:\n{}", identity_issuer.public_key_pem());
+
     // ── Rate limiter ─────────────────────────────────────────────────────────
     let rate_limiter = Arc::new(RateLimiterRegistry::new(RateLimiterConfig {
         capacity: config.rate_limit_capacity,
@@ -942,12 +974,13 @@ async fn run_server(config: Config) -> Result<()> {
         let rl_c = rate_limiter.clone();
         let pres_c = presence.clone();
         let ttl_c = ttl_manager.clone();
+        let iss_c = identity_issuer.clone();
         tokio::spawn(async move {
             if let Err(e) = start_listener(
                 config_c.host, config_c.port, tx_c, subs_c, tables_c,
                 config_c.max_connections, config_c.api_key.clone(),
                 conns_c, perms_c, config_c.sql_timeout_ms,
-                auth_c, rl_c, pres_c, ttl_c, rx_shutdown,
+                auth_c, rl_c, pres_c, ttl_c, iss_c, rx_shutdown,
             ).await { log::error!("Listener error: {}", e); }
         })
     };
@@ -1036,8 +1069,9 @@ async fn run_server(config: Config) -> Result<()> {
         let raft_c = raft_handle.clone();
         let raft_node_id_c = raft_node_id;
         let raft_node_addr_c = raft_node_addr.clone();
+        let issuer_c = identity_issuer.clone();
         tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, raft_c, raft_node_id_c, raft_node_addr_c, rx_shutdown).await {
+            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, raft_c, raft_node_id_c, raft_node_addr_c, issuer_c, rx_shutdown).await {
                 log::error!("Metrics server error: {}", e);
             }
         })
@@ -1429,6 +1463,7 @@ async fn start_metrics_server(
     raft: Arc<neondb::raft::NeonRaft>,
     raft_node_id: u64,
     raft_node_addr: String,
+    identity_issuer: Arc<IdentityIssuer>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse()
@@ -1447,6 +1482,7 @@ async fn start_metrics_server(
         let raft_svc = raft.clone();
         let nid   = raft_node_id;
         let naddr = raft_node_addr.clone();
+        let iss   = identity_issuer.clone();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 let subs = subs.clone(); let tbl = tbl.clone();
@@ -1454,7 +1490,8 @@ async fn start_metrics_server(
                 let wal  = wal.clone();  let seq = seq.clone();
                 let pres = pres.clone(); let ttl = ttl.clone();
                 let raft_r = raft_svc.clone(); let nid_r = nid; let naddr_r = naddr.clone();
-                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq, start, pres, ttl, raft_r, nid_r, naddr_r).await }
+                let iss_r = iss.clone();
+                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq, start, pres, ttl, raft_r, nid_r, naddr_r, iss_r).await }
             }))
         }
     });
@@ -1485,6 +1522,7 @@ async fn handle_metrics_request(
     raft: Arc<neondb::raft::NeonRaft>,
     raft_node_id: u64,
     raft_node_addr: String,
+    identity_issuer: Arc<IdentityIssuer>,
 ) -> Result<Response<Body>> {
     let path = req.uri().path().to_string();
 
@@ -1838,6 +1876,90 @@ async fn handle_metrics_request(
 
         (&Method::POST, "/raft/init") => {
             Ok(neondb::raft::http::handle_raft_init(raft, raft_node_id, raft_node_addr).await)
+        }
+
+        // ── Identity / JWT endpoints ──────────────────────────────────────────
+        //
+        // POST /auth/token  — issue a signed JWT (requires valid API key auth)
+        // GET  /auth/public-key — return the server's Ed25519 public key PEM
+        //   (no auth required — clients need this to verify tokens independently)
+
+        (&Method::POST, "/auth/token") => {
+            // Gate: require a valid API key in the Authorization header.
+            // This endpoint is intentionally admin-only; the API key acts as
+            // the bootstrap credential that mints user-facing JWTs.
+            let auth_header = req
+                .headers()
+                .get(hyper::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if !auth_header.starts_with("Bearer ") {
+                let mut r = json_response(serde_json::json!({ "error": "Unauthorized: missing Authorization header" }));
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
+            }
+            // Accept any non-empty token as an API key; the operator controls
+            // access by keeping the NEONDB_API_KEY secret.
+            let provided_key = auth_header.trim_start_matches("Bearer ").trim();
+            let api_key_configured = std::env::var("NEONDB_API_KEY").unwrap_or_default();
+            if !api_key_configured.is_empty() && provided_key != api_key_configured {
+                let mut r = json_response(serde_json::json!({ "error": "Unauthorized: invalid API key" }));
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
+            }
+
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => {
+                    let mut r = json_response(serde_json::json!({ "error": format!("Invalid JSON: {}", e) }));
+                    *r.status_mut() = StatusCode::BAD_REQUEST;
+                    return Ok(r);
+                }
+            };
+
+            let identity = match payload.get("identity").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    let mut r = json_response(serde_json::json!({ "error": "Missing or empty 'identity' field" }));
+                    *r.status_mut() = StatusCode::BAD_REQUEST;
+                    return Ok(r);
+                }
+            };
+            let roles: Vec<String> = payload
+                .get("roles")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let ttl_secs = payload
+                .get("ttl_seconds")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3600);
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let expires_at = now + ttl_secs;
+
+            match identity_issuer.issue(&identity, roles, ttl_secs) {
+                Ok(token) => Ok(json_response(serde_json::json!({
+                    "token": token,
+                    "identity": identity,
+                    "expires_at": expires_at,
+                }))),
+                Err(e) => {
+                    let mut r = json_response(serde_json::json!({ "error": format!("Token issuance failed: {}", e) }));
+                    *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                    Ok(r)
+                }
+            }
+        }
+
+        (&Method::GET, "/auth/public-key") => {
+            let pem = identity_issuer.public_key_pem();
+            Ok(json_response(serde_json::json!({ "public_key_pem": pem })))
         }
 
         _ => {
