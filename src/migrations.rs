@@ -152,6 +152,48 @@ pub fn apply_migrations(migrations_dir: &Path, tables: &Arc<TableStore>) -> Resu
     Ok(applied)
 }
 
+/// Apply a single migration from its TOML content string.
+///
+/// Returns `Ok(true)` if the migration was applied, `Ok(false)` if it was already
+/// recorded in `__migrations` (skipped).  Returns `Err` on parse or apply failure.
+///
+/// This is the HTTP-server-facing entry point used by `POST /migrate`.  It mirrors
+/// the per-file logic inside `apply_migrations()` without requiring a filesystem path.
+pub fn apply_migration_str(
+    filename: &str,
+    content: &str,
+    tables: &Arc<TableStore>,
+) -> Result<bool> {
+    // Idempotency: skip if already applied.
+    if tables.get_row(MIGRATIONS_TABLE, filename)?.is_some() {
+        log::info!("Migration {} already applied, skipping", filename);
+        return Ok(false);
+    }
+
+    let mig: MigrationFile = toml::from_str(content).map_err(|e| {
+        NeonDBError::internal(format!("Failed to parse migration '{}': {}", filename, e))
+    })?;
+
+    // Use a synthetic path for log messages.
+    let synthetic_path = Path::new(filename);
+    apply_migration(&mig, tables, synthetic_path)?;
+
+    let now_nanos: u128 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    tables.set_row(
+        MIGRATIONS_TABLE.to_string(),
+        filename.to_string(),
+        serde_json::json!({
+            "applied_at": now_nanos as u64,
+            "version": mig.version,
+        }),
+    )?;
+
+    Ok(true)
+}
+
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 fn apply_migration(mig: &MigrationFile, tables: &Arc<TableStore>, path: &Path) -> Result<()> {

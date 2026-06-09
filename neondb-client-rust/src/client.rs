@@ -103,7 +103,13 @@ pub enum ClientEvent {
 
 // ── Internal command channel ──────────────────────────────────────────────────
 
-#[derive(Debug)]
+/// Type alias for a boxed, replayable optimistic mutation function.
+///
+/// Unlike `FnOnce`, these can be called multiple times so the cache can be
+/// re-computed after any layer is removed (see TODO-036).
+pub type OptimisticMutation =
+    Arc<dyn Fn(CacheSnapshot) -> CacheSnapshot + Send + Sync + 'static>;
+
 enum Command {
     Call {
         call_id: u64,
@@ -119,17 +125,14 @@ enum Command {
     Unsubscribe {
         sub_id: String,
     },
-    /// Register a targeted rollback set for a pending optimistic call.
-    ApplyOptimistic {
+    /// Push an optimistic mutation layer onto the background task's layer stack.
+    RegisterLayer {
         call_id: u64,
-        snapshot: CacheSnapshot,
+        mutation: OptimisticMutation,
     },
     /// Signal the background task to disconnect (user-initiated close).
     Shutdown,
 }
-
-/// Targeted rollback snapshot.  `None` value = "row did not exist pre-call".
-pub type TouchedRollback = HashMap<(String, String), Option<serde_json::Value>>;
 
 /// A handle to a subscription.  Drop or call `.unsubscribe()` to cancel.
 pub struct Subscription {
@@ -149,6 +152,7 @@ impl Subscription {
 pub type CacheSnapshot = HashMap<String, HashMap<String, serde_json::Value>>;
 
 /// Convert the DashMap cache into a plain HashMap snapshot.
+#[allow(dead_code)]
 fn snapshot_dashmap_cache(cache: &Arc<DashMap<String, RowCache>>) -> CacheSnapshot {
     let mut snap: CacheSnapshot = HashMap::new();
     for table_ref in cache.iter() {
@@ -171,6 +175,28 @@ fn apply_snapshot_to_cache(cache: &Arc<DashMap<String, RowCache>>, snap: &CacheS
         }
         cache.insert(table.clone(), table_map);
     }
+}
+
+/// Recompute the derived cache = `server_base` + all `layers` applied in order,
+/// then write the result to the shared DashMap.
+///
+/// This is the core of the TODO-036 race fix: removing any single layer and
+/// calling this function automatically re-applies all remaining layers on top of
+/// the clean server-confirmed base, without clobbering sibling pending calls.
+fn recompute_and_apply(
+    server_base: &CacheSnapshot,
+    layers: &[(u64, OptimisticMutation)],
+    cache: &Arc<DashMap<String, RowCache>>,
+) {
+    if layers.is_empty() {
+        apply_snapshot_to_cache(cache, server_base);
+        return;
+    }
+    let mut current = server_base.clone();
+    for (_, mutation) in layers {
+        current = mutation(current);
+    }
+    apply_snapshot_to_cache(cache, &current);
 }
 
 // ── NeonDBClient ──────────────────────────────────────────────────────────────
@@ -310,12 +336,20 @@ impl NeonDBClient {
     /// Call a reducer with an **optimistic** cache update.
     ///
     /// `optimistic_fn` receives the current cache snapshot and returns a
-    /// speculative updated snapshot.  The client immediately applies it so
-    /// that `get_row()` / `get_rows()` reflect the change.
+    /// speculative updated snapshot.  The background task pushes it as a layer
+    /// on top of the server-confirmed base so that `get_row()` / `get_rows()`
+    /// reflect the change immediately.
     ///
-    /// On server success: server subscription diffs reconcile naturally.
-    /// On server error: the cache is automatically rolled back and an
-    /// `Err(NeonDBError::ReducerError(_))` is returned.
+    /// **Concurrent-call race fix (TODO-036):** unlike the previous snapshot-
+    /// restore approach, the background task maintains an ordered layer stack.
+    /// Rolling back call #1 removes its layer and re-applies call #2's layer on
+    /// top of the clean server base — so call #2's speculative state is
+    /// preserved correctly.
+    ///
+    /// On server success: the layer is removed; server subscription diffs
+    ///   update `server_base_cache` and the derived cache is recomputed.
+    /// On server error: the layer is removed (rolled back) and the remaining
+    ///   layers are re-applied automatically.
     pub async fn call_optimistic<A, F>(
         &self,
         reducer_name: &str,
@@ -324,30 +358,20 @@ impl NeonDBClient {
     ) -> Result<Vec<u8>>
     where
         A: serde::Serialize,
-        F: FnOnce(CacheSnapshot) -> CacheSnapshot + Send + 'static,
+        F: Fn(CacheSnapshot) -> CacheSnapshot + Send + Sync + 'static,
     {
         let call_id = self.next_call_id.fetch_add(1, Ordering::Relaxed);
         let args_bytes = encode_args(args)?;
 
-        // 1. Snapshot the current cache.
-        let snapshot = snapshot_dashmap_cache(&self.cache);
-
-        // 2. Apply the speculative state to the live cache.
-        let optimistic_state = optimistic_fn(snapshot.clone());
-        apply_snapshot_to_cache(&self.cache, &optimistic_state);
-
-        // 3. Register the rollback snapshot with the background task
-        //    (must arrive before the Call reply, per pitfall #22).
-        //    The channel is unbuffered-ordered: ApplyOptimistic is always
-        //    dequeued before the matching Call reply.
+        // 1. Send RegisterLayer — background task applies mutation and writes
+        //    the speculative state to the shared DashMap (pitfall #22: ordered
+        //    channel guarantees RegisterLayer is processed before Call reply).
+        let mutation: OptimisticMutation = Arc::new(optimistic_fn);
         self.cmd_tx
-            .send(Command::ApplyOptimistic {
-                call_id,
-                snapshot: snapshot.clone(),
-            })
+            .send(Command::RegisterLayer { call_id, mutation })
             .map_err(|_| NeonDBError::ConnectionClosed)?;
 
-        // 4. Enqueue the actual network call.
+        // 2. Enqueue the actual network call.
         let (inner_tx, inner_rx) = oneshot::channel::<Result<Vec<u8>>>();
         self.cmd_tx
             .send(Command::Call {
@@ -358,7 +382,7 @@ impl NeonDBClient {
             })
             .map_err(|_| NeonDBError::ConnectionClosed)?;
 
-        // 5. Await the network result.
+        // 3. Await the network result.
         let result = tokio::time::timeout(
             Duration::from_millis(self.opts.call_timeout_ms),
             inner_rx,
@@ -368,12 +392,6 @@ impl NeonDBClient {
         .map_err(|_| NeonDBError::ConnectionClosed)??;
 
         Ok(result)
-    }
-
-    /// Roll back the cache to `snapshot`, used after a failed optimistic call.
-    #[allow(dead_code)]
-    fn rollback_cache(&self, snapshot: &CacheSnapshot) {
-        apply_snapshot_to_cache(&self.cache, snapshot);
     }
 
     /// Decode raw result bytes from `call()` into a typed value.
@@ -470,8 +488,6 @@ async fn run_connection_with_reconnect(
     // Calls buffered while the connection is down: (call_id, reducer, args, reply).
     let mut pending_queue: Vec<(u64, String, Vec<u8>, oneshot::Sender<Result<Vec<u8>>>)> =
         Vec::new();
-    let mut optimistic_register: Vec<(u64, CacheSnapshot)> = Vec::new();
-
     let user_shutdown = run_connection_inner(
         initial_ws,
         &mut cmd_rx,
@@ -479,7 +495,6 @@ async fn run_connection_with_reconnect(
         &event_tx,
         &mut active_subs,
         &mut pending_queue,
-        &mut optimistic_register,
     )
     .await;
 
@@ -545,7 +560,6 @@ async fn run_connection_with_reconnect(
                     &event_tx,
                     &mut active_subs,
                     &mut pending_queue,
-                    &mut optimistic_register,
                 )
                 .await;
 
@@ -579,9 +593,13 @@ async fn run_connection_inner(
     _event_tx: &broadcast::Sender<ClientEvent>,
     active_subs: &mut HashMap<String, (String, mpsc::UnboundedSender<RowDiff>)>,
     pending_queue: &mut Vec<(u64, String, Vec<u8>, oneshot::Sender<Result<Vec<u8>>>)>,
-    _optimistic_register: &mut Vec<(u64, CacheSnapshot)>,
 ) -> bool {
     let (mut sink, mut stream) = ws.split();
+
+    // Server-confirmed row state — only updated by subscription diffs/snapshots.
+    let mut server_base_cache: CacheSnapshot = HashMap::new();
+    // Ordered stack of in-flight optimistic mutations.
+    let mut optimistic_layers: Vec<(u64, OptimisticMutation)> = Vec::new();
 
     // Re-issue active subscriptions so the server delivers fresh snapshots.
     for (sub_id, (query, _)) in active_subs.iter() {
@@ -596,7 +614,6 @@ async fn run_connection_inner(
 
     // Flush calls that were queued while disconnected.
     let mut pending_calls: HashMap<u64, oneshot::Sender<Result<Vec<u8>>>> = HashMap::new();
-    let mut optimistic_snapshots: HashMap<u64, CacheSnapshot> = HashMap::new();
     let queued = std::mem::take(pending_queue);
     for (call_id, reducer_name, args, reply) in queued {
         let msg = ClientMessage::ReducerCall(ReducerCall {
@@ -643,9 +660,11 @@ async fn run_connection_inner(
                         }
                     }
 
-                    Some(Command::ApplyOptimistic { call_id, snapshot, .. }) => {
-                        // Register the rollback snapshot; actual Call follows.
-                        optimistic_snapshots.insert(call_id, snapshot);
+                    Some(Command::RegisterLayer { call_id, mutation }) => {
+                        // Push the optimistic mutation onto the layer stack and
+                        // recompute the derived cache (server_base + all layers).
+                        optimistic_layers.push((call_id, mutation));
+                        recompute_and_apply(&server_base_cache, &optimistic_layers, cache);
                     }
 
                     Some(Command::Subscribe { sub_id, query, tx }) => {
@@ -685,7 +704,8 @@ async fn run_connection_inner(
                                 &mut pending_calls,
                                 active_subs,
                                 &mut pending_route,
-                                &mut optimistic_snapshots,
+                                &mut server_base_cache,
+                                &mut optimistic_layers,
                                 cache,
                             );
                         }
@@ -710,21 +730,28 @@ fn dispatch_message(
     pending_calls: &mut HashMap<u64, oneshot::Sender<Result<Vec<u8>>>>,
     subscriptions: &mut HashMap<String, (String, mpsc::UnboundedSender<RowDiff>)>,
     pending_route: &mut Option<Vec<String>>,
-    optimistic_snapshots: &mut HashMap<u64, CacheSnapshot>,
+    server_base_cache: &mut CacheSnapshot,
+    optimistic_layers: &mut Vec<(u64, OptimisticMutation)>,
     cache: &Arc<DashMap<String, RowCache>>,
 ) {
     match msg {
         ServerMessage::ReducerResponse(resp) => {
             if let Some(reply) = pending_calls.remove(&resp.call_id) {
+                // Remove the optimistic layer for this call regardless of success/failure.
+                // On failure this IS the rollback: recomputing without the failed layer
+                // re-applies any remaining sibling layers on top of server_base (TODO-036).
+                let had_layer = {
+                    let before = optimistic_layers.len();
+                    optimistic_layers.retain(|(id, _)| *id != resp.call_id);
+                    optimistic_layers.len() < before
+                };
+                if had_layer {
+                    recompute_and_apply(server_base_cache, optimistic_layers, cache);
+                }
+
                 let result = if resp.success {
-                    // Clean up any optimistic snapshot — server confirmed.
-                    optimistic_snapshots.remove(&resp.call_id);
                     Ok(resp.result.unwrap_or_default())
                 } else {
-                    // Roll back the optimistic cache if we have a snapshot.
-                    if let Some(snap) = optimistic_snapshots.remove(&resp.call_id) {
-                        apply_snapshot_to_cache(cache, &snap);
-                    }
                     Err(NeonDBError::ReducerError(
                         resp.error.unwrap_or_else(|| "Unknown error".to_string()),
                     ))
@@ -752,13 +779,15 @@ fn dispatch_message(
                 operation: diff.operation.clone(),
                 row_data: diff.row_data.clone(),
             };
-            apply_to_cache(
-                cache,
+            // Apply to server_base_cache (source of truth), then recompute derived cache.
+            apply_to_base(
+                server_base_cache,
                 &diff.table_name,
                 &diff.row_key,
                 &diff.operation,
                 diff.row_data,
             );
+            recompute_and_apply(server_base_cache, optimistic_layers, cache);
             if let Some((_, tx)) = subscriptions.get(&diff.subscription_id) {
                 let _ = tx.send(row_diff);
             }
@@ -770,13 +799,14 @@ fn dispatch_message(
 
         ServerMessage::SubscriptionBody(body) => {
             if let Some(ids) = pending_route.take() {
-                apply_to_cache(
-                    cache,
+                apply_to_base(
+                    server_base_cache,
                     &body.table_name,
                     &body.row_key,
                     &body.operation,
                     body.row_data.clone(),
                 );
+                recompute_and_apply(server_base_cache, optimistic_layers, cache);
                 for sub_id in &ids {
                     let diff = RowDiff {
                         subscription_id: sub_id.clone(),
@@ -798,16 +828,18 @@ fn dispatch_message(
     }
 }
 
-fn apply_to_cache(
-    cache: &Arc<DashMap<String, RowCache>>,
+/// Apply a single row diff to the server-base cache (plain HashMap).
+/// After calling this, call `recompute_and_apply` to update the visible DashMap cache.
+fn apply_to_base(
+    base: &mut CacheSnapshot,
     table_name: &str,
     row_key: &str,
     operation: &str,
     row_data: Option<serde_json::Value>,
 ) {
-    let table = cache
+    let table = base
         .entry(table_name.to_string())
-        .or_insert_with(DashMap::new);
+        .or_insert_with(HashMap::new);
     if operation == "delete" {
         table.remove(row_key);
     } else if let Some(data) = row_data {

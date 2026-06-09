@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // open_loot_box — deterministic loot roll from a seeded value
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, box_id: string, seed: number]
@@ -19,16 +19,18 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [pid, box_id, seed] = args;
-const p = __neondb_get("players", pid);
-if (!p) { result = { error: "not_found" }; }
-else {
-  const items = ["sword", "potion", "shield", "gold"];
-  const idx = ((seed || 0) % items.length + items.length) % items.length;
-  const reward = items[idx];
-  const k = pid + ":" + reward;
-  const inv = __neondb_get("inventory", k) || { player_id: pid, item_id: reward, qty: 0 };
-  inv.qty += 1;
-  __neondb_set("inventory", k, inv);
-  result = { ok: true, reward, qty: inv.qty };
+function reducer(args) {
+  const [pid, box_id, seed] = args;
+  const p = __neondb_get("players", pid);
+  if (!p) { return { error: "not_found" }; }
+  else {
+    const items = ["sword", "potion", "shield", "gold"];
+    const idx = ((seed || 0) % items.length + items.length) % items.length;
+    const reward = items[idx];
+    const k = pid + ":" + reward;
+    const inv = __neondb_get("inventory", k) || { player_id: pid, item_id: reward, qty: 0 };
+    inv.qty += 1;
+    __neondb_set("inventory", k, inv);
+    return { ok: true, reward, qty: inv.qty };
+  }
 }

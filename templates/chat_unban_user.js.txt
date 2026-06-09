@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // unban_user — lift a room ban (moderator or admin only)
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [room_id: string, user_id: string]
@@ -20,10 +20,12 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [rid, uid] = args;
-if (__neondb_caller_role !== "moderator" && __neondb_caller_role !== "admin") {
-  result = { error: "forbidden" };
-} else {
-  __neondb_delete("bans", rid + ":" + uid);
-  result = { ok: true };
+function reducer(args) {
+  const [rid, uid] = args;
+  if (__neondb_caller_role !== "moderator" && __neondb_caller_role !== "admin") {
+    return { error: "forbidden" };
+  } else {
+    __neondb_delete("bans", rid + ":" + uid);
+    return { ok: true };
+  }
 }

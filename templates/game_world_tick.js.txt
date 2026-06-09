@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // world_tick — scheduled per-tick world update; regenerates HP and MP
 // ───────────────────────────────────────────────────────────────────────
 // Args:   []  (called automatically by the scheduler every 1 s)
@@ -19,11 +19,13 @@
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 //   For large player counts (1000+) this is a good native-tier candidate.
 // ═══════════════════════════════════════════════════════════════════════
-const players = __neondb_get_all("players") || [];
-let healed = 0;
-for (const p of players) {
-  if (p.hp < p.max_hp) { p.hp = Math.min(p.max_hp, p.hp + 1); healed++; }
-  if (p.mp < p.max_mp) p.mp = Math.min(p.max_mp, p.mp + 1);
-  __neondb_set("players", p.player_id, p);
+function reducer(args) {
+  const players = __neondb_get_all("players") || [];
+  let healed = 0;
+  for (const p of players) {
+    if (p.hp < p.max_hp) { p.hp = Math.min(p.max_hp, p.hp + 1); healed++; }
+    if (p.mp < p.max_mp) p.mp = Math.min(p.max_mp, p.mp + 1);
+    __neondb_set("players", p.player_id, p);
+  }
+  return { ok: true, ticked: players.length, healed };
 }
-result = { ok: true, ticked: players.length, healed };

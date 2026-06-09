@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // delete_user — permanently delete a user (admin or self)
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [username: string]
@@ -19,13 +19,15 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [username] = args;
-if (__neondb_caller_id !== username && __neondb_caller_role !== "admin") {
-  result = { error: "forbidden" };
-} else if (!__neondb_get("users", username)) {
-  result = { error: "no_such_user" };
-} else {
-  __neondb_delete("users", username);
-  __neondb_delete("sessions", username);
-  result = { ok: true };
+function reducer(args) {
+  const [username] = args;
+  if (__neondb_caller_id !== username && __neondb_caller_role !== "admin") {
+    return { error: "forbidden" };
+  } else if (!__neondb_get("users", username)) {
+    return { error: "no_such_user" };
+  } else {
+    __neondb_delete("users", username);
+    __neondb_delete("sessions", username);
+    return { ok: true };
+  }
 }

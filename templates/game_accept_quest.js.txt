@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // accept_quest — assign a quest to a player
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, quest_id: string]
@@ -19,10 +19,12 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [pid, quest_id] = args;
-const k = pid + ":" + quest_id;
-if (__neondb_get("quests", k)) { result = { error: "already_active" }; }
-else {
-  __neondb_set("quests", k, { player_id: pid, quest_id, progress: 0, status: "active" });
-  result = { ok: true, quest_id };
+function reducer(args) {
+  const [pid, quest_id] = args;
+  const k = pid + ":" + quest_id;
+  if (__neondb_get("quests", k)) { return { error: "already_active" }; }
+  else {
+    __neondb_set("quests", k, { player_id: pid, quest_id, progress: 0, status: "active" });
+    return { ok: true, quest_id };
+  }
 }

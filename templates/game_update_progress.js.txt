@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // update_progress — increment quest progress by a delta amount
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, quest_id: string, delta: number]
@@ -19,12 +19,14 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [pid, quest_id, delta] = args;
-const k = pid + ":" + quest_id;
-const q = __neondb_get("quests", k);
-if (!q) { result = { error: "not_found" }; }
-else {
-  q.progress += (delta || 1);
-  __neondb_set("quests", k, q);
-  result = { ok: true, progress: q.progress };
+function reducer(args) {
+  const [pid, quest_id, delta] = args;
+  const k = pid + ":" + quest_id;
+  const q = __neondb_get("quests", k);
+  if (!q) { return { error: "not_found" }; }
+  else {
+    q.progress += (delta || 1);
+    __neondb_set("quests", k, q);
+    return { ok: true, progress: q.progress };
+  }
 }

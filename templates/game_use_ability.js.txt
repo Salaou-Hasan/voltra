@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // use_ability — consume MP and apply an ability effect
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, ability: string, target_id: string]
@@ -19,12 +19,14 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [pid, ability, tgt] = args;
-const p = __neondb_get("players", pid);
-if (!p) { result = { error: "not_found" }; }
-else if (p.mp < 10) { result = { error: "insufficient_mp" }; }
-else {
-  p.mp -= 10;
-  __neondb_set("players", pid, p);
-  result = { ok: true, ability, target: tgt, mp_remaining: p.mp };
+function reducer(args) {
+  const [pid, ability, tgt] = args;
+  const p = __neondb_get("players", pid);
+  if (!p) { return { error: "not_found" }; }
+  else if (p.mp < 10) { return { error: "insufficient_mp" }; }
+  else {
+    p.mp -= 10;
+    __neondb_set("players", pid, p);
+    return { ok: true, ability, target: tgt, mp_remaining: p.mp };
+  }
 }

@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // logout — end a session
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [username: string]
@@ -19,10 +19,12 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [username] = args;
-const session = __neondb_get("sessions", username);
-if (!session) { result = { error: "no_session" }; }
-else {
-  __neondb_delete("sessions", username);
-  result = { ok: true };
+function reducer(args) {
+  const [username] = args;
+  const session = __neondb_get("sessions", username);
+  if (!session) { return { error: "no_session" }; }
+  else {
+    __neondb_delete("sessions", username);
+    return { ok: true };
+  }
 }

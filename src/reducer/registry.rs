@@ -7,6 +7,22 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+// ── Inventory-based auto-registration ────────────────────────────────────────
+
+/// Descriptor submitted by the `#[reducer]` proc macro.
+///
+/// Each `#[reducer]`-annotated function emits an `inventory::submit!` that
+/// registers one of these items.  `ReducerRegistry::new()` iterates over all
+/// collected items and registers them as native reducers.
+pub struct NativeReducerItem {
+    /// The reducer name used in `ReducerCall.reducer_name`.
+    pub name: &'static str,
+    /// Factory that creates a boxed backend instance.
+    pub make: fn() -> Box<dyn ReducerBackend>,
+}
+
+inventory::collect!(NativeReducerItem);
+
 /// Which runtime backs this reducer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReducerRuntime {
@@ -44,10 +60,32 @@ impl ReducerRegistry {
             reducers: HashMap::new(),
         };
 
+        // Built-in native reducer — always available.
         registry.register_native(
             "increment",
             NativeReducerBackend::new(NativeReducerBackend::increment_reducer),
         );
+
+        // Auto-register all reducers submitted via `#[reducer]` + inventory.
+        for item in inventory::iter::<NativeReducerItem>() {
+            if registry.reducers.contains_key(item.name) {
+                log::debug!(
+                    "Reducer '{}' already registered, skipping inventory item",
+                    item.name
+                );
+                continue;
+            }
+            let backend: Box<dyn ReducerBackend> = (item.make)();
+            registry.reducers.insert(
+                item.name.to_string(),
+                ReducerDefinition {
+                    name: item.name.to_string(),
+                    runtime: ReducerRuntime::Native,
+                    backend,
+                },
+            );
+            log::info!("Auto-registered native reducer '{}' (via #[reducer])", item.name);
+        }
 
         let modules_path = PathBuf::from("modules");
         if modules_path.is_dir() {
@@ -395,5 +433,87 @@ mod tests {
         let decoded: serde_json::Value = rmp_serde::from_slice(&result).unwrap();
         assert_eq!(decoded["new_value"], 42);
         std::fs::remove_file(&path).ok();
+    }
+
+    // ── NativeReducerItem + inventory infrastructure ──────────────────────────
+
+    #[test]
+    fn test_native_reducer_item_can_be_registered_manually() {
+        // Directly insert a NativeReducerItem-style backend to verify the
+        // register_native_backend code path works.  The proc macro does the
+        // same thing via inventory::submit! — we test the plumbing here
+        // without invoking the macro (which generates ::neondb:: paths and
+        // therefore can't be used inside the neondb crate itself).
+        struct PongReducer;
+        impl ReducerBackend for PongReducer {
+            fn execute(
+                &self,
+                _ctx: &mut crate::reducer::context::ReducerContext,
+                _args: &[u8],
+            ) -> crate::error::Result<Vec<u8>> {
+                Ok(rmp_serde::to_vec(&serde_json::json!({ "pong": true })).unwrap())
+            }
+        }
+
+        let mut registry = ReducerRegistry::new().unwrap();
+        registry.reducers.insert(
+            "pong".to_string(),
+            ReducerDefinition {
+                name: "pong".to_string(),
+                runtime: ReducerRuntime::Native,
+                backend: Box::new(PongReducer),
+            },
+        );
+
+        assert!(registry.list_reducers().contains(&"pong".to_string()));
+        let mut ctx = make_ctx();
+        let result = registry.execute("pong", &mut ctx, b"").unwrap();
+        let decoded: serde_json::Value = rmp_serde::from_slice(&result).unwrap();
+        assert_eq!(decoded["pong"], true);
+    }
+
+    #[test]
+    fn test_inventory_collect_macro_present() {
+        // Verify that inventory::iter compiles and runs without panic.
+        // No external crates contribute items in this test build, so the
+        // iterator is empty — that's fine.  The real auto-registration is
+        // exercised by users of the neondb crate via #[reducer].
+        let collected: Vec<&NativeReducerItem> = inventory::iter::<NativeReducerItem>().collect();
+        // collected may be empty here; no assertion needed — just verify it
+        // doesn't panic.
+        let _ = collected;
+    }
+
+    // ── ctx.get / ctx.set / ctx.delete shortcut methods ──────────────────────
+
+    #[test]
+    fn test_ctx_set_get_delete_shortcuts() {
+        let tables = Arc::new(TableStore::new());
+        let mut ctx = ReducerContext::new(tables.clone(), 42);
+
+        // set via shortcut
+        ctx.set("scores", "alice", serde_json::json!({ "pts": 100 })).unwrap();
+
+        // get via shortcut — read-your-writes before commit
+        let row = ctx.get("scores", "alice").unwrap().expect("row should exist");
+        assert_eq!(row["pts"], 100);
+
+        // delete via shortcut
+        ctx.delete("scores", "alice").unwrap();
+        let after_delete = ctx.get("scores", "alice").unwrap();
+        assert!(after_delete.is_none(), "Row should be gone after pending delete");
+    }
+
+    #[test]
+    fn test_ctx_set_persists_after_commit() {
+        let tables = Arc::new(TableStore::new());
+        let mut ctx = ReducerContext::new(tables.clone(), 99);
+
+        ctx.set("items", "sword", serde_json::json!({ "damage": 55 })).unwrap();
+        ctx.commit().unwrap();
+
+        // After commit, the row lives in the TableStore.
+        let row = tables.get_row("items", "sword").unwrap().expect("committed row missing");
+        assert_eq!(row["damage"], 55);
     }
 }

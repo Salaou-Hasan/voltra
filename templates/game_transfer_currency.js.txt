@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // transfer_currency — send coins from one player to another
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [from_id: string, to_id: string, amount: number]
@@ -19,14 +19,16 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [from, to, amount] = args;
-const a = __neondb_get("players", from);
-const b = __neondb_get("players", to);
-if (!a || !b) { result = { error: "missing_player" }; }
-else if (a.currency < amount) { result = { error: "insufficient_funds" }; }
-else {
-  a.currency -= amount; b.currency += amount;
-  __neondb_set("players", from, a);
-  __neondb_set("players", to, b);
-  result = { ok: true, from_balance: a.currency, to_balance: b.currency };
+function reducer(args) {
+  const [from, to, amount] = args;
+  const a = __neondb_get("players", from);
+  const b = __neondb_get("players", to);
+  if (!a || !b) { return { error: "missing_player" }; }
+  else if (a.currency < amount) { return { error: "insufficient_funds" }; }
+  else {
+    a.currency -= amount; b.currency += amount;
+    __neondb_set("players", from, a);
+    __neondb_set("players", to, b);
+    return { ok: true, from_balance: a.currency, to_balance: b.currency };
+  }
 }

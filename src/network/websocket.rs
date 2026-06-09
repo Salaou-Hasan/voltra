@@ -469,16 +469,23 @@ where
                             continue;
                         }
 
+                        let call_id = call.call_id;
                         let pending = PendingCall {
-                            call_id: call.call_id,
+                            call_id,
                             reducer_name: call.reducer_name,
                             args: call.args,
                             caller_id: caller_id.clone(),
                             caller_role: caller_role.clone(),
                             response_tx: response_tx.clone(),
                         };
-                        if let Err(e) = reducer_tx.send(pending).await {
-                            log::warn!("Reducer queue send failed: {}", e);
+                        if let Err(_) = reducer_tx.try_send(pending) {
+                            // Queue is full — fail fast instead of blocking the WebSocket loop.
+                            log::warn!("Reducer queue full, rejecting call_id={}", call_id);
+                            let overloaded = ReducerResponse::error(
+                                call_id,
+                                "server overloaded, retry later".to_string(),
+                            );
+                            let _ = response_tx.send(overloaded);
                         }
                     }
 
@@ -666,16 +673,22 @@ where
                                     continue;
                                 }
 
+                                let call_id = call.call_id;
                                 let pending = PendingCall {
-                                    call_id: call.call_id,
+                                    call_id,
                                     reducer_name: call.reducer_name,
                                     args: call.args,
                                     caller_id: caller_id.clone(),
                                     caller_role: caller_role.clone(),
                                     response_tx: response_tx.clone(),
                                 };
-                                if let Err(e) = reducer_tx.send(pending).await {
-                                    log::warn!("Reducer queue send failed: {}", e);
+                                if let Err(_) = reducer_tx.try_send(pending) {
+                                    log::warn!("Reducer queue full, rejecting call_id={}", call_id);
+                                    let overloaded = ReducerResponse::error(
+                                        call_id,
+                                        "server overloaded, retry later".to_string(),
+                                    );
+                                    let _ = response_tx.send(overloaded);
                                 }
                             }
                             Err(e) => {

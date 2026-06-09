@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // delete_room — permanently delete a room (owner or admin only)
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [room_id: string]
@@ -20,12 +20,14 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [rid] = args;
-const r = __neondb_get("rooms", rid);
-if (!r) { result = { error: "no_such_room" }; }
-else if (r.owner !== __neondb_caller_id && __neondb_caller_role !== "admin") {
-  result = { error: "forbidden" };
-} else {
-  __neondb_delete("rooms", rid);
-  result = { ok: true };
+function reducer(args) {
+  const [rid] = args;
+  const r = __neondb_get("rooms", rid);
+  if (!r) { return { error: "no_such_room" }; }
+  else if (r.owner !== __neondb_caller_id && __neondb_caller_role !== "admin") {
+    return { error: "forbidden" };
+  } else {
+    __neondb_delete("rooms", rid);
+    return { ok: true };
+  }
 }

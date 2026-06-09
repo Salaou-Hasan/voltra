@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // edit_message — edit a message you authored
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [message_id: string, new_text: string]
@@ -19,12 +19,14 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [mid, text] = args;
-const m = __neondb_get("messages", mid);
-if (!m) { result = { error: "no_such_message" }; }
-else if (m.user_id !== __neondb_caller_id) { result = { error: "forbidden" }; }
-else {
-  m.text = text; m.edited = true;
-  __neondb_set("messages", mid, m);
-  result = { ok: true };
+function reducer(args) {
+  const [mid, text] = args;
+  const m = __neondb_get("messages", mid);
+  if (!m) { return { error: "no_such_message" }; }
+  else if (m.user_id !== __neondb_caller_id) { return { error: "forbidden" }; }
+  else {
+    m.text = text; m.edited = true;
+    __neondb_set("messages", mid, m);
+    return { ok: true };
+  }
 }

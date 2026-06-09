@@ -1,3 +1,7 @@
+[workspace]
+members  = ["neondb-macros"]
+resolver = "2"
+
 [package]
 name = "neondb"
 version = "0.1.0"
@@ -37,6 +41,10 @@ num_cpus = "1.16"                        # parallel reducer workers
 hdrhistogram = "7.5"                     # latency percentile tracking (bench + end_to_end)
 arc-swap = "1.6"                         # atomic Arc swaps for hot config
 flume = "0.11"                           # backup MPSC channel
+
+# Macro support: auto-registration of #[reducer]-annotated functions
+inventory    = "0.3"
+neondb-macros = { path = "neondb-macros" }
 
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 tokio-util = { version = "0.7", features = ["rt"] }

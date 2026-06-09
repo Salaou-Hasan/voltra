@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // spawn — create a player in the world
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, x: number, y: number, class_name: string]
@@ -18,12 +18,14 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [player_id, x, y, cls] = args;
-const zone = "zone_" + Math.floor((x || 0) / 100) + "_" + Math.floor((y || 0) / 100);
-const player = {
-  player_id, x: x || 0, y: y || 0, zone,
-  class: cls || "warrior",
-  hp: 100, max_hp: 100, mp: 50, max_mp: 50, level: 1, xp: 0, currency: 0,
-};
-__neondb_set("players", player_id, player);
-result = { ok: true, player };
+function reducer(args) {
+  const [player_id, x, y, cls] = args;
+  const zone = "zone_" + Math.floor((x || 0) / 100) + "_" + Math.floor((y || 0) / 100);
+  const player = {
+    player_id, x: x || 0, y: y || 0, zone,
+    class: cls || "warrior",
+    hp: 100, max_hp: 100, mp: 50, max_mp: 50, level: 1, xp: 0, currency: 0,
+  };
+  __neondb_set("players", player_id, player);
+  return { ok: true, player };
+}

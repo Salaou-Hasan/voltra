@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // reply — post a reply message inside a thread
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [thread_id: string, message_id: string, user_id: string, text: string]
@@ -19,10 +19,12 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [tid, mid, uid, text] = args;
-const t = __neondb_get("threads", tid);
-if (!t) { result = { error: "no_such_thread" }; }
-else {
-  __neondb_set("messages", mid, { message_id: mid, thread_id: tid, user_id: uid, text, edited: false, created_at: 0 });
-  result = { ok: true, message_id: mid };
+function reducer(args) {
+  const [tid, mid, uid, text] = args;
+  const t = __neondb_get("threads", tid);
+  if (!t) { return { error: "no_such_thread" }; }
+  else {
+    __neondb_set("messages", mid, { message_id: mid, thread_id: tid, user_id: uid, text, edited: false, created_at: 0 });
+    return { ok: true, message_id: mid };
+  }
 }

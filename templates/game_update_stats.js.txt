@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // update_stats — admin-only direct stat override on a player
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, stats: object]
@@ -20,14 +20,16 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [player_id, stats] = args;
-if (__neondb_caller_role !== "admin") { result = { error: "forbidden" }; }
-else {
-  const p = __neondb_get("players", player_id);
-  if (!p) { result = { error: "not_found" }; }
+function reducer(args) {
+  const [player_id, stats] = args;
+  if (__neondb_caller_role !== "admin") { return { error: "forbidden" }; }
   else {
-    const merged = Object.assign(p, stats || {});
-    __neondb_set("players", player_id, merged);
-    result = { ok: true, player: merged };
+    const p = __neondb_get("players", player_id);
+    if (!p) { return { error: "not_found" }; }
+    else {
+      const merged = Object.assign(p, stats || {});
+      __neondb_set("players", player_id, merged);
+      return { ok: true, player: merged };
+    }
   }
 }

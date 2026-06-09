@@ -158,6 +158,10 @@ pub struct Config {
     pub eviction: EvictionConfig,
     /// TLS / WSS configuration.
     pub tls: TlsConfig,
+    /// Bounded reducer queue capacity.  When the queue is full, new reducer calls are
+    /// rejected immediately (fail-fast) rather than blocking the WebSocket loop.
+    /// Env: `NEONDB_REDUCER_QUEUE_CAP`.  Default 16 384.
+    pub reducer_queue_cap: usize,
 }
 
 // These structs mirror the TOML schema.
@@ -230,6 +234,7 @@ struct ConfigServer {
     presence_heartbeat_timeout_ms: Option<u64>,
     presence_offline_timeout_ms: Option<u64>,
     ttl_sweep_interval_ms: Option<u64>,
+    reducer_queue_cap: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -281,6 +286,7 @@ impl Config {
             ttl_sweep_interval_ms: 5_000,
             eviction: EvictionConfig::default(),
             tls: TlsConfig::default(),
+            reducer_queue_cap: 16_384,
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -445,6 +451,9 @@ fn apply_server_section(cfg: &mut Config, server: Option<ConfigServer>) {
     }
     if let Some(t) = s.ttl_sweep_interval_ms {
         cfg.ttl_sweep_interval_ms = t;
+    }
+    if let Some(c) = s.reducer_queue_cap {
+        cfg.reducer_queue_cap = c.max(1);
     }
 }
 
@@ -632,6 +641,11 @@ fn apply_env_overrides(cfg: &mut Config) {
         .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
     {
         cfg.eviction.max_bytes_total = b;
+    }
+    if let Ok(c) = env::var("NEONDB_REDUCER_QUEUE_CAP")
+        .and_then(|v| v.parse::<usize>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.reducer_queue_cap = c.max(1);
     }
     if let Ok(v) = env::var("NEONDB_TLS_ENABLED") {
         cfg.tls.enabled = v == "1" || v.eq_ignore_ascii_case("true");

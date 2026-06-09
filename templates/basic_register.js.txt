@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // register — create a new user account
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [username: string, password_hash: string]
@@ -19,16 +19,18 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [username, password_hash] = args;
-if (!username || !password_hash) { result = { error: "missing_fields" }; }
-else if (__neondb_get("users", username)) { result = { error: "user_exists" }; }
-else {
-  __neondb_set("users", username, {
-    username,
-    password_hash,
-    role: "player",
-    created_at: 0,
-    profile: {},
-  });
-  result = { ok: true, username };
+function reducer(args) {
+  const [username, password_hash] = args;
+  if (!username || !password_hash) { return { error: "missing_fields" }; }
+  else if (__neondb_get("users", username)) { return { error: "user_exists" }; }
+  else {
+    __neondb_set("users", username, {
+      username,
+      password_hash,
+      role: "player",
+      created_at: 0,
+      profile: {},
+    });
+    return { ok: true, username };
+  }
 }

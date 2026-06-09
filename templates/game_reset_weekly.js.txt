@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // reset_weekly — scheduled weekly leaderboard wipe
 // ───────────────────────────────────────────────────────────────────────
 // Args:   []  (called automatically by the scheduler once per week)
@@ -18,6 +18,8 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const entries = __neondb_get_all("leaderboard") || [];
-for (const e of entries) __neondb_delete("leaderboard", e.player_id);
-result = { ok: true, cleared: entries.length };
+function reducer(args) {
+  const entries = __neondb_get_all("leaderboard") || [];
+  for (const e of entries) __neondb_delete("leaderboard", e.player_id);
+  return { ok: true, cleared: entries.length };
+}

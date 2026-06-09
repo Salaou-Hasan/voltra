@@ -1,0 +1,222 @@
+// ════════════════════════════════════════════════════════════════════════
+// Chat template — all reducers in native Rust with #[reducer] syntax
+//
+// Compiles to native machine code. Zero JS, zero WASM overhead.
+// Auto-registered at server startup via the `inventory` crate.
+//
+// Build: cargo build --release
+// Run:   ./target/release/mygame
+// ════════════════════════════════════════════════════════════════════════
+
+use neondb::{reducer, ReducerContext, ret};
+use serde_json::json;
+
+// ── Rooms ─────────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn create_room(ctx: ReducerContext, room_id: String, name: String, creator_id: String) {
+    if ctx.get("rooms", &room_id)?.is_some() {
+        ret!({ "error": "room_exists" })
+    }
+    ctx.set("rooms", &room_id, json!({
+        "room_id": &room_id, "name": name,
+        "creator": &creator_id, "members": [&creator_id],
+        "created_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true, "room_id": room_id })
+}
+
+#[reducer]
+fn join_room(ctx: ReducerContext, room_id: String, user_id: String) {
+    let mut room = match ctx.get("rooms", &room_id)? {
+        Some(r) => r,
+        None => ret!({ "error": "no_such_room" }),
+    };
+    if ctx.get("bans", &format!("{}:{}", room_id, user_id))?.is_some() {
+        ret!({ "error": "banned" })
+    }
+    let members = room["members"].as_array_mut().unwrap();
+    if !members.iter().any(|m| m == &user_id) {
+        members.push(json!(user_id));
+    }
+    ctx.set("rooms", &room_id, room)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn leave_room(ctx: ReducerContext, room_id: String, user_id: String) {
+    let mut room = match ctx.get("rooms", &room_id)? {
+        Some(r) => r,
+        None => ret!({ "error": "no_such_room" }),
+    };
+    if let Some(members) = room["members"].as_array_mut() {
+        members.retain(|m| m != &user_id);
+    }
+    ctx.set("rooms", &room_id, room)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn delete_room(ctx: ReducerContext, room_id: String) {
+    let room = match ctx.get("rooms", &room_id)? {
+        Some(r) => r,
+        None => ret!({ "error": "no_such_room" }),
+    };
+    if room["creator"] != ctx.caller_id && ctx.caller_role != "admin" {
+        ret!({ "error": "forbidden" })
+    }
+    ctx.delete("rooms", &room_id)?;
+    ret!({ "ok": true })
+}
+
+// ── Messages ──────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn send_message(ctx: ReducerContext, room_id: String, message_id: String, user_id: String, text: String) {
+    let room = match ctx.get("rooms", &room_id)? {
+        Some(r) => r,
+        None => ret!({ "error": "no_such_room" }),
+    };
+    let members = room["members"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    if !members.iter().any(|m| m == &user_id) {
+        ret!({ "error": "not_member" })
+    }
+    if ctx.get("bans", &format!("{}:{}", room_id, user_id))?.is_some() {
+        ret!({ "error": "banned" })
+    }
+    ctx.set("messages", &message_id, json!({
+        "message_id": &message_id, "room_id": room_id, "user_id": user_id,
+        "text": text, "edited": false, "created_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true, "message_id": message_id })
+}
+
+#[reducer]
+fn edit_message(ctx: ReducerContext, message_id: String, new_text: String) {
+    let mut msg = match ctx.get("messages", &message_id)? {
+        Some(m) => m,
+        None => ret!({ "error": "not_found" }),
+    };
+    if msg["user_id"] != ctx.caller_id && ctx.caller_role != "admin" {
+        ret!({ "error": "forbidden" })
+    }
+    msg["text"]   = json!(new_text);
+    msg["edited"] = json!(true);
+    ctx.set("messages", &message_id, msg)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn delete_message(ctx: ReducerContext, message_id: String) {
+    let msg = match ctx.get("messages", &message_id)? {
+        Some(m) => m,
+        None => ret!({ "error": "not_found" }),
+    };
+    if msg["user_id"] != ctx.caller_id && ctx.caller_role != "admin" {
+        ret!({ "error": "forbidden" })
+    }
+    ctx.delete("messages", &message_id)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn react(ctx: ReducerContext, message_id: String, user_id: String, emoji: String) {
+    let key = format!("{}:{}:{}", message_id, user_id, emoji);
+    ctx.set("reactions", &key, json!({
+        "message_id": message_id, "user_id": user_id,
+        "emoji": emoji, "created_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true })
+}
+
+// ── Threads ───────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn create_thread(ctx: ReducerContext, thread_id: String, room_id: String, user_id: String, title: String, text: String) {
+    ctx.set("threads", &thread_id, json!({
+        "thread_id": &thread_id, "room_id": room_id, "user_id": user_id,
+        "title": title, "text": text, "reply_count": 0,
+        "created_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true, "thread_id": thread_id })
+}
+
+#[reducer]
+fn reply(ctx: ReducerContext, thread_id: String, reply_id: String, user_id: String, text: String) {
+    let mut thread = match ctx.get("threads", &thread_id)? {
+        Some(t) => t,
+        None => ret!({ "error": "no_such_thread" }),
+    };
+    ctx.set("thread_replies", &reply_id, json!({
+        "reply_id": &reply_id, "thread_id": thread_id, "user_id": user_id,
+        "text": text, "created_at": ctx.timestamp(),
+    }))?;
+    thread["reply_count"] = json!(thread["reply_count"].as_i64().unwrap_or(0) + 1);
+    ctx.set("threads", &thread_id, thread)?;
+    ret!({ "ok": true, "reply_id": reply_id })
+}
+
+// ── Presence ──────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn set_online(ctx: ReducerContext, user_id: String, status: String) {
+    ctx.set("presence", &user_id, json!({
+        "user_id": &user_id, "status": status,
+        "last_seen": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn set_typing(ctx: ReducerContext, user_id: String, room_id: String, is_typing: bool) {
+    let key = format!("{}:{}", user_id, room_id);
+    if is_typing {
+        ctx.set("typing", &key, json!({
+            "user_id": &user_id, "room_id": room_id,
+            "since": ctx.timestamp(),
+        }))?;
+    } else {
+        ctx.delete("typing", &key)?;
+    }
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn cleanup_presence(ctx: ReducerContext) {
+    // Scheduled every 30 seconds
+    let now = ctx.timestamp();
+    let cutoff = now.saturating_sub(60_000); // 60 seconds
+    let presences = ctx.tables.list_rows_with_keys("presence").unwrap_or_default();
+    let mut removed = 0usize;
+    for (key, p) in presences {
+        if p["last_seen"].as_u64().unwrap_or(0) < cutoff {
+            ctx.delete("presence", &key)?;
+            removed += 1;
+        }
+    }
+    ret!({ "ok": true, "removed": removed })
+}
+
+// ── Moderation ────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn ban_user(ctx: ReducerContext, room_id: String, user_id: String) {
+    if ctx.caller_role != "admin" && ctx.caller_role != "moderator" {
+        ret!({ "error": "forbidden" })
+    }
+    let key = format!("{}:{}", room_id, user_id);
+    ctx.set("bans", &key, json!({
+        "room_id": room_id, "user_id": user_id,
+        "banned_by": &ctx.caller_id, "created_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn unban_user(ctx: ReducerContext, room_id: String, user_id: String) {
+    if ctx.caller_role != "admin" && ctx.caller_role != "moderator" {
+        ret!({ "error": "forbidden" })
+    }
+    ctx.delete("bans", &format!("{}:{}", room_id, user_id))?;
+    ret!({ "ok": true })
+}

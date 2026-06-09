@@ -259,7 +259,7 @@ and generated code, not removed.
 
 ### TODO-027 — `neondb-macros` Proc Macro Crate (Python-like Reducer Syntax)
 
-**Status**: ❌ NOT STARTED
+**Status**: ✅ DONE (Session 44 Wave 2)
 **Priority**: HIGH — this unblocks TODO-028, TODO-029, and all future templates
 **Effort**: 1–2 weeks
 
@@ -771,7 +771,7 @@ This is how they run "side by side with native Rust" at near-native speed on all
 
 ### TODO-032 — C# Reducer Authoring Path (C# → WASM)
 
-**Status**: ❌ NOT STARTED
+**Status**: ✅ DONE (Session 44)
 **Priority**: HIGH (Pillar 1)
 **Effort**: 1–2 weeks
 **Wave**: 1 (disjoint — touches `neondb build` + new template dir, minimal main.rs overlap)
@@ -834,7 +834,7 @@ installed (CI may not have the WASI workload).
 
 ### TODO-033 — Go Reducer Authoring Path (Go → WASM via TinyGo)
 
-**Status**: ❌ NOT STARTED
+**Status**: ✅ DONE (Session 44)
 **Priority**: HIGH (Pillar 1)
 **Effort**: 1–2 weeks
 **Wave**: 1 (disjoint — parallel with TODO-032, separate template dir)
@@ -1072,28 +1072,28 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 26. TODO-026  CLI `neondb seed` command       ✅ DONE (Session 35)
 
 ── DEVELOPER EXPERIENCE (Session 43+) ──────────────────────────
-27. TODO-027  neondb-macros proc macro crate  ❌ NOT STARTED  ← Wave 2
+27. TODO-027  neondb-macros proc macro crate  ✅ DONE (Session 44 Wave 2)
 28. TODO-028  Rewrite templates w/ #[reducer] ❌ NOT STARTED  ← Wave 3 (needs 027)
 29. TODO-029  neondb generate code generator  ❌ NOT STARTED  ← Wave 3 (needs 027,031)
 30. TODO-030  Engine-specific init templates  ❌ NOT STARTED  ← Wave 3 (needs 028,029)
               (Unity / Unreal / Godot / Web / GammaRay)
-31. TODO-031  GET /schema endpoint            ❌ NOT STARTED  ← Wave 2
+31. TODO-031  GET /schema endpoint            ✅ DONE  (Session 44 Wave 1)
 
 ── SESSION 44 — PARITY + PERFORMANCE PUSH ──────────────────────
    GOAL: single-node SpacetimeDB parity, then easiest game DB to build on.
 
    WAVE 0 (SOLO — foundation, conflict-prone shared files):
-34. TODO-034  Remove cluster + Raft           ❌ NOT STARTED  ← do FIRST, solo
-35. TODO-035  Bounded reducer queue           ❌ NOT STARTED  ← with 034
+34. TODO-034  Remove cluster + Raft           ✅ DONE  (Session 44 Wave 0)
+35. TODO-035  Bounded reducer queue           ✅ DONE  (Session 44 Wave 0)
 
    WAVE 1 (PARALLEL — disjoint file sets, after Wave 0 lands):
-32. TODO-032  C# reducers (C# → WASM)          ❌ NOT STARTED
-33. TODO-033  Go reducers (Go → WASM/TinyGo)   ❌ NOT STARTED
-36. TODO-036  SDK optimistic race fix          ❌ NOT STARTED  ← fully disjoint (SDKs)
-37. TODO-037  WAL crash-recovery test          ❌ NOT STARTED  ← disjoint (new test)
-38. TODO-038  Benchmark scaling fix            ❌ NOT STARTED  ← disjoint (benches)
-39. TODO-039  neondb migrate CLI               ❌ NOT STARTED
-40. TODO-040  Real queue-depth metric          ❌ NOT STARTED  ← after 035
+32. TODO-032  C# reducers (C# → WASM)          ✅ DONE  (Session 44 Wave 1)
+33. TODO-033  Go reducers (Go → WASM/TinyGo)   ✅ DONE  (Session 44 Wave 1)
+36. TODO-036  SDK optimistic race fix          ✅ DONE  (Session 44 Wave 1)
+37. TODO-037  WAL crash-recovery test          ✅ DONE  (Session 44 Wave 1)
+38. TODO-038  Benchmark scaling fix            ✅ DONE  (Session 44 Wave 1)
+39. TODO-039  neondb migrate CLI               ✅ DONE  (Session 44 Wave 1)
+40. TODO-040  Real queue-depth metric          ✅ DONE  (Session 44 Wave 1)
 
    WAVE 2 + 3: DX (TODO-027…031) per dependency order above.
 

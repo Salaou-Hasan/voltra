@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // guild_accept — accept a pending guild invite and join the guild
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [guild_id: string, invitee_id: string]
@@ -19,13 +19,15 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [gid, invitee] = args;
-const inv = __neondb_get("guild_invites", gid + ":" + invitee);
-const g = __neondb_get("guilds", gid);
-if (!inv || !g) { result = { error: "no_invite" }; }
-else {
-  if (g.members.indexOf(invitee) === -1) g.members.push(invitee);
-  __neondb_set("guilds", gid, g);
-  __neondb_delete("guild_invites", gid + ":" + invitee);
-  result = { ok: true, members: g.members };
+function reducer(args) {
+  const [gid, invitee] = args;
+  const inv = __neondb_get("guild_invites", gid + ":" + invitee);
+  const g = __neondb_get("guilds", gid);
+  if (!inv || !g) { return { error: "no_invite" }; }
+  else {
+    if (g.members.indexOf(invitee) === -1) g.members.push(invitee);
+    __neondb_set("guilds", gid, g);
+    __neondb_delete("guild_invites", gid + ":" + invitee);
+    return { ok: true, members: g.members };
+  }
 }

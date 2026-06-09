@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // sub_player — fetch a single user record for the client subscription
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [username: string]
@@ -19,6 +19,8 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [username] = args;
-const user = __neondb_get("users", username);
-result = user ? { ok: true, user } : { error: "no_such_user" };
+function reducer(args) {
+  const [username] = args;
+  const user = __neondb_get("users", username);
+  return user ? { ok: true, user } : { error: "no_such_user" };
+}

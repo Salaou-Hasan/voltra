@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // react — add an emoji reaction to a message (one reaction per user/emoji)
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [message_id: string, user_id: string, emoji: string]
@@ -19,10 +19,12 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [mid, uid, emoji] = args;
-const k = mid + ":" + uid + ":" + emoji;
-if (__neondb_get("reactions", k)) { result = { error: "duplicate" }; }
-else {
-  __neondb_set("reactions", k, { message_id: mid, user_id: uid, emoji });
-  result = { ok: true };
+function reducer(args) {
+  const [mid, uid, emoji] = args;
+  const k = mid + ":" + uid + ":" + emoji;
+  if (__neondb_get("reactions", k)) { return { error: "duplicate" }; }
+  else {
+    __neondb_set("reactions", k, { message_id: mid, user_id: uid, emoji });
+    return { ok: true };
+  }
 }

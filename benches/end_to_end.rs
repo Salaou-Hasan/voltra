@@ -50,10 +50,14 @@ fn ensure_server_built() {
 
 fn spawn_server(port: u16, wal_path: PathBuf) -> Child {
     ensure_server_built();
+    // Derive a unique metrics port so the bench server doesn't collide with
+    // the neondb.toml default (3001) that `Config::from_env()` would pick up.
+    let metrics_port = port + 1000;
     Command::new(server_binary_path())
         .arg("start")
         .env("NEONDB_HOST", "127.0.0.1")
         .env("NEONDB_PORT", port.to_string())
+        .env("NEONDB_METRICS_PORT", metrics_port.to_string())
         .env("NEONDB_WAL_PATH", &wal_path)
         .env("NEONDB_UNSAFE_NO_FSYNC", "true")
         .stdout(Stdio::null())
@@ -194,8 +198,11 @@ async fn client_workload_broadcast(
         }
     };
 
-    // Subscribe
-    let query = "players WHERE zone = 'north'".to_string();
+    // Subscribe to the counters table — this is what the write workload
+    // increments via the `increment` reducer, so every write triggers
+    // a subscription notification here.  (The old "players WHERE zone='north'"
+    // query never received notifications because no writes targeted that table.)
+    let query = "counters".to_string();
     let subscribe = ClientMessage::Subscribe { subscription_id, query };
     let subscribe_frame = rmp_serde::to_vec(&subscribe).unwrap();
     if ws.send(Message::Binary(subscribe_frame)).await.is_err() {
@@ -273,11 +280,14 @@ async fn main() {
     let sample_period = Duration::from_millis(250);
     let bench_total_window = Duration::from_secs(15);
 
+    // Accept "1", "true", "yes" (case-insensitive) for BENCH_SCALE_MODE.
     let scale_mode = std::env::var("BENCH_SCALE_MODE")
         .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(0)
-        != 0;
+        .map(|v| {
+            let v = v.trim().to_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        })
+        .unwrap_or(false);
 
     let default_counts: Vec<usize> = vec![10, 25, 50, 100, 200, 500, 1000];
     let client_counts: Vec<usize> = if scale_mode {

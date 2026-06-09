@@ -48,40 +48,25 @@ async function getWebSocketCtor(): Promise<typeof WebSocket> {
 }
 
 /**
- * Pre-call value at a single (table, rowKey) coordinate.
- * `undefined` means "this row did not exist before the optimistic call".
- */
-type RowSnapshot = Record<string, unknown> | undefined;
-
-/**
- * Targeted rollback snapshot: only the (table, rowKey) pairs the optimistic
- * callback actually modified.  Maps `"table\x00rowKey"` → pre-call value.
+ * An ordered optimistic mutation layer.
  *
- * Using a single flat Map (rather than nested) keeps lookups O(1) and the
- * memory footprint proportional to the number of touched rows, not the cache.
+ * Each in-flight `call()` with an `optimistic` callback contributes one layer.
+ * `rowCache` is always recomputed as: `serverBaseCache` + all layers applied in
+ * dispatch order.  Rolling back a layer (on error/timeout/disconnect) removes it
+ * from the stack and re-applies the remaining layers — this is the key fix for
+ * the concurrent-overlapping-call race (TODO-036).
  */
-type TouchedRollback = Map<string, RowSnapshot>;
-
-const ROLLBACK_KEY_SEP = "\x00";
-function rkey(table: string, rowKey: string): string {
-  return `${table}${ROLLBACK_KEY_SEP}${rowKey}`;
-}
-function unrkey(key: string): [string, string] {
-  const idx = key.indexOf(ROLLBACK_KEY_SEP);
-  return [key.slice(0, idx), key.slice(idx + 1)];
+interface OptimisticLayer {
+  callId: number;
+  mutation: (cache: OptimisticCache) => OptimisticCache;
 }
 
 interface PendingCall {
   resolve: (result: ReducerResult) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
-  /**
-   * Targeted rollback: only the (table, rowKey) pairs the optimistic call
-   * mutated, with their pre-call values.  `null` if this is not an optimistic
-   * call.  Rows NOT in this map are left untouched on rollback, so any
-   * subscription diffs that arrived mid-flight are preserved.
-   */
-  rollbackTouched: TouchedRollback | null;
+  /** True if this call has an optimistic layer that must be removed on resolve/rollback. */
+  isOptimistic: boolean;
   /** User-supplied rollback callback (from OptimisticOptions). */
   onRollback?: OptimisticOptions["onRollback"];
 }
@@ -153,7 +138,21 @@ export class NeonDBClient {
   private ws: WebSocket | null = null;
   private pendingCalls = new Map<number, PendingCall>();
   private subscriptions = new Map<string, SubEntry>();
-  private rowCache = new Map<string, RowCache>(); // tableName → { rowKey → rowData }
+  /**
+   * Server-confirmed row state — updated exclusively by subscription diffs and
+   * initial snapshots received from the server.  Never mutated by optimistic calls.
+   */
+  private serverBaseCache = new Map<string, RowCache>();
+  /**
+   * Ordered stack of in-flight optimistic mutations.  `rowCache` is always
+   * `serverBaseCache` + each layer's mutation applied in order.  Removing a
+   * layer and recomputing fixes the concurrent-update race (TODO-036): rolling
+   * back call #1 automatically re-applies call #2's mutation on top of the
+   * (now clean) server base.
+   */
+  private optimisticLayers: OptimisticLayer[] = [];
+  /** Derived view: serverBaseCache + optimisticLayers applied in order. */
+  private rowCache = new Map<string, RowCache>();
   private nextCallId = 1;
   private nextSubId = 1;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -335,9 +334,43 @@ export class NeonDBClient {
   // ── Optimistic helpers ────────────────────────────────────────────────────
 
   /**
-   * Deep-snapshot the current row cache into an OptimisticCache
-   * (Map<tableName, Map<rowKey, rowData>>).  Used for handing the callback a
-   * safe-to-mutate copy and for the `onRollback` payload.
+   * Recompute `rowCache` = `serverBaseCache` + all `optimisticLayers` applied
+   * in dispatch order.
+   *
+   * Called after every event that mutates either the server base or the layers
+   * stack: subscription diffs, optimistic apply, optimistic rollback, disconnect.
+   *
+   * When no layers are pending this is a cheap shallow copy.  When layers ARE
+   * pending the server base is deep-cloned once and each mutation is applied in
+   * sequence — O(L × N) where L = layer count and N = touched rows per layer;
+   * typically both are small (1–3 calls, 1–10 rows each).
+   */
+  private recomputeRowCache(): void {
+    if (this.optimisticLayers.length === 0) {
+      // Fast path: no speculative changes.  rowCache mirrors serverBaseCache directly.
+      this.rowCache.clear();
+      for (const [table, rows] of this.serverBaseCache) {
+        this.rowCache.set(table, rows);
+      }
+      return;
+    }
+    // Build speculative view: deep-clone base then apply each layer's mutation.
+    let current: OptimisticCache = new Map();
+    for (const [table, rows] of this.serverBaseCache) {
+      current.set(table, new Map(rows));
+    }
+    for (const layer of this.optimisticLayers) {
+      current = layer.mutation(current);
+    }
+    this.rowCache.clear();
+    for (const [table, rows] of current) {
+      this.rowCache.set(table, rows);
+    }
+  }
+
+  /**
+   * Deep-snapshot the current (speculative) row cache into an OptimisticCache.
+   * Used for passing to the `optimistic` callback and for `onRollback` payloads.
    */
   private snapshotCache(): OptimisticCache {
     const snap: OptimisticCache = new Map();
@@ -348,76 +381,20 @@ export class NeonDBClient {
   }
 
   /**
-   * Compare `proposed` against the live `rowCache`, find the (table, rowKey)
-   * coordinates that DIFFER, snapshot their pre-call values, then apply the
-   * proposed value at each one.  Returns the targeted rollback snapshot.
+   * Remove the optimistic layer for `callId` from the stack and recompute
+   * `rowCache`.  Called on reducer success (layer confirmed by server diffs),
+   * reducer error, timeout, and disconnect.
+   *
+   * Because we replay the remaining layers on top of `serverBaseCache`, rolling
+   * back call #1 automatically re-applies call #2's mutation — fixing the
+   * concurrent-overlapping-call race (TODO-036).
    */
-  private applyTargetedOptimistic(
-    proposed: OptimisticCache,
-  ): TouchedRollback {
-    const touched: TouchedRollback = new Map();
-
-    // 1. Walk the proposed cache to find inserts and updates.
-    for (const [table, proposedRows] of proposed) {
-      const liveRows = this.rowCache.get(table);
-      for (const [rowKey, newRow] of proposedRows) {
-        const preValue = liveRows?.get(rowKey);
-        if (!rowsEqual(preValue, newRow)) {
-          touched.set(rkey(table, rowKey), preValue);
-          // Apply the new value.
-          if (!this.rowCache.has(table)) {
-            this.rowCache.set(table, new Map());
-          }
-          this.rowCache.get(table)!.set(rowKey, newRow);
-        }
-      }
+  private removeOptimisticLayer(callId: number): void {
+    const idx = this.optimisticLayers.findIndex((l) => l.callId === callId);
+    if (idx !== -1) {
+      this.optimisticLayers.splice(idx, 1);
     }
-
-    // 2. Walk the live cache to find deletes (rows present live, absent in proposed).
-    for (const [table, liveRows] of this.rowCache) {
-      const proposedRows = proposed.get(table);
-      for (const rowKey of liveRows.keys()) {
-        if (!proposedRows || !proposedRows.has(rowKey)) {
-          const preValue = liveRows.get(rowKey);
-          const k = rkey(table, rowKey);
-          // Skip if we already recorded this coordinate above (defensive).
-          if (!touched.has(k)) {
-            touched.set(k, preValue);
-          }
-        }
-      }
-    }
-
-    // 3. Apply deletes (do this after recording so we don't lose pre-values).
-    for (const [k] of touched) {
-      const [table, rowKey] = unrkey(k);
-      const proposedRows = proposed.get(table);
-      if (!proposedRows || !proposedRows.has(rowKey)) {
-        this.rowCache.get(table)?.delete(rowKey);
-      }
-    }
-
-    return touched;
-  }
-
-  /**
-   * Restore every (table, rowKey) pair recorded in `touched` to its pre-call
-   * value.  Rows NOT in `touched` are left at whatever value they hold right
-   * now — this is what preserves subscription diffs that arrived mid-flight.
-   */
-  private rollbackTouchedRows(touched: TouchedRollback): void {
-    for (const [k, preValue] of touched) {
-      const [table, rowKey] = unrkey(k);
-      if (preValue === undefined) {
-        // Row didn't exist before the call — delete it.
-        this.rowCache.get(table)?.delete(rowKey);
-      } else {
-        if (!this.rowCache.has(table)) {
-          this.rowCache.set(table, new Map());
-        }
-        this.rowCache.get(table)!.set(rowKey, preValue);
-      }
-    }
+    this.recomputeRowCache();
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────
@@ -435,18 +412,24 @@ export class NeonDBClient {
       const encodedArgs = encodeArgs(args);
       const frame = encodeReducerCall(callId, reducerName, encodedArgs);
 
-      // ── Optimistic: targeted snapshot + apply before sending ─────────────
-      let rollbackTouched: TouchedRollback | null = null;
-      if (optimisticOpts?.optimistic) {
-        const preCacheClone = this.snapshotCache();
-        const proposed = optimisticOpts.optimistic(preCacheClone);
-        rollbackTouched = this.applyTargetedOptimistic(proposed);
+      // ── Optimistic: push a layer onto the stack and recompute rowCache ─────
+      const isOptimistic = !!optimisticOpts?.optimistic;
+      if (isOptimistic) {
+        // Store the raw user-provided mutation function.  On replay (after a
+        // sibling layer is rolled back), recomputeRowCache() calls it again on
+        // the freshly rebuilt serverBase — this is what fixes the concurrent-
+        // call race (TODO-036).
+        this.optimisticLayers.push({
+          callId,
+          mutation: optimisticOpts!.optimistic!,
+        });
+        this.recomputeRowCache();
       }
 
       const timer = setTimeout(() => {
         this.pendingCalls.delete(callId);
-        if (rollbackTouched !== null) {
-          this.rollbackTouchedRows(rollbackTouched);
+        if (isOptimistic) {
+          this.removeOptimisticLayer(callId);
           optimisticOpts?.onRollback?.(
             `call "${reducerName}" timed out`,
             this.snapshotCache(),
@@ -463,10 +446,16 @@ export class NeonDBClient {
         resolve: (result) => {
           clearTimeout(timer);
           if (result.success) {
+            // On success the server will send subscription diffs that update
+            // serverBaseCache; remove the speculative layer so those diffs land
+            // cleanly without double-applying the optimistic change.
+            if (isOptimistic) {
+              this.removeOptimisticLayer(callId);
+            }
             resolve(result.resultBytes);
           } else {
-            if (rollbackTouched !== null) {
-              this.rollbackTouchedRows(rollbackTouched);
+            if (isOptimistic) {
+              this.removeOptimisticLayer(callId);
               optimisticOpts?.onRollback?.(
                 result.error ?? "Reducer returned an error",
                 this.snapshotCache(),
@@ -477,13 +466,13 @@ export class NeonDBClient {
         },
         reject: (err) => {
           clearTimeout(timer);
-          if (rollbackTouched !== null) {
-            this.rollbackTouchedRows(rollbackTouched);
+          if (isOptimistic) {
+            this.removeOptimisticLayer(callId);
           }
           reject(err);
         },
         timer,
-        rollbackTouched,
+        isOptimistic,
         onRollback: optimisticOpts?.onRollback,
       });
 
@@ -717,15 +706,18 @@ export class NeonDBClient {
     operation: string,
     rowData: Record<string, unknown> | null,
   ): void {
-    if (!this.rowCache.has(tableName)) {
-      this.rowCache.set(tableName, new Map());
+    // Always apply server-confirmed diffs to serverBaseCache.
+    if (!this.serverBaseCache.has(tableName)) {
+      this.serverBaseCache.set(tableName, new Map());
     }
-    const table = this.rowCache.get(tableName)!;
+    const baseTable = this.serverBaseCache.get(tableName)!;
     if (operation === "delete") {
-      table.delete(rowKey);
+      baseTable.delete(rowKey);
     } else if (rowData != null) {
-      table.set(rowKey, rowData);
+      baseTable.set(rowKey, rowData);
     }
+    // Recompute the speculative rowCache (serverBase + remaining layers).
+    this.recomputeRowCache();
   }
 
   private send(frame: Uint8Array): void {
@@ -737,59 +729,15 @@ export class NeonDBClient {
   private rejectAllPending(err: Error): void {
     for (const pending of this.pendingCalls.values()) {
       clearTimeout(pending.timer);
-      // Roll back any in-flight optimistic updates on disconnect — but only
-      // the rows each call actually touched (pitfall #21).
-      if (pending.rollbackTouched !== null) {
-        this.rollbackTouchedRows(pending.rollbackTouched);
-      }
       pending.reject(err);
     }
     this.pendingCalls.clear();
-  }
-}
-
-/**
- * Shallow-then-deep equality for row data.  Identical references short-circuit
- * to true; otherwise we compare via JSON.stringify with stable key ordering.
- *
- * `undefined` vs anything-defined is treated as unequal (the touched-set logic
- * uses `undefined` to mean "did not exist").
- */
-function rowsEqual(
-  a: Record<string, unknown> | undefined,
-  b: Record<string, unknown> | undefined,
-): boolean {
-  if (a === b) return true;
-  if (a === undefined || b === undefined) return false;
-  // Fast path: same number of keys and shallow identity per key.
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length === bKeys.length) {
-    let allShallowEqual = true;
-    for (const k of aKeys) {
-      if (!(k in b) || (a as Record<string, unknown>)[k] !== (b as Record<string, unknown>)[k]) {
-        allShallowEqual = false;
-        break;
-      }
+    // Drop all speculative layers and recompute so rowCache reflects only
+    // server-confirmed data (pitfall #21 — optimistic rollback on disconnect).
+    if (this.optimisticLayers.length > 0) {
+      this.optimisticLayers = [];
+      this.recomputeRowCache();
     }
-    if (allShallowEqual) return true;
   }
-  // Fallback: deep compare via stable JSON.
-  return stableStringify(a) === stableStringify(b);
 }
 
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return "[" + value.map(stableStringify).join(",") + "]";
-  }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return (
-    "{" +
-    keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") +
-    "}"
-  );
-}

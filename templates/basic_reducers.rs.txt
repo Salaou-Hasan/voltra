@@ -1,0 +1,126 @@
+// ════════════════════════════════════════════════════════════════════════
+// Basic template — all reducers in native Rust with #[reducer] syntax
+//
+// These run at full native throughput — no JS engine, no JIT warmup,
+// no WASM overhead. Every function is compiled into the server binary
+// and auto-registered via the `inventory` crate at startup.
+//
+// Usage after `cargo build --release`:
+//   ./target/release/mygame   # starts the NeonDB server with your reducers
+//
+// Client calls (same WebSocket API as always):
+//   neondb call register '["alice", "hashed-pw"]'
+//   neondb call login    '["alice", "hashed-pw"]'
+// ════════════════════════════════════════════════════════════════════════
+
+use neondb::{reducer, ReducerContext, ret};
+use serde_json::json;
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn register(ctx: ReducerContext, username: String, password_hash: String) {
+    if username.is_empty() || password_hash.is_empty() {
+        ret!({ "error": "missing_fields" })
+    }
+    if ctx.get("users", &username)?.is_some() {
+        ret!({ "error": "user_exists" })
+    }
+    ctx.set("users", &username, json!({
+        "username": username,
+        "password_hash": password_hash,
+        "role": "player",
+        "created_at": ctx.timestamp(),
+        "profile": {},
+    }))?;
+    ret!({ "ok": true, "username": username })
+}
+
+#[reducer]
+fn login(ctx: ReducerContext, username: String, password_hash: String) {
+    let user = match ctx.get("users", &username)? {
+        Some(u) => u,
+        None => ret!({ "error": "not_found" }),
+    };
+    if user["password_hash"] != password_hash {
+        ret!({ "error": "bad_password" })
+    }
+    let session_id = format!("sess_{}", ctx.timestamp());
+    ctx.set("sessions", &session_id, json!({
+        "session_id": &session_id,
+        "username": &username,
+        "role": &user["role"],
+        "created_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true, "session_id": session_id })
+}
+
+#[reducer]
+fn logout(ctx: ReducerContext, session_id: String) {
+    ctx.delete("sessions", &session_id)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn grant_role(ctx: ReducerContext, username: String, role: String) {
+    if ctx.caller_role != "admin" {
+        ret!({ "error": "forbidden" })
+    }
+    let mut user = match ctx.get("users", &username)? {
+        Some(u) => u,
+        None => ret!({ "error": "not_found" }),
+    };
+    user["role"] = json!(role);
+    ctx.set("users", &username, user)?;
+    ret!({ "ok": true })
+}
+
+// ── Users ─────────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn update_profile(ctx: ReducerContext, username: String, display_name: String, avatar_url: String) {
+    let mut user = match ctx.get("users", &username)? {
+        Some(u) => u,
+        None => ret!({ "error": "not_found" }),
+    };
+    user["profile"] = json!({ "display_name": display_name, "avatar_url": avatar_url });
+    ctx.set("users", &username, user)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn delete_user(ctx: ReducerContext, username: String) {
+    if ctx.caller_role != "admin" && ctx.caller_id != username {
+        ret!({ "error": "forbidden" })
+    }
+    ctx.delete("users", &username)?;
+    ret!({ "ok": true })
+}
+
+// ── Inventory ─────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn add_item(ctx: ReducerContext, player_id: String, item_id: String, qty: i64) {
+    let key = format!("{}:{}", player_id, item_id);
+    let mut inv = ctx.get("inventory", &key)?
+        .unwrap_or_else(|| json!({ "player_id": &player_id, "item_id": &item_id, "qty": 0 }));
+    inv["qty"] = json!(inv["qty"].as_i64().unwrap_or(0) + qty);
+    ctx.set("inventory", &key, inv.clone())?;
+    ret!({ "ok": true, "qty": inv["qty"] })
+}
+
+#[reducer]
+fn remove_item(ctx: ReducerContext, player_id: String, item_id: String, qty: i64) {
+    let key = format!("{}:{}", player_id, item_id);
+    let mut inv = match ctx.get("inventory", &key)? {
+        Some(i) => i,
+        None => ret!({ "error": "not_found" }),
+    };
+    let current = inv["qty"].as_i64().unwrap_or(0);
+    if current < qty {
+        ret!({ "error": "insufficient_qty" })
+    }
+    inv["qty"] = json!(current - qty);
+    ctx.set("inventory", &key, inv.clone())?;
+    ret!({ "ok": true, "qty": inv["qty"] })
+}

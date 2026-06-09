@@ -1,0 +1,267 @@
+// ════════════════════════════════════════════════════════════════════════
+// Game-Ready template — all reducers in native Rust with #[reducer] syntax
+//
+// Compiles to native machine code. Zero JS, zero WASM overhead.
+// Auto-registered at server startup via the `inventory` crate.
+//
+// Build: cargo build --release
+// Run:   ./target/release/mygame
+// ════════════════════════════════════════════════════════════════════════
+
+use neondb::{reducer, ReducerContext, ret};
+use serde_json::json;
+
+// ── Players ───────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn spawn(ctx: ReducerContext, player_id: String, x: f64, y: f64, class_name: String) {
+    let zone = format!("zone_{}_{}", (x / 100.0) as i64, (y / 100.0) as i64);
+    ctx.set("players", &player_id, json!({
+        "player_id": &player_id,
+        "x": x, "y": y, "zone": zone,
+        "class": class_name,
+        "hp": 100, "max_hp": 100, "mp": 50, "max_mp": 50,
+        "level": 1, "xp": 0, "currency": 0,
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn despawn(ctx: ReducerContext, player_id: String) {
+    ctx.delete("players", &player_id)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn move_player(ctx: ReducerContext, player_id: String, x: f64, y: f64) {
+    let mut p = match ctx.get("players", &player_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "not_found" }),
+    };
+    let zone = format!("zone_{}_{}", (x / 100.0) as i64, (y / 100.0) as i64);
+    p["x"] = json!(x);
+    p["y"] = json!(y);
+    p["zone"] = json!(zone);
+    ctx.set("players", &player_id, p)?;
+    ret!({ "ok": true, "zone": zone })
+}
+
+#[reducer]
+fn update_stats(ctx: ReducerContext, player_id: String, xp: i64, level: i64) {
+    let mut p = match ctx.get("players", &player_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "not_found" }),
+    };
+    p["xp"]    = json!(p["xp"].as_i64().unwrap_or(0) + xp);
+    p["level"] = json!(level);
+    ctx.set("players", &player_id, p)?;
+    ret!({ "ok": true })
+}
+
+// ── Combat ────────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn spawn_npc(ctx: ReducerContext, npc_id: String, npc_type: String, x: f64, y: f64, hp: i64) {
+    let zone = format!("zone_{}_{}", (x / 100.0) as i64, (y / 100.0) as i64);
+    ctx.set("npcs", &npc_id, json!({
+        "npc_id": &npc_id, "type": npc_type, "zone": zone,
+        "x": x, "y": y, "hp": hp, "max_hp": hp, "alive": true,
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn attack(ctx: ReducerContext, attacker_id: String, target_id: String, _weapon: String, damage: i64) {
+    if ctx.get("players", &attacker_id)?.is_none() {
+        ret!({ "error": "Attacker not found" })
+    }
+    // Try players first, then NPCs
+    let (table, mut target) = if let Some(p) = ctx.get("players", &target_id)? {
+        ("players".to_string(), p)
+    } else if let Some(n) = ctx.get("npcs", &target_id)? {
+        ("npcs".to_string(), n)
+    } else {
+        ret!({ "error": "Target not found" })
+    };
+
+    let new_hp = (target["hp"].as_i64().unwrap_or(0) - damage).max(0);
+    target["hp"] = json!(new_hp);
+    let dead = new_hp == 0;
+    if dead { target["alive"] = json!(false); }
+    ctx.set(&table, &target_id, target)?;
+    ret!({ "ok": true, "target_id": target_id, "hp": new_hp, "dead": dead })
+}
+
+#[reducer]
+fn use_ability(ctx: ReducerContext, player_id: String, ability: String, target_id: String) {
+    let p = match ctx.get("players", &player_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "not_found" }),
+    };
+    let mp_cost = match ability.as_str() { "fireball" => 20, "heal" => 15, _ => 10 };
+    let mp = p["mp"].as_i64().unwrap_or(0);
+    if mp < mp_cost { ret!({ "error": "insufficient_mp" }) }
+    let damage = match ability.as_str() { "fireball" => 40, "heal" => -30, _ => 15 };
+    ret!({ "ok": true, "ability": ability, "target": target_id, "damage": damage })
+}
+
+#[reducer]
+fn respawn(ctx: ReducerContext, player_id: String) {
+    let mut p = match ctx.get("players", &player_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "not_found" }),
+    };
+    p["hp"] = p["max_hp"].clone();
+    p["x"]  = json!(0.0);
+    p["y"]  = json!(0.0);
+    p["zone"] = json!("zone_0_0");
+    ctx.set("players", &player_id, p)?;
+    ret!({ "ok": true })
+}
+
+// ── Economy ───────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn buy_item(ctx: ReducerContext, player_id: String, item_id: String, price: i64) {
+    let mut p = match ctx.get("players", &player_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "not_found" }),
+    };
+    if p["currency"].as_i64().unwrap_or(0) < price {
+        ret!({ "error": "insufficient_funds" })
+    }
+    p["currency"] = json!(p["currency"].as_i64().unwrap_or(0) - price);
+    ctx.set("players", &player_id, p)?;
+    let key = format!("{}:{}", player_id, item_id);
+    let mut inv = ctx.get("inventory", &key)?
+        .unwrap_or_else(|| json!({ "player_id": &player_id, "item_id": &item_id, "qty": 0 }));
+    let qty = inv["qty"].as_i64().unwrap_or(0) + 1;
+    inv["qty"] = json!(qty);
+    ctx.set("inventory", &key, inv)?;
+    ret!({ "ok": true, "item_id": item_id, "qty": qty })
+}
+
+#[reducer]
+fn sell_item(ctx: ReducerContext, player_id: String, item_id: String, price: i64) {
+    let key = format!("{}:{}", player_id, item_id);
+    let mut inv = match ctx.get("inventory", &key)? {
+        Some(i) => i,
+        None => ret!({ "error": "not_found" }),
+    };
+    let qty = inv["qty"].as_i64().unwrap_or(0);
+    if qty < 1 { ret!({ "error": "insufficient_qty" }) }
+    inv["qty"] = json!(qty - 1);
+    ctx.set("inventory", &key, inv)?;
+    let mut p = ctx.get("players", &player_id)?.unwrap_or_else(|| json!({}));
+    let new_currency = p["currency"].as_i64().unwrap_or(0) + price;
+    p["currency"] = json!(new_currency);
+    ctx.set("players", &player_id, p)?;
+    ret!({ "ok": true, "currency": new_currency })
+}
+
+#[reducer]
+fn transfer_currency(ctx: ReducerContext, from_id: String, to_id: String, amount: i64) {
+    let mut from = match ctx.get("players", &from_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "sender_not_found" }),
+    };
+    let mut to = match ctx.get("players", &to_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "recipient_not_found" }),
+    };
+    if from["currency"].as_i64().unwrap_or(0) < amount {
+        ret!({ "error": "insufficient_funds" })
+    }
+    from["currency"] = json!(from["currency"].as_i64().unwrap_or(0) - amount);
+    to["currency"]   = json!(to["currency"].as_i64().unwrap_or(0) + amount);
+    ctx.set("players", &from_id, from)?;
+    ctx.set("players", &to_id, to)?;
+    ret!({ "ok": true, "amount": amount })
+}
+
+// ── Matchmaking ───────────────────────────────────────────────────────────────
+
+#[reducer]
+fn queue(ctx: ReducerContext, player_id: String, mode: String) {
+    ctx.set("matchmaking_queue", &player_id, json!({
+        "player_id": &player_id, "mode": mode,
+        "queued_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn dequeue(ctx: ReducerContext, player_id: String) {
+    ctx.delete("matchmaking_queue", &player_id)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn refresh(ctx: ReducerContext) {
+    // Scheduled every 5 seconds — form matches from queued players
+    let queued = ctx.tables.list_rows_with_keys("matchmaking_queue")
+        .unwrap_or_default();
+    let mut matched = 0usize;
+    let chunks: Vec<_> = queued.chunks(2).collect();
+    for pair in chunks {
+        if pair.len() < 2 { break; }
+        let (id_a, _) = &pair[0];
+        let (id_b, _) = &pair[1];
+        let match_id = format!("match_{}_{}", id_a, id_b);
+        ctx.set("matches", &match_id, json!({
+            "match_id": &match_id,
+            "players": [id_a, id_b],
+            "state": "starting",
+            "created_at": ctx.timestamp(),
+        }))?;
+        ctx.delete("matchmaking_queue", id_a)?;
+        ctx.delete("matchmaking_queue", id_b)?;
+        matched += 1;
+    }
+    ret!({ "ok": true, "matches_created": matched })
+}
+
+// ── Leaderboard ───────────────────────────────────────────────────────────────
+
+#[reducer]
+fn submit_score(ctx: ReducerContext, player_id: String, score: i64, category: String) {
+    let key = format!("{}:{}", category, player_id);
+    let entry = ctx.get("leaderboard", &key)?
+        .unwrap_or_else(|| json!({ "player_id": &player_id, "score": 0, "category": &category }));
+    let best = entry["score"].as_i64().unwrap_or(0).max(score);
+    ctx.set("leaderboard", &key, json!({
+        "player_id": &player_id, "score": best,
+        "category": &category, "updated_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true, "score": best })
+}
+
+// ── World (Scheduled) ─────────────────────────────────────────────────────────
+
+#[reducer]
+fn world_tick(ctx: ReducerContext) {
+    // Called every 1 second by the scheduler
+    let tick = ctx.get("world_state", "tick")?
+        .and_then(|t| t["count"].as_i64())
+        .unwrap_or(0) + 1;
+    ctx.set("world_state", "tick", json!({
+        "count": tick, "last_tick": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true, "tick": tick })
+}
+
+#[reducer]
+fn cleanup_sessions(ctx: ReducerContext) {
+    // Called every 60 seconds by the scheduler
+    let now = ctx.timestamp();
+    let cutoff = now.saturating_sub(3_600_000); // 1 hour
+    let sessions = ctx.tables.list_rows_with_keys("sessions").unwrap_or_default();
+    let mut removed = 0usize;
+    for (key, s) in sessions {
+        if s["created_at"].as_u64().unwrap_or(0) < cutoff {
+            ctx.delete("sessions", &key)?;
+            removed += 1;
+        }
+    }
+    ret!({ "ok": true, "removed": removed })
+}

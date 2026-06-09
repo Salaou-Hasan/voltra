@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // cleanup — scheduled GC; clears all stale typing indicators
 // ───────────────────────────────────────────────────────────────────────
 // Args:   []  (called automatically by the scheduler every 30 s)
@@ -18,10 +18,12 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const rows = __neondb_get_all("typing") || [];
-let removed = 0;
-for (const t of rows) {
-  __neondb_delete("typing", t.room_id + ":" + t.user_id);
-  removed++;
+function reducer(args) {
+  const rows = __neondb_get_all("typing") || [];
+  let removed = 0;
+  for (const t of rows) {
+    __neondb_delete("typing", t.room_id + ":" + t.user_id);
+    removed++;
+  }
+  return { ok: true, removed };
 }
-result = { ok: true, removed };

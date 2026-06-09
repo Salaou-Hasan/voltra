@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // add_item — append an item to a user's inventory
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [username: string, item_id: string, qty: number]
@@ -18,9 +18,11 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [username, item_id, qty] = args;
-const key = username + ":" + item_id;
-const existing = __neondb_get("inventory", key);
-const next_qty = (existing && existing.qty ? existing.qty : 0) + (qty || 1);
-__neondb_set("inventory", key, { username, item_id, qty: next_qty });
-result = { ok: true, item_id, qty: next_qty };
+function reducer(args) {
+  const [username, item_id, qty] = args;
+  const key = username + ":" + item_id;
+  const existing = __neondb_get("inventory", key);
+  const next_qty = (existing && existing.qty ? existing.qty : 0) + (qty || 1);
+  __neondb_set("inventory", key, { username, item_id, qty: next_qty });
+  return { ok: true, item_id, qty: next_qty };
+}

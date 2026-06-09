@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // guild_invite — record a pending guild invite for a player
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [guild_id: string, invitee_id: string]
@@ -19,10 +19,12 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [gid, invitee] = args;
-const g = __neondb_get("guilds", gid);
-if (!g) { result = { error: "no_such_guild" }; }
-else {
-  __neondb_set("guild_invites", gid + ":" + invitee, { guild_id: gid, invitee, status: "pending" });
-  result = { ok: true };
+function reducer(args) {
+  const [gid, invitee] = args;
+  const g = __neondb_get("guilds", gid);
+  if (!g) { return { error: "no_such_guild" }; }
+  else {
+    __neondb_set("guild_invites", gid + ":" + invitee, { guild_id: gid, invitee, status: "pending" });
+    return { ok: true };
+  }
 }

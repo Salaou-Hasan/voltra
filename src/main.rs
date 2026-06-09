@@ -68,6 +68,8 @@ const TEMPLATES: &[Template] = &[
     Template { name: "rust/chat",       category: "Rust server", description: "Production chat — rooms, threads, reactions, presence, moderation  (JS reducers → WASM-upgradable)" },
     Template { name: "typescript",      category: "TypeScript",  description: "TypeScript-first — React hooks, full client SDK, package.json scaffolding" },
     Template { name: "native/game-ready", category: "Native Rust", description: "Rust reducers compiled to WASM — near-native throughput, no NeonDB source needed" },
+    Template { name: "csharp-reducers", category: "Multi-language", description: "C# reducers compiled to WASM via .NET 8 WASI workload" },
+    Template { name: "go-reducers",     category: "Multi-language", description: "Go reducers compiled to WASM via TinyGo (wasm32-wasi)" },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,6 +149,15 @@ enum Commands {
         #[arg(long, help = "Parse and preview what would be seeded without writing")]
         dry_run: bool,
     },
+    /// Apply pending schema migrations from the migrations/ directory
+    Migrate {
+        #[arg(value_name = "DIR", default_value = "migrations", help = "Path to migrations directory")]
+        dir: String,
+        #[arg(long, default_value = "http://127.0.0.1:3001", help = "Admin/metrics server URL")]
+        metrics_url: String,
+        #[arg(long, help = "Preview what would be applied without writing")]
+        dry_run: bool,
+    },
     /// AI-generate an NPC template and cache it in the running server
     GenerateNpc {
         #[arg(value_name = "NPC_TYPE", help = "e.g. goblin, dragon, shadow_assassin")]
@@ -195,6 +206,7 @@ async fn main() -> Result<()> {
         Commands::Watch { query, url, api_key } => neondb::cli::cmd_watch(&url, &query, api_key.as_deref()).await,
         Commands::ClusterStatus { metrics_url } => cmd_cluster_status(&metrics_url).await,
         Commands::Seed { file, metrics_url, dry_run } => neondb::cli::cmd_seed(&metrics_url, &file, dry_run).await,
+        Commands::Migrate { dir, metrics_url, dry_run } => neondb::cli::cmd_migrate(&metrics_url, &dir, dry_run).await,
         Commands::GenerateNpc { npc_type, context, url, api_key } => neondb::cli::cmd_generate_npc(&url, &npc_type, context.as_deref(), api_key.as_deref()).await,
         Commands::Bench { url, clients, calls, warmup, api_key } => run_cli_bench(&url, clients, calls, warmup, api_key.as_deref()).await,
     }
@@ -354,6 +366,8 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
         "rust/chat"         => scaffold_rust_chat(&project_path, &project_name)?,
         "typescript"        => scaffold_typescript(&project_path, &project_name)?,
         "native/game-ready" => scaffold_native_game_ready(&project_path, &project_name)?,
+        "csharp-reducers"   => scaffold_csharp_reducers(&project_path, &project_name)?,
+        "go-reducers"       => scaffold_go_reducers(&project_path, &project_name)?,
         _                   => unreachable!(),
     }
     Ok(())
@@ -438,16 +452,21 @@ fn scaffold_rust_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "schema.toml",                       BASIC_SCHEMA_TOML)?;
     wf(p, "PERFORMANCE.md",                    PERF_MD)?;
     wf(p, "README.md", &format!("# {} — Basic Template\n\n{}", name, BASIC_README))?;
+    // ── Embedded #[reducer] Rust path (single binary, native performance) ────
+    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML.replace("__NAME__", &format!("{}-server", name)))?;
+    wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
+    wf(p, "embedded/src/reducers.rs", BASIC_REDUCERS_RS)?;
     print_success(name, "rust/basic", &[
-        ("modules/auth/",       "register, login, logout, grant_role"),
+        ("modules/auth/",       "register, login, logout, grant_role  (JS — instant start)"),
         ("modules/users/",      "update_profile, delete_user"),
         ("modules/inventory/",  "add_item, remove_item"),
         ("modules/subscribers/","subscribe_to_player"),
         ("client/example.ts",   "TypeScript client example"),
         ("schema.toml",         "typed column definitions"),
         ("neondb.toml",         "server config + [permissions]"),
+        ("embedded/",           "#[reducer] Rust path — native speed, single binary"),
     ]);
-    println!("  Next steps:\n    cd {name}\n    neondb start\n\n  Upgrade to WASM for production throughput:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full native-Rust path.");
+    println!("  Next steps:\n    cd {name}\n    neondb start\n\n  Native Rust path (highest performance):\n    cd embedded && cargo run --release\n\n  Upgrade JS to WASM:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full benchmark.");
     println!();
     Ok(())
 }
@@ -487,8 +506,12 @@ fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
     wf(p, "PERFORMANCE.md",                    PERF_MD)?;
     wf(p, "seed.json",                          GAME_SEED_JSON)?;
     wf(p, "README.md", &format!("# {} — Game-Ready Template\n\n{}", name, GAME_README))?;
+    // ── Embedded #[reducer] Rust path (single binary, native performance) ────
+    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML.replace("__NAME__", &format!("{}-server", name)))?;
+    wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
+    wf(p, "embedded/src/reducers.rs", GAME_REDUCERS_RS)?;
     print_success(name, "rust/game-ready", &[
-        ("modules/players/",    "spawn, despawn, move, update_stats"),
+        ("modules/players/",    "spawn, despawn, move, update_stats  (JS — instant start)"),
         ("modules/combat/",     "spawn_npc, attack, use_ability, apply_damage, respawn"),
         ("modules/economy/",    "buy_item, sell_item, transfer_currency, loot_box"),
         ("modules/quests/",     "accept, complete, update_progress"),
@@ -498,8 +521,9 @@ fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
         ("modules/leaderboard/","submit_score, reset_weekly (scheduled)"),
         ("seed.json",           "neondb seed seed.json  — load sample data instantly"),
         ("GENRE_GUIDE.md",      "how to adapt this to any game genre"),
+        ("embedded/",           "#[reducer] Rust path — native speed, single binary"),
     ]);
-    println!("  Next steps:\n    cd {name}\n    neondb start\n    neondb seed seed.json\n\n  Upgrade to WASM for production throughput:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full native-Rust path.");
+    println!("  Next steps:\n    cd {name}\n    neondb start\n    neondb seed seed.json\n\n  Native Rust path (highest performance):\n    cd embedded && cargo run --release\n\n  Upgrade JS to WASM:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full benchmark.");
     println!();
     Ok(())
 }
@@ -524,14 +548,19 @@ fn scaffold_rust_chat(p: &Path, name: &str) -> Result<()> {
     wf(p, "schema.toml",                        CHAT_SCHEMA_TOML)?;
     wf(p, "PERFORMANCE.md",                     PERF_MD)?;
     wf(p, "README.md", &format!("# {} — Chat Template\n\n{}", name, CHAT_README))?;
+    // ── Embedded #[reducer] Rust path (single binary, native performance) ────
+    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML.replace("__NAME__", &format!("{}-server", name)))?;
+    wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
+    wf(p, "embedded/src/reducers.rs", CHAT_REDUCERS_RS)?;
     print_success(name, "rust/chat", &[
-        ("modules/rooms/",      "create, join, leave, delete"),
+        ("modules/rooms/",      "create, join, leave, delete  (JS — instant start)"),
         ("modules/messages/",   "send, edit, delete, react"),
         ("modules/threads/",    "create_thread, reply"),
         ("modules/presence/",   "set_online, set_typing, cleanup (scheduled 30s)"),
         ("modules/moderation/", "ban_user, unban_user"),
+        ("embedded/",           "#[reducer] Rust path — native speed, single binary"),
     ]);
-    println!("  Next steps:\n    cd {name}\n    neondb start\n\n  Upgrade to WASM for production throughput:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full native-Rust path.");
+    println!("  Next steps:\n    cd {name}\n    neondb start\n\n  Native Rust path (highest performance):\n    cd embedded && cargo run --release\n\n  Upgrade JS to WASM:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full benchmark.");
     println!();
     Ok(())
 }
@@ -648,6 +677,13 @@ const TS_TSCONFIG_JSON: &str        = include_str!("../templates/ts_tsconfig.jso
 const TS_README: &str               = include_str!("../templates/ts_readme.md.txt");
 const PERF_MD: &str                 = include_str!("../templates/performance.md.txt");
 
+// Embedded #[reducer] Rust templates — single-binary path
+const EMBEDDED_CARGO_TOML: &str     = include_str!("../templates/embedded_cargo.toml.txt");
+const EMBEDDED_MAIN_RS: &str        = include_str!("../templates/embedded_main.rs.txt");
+const BASIC_REDUCERS_RS: &str       = include_str!("../templates/basic_reducers.rs.txt");
+const GAME_REDUCERS_RS: &str        = include_str!("../templates/game_reducers.rs.txt");
+const CHAT_REDUCERS_RS: &str        = include_str!("../templates/chat_reducers.rs.txt");
+
 // native/game-ready template
 const NATIVE_WORKSPACE_TOML: &str         = include_str!("../templates/native_workspace_cargo.toml.txt");
 const NATIVE_HELPER_TOML: &str            = include_str!("../templates/native_neondb_reducer_cargo.toml.txt");
@@ -733,11 +769,766 @@ fn scaffold_native_game_ready(p: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// C# reducer template (TODO-032)
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn scaffold_csharp_reducers(p: &Path, name: &str) -> Result<()> {
+    wf(p, "reducers/Reducers.csproj", CSHARP_CSPROJ)?;
+    wf(p, "reducers/NeonDB.cs", CSHARP_NEONDB_BINDINGS)?;
+    wf(p, "reducers/Combat.cs", CSHARP_COMBAT_CS)?;
+    wf(p, "modules/.gitkeep", "")?;
+
+    let readme = format!(
+        "# {} — C# Reducers Template\n\n\
+        Write your game logic in C# and compile it to WebAssembly via .NET 8 WASI.\n\n\
+        ## Prerequisites\n\n\
+        ```sh\n\
+        # Install .NET 8 SDK\n\
+        # https://dotnet.microsoft.com/download\n\n\
+        # Install the WASI experimental workload\n\
+        dotnet workload install wasi-experimental\n\
+        ```\n\n\
+        ## Build & Run\n\n\
+        ```sh\n\
+        neondb build      # detects reducers/*.csproj and runs dotnet publish\n\
+        neondb start\n\
+        neondb call attack '[\"player1\", \"enemy1\", 25]'\n\
+        ```\n\n\
+        ## Host ABI\n\n\
+        `NeonDB.cs` wraps the host imports declared in `env`:\n\n\
+        | Host function       | Signature |\n\
+        |---------------------|-----------|\n\
+        | `neondb_get_row`    | `(table*, tlen, key*, klen, out*, outmax) -> i32` |\n\
+        | `neondb_set_row`    | `(table*, tlen, key*, klen, val*, vlen) -> i32` |\n\
+        | `neondb_delete_row` | `(table*, tlen, key*, klen) -> i32` |\n\
+        | `neondb_caller_id`  | `(out*, outmax) -> i32` |\n\
+        | `neondb_caller_role`| `(out*, outmax) -> i32` |\n\n\
+        Return convention: `[UnmanagedCallersOnly]` exports return `long` (i64) where\n\
+        high 32 bits = result_ptr, low 32 bits = result_len. NeonDB's Wasmtime backend\n\
+        handles both the classic multi-value WASM ABI and this fat-pointer i64 ABI.\n",
+        name
+    );
+    wf(p, "README.md", &readme)?;
+
+    print_success(name, "csharp-reducers", &[
+        ("reducers/Reducers.csproj", ".NET 8 WASI project file"),
+        ("reducers/NeonDB.cs",       "host-function bindings (ReducerContext API)"),
+        ("reducers/Combat.cs",       "sample Attack reducer"),
+        ("modules/",                 "compiled .wasm written here by neondb build"),
+    ]);
+    println!("  Prerequisites:");
+    println!("    dotnet workload install wasi-experimental");
+    println!();
+    println!("  Next steps:");
+    println!("    cd {name}");
+    println!("    neondb build");
+    println!("    neondb start");
+    println!();
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Go reducer template (TODO-033)
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn scaffold_go_reducers(p: &Path, name: &str) -> Result<()> {
+    wf(p, "reducers/go.mod", &format!("module {}\n\ngo 1.21\n", name))?;
+    wf(p, "reducers/neondb/neondb.go", GO_NEONDB_BINDINGS)?;
+    wf(p, "reducers/combat.go", GO_COMBAT_GO)?;
+    wf(p, "modules/.gitkeep", "")?;
+
+    let readme = format!(
+        "# {} — Go Reducers Template\n\n\
+        Write your game logic in Go and compile it to WebAssembly via TinyGo.\n\n\
+        ## Prerequisites\n\n\
+        ```sh\n\
+        # Install TinyGo\n\
+        # https://tinygo.org/getting-started/install/\n\
+        tinygo version   # verify installation\n\
+        ```\n\n\
+        ## Build & Run\n\n\
+        ```sh\n\
+        neondb build      # detects reducers/go.mod and runs tinygo build\n\
+        neondb start\n\
+        neondb call attack '[\"player1\", \"enemy1\", 25]'\n\
+        ```\n\n\
+        ## Notes\n\n\
+        - Use `//export funcname` to declare a reducer export (TinyGo WASM convention).\n\
+        - TinyGo partial stdlib: `fmt`, `math`, `strings`, `strconv` work; `net/http`, `database/sql` do not.\n\
+        - The `neondb` package wraps the host imports and exposes `Get`, `Set`, `Delete`, `CallerID`, `CallerRole`.\n\
+        - Every reducer file must be in `package main` and include `func main() {{}}`.\n\
+        - Standard `go build` will NOT produce a correct WASM module — always use TinyGo.\n",
+        name
+    );
+    wf(p, "README.md", &readme)?;
+
+    print_success(name, "go-reducers", &[
+        ("reducers/go.mod",          "Go module definition"),
+        ("reducers/neondb/neondb.go","host-function bindings (Get/Set/Delete API)"),
+        ("reducers/combat.go",       "sample Attack reducer"),
+        ("modules/",                 "compiled .wasm written here by neondb build"),
+    ]);
+    println!("  Prerequisites:");
+    println!("    Install TinyGo: https://tinygo.org/getting-started/install/");
+    println!();
+    println!("  Next steps:");
+    println!("    cd {name}");
+    println!("    neondb build");
+    println!("    neondb start");
+    println!();
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C# template strings
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Minimal .csproj that produces a WASM module with .NET 8 WASI workload.
+const CSHARP_CSPROJ: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- .NET 8 WASI target -->
+    <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifier>wasi-wasm</RuntimeIdentifier>
+    <OutputType>Exe</OutputType>
+    <!-- Keep the .wasm small -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimmerRootAssembly Include="Reducers" />
+    <!-- Export reducer symbols to WebAssembly -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>
+"#;
+
+/// C# host-function bindings.
+///
+/// Maps the NeonDB WASM host ABI to a safe, ergonomic `ReducerContext` class.
+/// Exported reducers should be `static unsafe` methods decorated with
+/// `[UnmanagedCallersOnly(EntryPoint = "reducer_name")]`.
+///
+/// Return convention: pack (result_ptr, result_len) into a single `long`:
+///   `return ((long)resultPtr << 32) | (uint)resultLen;`
+/// The NeonDB Wasmtime backend (wasm.rs) accepts this i64 fat-pointer ABI.
+const CSHARP_NEONDB_BINDINGS: &str = r#"// NeonDB host-function bindings for .NET 8 WASI
+// ─────────────────────────────────────────────────────────────────────────────
+// This file wraps the NeonDB WASM host imports into an ergonomic C# API.
+// Every reducer file should `using NeonDB;` and work through ReducerContext.
+// ─────────────────────────────────────────────────────────────────────────────
+
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+namespace NeonDB;
+
+/// <summary>
+/// Ergonomic wrapper around the NeonDB WASM host imports.
+/// Passed to every reducer and provides Get / Set / Delete / CallerID / CallerRole.
+/// </summary>
+public static unsafe class ReducerContext
+{
+    private const int BufSize = 65536; // 64 KB scratch buffer per call
+    private static byte* _buf;
+
+    static ReducerContext()
+    {
+        // Allocate a scratch buffer in the first 4 MB — always reachable.
+        _buf = (byte*)NativeMemory.Alloc((nuint)BufSize);
+    }
+
+    // ── Host imports ──────────────────────────────────────────────────────────
+
+    [DllImport("env", EntryPoint = "neondb_get_row")]
+    private static extern int NativeGetRow(
+        byte* tablePtr, int tableLen,
+        byte* keyPtr, int keyLen,
+        byte* outPtr, int outMax);
+
+    [DllImport("env", EntryPoint = "neondb_set_row")]
+    private static extern int NativeSetRow(
+        byte* tablePtr, int tableLen,
+        byte* keyPtr, int keyLen,
+        byte* valPtr, int valLen);
+
+    [DllImport("env", EntryPoint = "neondb_delete_row")]
+    private static extern int NativeDeleteRow(
+        byte* tablePtr, int tableLen,
+        byte* keyPtr, int keyLen);
+
+    [DllImport("env", EntryPoint = "neondb_caller_id")]
+    private static extern int NativeCallerID(byte* outPtr, int outMax);
+
+    [DllImport("env", EntryPoint = "neondb_caller_role")]
+    private static extern int NativeCallerRole(byte* outPtr, int outMax);
+
+    // ── Public API ────────────────────────────────────────────────────────────
+
+    /// <summary>Get a row from a table as a <see cref="JsonObject"/>.</summary>
+    /// <returns>The row data, or null if the row does not exist.</returns>
+    public static JsonObject? Get(string table, string key)
+    {
+        fixed (byte* tablePtr = Encoding.UTF8.GetBytes(table))
+        fixed (byte* keyPtr   = Encoding.UTF8.GetBytes(key))
+        {
+            int n = NativeGetRow(
+                tablePtr, Encoding.UTF8.GetByteCount(table),
+                keyPtr,   Encoding.UTF8.GetByteCount(key),
+                _buf, BufSize);
+            if (n < 0) return null;
+            var span = new ReadOnlySpan<byte>(_buf, n);
+            return JsonNode.Parse(span)?.AsObject();
+        }
+    }
+
+    /// <summary>Write a row to a table.</summary>
+    public static void Set(string table, string key, JsonObject row)
+    {
+        var json = Encoding.UTF8.GetBytes(row.ToJsonString());
+        fixed (byte* tablePtr = Encoding.UTF8.GetBytes(table))
+        fixed (byte* keyPtr   = Encoding.UTF8.GetBytes(key))
+        fixed (byte* valPtr   = json)
+        {
+            NativeSetRow(
+                tablePtr, Encoding.UTF8.GetByteCount(table),
+                keyPtr,   Encoding.UTF8.GetByteCount(key),
+                valPtr,   json.Length);
+        }
+    }
+
+    /// <summary>Delete a row from a table.</summary>
+    public static void Delete(string table, string key)
+    {
+        fixed (byte* tablePtr = Encoding.UTF8.GetBytes(table))
+        fixed (byte* keyPtr   = Encoding.UTF8.GetBytes(key))
+        {
+            NativeDeleteRow(
+                tablePtr, Encoding.UTF8.GetByteCount(table),
+                keyPtr,   Encoding.UTF8.GetByteCount(key));
+        }
+    }
+
+    /// <summary>The ID of the client that triggered this reducer call.</summary>
+    public static string CallerID()
+    {
+        int n = NativeCallerID(_buf, BufSize);
+        if (n < 0) return "";
+        return Encoding.UTF8.GetString(new ReadOnlySpan<byte>(_buf, n));
+    }
+
+    /// <summary>The role of the client that triggered this reducer call.</summary>
+    public static string CallerRole()
+    {
+        int n = NativeCallerRole(_buf, BufSize);
+        if (n < 0) return "";
+        return Encoding.UTF8.GetString(new ReadOnlySpan<byte>(_buf, n));
+    }
+
+    // ── Result helpers ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Write <paramref name="result"/> into WASM linear memory and return a
+    /// fat-pointer i64: <c>((long)ptr &lt;&lt; 32) | (uint)len</c>.
+    ///
+    /// Use at the end of every exported reducer:
+    /// <code>return ReducerContext.Return(JsonSerializer.SerializeToUtf8Bytes(new { ok = true }));</code>
+    /// </summary>
+    public static long Return(byte[] result)
+    {
+        // Write into the scratch buffer (starting after the 64-byte header area).
+        int offset = 64;
+        int len = Math.Min(result.Length, BufSize - offset);
+        fixed (byte* src = result)
+        {
+            Buffer.MemoryCopy(src, _buf + offset, BufSize - offset, len);
+        }
+        long ptr = (long)((nuint)(_buf + offset));
+        return (ptr << 32) | (uint)len;
+    }
+
+    /// <summary>Return an empty OK result.</summary>
+    public static long ReturnOk() =>
+        Return(Encoding.UTF8.GetBytes("{\"ok\":true}"));
+}
+"#;
+
+/// Sample C# Combat reducer demonstrating the NeonDB API.
+const CSHARP_COMBAT_CS: &str = r#"// Combat.cs — sample NeonDB reducer in C#
+// Build:  neondb build   (runs dotnet publish -r wasi-wasm)
+// Call:   neondb call attack '["player1", "enemy1", 25]'
+
+using System;
+using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using NeonDB;
+
+/// <summary>Combat reducers — attach, heal, and revive.</summary>
+public static class Combat
+{
+    /// <summary>
+    /// Apply <paramref name="damage"/> to <paramref name="targetId"/>.
+    /// Only the owner of a player or an admin may call this reducer.
+    ///
+    /// Exported as WASM function "attack" — the NeonDB WASM backend discovers
+    /// it by name.  Return convention: i64 fat-pointer
+    ///   high 32 bits = ptr to result JSON in linear memory
+    ///   low  32 bits = byte length
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "attack")]
+    public static unsafe long Attack(int argsPtr, int argsLen)
+    {
+        try
+        {
+            // --- Parse args [attackerId, targetId, damage] ---
+            var argsSpan = new ReadOnlySpan<byte>((void*)argsPtr, argsLen);
+            using var doc = JsonDocument.Parse(argsSpan);
+            var root = doc.RootElement;
+            string attackerId = root[0].GetString() ?? "";
+            string targetId   = root[1].GetString() ?? "";
+            int    damage     = root[2].GetInt32();
+
+            // --- Read the target player ---
+            var target = ReducerContext.Get("players", targetId);
+            if (target is null)
+                return ReducerContext.Return(
+                    JsonSerializer.SerializeToUtf8Bytes(new { error = "Target not found" }));
+
+            // --- Apply damage ---
+            int currentHp = target["hp"]?.GetValue<int>() ?? 0;
+            int newHp = Math.Max(0, currentHp - damage);
+            target["hp"]    = JsonValue.Create(newHp);
+            target["alive"] = JsonValue.Create(newHp > 0);
+
+            ReducerContext.Set("players", targetId, target);
+
+            return ReducerContext.Return(
+                JsonSerializer.SerializeToUtf8Bytes(new { ok = true, new_hp = newHp }));
+        }
+        catch (Exception ex)
+        {
+            return ReducerContext.Return(
+                JsonSerializer.SerializeToUtf8Bytes(new { error = ex.Message }));
+        }
+    }
+
+    /// <summary>Heal <paramref name="targetId"/> by <paramref name="amount"/> HP (capped at 200).</summary>
+    [UnmanagedCallersOnly(EntryPoint = "heal")]
+    public static unsafe long Heal(int argsPtr, int argsLen)
+    {
+        try
+        {
+            var argsSpan = new ReadOnlySpan<byte>((void*)argsPtr, argsLen);
+            using var doc = JsonDocument.Parse(argsSpan);
+            var root = doc.RootElement;
+            string targetId = root[0].GetString() ?? "";
+            int    amount   = root[1].GetInt32();
+
+            var target = ReducerContext.Get("players", targetId);
+            if (target is null)
+                return ReducerContext.Return(
+                    JsonSerializer.SerializeToUtf8Bytes(new { error = "Target not found" }));
+
+            int currentHp = target["hp"]?.GetValue<int>() ?? 0;
+            int newHp = Math.Min(200, currentHp + amount);
+            target["hp"]    = JsonValue.Create(newHp);
+            target["alive"] = JsonValue.Create(true);
+            ReducerContext.Set("players", targetId, target);
+
+            return ReducerContext.Return(
+                JsonSerializer.SerializeToUtf8Bytes(new { ok = true, new_hp = newHp }));
+        }
+        catch (Exception ex)
+        {
+            return ReducerContext.Return(
+                JsonSerializer.SerializeToUtf8Bytes(new { error = ex.Message }));
+        }
+    }
+
+    /// Required by .NET WASI — the entry point for the WASM module.
+    public static void Main() { }
+}
+"#;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Go template strings
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Go host-function bindings package.
+///
+/// Provides `Get`, `Set`, `Delete`, `CallerID`, `CallerRole` backed by the
+/// NeonDB WASM host imports.  Imported in reducer files as `import "neondb"`.
+const GO_NEONDB_BINDINGS: &str = r#"// Package neondb provides the NeonDB host-function bindings for TinyGo WASM reducers.
+// Build: tinygo build -target wasi -o ../modules/reducers.wasm ..
+//
+// Host imports are declared with //go:wasmimport (TinyGo 0.28+).
+// All data passes as JSON over linear memory.
+package neondb
+
+import "unsafe"
+
+// ── Host imports (env module) ─────────────────────────────────────────────────
+
+//go:wasmimport env neondb_get_row
+//go:noescape
+func neondbGetRow(tablePtr unsafe.Pointer, tableLen int32,
+	keyPtr unsafe.Pointer, keyLen int32,
+	outPtr unsafe.Pointer, outMax int32) int32
+
+//go:wasmimport env neondb_set_row
+//go:noescape
+func neondbSetRow(tablePtr unsafe.Pointer, tableLen int32,
+	keyPtr unsafe.Pointer, keyLen int32,
+	valPtr unsafe.Pointer, valLen int32) int32
+
+//go:wasmimport env neondb_delete_row
+//go:noescape
+func neondbDeleteRow(tablePtr unsafe.Pointer, tableLen int32,
+	keyPtr unsafe.Pointer, keyLen int32) int32
+
+//go:wasmimport env neondb_caller_id
+//go:noescape
+func neondbCallerID(outPtr unsafe.Pointer, outMax int32) int32
+
+//go:wasmimport env neondb_caller_role
+//go:noescape
+func neondbCallerRole(outPtr unsafe.Pointer, outMax int32) int32
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+// Get returns the JSON bytes of the row at (table, key), or nil if not found.
+func Get(table, key string) []byte {
+	tb, kb := []byte(table), []byte(key)
+	buf := make([]byte, 65536)
+	n := neondbGetRow(
+		unsafe.Pointer(&tb[0]), int32(len(tb)),
+		unsafe.Pointer(&kb[0]), int32(len(kb)),
+		unsafe.Pointer(&buf[0]), int32(len(buf)),
+	)
+	if n < 0 {
+		return nil
+	}
+	return buf[:n]
+}
+
+// Set writes row data (JSON bytes) at (table, key).
+func Set(table, key string, val []byte) {
+	tb, kb := []byte(table), []byte(key)
+	neondbSetRow(
+		unsafe.Pointer(&tb[0]), int32(len(tb)),
+		unsafe.Pointer(&kb[0]), int32(len(kb)),
+		unsafe.Pointer(&val[0]), int32(len(val)),
+	)
+}
+
+// Delete removes the row at (table, key).
+func Delete(table, key string) {
+	tb, kb := []byte(table), []byte(key)
+	neondbDeleteRow(
+		unsafe.Pointer(&tb[0]), int32(len(tb)),
+		unsafe.Pointer(&kb[0]), int32(len(kb)),
+	)
+}
+
+// CallerID returns the ID of the client that triggered this reducer call.
+func CallerID() string {
+	buf := make([]byte, 256)
+	n := neondbCallerID(unsafe.Pointer(&buf[0]), int32(len(buf)))
+	if n < 0 {
+		return ""
+	}
+	return string(buf[:n])
+}
+
+// CallerRole returns the role of the client that triggered this reducer call.
+func CallerRole() string {
+	buf := make([]byte, 256)
+	n := neondbCallerRole(unsafe.Pointer(&buf[0]), int32(len(buf)))
+	if n < 0 {
+		return ""
+	}
+	return string(buf[:n])
+}
+
+// ── Result buffer ─────────────────────────────────────────────────────────────
+
+// resultBuf is the linear-memory buffer used by all reducers for their return value.
+// Each call overwrites it; reducers are not re-entrant in NeonDB's single-call model.
+var resultBuf [65536]byte
+
+// WriteResult copies result into resultBuf and returns (ptr, len) as separate values.
+// Use the MultiReturn function to pack them for the WASM export ABI.
+func WriteResult(result []byte) (int32, int32) {
+	n := copy(resultBuf[:], result)
+	return int32(uintptr(unsafe.Pointer(&resultBuf[0]))), int32(n)
+}
+"#;
+
+/// Sample Go combat reducer.
+const GO_COMBAT_GO: &str = r#"// combat.go — sample NeonDB reducer in Go (compiled via TinyGo)
+// Build:  neondb build   (runs tinygo build -target wasi)
+// Call:   neondb call attack '["player1", "enemy1", 25]'
+
+package main
+
+import (
+	"encoding/json"
+	"math"
+	"unsafe"
+
+	"neondb" // the local host-binding package in neondb/
+)
+
+// attack reduces the HP of the target player by the given damage amount.
+//
+// Args (JSON array): [attackerID string, targetID string, damage int]
+//
+// The //export directive tells TinyGo to export this function as the WASM
+// "attack" symbol.  NeonDB's Wasmtime backend calls it by name.
+//
+// Multi-value return: TinyGo correctly exports (ptr i32, len i32) as a WASM
+// multi-value function — matched by call_reducer_typed in wasm.rs.
+
+//export attack
+func attack(argsPtr int32, argsLen int32) (int32, int32) {
+	// Read the JSON args from linear memory.
+	argsMem := make([]byte, argsLen)
+	copy(argsMem, ptrToSlice(argsPtr, argsLen))
+
+	var args []json.RawMessage
+	if err := json.Unmarshal(argsMem, &args); err != nil || len(args) < 3 {
+		return writeResult(map[string]interface{}{"error": "invalid args"})
+	}
+
+	var attackerID, targetID string
+	var damage int
+	json.Unmarshal(args[0], &attackerID)
+	json.Unmarshal(args[1], &targetID)
+	json.Unmarshal(args[2], &damage)
+
+	// Read the target row.
+	rowBytes := neondb.Get("players", targetID)
+	if rowBytes == nil {
+		return writeResult(map[string]interface{}{"error": "target not found"})
+	}
+
+	var row map[string]interface{}
+	if err := json.Unmarshal(rowBytes, &row); err != nil {
+		return writeResult(map[string]interface{}{"error": "row parse error"})
+	}
+
+	// Apply damage.
+	currentHP := intField(row, "hp")
+	newHP := int(math.Max(0, float64(currentHP-damage)))
+	row["hp"] = newHP
+	row["alive"] = newHP > 0
+
+	updated, _ := json.Marshal(row)
+	neondb.Set("players", targetID, updated)
+
+	return writeResult(map[string]interface{}{"ok": true, "new_hp": newHP})
+}
+
+//export heal
+func heal(argsPtr int32, argsLen int32) (int32, int32) {
+	argsMem := make([]byte, argsLen)
+	copy(argsMem, ptrToSlice(argsPtr, argsLen))
+
+	var args []json.RawMessage
+	if err := json.Unmarshal(argsMem, &args); err != nil || len(args) < 2 {
+		return writeResult(map[string]interface{}{"error": "invalid args"})
+	}
+
+	var targetID string
+	var amount int
+	json.Unmarshal(args[0], &targetID)
+	json.Unmarshal(args[1], &amount)
+
+	rowBytes := neondb.Get("players", targetID)
+	if rowBytes == nil {
+		return writeResult(map[string]interface{}{"error": "target not found"})
+	}
+
+	var row map[string]interface{}
+	json.Unmarshal(rowBytes, &row)
+
+	currentHP := intField(row, "hp")
+	newHP := currentHP + amount
+	if newHP > 200 {
+		newHP = 200
+	}
+	row["hp"] = newHP
+	row["alive"] = true
+
+	updated, _ := json.Marshal(row)
+	neondb.Set("players", targetID, updated)
+
+	return writeResult(map[string]interface{}{"ok": true, "new_hp": newHP})
+}
+
+// main is required by TinyGo for the wasi target.
+func main() {}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func writeResult(v interface{}) (int32, int32) {
+	b, _ := json.Marshal(v)
+	return neondb.WriteResult(b)
+}
+
+func intField(m map[string]interface{}, key string) int {
+	switch v := m[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return 0
+}
+
+// ptrToSlice reinterprets a WASM linear-memory pointer+length as a Go slice.
+// Safe because WASM linear memory is a flat []byte contiguous array in Go/TinyGo.
+func ptrToSlice(ptr int32, length int32) []byte {
+	return (*[1 << 30]byte)(unsafe.Pointer(uintptr(ptr)))[:length:length]
+}
+"#;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // neondb build
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Detect reducer language and invoke the appropriate compiler before the main
+/// JS→WASM and AOT steps.
+///
+/// Priority (first match wins):
+///   1. `reducers/*.csproj` → dotnet publish (C# → WASM via .NET 8 WASI)
+///   2. `reducers/go.mod` + `*.go` → tinygo build (Go → WASM via TinyGo)
+///
+/// Both compilers output `.wasm` into `modules/`, which the remainder of
+/// `build_wasm_modules` then AOT-compiles.
+fn build_multi_lang_reducers(project_root: &Path, modules_dir: &Path) -> Result<()> {
+    let reducers_dir = project_root.join("reducers");
+    if !reducers_dir.is_dir() {
+        return Ok(()); // no reducers/ directory — nothing to do
+    }
+
+    // ── C# detection ─────────────────────────────────────────────────────────
+    let csproj = std::fs::read_dir(&reducers_dir).ok().and_then(|entries| {
+        entries.flatten().find(|e| {
+            e.path().extension().and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("csproj"))
+                .unwrap_or(false)
+        })
+    });
+    if let Some(csproj_entry) = csproj {
+        let csproj_path = csproj_entry.path();
+        println!("  C# project detected: {}", csproj_path.display());
+
+        // Check that dotnet is available.
+        let dotnet_ok = std::process::Command::new("dotnet")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !dotnet_ok {
+            eprintln!(
+                "  Warning: 'dotnet' not found on PATH. Skipping C# compilation.\n\
+                 Install .NET 8 SDK: https://dotnet.microsoft.com/download\n\
+                 Then install the WASI workload: dotnet workload install wasi-experimental"
+            );
+            return Ok(());
+        }
+
+        println!("  C# → WASM via dotnet publish (wasi-wasm) ...");
+        let status = std::process::Command::new("dotnet")
+            .arg("publish")
+            .arg(&csproj_path)
+            .arg("-c").arg("Release")
+            .arg("-r").arg("wasi-wasm")
+            .arg("--self-contained").arg("true")
+            .arg("-o").arg(modules_dir)
+            .current_dir(&reducers_dir)
+            .status()
+            .map_err(|e| neondb::error::NeonDBError::internal(format!("dotnet publish: {}", e)))?;
+        if status.success() {
+            println!("  C# compilation OK — .wasm written to {}", modules_dir.display());
+        } else {
+            return Err(neondb::error::NeonDBError::internal(
+                format!("dotnet publish failed (exit {:?})", status.code())
+            ));
+        }
+        return Ok(());
+    }
+
+    // ── Go / TinyGo detection ─────────────────────────────────────────────────
+    let has_gomod = reducers_dir.join("go.mod").exists();
+    let has_go_files = std::fs::read_dir(&reducers_dir).ok().map(|entries| {
+        entries.flatten().any(|e| {
+            e.path().extension().and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("go"))
+                .unwrap_or(false)
+        })
+    }).unwrap_or(false);
+
+    if has_gomod && has_go_files {
+        println!("  Go project detected: {}", reducers_dir.display());
+
+        let tinygo_ok = std::process::Command::new("tinygo")
+            .arg("version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !tinygo_ok {
+            eprintln!(
+                "  Warning: 'tinygo' not found on PATH. Skipping Go compilation.\n\
+                 Install TinyGo: https://tinygo.org/getting-started/install/\n\
+                 Then run: tinygo build -o modules/reducers.wasm -target wasi ./reducers"
+            );
+            return Ok(());
+        }
+
+        // Determine the output name from the module name in go.mod, or use "reducers".
+        let mod_name = std::fs::read_to_string(reducers_dir.join("go.mod"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.trim_start().starts_with("module "))
+                    .map(|l| {
+                        l.trim_start_matches("module").trim().split('/').last()
+                            .unwrap_or("reducers")
+                            .to_string()
+                    })
+            })
+            .unwrap_or_else(|| "reducers".to_string());
+        let out_wasm = modules_dir.join(format!("{}.wasm", mod_name));
+
+        println!("  Go → WASM via tinygo build ...");
+        let status = std::process::Command::new("tinygo")
+            .arg("build")
+            .arg("-o").arg(&out_wasm)
+            .arg("-target").arg("wasi")
+            .arg(".")
+            .current_dir(&reducers_dir)
+            .status()
+            .map_err(|e| neondb::error::NeonDBError::internal(format!("tinygo build: {}", e)))?;
+        if status.success() {
+            println!("  Go compilation OK — {} written", out_wasm.display());
+        } else {
+            return Err(neondb::error::NeonDBError::internal(
+                format!("tinygo build failed (exit {:?})", status.code())
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
+    // ── Step 0: compile multi-language reducers (C#, Go) if present ──────────
+    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    build_multi_lang_reducers(&project_root, modules_dir)?;
+
     if !modules_dir.is_dir() {
         println!("No '{}' directory found.", modules_dir.display());
         return Ok(());
@@ -894,7 +1685,8 @@ async fn run_server(config: Config) -> Result<()> {
     // Distribution removed in Session 44 (TODO-034) — single-node only.
     log::info!("[neondb] single-node mode");
 
-    let (reducer_tx, reducer_rx) = kanal::unbounded_async::<PendingCall>();
+    let (reducer_tx, reducer_rx) = kanal::bounded_async::<PendingCall>(config.reducer_queue_cap);
+    let queue_probe = reducer_tx.clone(); // for healthz queue-depth reporting
     let subscription_manager = Arc::new(SubscriptionManager::new_with_options(config.two_frame_protocol));
 
     let active_connections = Arc::new(AtomicUsize::new(0));
@@ -1024,8 +1816,9 @@ async fn run_server(config: Config) -> Result<()> {
         let ttl_m = ttl_manager.clone();
         let prom_c = metrics.clone();
         let issuer_c = identity_issuer.clone();
+        let qprobe_c = queue_probe.clone();
         tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, prom_c, issuer_c, rx_shutdown).await {
+            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, prom_c, issuer_c, qprobe_c, rx_shutdown).await {
                 log::error!("Metrics server error: {}", e);
             }
         })
@@ -1421,6 +2214,7 @@ async fn start_metrics_server(
     ttl_manager: Arc<TtlManager>,
     prom: Arc<Metrics>,
     identity_issuer: Arc<IdentityIssuer>,
+    queue_probe: kanal::AsyncSender<PendingCall>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse()
@@ -1437,6 +2231,7 @@ async fn start_metrics_server(
         let ttl   = ttl_manager.clone();
         let prom_svc = prom.clone();
         let iss   = identity_issuer.clone();
+        let qp    = queue_probe.clone();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 let subs = subs.clone(); let tbl = tbl.clone();
@@ -1445,7 +2240,8 @@ async fn start_metrics_server(
                 let pres = pres.clone(); let ttl = ttl.clone();
                 let prom_r = prom_svc.clone();
                 let iss_r = iss.clone();
-                async move { handle_metrics_request(req, subs, tbl, reg, wal, seq, start, pres, ttl, prom_r, iss_r).await }
+                let qp_r = qp.clone();
+                async move { handle_metrics_request(req, subs, tbl, reg, wal, seq, start, pres, ttl, prom_r, iss_r, qp_r).await }
             }))
         }
     });
@@ -1466,7 +2262,7 @@ async fn handle_metrics_request(
     req: Request<Body>,
     subscription_manager: Arc<SubscriptionManager>,
     tables: Arc<TableStore>,
-    _registry: Arc<ReducerRegistry>,   // retained for upcoming GET /schema (TODO-031)
+    registry: Arc<ReducerRegistry>,
     wal_writer: Arc<BatchedWalWriter>,
     global_seq: Arc<std::sync::atomic::AtomicU64>,
     startup_instant: std::time::Instant,
@@ -1474,6 +2270,7 @@ async fn handle_metrics_request(
     ttl_manager: Arc<TtlManager>,
     prom: Arc<Metrics>,
     identity_issuer: Arc<IdentityIssuer>,
+    queue_probe: kanal::AsyncSender<PendingCall>,
 ) -> Result<Response<Body>> {
     let path = req.uri().path().to_string();
 
@@ -1497,7 +2294,7 @@ async fn handle_metrics_request(
             "wal_sequence": global_seq.load(std::sync::atomic::Ordering::Relaxed),
             "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
             "uptime_seconds": startup_instant.elapsed().as_secs(),
-            "reducer_queue_depth": 0,
+            "reducer_queue_depth": queue_probe.len(),
             "memory_usage_bytes": get_memory_usage_bytes(),
             "presence_tracked": presence_manager.count(),
             "ttl_active": ttl_manager.count(),
@@ -1560,6 +2357,72 @@ async fn handle_metrics_request(
             if !errors.is_empty() { body["errors"] = serde_json::Value::Array(errors.into_iter().map(serde_json::Value::String).collect()); }
             let status = if rows_skipped > 0 && rows_written == 0 { StatusCode::BAD_REQUEST } else { StatusCode::OK };
             let mut r = json_response(body); *r.status_mut() = status; Ok(r)
+        }
+
+        (&Method::POST, "/migrate") => {
+            // Accepts: {"migrations": [{"filename": "001_add_score.toml", "content": "<toml>"}]}
+            // Applies each migration via apply_migrations_inline(); returns applied/skipped/errors.
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => {
+                    let mut r = json_response(serde_json::json!({ "error": format!("Invalid JSON: {}", e) }));
+                    *r.status_mut() = StatusCode::BAD_REQUEST;
+                    return Ok(r);
+                }
+            };
+            let mig_arr = match payload.get("migrations").and_then(|v| v.as_array()) {
+                Some(a) => a.clone(),
+                None => {
+                    let mut r = json_response(serde_json::json!({ "error": "Expected {\"migrations\": [...]}" }));
+                    *r.status_mut() = StatusCode::BAD_REQUEST;
+                    return Ok(r);
+                }
+            };
+            let mut applied = 0usize;
+            let mut skipped = 0usize;
+            let mut errors: Vec<String> = Vec::new();
+            for entry in &mig_arr {
+                let filename = match entry.get("filename").and_then(|v| v.as_str()) {
+                    Some(f) => f.to_string(),
+                    None => { errors.push("missing filename field".to_string()); skipped += 1; continue; }
+                };
+                let content = match entry.get("content").and_then(|v| v.as_str()) {
+                    Some(c) => c.to_string(),
+                    None => { errors.push(format!("{}: missing content field", filename)); skipped += 1; continue; }
+                };
+                match neondb::migrations::apply_migration_str(&filename, &content, &tables) {
+                    Ok(true)  => applied += 1,
+                    Ok(false) => skipped += 1,
+                    Err(e)    => { errors.push(format!("{}: {}", filename, e)); skipped += 1; }
+                }
+            }
+            let mut body = serde_json::json!({ "applied": applied, "skipped": skipped });
+            if !errors.is_empty() {
+                body["errors"] = serde_json::Value::Array(errors.into_iter().map(serde_json::Value::String).collect());
+            }
+            Ok(json_response(body))
+        }
+
+        (&Method::GET, "/schema") => {
+            // Machine-readable schema — used by `neondb generate` (TODO-029).
+            // Returns all registered tables + their column definitions.
+            let table_schemas: serde_json::Value = {
+                let mut map = serde_json::Map::new();
+                for table_name in tables.list_tables() {
+                    // Provide basic row-count info; full column schema requires SchemaRegistry
+                    let rows = tables.list_rows_with_keys(&table_name).map(|r| r.len()).unwrap_or(0);
+                    map.insert(table_name, serde_json::json!({ "rows": rows }));
+                }
+                serde_json::Value::Object(map)
+            };
+            let reducer_list: Vec<_> = registry.list_reducers();
+            Ok(json_response(serde_json::json!({
+                "tables": table_schemas,
+                "reducers": reducer_list,
+                "version": env!("CARGO_PKG_VERSION"),
+            })))
         }
 
         (&Method::GET, "/tables") => {

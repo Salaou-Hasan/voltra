@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // guild_kick — remove a member from a guild (owner only)
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [guild_id: string, member_id: string]
@@ -20,12 +20,14 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [gid, member] = args;
-const g = __neondb_get("guilds", gid);
-if (!g) { result = { error: "no_such_guild" }; }
-else if (g.owner !== __neondb_caller_id) { result = { error: "forbidden" }; }
-else {
-  g.members = g.members.filter((m) => m !== member);
-  __neondb_set("guilds", gid, g);
-  result = { ok: true, members: g.members };
+function reducer(args) {
+  const [gid, member] = args;
+  const g = __neondb_get("guilds", gid);
+  if (!g) { return { error: "no_such_guild" }; }
+  else if (g.owner !== __neondb_caller_id) { return { error: "forbidden" }; }
+  else {
+    g.members = g.members.filter((m) => m !== member);
+    __neondb_set("guilds", gid, g);
+    return { ok: true, members: g.members };
+  }
 }

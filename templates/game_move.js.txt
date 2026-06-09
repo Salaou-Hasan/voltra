@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // move — update a player's position and zone
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, x: number, y: number]
@@ -19,12 +19,14 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [player_id, x, y] = args;
-const p = __neondb_get("players", player_id);
-if (!p) { result = { error: "not_found" }; }
-else {
-  p.x = x; p.y = y;
-  p.zone = "zone_" + Math.floor(x / 100) + "_" + Math.floor(y / 100);
-  __neondb_set("players", player_id, p);
-  result = { ok: true, x, y, zone: p.zone };
+function reducer(args) {
+  const [player_id, x, y] = args;
+  const p = __neondb_get("players", player_id);
+  if (!p) { return { error: "not_found" }; }
+  else {
+    p.x = x; p.y = y;
+    p.zone = "zone_" + Math.floor(x / 100) + "_" + Math.floor(y / 100);
+    __neondb_set("players", player_id, p);
+    return { ok: true, x, y, zone: p.zone };
+  }
 }

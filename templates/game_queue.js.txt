@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // queue — put a player in the matchmaking queue
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, rating: number]
@@ -18,6 +18,8 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [pid, rating] = args;
-__neondb_set("matchmaking", pid, { player_id: pid, rating: rating || 1000, queued_at: 0 });
-result = { ok: true };
+function reducer(args) {
+  const [pid, rating] = args;
+  __neondb_set("matchmaking", pid, { player_id: pid, rating: rating || 1000, queued_at: 0 });
+  return { ok: true };
+}

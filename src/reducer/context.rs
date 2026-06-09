@@ -346,6 +346,43 @@ impl ReducerContext {
         self.pending_deltas.clear();
         self.pending_diffs.clear();
     }
+
+    // ── Ergonomic shortcuts for use in `#[reducer]`-annotated functions ───────
+
+    /// Read a row from `table` with the given `key`.
+    ///
+    /// Shorthand for [`get_row`](Self::get_row) — returns `None` when the row
+    /// does not exist or RLS denies access.
+    #[inline]
+    pub fn get(&self, table: &str, key: &str) -> Result<Option<Value>> {
+        self.get_row(table, key)
+    }
+
+    /// Write a JSON value to `table[key]`.
+    ///
+    /// Shorthand for [`set_row`](Self::set_row).  Accepts anything that
+    /// converts into a `serde_json::Value` — a `serde_json::json!({…})`
+    /// literal, a typed struct via `serde_json::to_value`, etc.
+    #[inline]
+    pub fn set(
+        &mut self,
+        table: impl Into<String>,
+        key: impl Into<String>,
+        value: impl Into<Value>,
+    ) -> Result<()> {
+        self.set_row(table.into(), key.into(), value.into())?;
+        Ok(())
+    }
+
+    /// Delete the row at `table[key]`.
+    ///
+    /// Shorthand for [`delete_row`](Self::delete_row).  A no-op if the row
+    /// does not exist.
+    #[inline]
+    pub fn delete(&mut self, table: impl Into<String>, key: impl Into<String>) -> Result<()> {
+        self.delete_row(table.into(), key.into())?;
+        Ok(())
+    }
 }
 
 // ── Increment reducer ─────────────────────────────────────────────────────────

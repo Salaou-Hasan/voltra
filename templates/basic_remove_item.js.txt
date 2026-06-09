@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // remove_item — decrement (or delete) an inventory row
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [username: string, item_id: string, qty: number]
@@ -19,12 +19,14 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [username, item_id, qty] = args;
-const key = username + ":" + item_id;
-const row = __neondb_get("inventory", key);
-if (!row) { result = { error: "no_such_item" }; }
-else {
-  const remaining = row.qty - (qty || 1);
-  if (remaining <= 0) { __neondb_delete("inventory", key); result = { ok: true, qty: 0 }; }
-  else { row.qty = remaining; __neondb_set("inventory", key, row); result = { ok: true, qty: remaining }; }
+function reducer(args) {
+  const [username, item_id, qty] = args;
+  const key = username + ":" + item_id;
+  const row = __neondb_get("inventory", key);
+  if (!row) { return { error: "no_such_item" }; }
+  else {
+    const remaining = row.qty - (qty || 1);
+    if (remaining <= 0) { __neondb_delete("inventory", key); return { ok: true, qty: 0 }; }
+    else { row.qty = remaining; __neondb_set("inventory", key, row); return { ok: true, qty: remaining }; }
+  }
 }

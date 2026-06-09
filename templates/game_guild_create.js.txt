@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // guild_create — found a new guild
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [guild_id: string, name: string, owner_id: string]
@@ -19,9 +19,11 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [gid, name, owner] = args;
-if (__neondb_get("guilds", gid)) { result = { error: "exists" }; }
-else {
-  __neondb_set("guilds", gid, { guild_id: gid, name, owner, members: [owner], created_at: 0 });
-  result = { ok: true, guild_id: gid };
+function reducer(args) {
+  const [gid, name, owner] = args;
+  if (__neondb_get("guilds", gid)) { return { error: "exists" }; }
+  else {
+    __neondb_set("guilds", gid, { guild_id: gid, name, owner, members: [owner], created_at: 0 });
+    return { ok: true, guild_id: gid };
+  }
 }

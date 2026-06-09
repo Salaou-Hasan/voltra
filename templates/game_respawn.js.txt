@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // respawn — revive a dead player at the spawn point (0, 0)
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string]
@@ -19,11 +19,13 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [pid] = args;
-const p = __neondb_get("players", pid);
-if (!p) { result = { error: "not_found" }; }
-else {
-  p.hp = p.max_hp; p.mp = p.max_mp; p.x = 0; p.y = 0; p.zone = "zone_0_0";
-  __neondb_set("players", pid, p);
-  result = { ok: true, player: p };
+function reducer(args) {
+  const [pid] = args;
+  const p = __neondb_get("players", pid);
+  if (!p) { return { error: "not_found" }; }
+  else {
+    p.hp = p.max_hp; p.mp = p.max_mp; p.x = 0; p.y = 0; p.zone = "zone_0_0";
+    __neondb_set("players", pid, p);
+    return { ok: true, player: p };
+  }
 }

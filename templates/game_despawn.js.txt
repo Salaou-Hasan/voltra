@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // despawn — remove a player from the world
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string]
@@ -19,6 +19,8 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [player_id] = args;
-if (!__neondb_get("players", player_id)) { result = { error: "not_found" }; }
-else { __neondb_delete("players", player_id); result = { ok: true }; }
+function reducer(args) {
+  const [player_id] = args;
+  if (!__neondb_get("players", player_id)) { return { error: "not_found" }; }
+  else { __neondb_delete("players", player_id); return { ok: true }; }
+}

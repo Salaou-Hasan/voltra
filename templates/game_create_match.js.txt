@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // create_match — pair two queued players into a match record
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [match_id: string, player_a: string, player_b: string]
@@ -18,8 +18,10 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [match_id, a, b] = args;
-__neondb_delete("matchmaking", a);
-__neondb_delete("matchmaking", b);
-__neondb_set("matches", match_id, { match_id, players: [a, b], status: "starting", created_at: 0 });
-result = { ok: true, match_id };
+function reducer(args) {
+  const [match_id, a, b] = args;
+  __neondb_delete("matchmaking", a);
+  __neondb_delete("matchmaking", b);
+  __neondb_set("matches", match_id, { match_id, players: [a, b], status: "starting", created_at: 0 });
+  return { ok: true, match_id };
+}

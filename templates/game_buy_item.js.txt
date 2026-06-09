@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // buy_item — purchase an item with in-game currency
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, item_id: string, price: number]
@@ -19,16 +19,18 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [pid, item_id, price] = args;
-const p = __neondb_get("players", pid);
-if (!p) { result = { error: "not_found" }; }
-else if (p.currency < price) { result = { error: "insufficient_funds" }; }
-else {
-  p.currency -= price;
-  __neondb_set("players", pid, p);
-  const k = pid + ":" + item_id;
-  const inv = __neondb_get("inventory", k) || { player_id: pid, item_id, qty: 0 };
-  inv.qty += 1;
-  __neondb_set("inventory", k, inv);
-  result = { ok: true, currency: p.currency, item_id, qty: inv.qty };
+function reducer(args) {
+  const [pid, item_id, price] = args;
+  const p = __neondb_get("players", pid);
+  if (!p) { return { error: "not_found" }; }
+  else if (p.currency < price) { return { error: "insufficient_funds" }; }
+  else {
+    p.currency -= price;
+    __neondb_set("players", pid, p);
+    const k = pid + ":" + item_id;
+    const inv = __neondb_get("inventory", k) || { player_id: pid, item_id, qty: 0 };
+    inv.qty += 1;
+    __neondb_set("inventory", k, inv);
+    return { ok: true, currency: p.currency, item_id, qty: inv.qty };
+  }
 }

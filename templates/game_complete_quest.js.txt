@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // complete_quest — finalise a quest and grant XP + currency rewards
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [player_id: string, quest_id: string, xp_reward: number, currency_reward: number]
@@ -19,15 +19,17 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [pid, quest_id, xp, gold] = args;
-const k = pid + ":" + quest_id;
-const q = __neondb_get("quests", k);
-const p = __neondb_get("players", pid);
-if (!q || !p) { result = { error: "not_found" }; }
-else {
-  q.status = "complete";
-  __neondb_set("quests", k, q);
-  p.xp += (xp || 0); p.currency += (gold || 0);
-  __neondb_set("players", pid, p);
-  result = { ok: true, xp: p.xp, currency: p.currency };
+function reducer(args) {
+  const [pid, quest_id, xp, gold] = args;
+  const k = pid + ":" + quest_id;
+  const q = __neondb_get("quests", k);
+  const p = __neondb_get("players", pid);
+  if (!q || !p) { return { error: "not_found" }; }
+  else {
+    q.status = "complete";
+    __neondb_set("quests", k, q);
+    p.xp += (xp || 0); p.currency += (gold || 0);
+    __neondb_set("players", pid, p);
+    return { ok: true, xp: p.xp, currency: p.currency };
+  }
 }

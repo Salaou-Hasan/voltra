@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // create_thread — start a reply thread on an existing message
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [thread_id: string, parent_message_id: string, user_id: string]
@@ -19,10 +19,12 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [tid, parent, uid] = args;
-const m = __neondb_get("messages", parent);
-if (!m) { result = { error: "no_such_message" }; }
-else {
-  __neondb_set("threads", tid, { thread_id: tid, parent_message_id: parent, created_by: uid, created_at: 0 });
-  result = { ok: true, thread_id: tid };
+function reducer(args) {
+  const [tid, parent, uid] = args;
+  const m = __neondb_get("messages", parent);
+  if (!m) { return { error: "no_such_message" }; }
+  else {
+    __neondb_set("threads", tid, { thread_id: tid, parent_message_id: parent, created_by: uid, created_at: 0 });
+    return { ok: true, thread_id: tid };
+  }
 }

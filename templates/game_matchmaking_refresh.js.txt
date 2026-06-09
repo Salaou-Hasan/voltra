@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // refresh — scheduled matchmaking pass; pairs the first two queued players
 // ───────────────────────────────────────────────────────────────────────
 // Args:   []  (called automatically by the scheduler every 5 s)
@@ -19,15 +19,17 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const queued = __neondb_get_all("matchmaking") || [];
-if (queued.length >= 2) {
-  const a = queued[0].player_id;
-  const b = queued[1].player_id;
-  const match_id = "m_" + a + "_" + b;
-  __neondb_delete("matchmaking", a);
-  __neondb_delete("matchmaking", b);
-  __neondb_set("matches", match_id, { match_id, players: [a, b], status: "starting", created_at: 0 });
-  result = { ok: true, match_id };
-} else {
-  result = { ok: true, paired: 0 };
+function reducer(args) {
+  const queued = __neondb_get_all("matchmaking") || [];
+  if (queued.length >= 2) {
+    const a = queued[0].player_id;
+    const b = queued[1].player_id;
+    const match_id = "m_" + a + "_" + b;
+    __neondb_delete("matchmaking", a);
+    __neondb_delete("matchmaking", b);
+    __neondb_set("matches", match_id, { match_id, players: [a, b], status: "starting", created_at: 0 });
+    return { ok: true, match_id };
+  } else {
+    return { ok: true, paired: 0 };
+  }
 }

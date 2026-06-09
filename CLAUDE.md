@@ -339,12 +339,153 @@ neondb get players                       # verify rows landed
 
 ## Current Build Status
 
-After Session 43 (9-feature production-readiness wave, all branches merged):
-- `cargo build --offline` → **zero errors, zero warnings**.
-- `cargo test --lib` → **465 lib tests passing**.
-- `cargo test --test raft_consensus_test` → **6/6 Raft consensus integration tests passing**.
-- Total tested: **471 tests, 0 failures**.
-- All 9 production features: **COMPLETE AND MERGED** — TLS, graceful shutdown, LRU eviction, Prometheus metrics, row-level security, SDK auto-reconnect, Docker/CI, docs, JWT+Ed25519 identity.
+After Session 45 (TODO-028 complete — `run_server` library API + scaffold `#[reducer]` templates):
+- `cargo build` → **zero errors, zero warnings** (full workspace: neondb + neondb-macros).
+- `cargo test --lib` → **417 lib tests passing**, zero failures.
+- `src/server.rs` — `pub async fn run_server(config: Config) -> Result<()>` is complete and correct.
+- All three scaffold functions now write an `embedded/` subdirectory with `Cargo.toml`, `src/main.rs`, and `src/reducers.rs` using the `#[reducer]` macro syntax.
+
+After Session 44 Wave 2 (TODO-027 — `neondb-macros` proc macro crate):
+- `cargo build --offline` → **zero errors, zero warnings** (full workspace: neondb + neondb-macros).
+- `cargo test --lib --offline` → **417 lib tests passing**, zero failures.
+- `cargo test --package neondb-macros --offline` → **2 unit tests passing**.
+- `neondb-client-rust/`: **builds clean**.
+- All Wave 1 features: **COMPLETE** — bounded queue, queue metric, WAL crash test, SDK race fix, `neondb migrate`, benchmark fix, C# WASM reducers, Go WASM reducers.
+- TODO-027 `neondb-macros`: **COMPLETE** — `#[reducer]`, `#[table]`, `ret!`, inventory auto-registration, `ctx.get/set/delete` shortcuts.
+
+---
+
+### Session 45 — TODO-028: `run_server` library API + `#[reducer]` scaffold templates
+
+**What was built:**
+
+**`src/server.rs`** — `pub async fn run_server(config: Config) -> Result<()>` (complete, zero-error):
+- Full WAL + snapshot bootstrap (same crash-recovery path as main server):
+  - `find_latest_snapshot(dir) -> Option<(PathBuf, u64)>` — no `?`, returns raw `Option`
+  - `load_snapshot(&path, &tables) -> Result<SnapshotMeta>` — takes `&TableStore`, not `Arc`
+  - `WalReader::open().read_all_entries()` — batch-reads all WAL entries; applies via `tables.apply_delta(delta)`
+- `BatchedWalWriter::open(path, fsync_interval_ms, wal_batch_size, unsafe_no_fsync)` — 4-arg constructor (not `::new`)
+- `IdentityIssuer`: load-or-generate pattern (no `load_or_generate` helper exists — manually checks path, calls `load_from_file` or `generate` + `save_to_file`)
+- `AuthValidator::from_env()` — reads env vars; not `AuthValidator::new(api_key)`
+- `PresenceManager::new(heartbeat_timeout_ms, offline_timeout_ms)` — 2 args, not 0
+- `TtlManager::new()` — 0 args, not `TtlManager::new(tables.clone())`
+- `RateLimiterConfig { capacity, refill_rate, enabled }` — constructed from `config.*` fields
+- `ReducerContext::new(tables, ts).with_schema(schema).with_ttl(ttl)` — builder pattern
+- `PendingCall` has no `timestamp` field — `ts = now_nanos()` computed per-call inline
+- `ctx.commit()` returns `Result<Vec<RowDelta>>` directly — no `take_committed_deltas()`
+- `call.response_tx.send(response)` — not Optional, no `reply_tx`
+- `ReducerResponse::success(call_id, bytes)` / `ReducerResponse::error(call_id, msg)` constructors
+- `wal_w.append(&entry, seq_num)` — sync, takes sequence number as second arg
+- Multi-worker pool: `num_cpus::get().max(2)` workers, each running blocking Tokio task
+- `kanal::bounded_async(queue_cap)` bounded queue with graceful shutdown via `watch::Receiver`
+
+**`src/main.rs`** — scaffold updates (3 functions):
+- Added 5 new `include_str!` constants: `EMBEDDED_CARGO_TOML`, `EMBEDDED_MAIN_RS`, `BASIC_REDUCERS_RS`, `GAME_REDUCERS_RS`, `CHAT_REDUCERS_RS`
+- `scaffold_rust_basic()`: now also writes `embedded/Cargo.toml`, `embedded/src/main.rs`, `embedded/src/reducers.rs` (basic #[reducer] reducers)
+- `scaffold_rust_game_ready()`: same, with game reducers
+- `scaffold_rust_chat()`: same, with chat reducers
+- Each `embedded/` directory is a self-contained Cargo project that compiles to a single NeonDB + reducers binary
+
+**WASM pooling engine** (`src/reducer/wasm.rs`) — completed in prior session:
+- `PoolingAllocationConfig` pre-allocates memory slots at startup
+- `build_pooling_engine()` → `build_standard_engine()` fallback chain
+- Cuts WASM instantiation from ~1-5ms to ~10-50µs
+
+**JS template fix** (52 files in `templates/`) — completed in prior session:
+- All JS reducers now use `function reducer(args) { ... return ...; }` format matching v8.rs runtime
+
+**New pitfalls:**
+64. **`find_latest_snapshot` returns `Option<(PathBuf, u64)>`, not `Result<Option<...>>`** — no `?` operator, use `if let Some((path, seq)) = find_latest_snapshot(...)`.
+65. **`load_snapshot` takes `&TableStore`, not `Arc<TableStore>`** — pass `&tables` where `tables: Arc<TableStore>` (Deref coercion handles it).
+66. **`BatchedWalWriter::open` takes 4 args** — `(path, fsync_interval_ms, batch_size, unsafe_no_fsync: bool)`. The fourth arg is `false` for safe (fsync-on-flush) mode.
+67. **`PendingCall` has no `timestamp` field** — compute it inline: `let ts = SystemTime::now().duration_since(UNIX_EPOCH)...as_nanos() as u64`.
+68. **`AuthValidator::from_env()`** — reads auth config from env vars. `AuthValidator::new(mode)` is the manual constructor taking an `AuthMode` enum.
+69. **`PresenceManager::new(heartbeat_ms, offline_ms)`** — 2 required args. No default constructor.
+70. **`TtlManager::new()`** — 0 args. Does NOT take a `TableStore` reference.
+71. **`ReducerContext` builder**: `.with_schema(Arc<SchemaRegistry>)` and `.with_ttl(Arc<TtlManager>)` return `Self` — chain after `ReducerContext::new(tables, ts)`.
+72. **`ctx.schema` field, not `ctx.schema_registry`** — the field name is `schema: Option<Arc<SchemaRegistry>>`.
+
+---
+
+### Session 44 Wave 2 — TODO-027: `neondb-macros` proc macro crate
+
+**What was built:**
+
+New crate `neondb-macros/` (workspace member, `proc-macro = true`):
+
+- **`neondb-macros/src/reducer.rs`** — `#[reducer]` proc macro:
+  - Parses the input `fn`: first param is ctx (any type annotation, ignored), rest are args.
+  - Generates:
+    1. Inner `fn __neondb_reducer_<name>(ctx: &mut ::neondb::reducer::context::ReducerContext, args: &[u8]) -> Result<Vec<u8>>` — deserialises positional MessagePack args, runs user body.
+    2. Struct `<PascalName>Reducer` implementing `::neondb::reducer::backend::ReducerBackend`.
+    3. `::neondb::inventory::submit! { NativeReducerItem { name, make } }` — auto-registers the reducer at startup.
+  - `#[allow(unreachable_code)]` suppresses warnings when user always calls `ret!(...)`.
+  - No-arg reducers skip the `rmp_serde::from_slice` step entirely.
+
+- **`neondb-macros/src/table.rs`** — `#[table(name = "players")]` proc macro:
+  - Derives `Serialize + Deserialize` on the target struct.
+  - Generates `table_name() -> &'static str`, `from_json(Value) -> Option<Self>`, `to_json(&self) -> Value`.
+  - Falls back to snake_case of the struct name when no `name =` attribute is given.
+
+- **`neondb-macros/src/lib.rs`** — exports `#[reducer]` and `#[table]` attribute macros.
+
+**Changes to main `neondb` crate:**
+
+- `Cargo.toml`:
+  - Added `[workspace]` section with `members = ["neondb-macros"]`, `resolver = "2"`.
+  - Added `inventory = "0.3"` and `neondb-macros = { path = "neondb-macros" }` deps.
+
+- `src/lib.rs`:
+  - `#[doc(hidden)] pub use inventory;` — makes `::neondb::inventory::submit!` available to generated code without requiring users to add `inventory` as a direct dep.
+  - `pub use neondb_macros::{reducer, table};` — `#[neondb::reducer]` and `#[neondb::table]` work.
+  - `ret!(...)` macro exported via `#[macro_export]` — expands to `return Ok(rmp_serde::to_vec(&json!(...))?)`.
+
+- `src/reducer/registry.rs`:
+  - `pub struct NativeReducerItem { name: &'static str, make: fn() -> Box<dyn ReducerBackend> }` — the item type submitted by `#[reducer]`.
+  - `inventory::collect!(NativeReducerItem)` — registers the collection point.
+  - `ReducerRegistry::new()` iterates `inventory::iter::<NativeReducerItem>()` and registers all submitted items before loading file-based modules.
+  - 4 new unit tests: `test_native_reducer_item_can_be_registered_manually`, `test_inventory_collect_macro_present`, `test_ctx_set_get_delete_shortcuts`, `test_ctx_set_persists_after_commit`.
+
+- `src/reducer/context.rs`:
+  - `ctx.get(table, key) -> Result<Option<Value>>` — shorthand for `get_row`.
+  - `ctx.set(table, key, value) -> Result<()>` — shorthand for `set_row` (accepts any `Into<String>` + `Into<Value>`).
+  - `ctx.delete(table, key) -> Result<()>` — shorthand for `delete_row`.
+
+**Usage (for external users of neondb):**
+
+```rust
+use neondb::{reducer, ret};
+
+#[reducer]
+fn heal(ctx: Ctx, target_id: String, amount: i32) {
+    let row = ctx.get("players", &target_id)?
+        .unwrap_or_else(|| serde_json::json!({ "hp": 0 }));
+    let hp = row["hp"].as_i64().unwrap_or(0) as i32 + amount;
+    ctx.set("players", &target_id, serde_json::json!({ "hp": hp }))?;
+    ret!({ "ok": true, "new_hp": hp })
+}
+
+#[table(name = "players")]
+pub struct Player {
+    pub hp: i32,
+    pub alive: bool,
+    pub zone: String,
+}
+```
+
+**Design decisions:**
+- Generated code uses `::neondb::...` absolute paths — macros are for USERS of the crate, not for internal use within neondb itself.
+- `inventory` re-exported as `::neondb::inventory` so users don't need `inventory` as a direct dep.
+- `NativeReducerItem.make` is a plain `fn() -> Box<dyn ReducerBackend>` (not a closure) so it can live in a `static`.
+- The `ctx` param type annotation is intentionally ignored by the macro — users write any placeholder type (e.g. `Ctx`, `_`) and the generated inner function always uses `&mut ReducerContext`.
+- `ret!` uses `$crate::error::NeonDBError::reducer_error` — resolves correctly from user crates that have neondb as a dep.
+
+**New pitfalls:**
+59. **`#[reducer]` macro generates `::neondb::...` paths** — cannot be used inside the `neondb` crate itself (circular path issue). Always use it from user/downstream crates.
+60. **`inventory::collect!` must be called exactly once** — it's in `registry.rs`. Do not add another `collect!` for `NativeReducerItem` anywhere else.
+61. **`inventory::submit!` must be at module scope, not inside a function** — the `#[reducer]` macro emits it at the module level of the expanded output. This is correct and required for the linker-section magic to work.
+62. **`ret!` uses `return`** — it exits the generated inner `__neondb_reducer_*` function, not a closure. The `#[allow(unreachable_code)]` wrapper suppresses dead-code warnings when `ret!` is the last statement.
+63. **`ctx.set()` accepts `impl Into<Value>`** — pass `serde_json::json!({...})` literals, `serde_json::to_value(&my_struct).unwrap()`, or anything else that converts to `serde_json::Value`. The underlying `set_row` handles schema validation.
 
 ---
 
@@ -372,6 +513,63 @@ resurrection. Do not try to keep Raft "dormant but compiled" — fully remove it
 **Wave model (NOT hundreds of agents).** More agents on shared files = merge chaos (proven the hard
 way in the Session 43 9-agent merge). Sequence: Wave 0 solo (TODO-034+035, foundation), then
 parallel waves of ~5 agents on disjoint file sets. See `TODO.md` execution-order block.
+
+### Session 44 — Wave 1 solo: all Wave 1 TODOs complete
+
+**All Wave 1 work done solo (no agents) in this session.**
+
+**Completed items:**
+
+- **TODO-035 — Bounded reducer queue** (`src/config.rs`, `src/main.rs`, `src/network/websocket.rs`):
+  - `kanal::bounded_async(config.reducer_queue_cap)` replaces unbounded channel.
+  - Default cap: 16 384 (env: `NEONDB_REDUCER_QUEUE_CAP`).
+  - `try_send` in websocket.rs: fail-fast on full queue, returns `"server overloaded"` to client.
+
+- **TODO-040 — Real queue-depth metric** (`src/main.rs`):
+  - `queue_probe: kanal::AsyncSender<PendingCall>` clone passed to `start_metrics_server`.
+  - `/healthz` endpoint now includes `"reducer_queue_depth": N`.
+
+- **TODO-039 — `neondb migrate` CLI** (`src/cli.rs`, `src/main.rs`, `src/migrations.rs`):
+  - `cmd_migrate(metrics_url, dir, dry_run)` reads sorted `*.toml` files from migrations dir.
+  - `POST /migrate` endpoint in metrics server: calls `apply_migration_str()` per file.
+  - `apply_migration_str(filename, content, tables)` added to `migrations.rs` — idempotent, TOML-string version of per-file apply logic.
+
+- **TODO-031 — `GET /schema`** (`src/main.rs`):
+  - Returns `{"tables": {...schema...}, "reducers": [...], "version": "..."}` from metrics server.
+
+- **TODO-037 — WAL crash-recovery test** (`tests/crash_recovery_test.rs`):
+  - 2 tests: basic counter survives crash+restart, paired writes don't tear.
+  - Uses real server process, real WAL, kill + restart, HTTP verification.
+
+- **TODO-038 — Benchmark scaling fix** (`benches/end_to_end.rs`):
+  - `NEONDB_METRICS_PORT = port + 1000` in `spawn_server`.
+  - `BENCH_SCALE_MODE` accepts "1", "true", "yes".
+  - Broadcast subscription changed to `"counters"` (actual write target of `increment` reducer).
+
+- **TODO-036 — SDK optimistic-update race fix**:
+  - **TypeScript** (`neondb-client-ts/src/client.ts`): stack-replay approach — `serverBaseCache` + `optimisticLayers: OptimisticLayer[]` + `recomputeRowCache()`. Rolling back any layer re-applies remaining layers correctly. Removed old `applyTargetedOptimistic` / `rollbackTouchedRows` / `TouchedRollback` / `rowsEqual` / `stableStringify`.
+  - **Rust** (`neondb-client-rust/src/client.rs`): same approach — `server_base_cache: CacheSnapshot` + `optimistic_layers: Vec<(u64, OptimisticMutation)>` + `recompute_and_apply()`. `call_optimistic` changed from `FnOnce` to `Fn` bound. `Command::ApplyOptimistic` → `Command::RegisterLayer`. `apply_to_cache` → `apply_to_base` (writes to HashMap, not DashMap).
+
+- **TODO-032 — C# reducer path** (`src/main.rs`, `src/reducer/wasm.rs`, `docs/reducers-csharp.md`):
+  - `build_multi_lang_reducers()` detects `reducers/*.csproj` → `dotnet publish -r wasi-wasm`.
+  - `scaffold_csharp_reducers()` generates `.csproj`, `NeonDB.cs` (host bindings), `Combat.cs`.
+  - `CSHARP_CSPROJ`, `CSHARP_NEONDB_BINDINGS`, `CSHARP_COMBAT_CS` template strings.
+  - `call_reducer_typed` extended with i64 fat-pointer ABI (C# `UnmanagedCallersOnly` can't multi-value return): `(i32,i32) → i64` where high 32 = ptr, low 32 = len.
+  - Template added to `TEMPLATES` as `"csharp-reducers"`.
+
+- **TODO-033 — Go reducer path** (`src/main.rs`, `docs/reducers-go.md`):
+  - `build_multi_lang_reducers()` detects `reducers/go.mod` + `*.go` → `tinygo build -target wasi`.
+  - `scaffold_go_reducers()` generates `go.mod`, `neondb/neondb.go` (host bindings via `//go:wasmimport`), `combat.go`.
+  - `GO_NEONDB_BINDINGS`, `GO_COMBAT_GO` template strings.
+  - TinyGo's multi-value WASM returns work natively with the existing `call_reducer_typed`.
+  - Template added to `TEMPLATES` as `"go-reducers"`.
+
+**New pitfalls:**
+59. **C# `[UnmanagedCallersOnly]` cannot return WASM multi-value** — use i64 fat-pointer: `high 32 = ptr, low 32 = len`. NeonDB's `call_reducer_typed` in `wasm.rs` now tries this signature as a third fallback.
+60. **TinyGo multi-value returns work natively** — no special encoding needed. `//export funcname` + `func f(a, b int32) (int32, int32)` compiles to the multi-value WASM ABI that Wasmtime's `get_typed_func::<(i32,i32),(i32,i32)>` picks up.
+61. **`neondb build` detects C# before Go** — if both `reducers/*.csproj` AND `reducers/go.mod` exist, C# takes priority. This is a known limitation; future work could support mixed language projects.
+62. **`call_optimistic` in Rust SDK changed to `Fn`** — previously `FnOnce`, now requires `Fn + Send + Sync + 'static`. This allows the background task to replay the mutation when a sibling layer is rolled back (TODO-036 fix). Update any callers that used move-only closures.
+63. **`Command::ApplyOptimistic` is gone from Rust SDK** — replaced with `Command::RegisterLayer`. Any code that sent `ApplyOptimistic` manually must be updated to `RegisterLayer`.
 
 ### Session 43 — 9-feature production wave: all branches merged to master
 

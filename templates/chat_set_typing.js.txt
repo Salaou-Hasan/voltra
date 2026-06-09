@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // set_typing — broadcast or clear a typing indicator for a room
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [user_id: string, room_id: string, typing: boolean]
@@ -18,8 +18,10 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [uid, rid, typing] = args;
-const k = rid + ":" + uid;
-if (typing) { __neondb_set("typing", k, { user_id: uid, room_id: rid, started_at: 0 }); }
-else { __neondb_delete("typing", k); }
-result = { ok: true, typing: !!typing };
+function reducer(args) {
+  const [uid, rid, typing] = args;
+  const k = rid + ":" + uid;
+  if (typing) { __neondb_set("typing", k, { user_id: uid, room_id: rid, started_at: 0 }); }
+  else { __neondb_delete("typing", k); }
+  return { ok: true, typing: !!typing };
+}

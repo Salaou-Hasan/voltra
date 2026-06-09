@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // set_online — update a user's presence (online / offline)
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [user_id: string, online: boolean]
@@ -18,6 +18,8 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [uid, online] = args;
-__neondb_set("presence", uid, { user_id: uid, online: !!online, last_seen: 0 });
-result = { ok: true };
+function reducer(args) {
+  const [uid, online] = args;
+  __neondb_set("presence", uid, { user_id: uid, online: !!online, last_seen: 0 });
+  return { ok: true };
+}

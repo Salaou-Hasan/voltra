@@ -28,6 +28,7 @@ use futures::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
+use reqwest;
 
 fn ws_request(
     url: &str,
@@ -815,4 +816,113 @@ fn handle_watch_frame(data: &[u8], pending_route: &mut Option<Vec<String>>) {
             }
         }
     }
+}
+
+// ── neondb migrate ────────────────────────────────────────────────────────────
+
+/// Run pending migrations from the `migrations/` directory against a running server.
+///
+/// Each `*.toml` file in `migrations_dir` is sent to `POST /migrate` on the admin
+/// server.  The server applies any files not yet in its `__migrations` tracking table
+/// and returns a per-file summary.  Already-applied migrations are skipped.
+///
+/// `--dry-run` reads the files and prints what would be applied without POSTing.
+pub async fn cmd_migrate(
+    metrics_url: &str,
+    migrations_dir: &str,
+    dry_run: bool,
+) -> Result<()> {
+    let dir = std::path::Path::new(migrations_dir);
+    if !dir.exists() {
+        println!("No migrations directory found at {:?}", dir);
+        return Ok(());
+    }
+
+    // Collect *.toml files sorted lexicographically (001_ < 002_ etc.)
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|e| NeonDBError::internal(format!("Cannot read migrations dir: {}", e)))?
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("toml"))
+                .unwrap_or(false)
+        })
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+
+    if paths.is_empty() {
+        println!("No migration files found in {:?}", dir);
+        return Ok(());
+    }
+
+    println!("Found {} migration file(s) in {:?}", paths.len(), dir);
+    println!();
+
+    if dry_run {
+        println!("[dry-run] Would send the following migration files:");
+        for p in &paths {
+            println!("  • {}", p.file_name().and_then(|s| s.to_str()).unwrap_or("?"));
+            // Print a quick summary of steps
+            if let Ok(contents) = std::fs::read_to_string(p) {
+                if let Ok(parsed) = toml::from_str::<toml::Value>(&contents) {
+                    let version = parsed.get("version").and_then(|v| v.as_integer()).unwrap_or(0);
+                    let desc = parsed.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                    let steps = parsed.get("steps").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                    println!("    version={}, steps={}{}", version, steps,
+                        if desc.is_empty() { String::new() } else { format!(", \"{}\"", desc) });
+                }
+            }
+        }
+        println!();
+        println!("Run without --dry-run to apply.");
+        return Ok(());
+    }
+
+    // Build the request payload: list of {filename, content} objects
+    let mut migrations = Vec::new();
+    for p in &paths {
+        let filename = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        let content = std::fs::read_to_string(p)
+            .map_err(|e| NeonDBError::internal(format!("Cannot read {:?}: {}", p, e)))?;
+        migrations.push(serde_json::json!({ "filename": filename, "content": content }));
+    }
+    let payload = serde_json::json!({ "migrations": migrations });
+
+    let url = format!("{}/migrate", metrics_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .body(payload.to_string())
+        .send()
+        .await
+        .map_err(|e| NeonDBError::network_error(format!("Cannot reach {}: {}", url, e)))?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        eprintln!("Server returned HTTP {}: {}", status, body);
+        return Err(NeonDBError::network_error(format!("HTTP {}", status)));
+    }
+
+    match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(v) => {
+            let applied  = v.get("applied").and_then(|n| n.as_u64()).unwrap_or(0);
+            let skipped  = v.get("skipped").and_then(|n| n.as_u64()).unwrap_or(0);
+            let errors   = v.get("errors").and_then(|e| e.as_array()).cloned().unwrap_or_default();
+            println!("✓ Migration complete: {} applied, {} already up to date.", applied, skipped);
+            if !errors.is_empty() {
+                println!("  Errors:");
+                for err in &errors {
+                    println!("  ✗ {}", err.as_str().unwrap_or("unknown error"));
+                }
+            }
+        }
+        Err(_) => println!("✓ Migration complete.\n{}", body),
+    }
+    Ok(())
 }

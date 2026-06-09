@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 // delete_message — delete a message (author, moderator, or admin)
 // ───────────────────────────────────────────────────────────────────────
 // Args:   [message_id: string]
@@ -19,12 +19,14 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [mid] = args;
-const m = __neondb_get("messages", mid);
-if (!m) { result = { error: "no_such_message" }; }
-else if (m.user_id !== __neondb_caller_id && __neondb_caller_role !== "moderator" && __neondb_caller_role !== "admin") {
-  result = { error: "forbidden" };
-} else {
-  __neondb_delete("messages", mid);
-  result = { ok: true };
+function reducer(args) {
+  const [mid] = args;
+  const m = __neondb_get("messages", mid);
+  if (!m) { return { error: "no_such_message" }; }
+  else if (m.user_id !== __neondb_caller_id && __neondb_caller_role !== "moderator" && __neondb_caller_role !== "admin") {
+    return { error: "forbidden" };
+  } else {
+    __neondb_delete("messages", mid);
+    return { ok: true };
+  }
 }
