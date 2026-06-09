@@ -1,3 +1,27 @@
+/**
+ * Exponential-backoff reconnect configuration.
+ *
+ * All fields are optional; sensible defaults are used when omitted.
+ */
+export interface ReconnectOptions {
+    /** Whether to reconnect at all.  Default: true. */
+    enabled?: boolean;
+    /**
+     * Maximum number of reconnect attempts before giving up.
+     * Default: Infinity (keep trying forever).
+     */
+    maxAttempts?: number;
+    /** Initial backoff delay in milliseconds.  Default: 1000. */
+    baseDelayMs?: number;
+    /** Upper cap on backoff delay in milliseconds.  Default: 30000. */
+    maxDelayMs?: number;
+    /**
+     * Apply ±25% random jitter to each computed delay so that many clients
+     * do not all reconnect at the same instant after a server restart.
+     * Default: true.
+     */
+    jitter?: boolean;
+}
 /** Options passed to NeonDBClient constructor. */
 export interface NeonDBClientOptions {
     /** WebSocket URL, e.g. "ws://localhost:3000" or "wss://db.yourgame.com" */
@@ -11,6 +35,9 @@ export interface NeonDBClientOptions {
     /**
      * Milliseconds between auto-reconnect attempts.
      * Set to 0 to disable.  Default: 3000.
+     *
+     * @deprecated Use `reconnect.baseDelayMs` instead.  When `reconnect` is
+     * provided this field is ignored.
      */
     reconnectInterval?: number;
     /**
@@ -18,6 +45,26 @@ export interface NeonDBClientOptions {
      * Default: 5000.
      */
     callTimeout?: number;
+    /**
+     * Reconnect configuration with exponential backoff.
+     * When provided, overrides the legacy `reconnectInterval` field.
+     */
+    reconnect?: ReconnectOptions;
+    /**
+     * Called every time the WebSocket closes unexpectedly (before any
+     * reconnect attempt is scheduled).
+     */
+    onDisconnect?: () => void;
+    /**
+     * Called after a successful reconnect.
+     * @param attempt  1-based attempt number that succeeded.
+     */
+    onReconnect?: (attempt: number) => void;
+    /**
+     * Called after all reconnect attempts are exhausted (only fires when
+     * `reconnect.maxAttempts` is finite).
+     */
+    onReconnectFailed?: (err: Error) => void;
 }
 export interface ReducerResult {
     callId: number;
