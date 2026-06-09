@@ -346,6 +346,33 @@ After Session 43 (9-feature production-readiness wave, all branches merged):
 - Total tested: **471 tests, 0 failures**.
 - All 9 production features: **COMPLETE AND MERGED** — TLS, graceful shutdown, LRU eviction, Prometheus metrics, row-level security, SDK auto-reconnect, Docker/CI, docs, JWT+Ed25519 identity.
 
+---
+
+## 🎯 SESSION 44 — DIRECTION SET BY PROJECT OWNER (read this)
+
+**Goal:** Single-node SpacetimeDB *parity* (feature + performance), then make NeonDB the easiest
+game/app database to build on. Full detail in `TODO.md` → "🎯 THE GOAL".
+
+Three pillars:
+1. **Multi-language reducers** — add **C# (→ WASM via .NET 8 WASI)** and **Go (→ WASM via TinyGo)**
+   running in the existing Wasmtime backend. Parallelism is already provided by NeonDB's N-worker
+   dispatch (`num_cpus`); the languages just need to compile to `.wasm`. (TODO-032, TODO-033.)
+   **Do NOT embed the native Go runtime or .NET CLR** — Go's scheduler assumes process ownership and
+   the CLR is a heavyweight GC'd dependency; both fight the DB for memory. WASM is the chosen path.
+2. **Production hardening** — TODO-034…TODO-040 (bounded queue, queue metric, WAL crash test, SDK
+   race fix, `neondb migrate`, benchmark fix).
+3. **Ease of use** — TODO-027…TODO-031 (macros, codegen, engine templates).
+
+**MAJOR DECISION — cluster + Raft REMOVED (deferred).** The owner is deferring all distribution.
+TODO-034 removes `src/cluster/` and `src/raft/`, reverts the worker write path to single-node
+`commit()` → `publish_deltas()` → WAL append (faster than per-write consensus). **Recovery:** a
+`pre-cluster-removal` git tag preserves the Raft/cluster code (Sessions 36, 40–43) for later
+resurrection. Do not try to keep Raft "dormant but compiled" — fully remove it from the build.
+
+**Wave model (NOT hundreds of agents).** More agents on shared files = merge chaos (proven the hard
+way in the Session 43 9-agent merge). Sequence: Wave 0 solo (TODO-034+035, foundation), then
+parallel waves of ~5 agents on disjoint file sets. See `TODO.md` execution-order block.
+
 ### Session 43 — 9-feature production wave: all branches merged to master
 
 **9 parallel agents worked in separate worktrees; all merged to master in this session.**
