@@ -42,11 +42,6 @@ reqwest = { version = "0.11", features = ["blocking", "json"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 prometheus = { version = "0.13", default-features = false, features = ["process"] }
 
-# Raft consensus (distributed leader election + log replication)
-# storage-v2 enables the split RaftLogStorage + RaftStateMachine traits
-# (replaces the deprecated monolithic RaftStorage trait).
-openraft = { version = "0.9", features = ["serde", "storage-v2"] }
-anyerror = "0.1"   # error type used by openraft's StorageError constructors
 base64 = "0.21"
 jsonwebtoken = "9"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8", "pem"] }

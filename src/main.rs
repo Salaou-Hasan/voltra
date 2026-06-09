@@ -33,12 +33,9 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Method, Request, Response, Server, StatusCode,
 };
-use openraft;
-
 use neondb::{
     auth::{AuthValidator, IdentityIssuer},
     config::{Config, ScheduledReducerConfig},
-    cluster::{ClusterBus, ClusterConfig, NodeInfo, PeerEntry},
     error::Result,
     metrics::Metrics,
     network::{start_listener, PendingCall, RateLimiterConfig, RateLimiterRegistry, ReducerResponse},
@@ -894,29 +891,8 @@ async fn run_server(config: Config) -> Result<()> {
 
     let permissions = Arc::new(config.permissions.clone());
 
-    // ── Cluster bus ───────────────────────────────────────────────────────────
-    let cluster_config = ClusterConfig::from_env(config.shard_id, config.shard_count);
-    if cluster_config.enabled {
-        log::info!("[cluster] shard {}/{}, {} peer(s)", cluster_config.my_shard_id, cluster_config.shard_count, cluster_config.peers.len());
-    } else {
-        log::info!("[cluster] single-node mode");
-    }
-    let cluster_bus = ClusterBus::new(cluster_config);
-
-    // ── Dynamic seed join ─────────────────────────────────────────────────────
-    if let Ok(seed_url) = std::env::var("NEONDB_SEED_NODE") {
-        if !seed_url.is_empty() {
-            let my_shard_id = cluster_bus.config.my_shard_id;
-            let my_metrics  = format!("http://{}:{}", config.host, config.metrics_port);
-            log::info!("[cluster] Seeding from {}", seed_url);
-            let bus_seed = cluster_bus.clone();
-            tokio::spawn(async move {
-                if let Err(e) = cluster_seed(&bus_seed, &seed_url, my_shard_id, &my_metrics).await {
-                    log::warn!("[cluster] Seed join failed: {}", e);
-                }
-            });
-        }
-    }
+    // Distribution removed in Session 44 (TODO-034) — single-node only.
+    log::info!("[neondb] single-node mode");
 
     let (reducer_tx, reducer_rx) = kanal::unbounded_async::<PendingCall>();
     let subscription_manager = Arc::new(SubscriptionManager::new_with_options(config.two_frame_protocol));
@@ -1024,9 +1000,6 @@ async fn run_server(config: Config) -> Result<()> {
         })
     };
 
-    let gossip_handle = neondb::cluster::gossip::start_gossip(cluster_bus.clone(), shutdown_rx.clone());
-    let _fanout_retry_handle = neondb::cluster::fanout::start_fanout_retry(cluster_bus.clone(), shutdown_rx.clone());
-
     let wal_writer = Arc::new(BatchedWalWriter::open(
         &config.wal_path, config.wal_batch_interval_ms, config.wal_batch_size, config.unsafe_no_fsync,
     )?);
@@ -1040,78 +1013,19 @@ async fn run_server(config: Config) -> Result<()> {
 
     let startup_instant = std::time::Instant::now();
 
-    // ── Raft consensus engine ─────────────────────────────────────────────────
-    // Initialise openraft. In single-node mode this is a no-op cluster of 1.
-    // In multi-node mode other peers call POST /raft/add-learner and
-    // POST /raft/change-membership to form the cluster.
-    let raft_node_id: u64 = config.shard_id as u64;
-    let raft_node_addr = format!("http://{}:{}", config.host, config.metrics_port);
-    let raft_handle: Arc<neondb::raft::NeonRaft> = {
-        use neondb::raft::{
-            build_raft_config, TypeConfig,
-            network::NeonNetworkFactory,
-            state_machine::NeonStateMachine,
-            storage::MemLogStore,
-        };
-        use openraft::Raft;
-
-        let raft_config  = build_raft_config();
-        let vote_path = config.wal_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("raft_vote.json");
-        let persisted_vote = MemLogStore::load_persisted_vote(&vote_path);
-        let mut log_store = MemLogStore::new(Some(vote_path));
-        if let Some(vote) = persisted_vote {
-            use openraft::storage::RaftLogStorage;
-            log_store.save_vote(&vote).await.expect("Failed to restore persisted Raft vote");
-            log::info!("[raft] restored persisted vote from disk (term={})", vote.leader_id.term);
-        }
-        let state_machine = NeonStateMachine::new(tables.clone(), subscription_manager.clone());
-        let network_factory = NeonNetworkFactory::new();
-
-        let raft = Raft::<TypeConfig>::new(
-            raft_node_id,
-            raft_config,
-            network_factory,
-            log_store,
-            state_machine,
-        ).await.expect("Failed to create Raft node");
-
-        // Bootstrap: initialise as a single-node cluster unless peers are known.
-        // A multi-node cluster is formed by calling /raft/change-membership after
-        // all nodes are started.
-        if config.shard_count <= 1 {
-            let mut members = std::collections::BTreeMap::new();
-            members.insert(raft_node_id, openraft::BasicNode { addr: raft_node_addr.clone() });
-            match raft.initialize(members).await {
-                Ok(_)  => log::info!("[raft] bootstrapped single-node cluster (id={})", raft_node_id),
-                Err(e) => log::warn!("[raft] init skipped (already initialised?): {}", e),
-            }
-        } else {
-            log::info!("[raft] multi-node mode: shard_count={}; call /raft/change-membership to form cluster", config.shard_count);
-        }
-
-        Arc::new(raft)
-    };
-
     let metrics_handle = {
         let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
         let rx_shutdown = shutdown_rx.clone();
         let host_c = config.host.clone(); let mport = config.metrics_port;
-        let bus_c = cluster_bus.clone();
         let registry_c = registry.clone();
         let wal_c = wal_writer.clone();
         let seq_c = global_seq.clone();
         let pres_m = presence.clone();
         let ttl_m = ttl_manager.clone();
-        let raft_c = raft_handle.clone();
-        let raft_node_id_c = raft_node_id;
-        let raft_node_addr_c = raft_node_addr.clone();
         let prom_c = metrics.clone();
         let issuer_c = identity_issuer.clone();
         tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, raft_c, raft_node_id_c, raft_node_addr_c, prom_c, issuer_c, rx_shutdown).await {
+            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, prom_c, issuer_c, rx_shutdown).await {
                 log::error!("Metrics server error: {}", e);
             }
         })
@@ -1121,13 +1035,10 @@ async fn run_server(config: Config) -> Result<()> {
     for worker_id in 0..worker_count {
         let rx = reducer_rx.clone(); let tables_w = tables.clone();
         let registry_w = registry.clone();
-        let _subs_w = subscription_manager.clone(); let wal_w = wal_writer.clone();
+        let subs_w = subscription_manager.clone(); let wal_w = wal_writer.clone();
         let seq_w = global_seq.clone(); let snap_iv = snapshot_interval;
         let snap_dir_ww = snapshot_dir_w.clone(); let schema_w = schema_registry.clone();
-        let bus_w = cluster_bus.clone();
         let ttl_w = ttl_manager.clone();
-        // Raft handle — every committed reducer result goes through consensus.
-        let raft_w = raft_handle.clone();
         let mut rx_shutdown_w = shutdown_rx.clone();
         let metrics_w = metrics.clone();
 
@@ -1177,47 +1088,25 @@ async fn run_server(config: Config) -> Result<()> {
                     }
                     Ok(Ok((exec_result, mut ctx))) => match exec_result {
                         Ok(Ok(result_bytes)) => {
-                            // ── Raft write path ──────────────────────────────────────────────
+                            // ── Single-node write path ───────────────────────────────────────
                             //
-                            // Drain staged deltas WITHOUT applying them to the local TableStore.
-                            // Forward to Raft consensus: the Raft state machine (NeonStateMachine)
-                            // applies the deltas on EVERY node (including this one) once the entry
-                            // is committed to a quorum.  This guarantees the write is durable and
-                            // replicated before the client receives a success response.
-                            //
-                            // In single-node clusters, Raft commits immediately (no network RTT).
-                            // In multi-node clusters, commit latency ≈ one heartbeat period / 2
-                            // (≈125 ms with the default 250 ms heartbeat).
-                            let deltas = ctx.drain_pending_deltas();
-
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis() as u64;
-                            let raft_req = neondb::raft::RaftRequest {
-                                reducer_name: call.reducer_name.clone(),
-                                args:         call.args.clone(),
-                                deltas:       deltas.clone(),
-                                timestamp_ms: now_ms,
-                            };
-
-                            match raft_w.client_write(raft_req).await {
-                                Ok(_) => {
-                                    // Raft committed — state machine has applied deltas and
-                                    // published fan-out to local subscribers.
-                                    // Also write a WAL entry for crash recovery between
-                                    // snapshots (WAL is the fast-recovery path; Raft log is
-                                    // the authoritative distributed log).
+                            // Commit the staged deltas to the local TableStore (the sole atomic
+                            // write entry point), fan out to live subscribers, then append to the
+                            // WAL for crash recovery. Distribution/consensus was removed in
+                            // Session 44 — see TODO-034. The pre-cluster-removal git tag preserves
+                            // the Raft path for later resurrection.
+                            match ctx.commit() {
+                                Ok(deltas) => {
+                                    // Fan out to live subscribers (one encode, Arc<Bytes> reuse).
+                                    if !deltas.is_empty() {
+                                        subs_w.publish_deltas(&deltas);
+                                    }
                                     let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas.clone());
                                     if let Err(e) = wal_w.append(&entry, seq_num) {
-                                        log::warn!("WAL append failed (non-fatal, Raft is durable): {}", e);
+                                        log::warn!("WAL append failed: {}", e);
                                     } else {
                                         metrics_w.wal_entries_written_total.inc();
-                                    }
-                                    // Cluster fan-out to non-Raft legacy peers (if any).
-                                    if !deltas.is_empty() {
-                                        bus_w.fanout_deltas(&deltas);
                                     }
                                     // Periodic snapshot.
                                     if snap_iv > 0 && (seq_num + 1) % snap_iv == 0 {
@@ -1242,9 +1131,9 @@ async fn run_server(config: Config) -> Result<()> {
                                     ReducerResponse::success(call_id, result_bytes)
                                 }
                                 Err(e) => {
-                                    log::error!("Raft client_write failed call_id={}: {}", call_id, e);
+                                    log::error!("Commit failed call_id={}: {}", call_id, e);
                                     metrics_w.reducer_errors_total.inc();
-                                    ReducerResponse::error(call_id, format!("Consensus error: {}", e))
+                                    ReducerResponse::error(call_id, format!("Commit error: {}", e))
                                 }
                             }
                         }
@@ -1392,7 +1281,6 @@ async fn run_server(config: Config) -> Result<()> {
     let gauge_handle = {
         let tables_g = tables.clone();
         let subs_g   = subscription_manager.clone();
-        let raft_g   = raft_handle.clone();
         let prom_g   = metrics.clone();
         let mut rx_g = shutdown_rx.clone();
         tokio::spawn(async move {
@@ -1408,15 +1296,6 @@ async fn run_server(config: Config) -> Result<()> {
                         prom_g.subscriptions_active.set(
                             subs_g.active_subscriptions() as i64
                         );
-                        // Raft state
-                        let raft_metrics = raft_g.metrics().borrow().clone();
-                        prom_g.raft_log_index.set(
-                            raft_metrics.last_log_index.unwrap_or(0) as i64
-                        );
-                        let is_leader = raft_metrics.current_leader
-                            .map(|lid| if lid == raft_metrics.id { 1i64 } else { 0i64 })
-                            .unwrap_or(0);
-                        prom_g.raft_is_leader.set(is_leader);
                     }
                     _ = rx_g.changed() => break,
                 }
@@ -1457,63 +1336,12 @@ async fn run_server(config: Config) -> Result<()> {
     // 5. Await all remaining task handles (listener sends WebSocket Close frames).
     let _ = listener_handle.await;
     let _ = metrics_handle.await;
-    let _ = gossip_handle.await;
     let _ = presence_handle.await;
     let _ = ttl_handle.await;
     let _ = gauge_handle.await;
 
     eprintln!("[neondb] Shutdown complete.");
     log::info!("Shutdown complete");
-    Ok(())
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// cluster_seed — dynamic join via NEONDB_SEED_NODE
-// ─────────────────────────────────────────────────────────────────────────────
-
-async fn cluster_seed(
-    bus: &Arc<ClusterBus>,
-    seed_url: &str,
-    my_shard_id: u32,
-    my_metrics_url: &str,
-) -> std::result::Result<(), String> {
-    let url = format!("{}/cluster/join", seed_url.trim_end_matches('/'));
-
-    let body = serde_json::json!({
-        "shard_id":    my_shard_id,
-        "metrics_url": my_metrics_url,
-    });
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(bus.config.http_timeout_ms))
-        .build()
-        .map_err(|e| format!("HTTP client: {}", e))?;
-
-    let mut req = client.post(&url).json(&body);
-    if let Some((hdr, val)) = bus.secret_header() {
-        req = req.header(hdr, val);
-    }
-
-    let resp = req.send().await.map_err(|e| format!("POST {}: {}", url, e))?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("JSON: {}", e))?;
-    let peers = data.get("peers").and_then(|p| p.as_array()).cloned().unwrap_or_default();
-
-    let mut added = 0usize;
-    for peer_val in &peers {
-        let shard_id    = peer_val.get("shard_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let metrics_url = peer_val.get("metrics_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if shard_id == my_shard_id || metrics_url.is_empty() { continue; }
-        if !bus.peers.contains_key(&shard_id) {
-            let node = NodeInfo { shard_id, metrics_url };
-            bus.peers.insert(shard_id, PeerEntry::new(node));
-            added += 1;
-        }
-    }
-    log::info!("[cluster] Joined via seed {}; learned {} peer(s)", seed_url, added);
     Ok(())
 }
 
@@ -1585,16 +1413,12 @@ async fn start_metrics_server(
     port: u16,
     subscription_manager: Arc<SubscriptionManager>,
     tables: Arc<TableStore>,
-    cluster_bus: Arc<ClusterBus>,
     registry: Arc<ReducerRegistry>,
     wal_writer: Arc<BatchedWalWriter>,
     global_seq: Arc<std::sync::atomic::AtomicU64>,
     startup_instant: std::time::Instant,
     presence_manager: Arc<PresenceManager>,
     ttl_manager: Arc<TtlManager>,
-    raft: Arc<neondb::raft::NeonRaft>,
-    raft_node_id: u64,
-    raft_node_addr: String,
     prom: Arc<Metrics>,
     identity_issuer: Arc<IdentityIssuer>,
     mut shutdown: watch::Receiver<()>,
@@ -1605,28 +1429,23 @@ async fn start_metrics_server(
     let make_service = make_service_fn(move |_| {
         let subs  = subscription_manager.clone();
         let tbl   = tables.clone();
-        let bus   = cluster_bus.clone();
         let reg   = registry.clone();
         let wal   = wal_writer.clone();
         let seq   = global_seq.clone();
         let start = startup_instant;
         let pres  = presence_manager.clone();
         let ttl   = ttl_manager.clone();
-        let raft_svc = raft.clone();
-        let nid   = raft_node_id;
-        let naddr = raft_node_addr.clone();
         let prom_svc = prom.clone();
         let iss   = identity_issuer.clone();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 let subs = subs.clone(); let tbl = tbl.clone();
-                let bus  = bus.clone();  let reg = reg.clone();
+                let reg = reg.clone();
                 let wal  = wal.clone();  let seq = seq.clone();
                 let pres = pres.clone(); let ttl = ttl.clone();
-                let raft_r = raft_svc.clone(); let nid_r = nid; let naddr_r = naddr.clone();
                 let prom_r = prom_svc.clone();
                 let iss_r = iss.clone();
-                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq, start, pres, ttl, raft_r, nid_r, naddr_r, prom_r, iss_r).await }
+                async move { handle_metrics_request(req, subs, tbl, reg, wal, seq, start, pres, ttl, prom_r, iss_r).await }
             }))
         }
     });
@@ -1647,16 +1466,12 @@ async fn handle_metrics_request(
     req: Request<Body>,
     subscription_manager: Arc<SubscriptionManager>,
     tables: Arc<TableStore>,
-    cluster_bus: Arc<ClusterBus>,
-    registry: Arc<ReducerRegistry>,
+    _registry: Arc<ReducerRegistry>,   // retained for upcoming GET /schema (TODO-031)
     wal_writer: Arc<BatchedWalWriter>,
     global_seq: Arc<std::sync::atomic::AtomicU64>,
     startup_instant: std::time::Instant,
     presence_manager: Arc<PresenceManager>,
     ttl_manager: Arc<TtlManager>,
-    raft: Arc<neondb::raft::NeonRaft>,
-    raft_node_id: u64,
-    raft_node_addr: String,
     prom: Arc<Metrics>,
     identity_issuer: Arc<IdentityIssuer>,
 ) -> Result<Response<Body>> {
@@ -1699,10 +1514,6 @@ async fn handle_metrics_request(
                     serde_json::json!({ "table": name.clone(), "field": field })
                 })
             }).collect();
-            let peers: Vec<_> = cluster_bus.peers.iter().map(|e| {
-                let p = e.value();
-                serde_json::json!({ "shard_id": p.node.shard_id, "healthy": p.is_healthy() })
-            }).collect();
             Ok(json_response(serde_json::json!({
                 "tables": table_list,
                 "total_rows": tables.total_row_count(),
@@ -1710,8 +1521,6 @@ async fn handle_metrics_request(
                 "wal_sequence": global_seq.load(std::sync::atomic::Ordering::Relaxed),
                 "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
                 "snapshot_last_seq": 0u64, // Not easily queryable without scanning snapshot dir
-                "cluster_enabled": cluster_bus.is_active(),
-                "peers": peers,
             })))
         },
 
@@ -1775,243 +1584,6 @@ async fn handle_metrics_request(
                     *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR; Ok(r)
                 }
             }
-        }
-
-        (&Method::GET, "/cluster/health") => {
-            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
-            if !cluster_bus.validate_secret(secret) {
-                let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED;
-                return Ok(r);
-            }
-            Ok(json_response(serde_json::json!({
-                "ok": true,
-                "shard_id": cluster_bus.config.my_shard_id,
-                "shard_count": cluster_bus.config.shard_count,
-                "total_rows": tables.total_row_count(),
-                "active_connections": subscription_manager.active_connections(),
-            })))
-        }
-
-        (&Method::GET, "/cluster/peers") => {
-            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
-            if !cluster_bus.validate_secret(secret) {
-                let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED;
-                return Ok(r);
-            }
-            let peers: Vec<_> = cluster_bus.peers.iter().map(|e| {
-                let p = e.value();
-                serde_json::json!({ "shard_id": p.node.shard_id, "metrics_url": p.node.metrics_url, "healthy": p.is_healthy() })
-            }).collect();
-            Ok(json_response(serde_json::json!({
-                "my_shard_id": cluster_bus.config.my_shard_id,
-                "shard_count": cluster_bus.config.shard_count,
-                "cluster_enabled": cluster_bus.is_active(),
-                "peers": peers,
-            })))
-        }
-
-        (&Method::POST, "/cluster/join") => {
-            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
-            if !cluster_bus.validate_secret(secret) {
-                let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED;
-                return Ok(r);
-            }
-            let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
-            let join_req: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v,
-                Err(e) => {
-                    let mut r = json_response(serde_json::json!({ "error": format!("Parse error: {}", e) }));
-                    *r.status_mut() = StatusCode::BAD_REQUEST;
-                    return Ok(r);
-                }
-            };
-            let new_shard_id = join_req.get("shard_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let new_url = join_req.get("metrics_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-            if new_url.is_empty() {
-                let mut r = json_response(serde_json::json!({ "error": "metrics_url required" }));
-                *r.status_mut() = StatusCode::BAD_REQUEST;
-                return Ok(r);
-            }
-
-            if !cluster_bus.peers.contains_key(&new_shard_id) {
-                let node = NodeInfo { shard_id: new_shard_id, metrics_url: new_url.clone() };
-                cluster_bus.peers.insert(new_shard_id, PeerEntry::new(node));
-                log::info!("[cluster] New peer joined: shard{} @ {}", new_shard_id, new_url);
-            }
-
-            let peers: Vec<_> = cluster_bus.peers.iter()
-                .map(|e| serde_json::json!({ "shard_id": e.value().node.shard_id, "metrics_url": e.value().node.metrics_url }))
-                .collect();
-
-            Ok(json_response(serde_json::json!({
-                "ok": true,
-                "my_shard_id": cluster_bus.config.my_shard_id,
-                "peers": peers,
-            })))
-        }
-
-        (&Method::POST, "/cluster/deltas") => {
-            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
-            if !cluster_bus.validate_secret(secret) {
-                let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED;
-                return Ok(r);
-            }
-            let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
-            match neondb::cluster::fanout::parse_delta_payload(&body_bytes) {
-                Err(e) => {
-                    let mut r = json_response(serde_json::json!({ "error": format!("Parse error: {}", e) }));
-                    *r.status_mut() = StatusCode::BAD_REQUEST; Ok(r)
-                }
-                Ok(payload) => {
-                    let deltas = neondb::cluster::fanout::wire_to_row_deltas(payload.deltas);
-                    match ClusterBus::apply_peer_deltas(&deltas, &tables, &subscription_manager) {
-                        Ok(()) => {
-                            // Journal peer-applied deltas to the local WAL so they survive
-                            // a restart on this receiver node. Without this, peer fan-outs
-                            // are in-memory only.
-                            if !deltas.is_empty() {
-                                let seq_num = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                let ts = current_timestamp_nanos();
-                                let entry = WalEntry::new(
-                                    ts,
-                                    seq_num,
-                                    "__cluster_replication".to_string(),
-                                    Vec::new(),
-                                    deltas.clone(),
-                                );
-                                if let Err(e) = wal_writer.append(&entry, seq_num) {
-                                    log::error!("[cluster] WAL append for replicated deltas failed: {}", e);
-                                }
-                            }
-                            Ok(json_response(serde_json::json!({ "ok": true, "applied": deltas.len() })))
-                        }
-                        Err(e) => {
-                            let mut r = json_response(serde_json::json!({ "error": e.to_string() }));
-                            *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR; Ok(r)
-                        }
-                    }
-                }
-            }
-        }
-
-        (&Method::POST, "/cluster/call") => {
-            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
-            if !cluster_bus.validate_secret(secret) {
-                let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED;
-                return Ok(r);
-            }
-            let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
-            let proxy_req: neondb::cluster::proxy::ProxyCallRequest =
-                match serde_json::from_slice(&body_bytes) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let mut r = json_response(serde_json::json!({ "error": format!("Parse error: {}", e) }));
-                        *r.status_mut() = StatusCode::BAD_REQUEST;
-                        return Ok(r);
-                    }
-                };
-
-            // Shard ownership validation: if the caller specified a target shard,
-            // reject mis-routed requests with HTTP 421 (Misdirected) so the caller
-            // can refresh its peer table and retry against the correct owner.
-            if let Some(target) = proxy_req.target_shard_id {
-                let me = cluster_bus.config.my_shard_id;
-                if target != me {
-                    log::warn!(
-                        "[cluster] Misrouted /cluster/call: reducer='{}' target_shard={} but I am shard{}",
-                        proxy_req.reducer_name, target, me
-                    );
-                    let mut r = json_response(serde_json::json!({
-                        "error": "wrong_shard",
-                        "owner_shard": me,
-                    }));
-                    *r.status_mut() = StatusCode::MISDIRECTED_REQUEST;
-                    return Ok(r);
-                }
-            }
-
-            use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-            let args = match B64.decode(&proxy_req.args_b64) {
-                Ok(a) => a,
-                Err(e) => {
-                    let mut r = json_response(serde_json::json!({ "error": format!("Base64 decode: {}", e) }));
-                    *r.status_mut() = StatusCode::BAD_REQUEST;
-                    return Ok(r);
-                }
-            };
-
-            let tables_blk   = tables.clone();
-            let registry_blk = registry.clone();
-            let reducer_name = proxy_req.reducer_name.clone();
-            let caller_id    = proxy_req.caller_id.clone();
-            let caller_role  = proxy_req.caller_role.clone();
-            let timestamp    = current_timestamp_nanos();
-
-            let blk = tokio::task::spawn_blocking(move || {
-                let mut ctx = neondb::reducer::ReducerContext::new(tables_blk, timestamp);
-                ctx.caller_id   = caller_id;
-                ctx.caller_role = caller_role;
-                let exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                    || registry_blk.execute(&reducer_name, &mut ctx, &args)
-                ));
-                (exec, ctx)
-            }).await;
-
-            let resp_body = match blk {
-                Err(e)              => neondb::cluster::proxy::ProxyCallResponse::error_response(format!("Task join error: {}", e)),
-                Ok((Err(_), _))     => neondb::cluster::proxy::ProxyCallResponse::error_response("Reducer panicked"),
-                Ok((Ok(Err(e)), _)) => neondb::cluster::proxy::ProxyCallResponse::error_response(e.to_string()),
-                Ok((Ok(Ok(result_bytes)), mut ctx)) => match ctx.commit() {
-                    Err(e)     => neondb::cluster::proxy::ProxyCallResponse::error_response(format!("Commit error: {}", e)),
-                    Ok(deltas) => {
-                        subscription_manager.publish_deltas(&deltas);
-                        cluster_bus.fanout_deltas(&deltas);
-                        neondb::cluster::proxy::ProxyCallResponse::success_response(&result_bytes)
-                    }
-                },
-            };
-
-            Ok(json_response(serde_json::to_value(resp_body).unwrap_or(serde_json::json!({}))))
-        }
-
-        // ── Raft RPC endpoints (called by peer nodes) ─────────────────────
-        // These receive openraft RPCs from other NeonDB nodes in the cluster.
-
-        (&Method::POST, "/raft/append") => {
-            Ok(neondb::raft::http::handle_raft_append(raft, req).await)
-        }
-
-        (&Method::POST, "/raft/vote") => {
-            Ok(neondb::raft::http::handle_raft_vote(raft, req).await)
-        }
-
-        (&Method::POST, "/raft/snapshot") => {
-            Ok(neondb::raft::http::handle_raft_snapshot(raft, req).await)
-        }
-
-        (&Method::GET, "/raft/metrics") => {
-            Ok(neondb::raft::http::handle_raft_metrics(raft).await)
-        }
-
-        (&Method::POST, "/raft/add-learner") => {
-            Ok(neondb::raft::http::handle_raft_add_learner(raft, req).await)
-        }
-
-        (&Method::POST, "/raft/change-membership") => {
-            Ok(neondb::raft::http::handle_raft_change_membership(raft, req).await)
-        }
-
-        (&Method::POST, "/raft/init") => {
-            Ok(neondb::raft::http::handle_raft_init(raft, raft_node_id, raft_node_addr).await)
         }
 
         // ── Identity / JWT endpoints ──────────────────────────────────────────

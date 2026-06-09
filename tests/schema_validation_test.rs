@@ -12,6 +12,7 @@
 // ============================================================================
 
 use neondb::{ColumnDef, SchemaRegistry, TableSchema};
+use neondb::schema::RlsPolicy;
 use serde_json::json;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -59,6 +60,7 @@ fn registry_with_players() -> SchemaRegistry {
                 required: false,
             },
         ],
+        rls: RlsPolicy::Public,
     });
     reg
 }
@@ -229,6 +231,7 @@ fn any_column_accepts_arbitrary_value() {
                 required: true,
             },
         ],
+        rls: RlsPolicy::Public,
     });
 
     // Nested object on an Any column
