@@ -40,8 +40,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch::Receiver};
+use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -129,10 +130,18 @@ pub async fn start_listener(
     ttl_manager: Arc<TtlManager>,
     mut shutdown: Receiver<()>,
     metrics: Arc<Metrics>,
+    tls: Option<Arc<rustls::ServerConfig>>,
 ) -> Result<()> {
     let bind_addr = format!("{}:{}", addr, port);
     let listener = TcpListener::bind(&bind_addr).await?;
-    log::info!("WebSocket listener started on {}", bind_addr);
+
+    let tls_acceptor: Option<TlsAcceptor> = tls.map(TlsAcceptor::from);
+
+    if tls_acceptor.is_some() {
+        log::info!("WebSocket listener started (WSS/TLS) on {}", bind_addr);
+    } else {
+        log::info!("WebSocket listener started on {}", bind_addr);
+    }
 
     loop {
         tokio::select! {
@@ -160,14 +169,29 @@ pub async fn start_listener(
                         let ttl     = ttl_manager.clone();
                         let sd      = shutdown.clone();
                         let met     = metrics.clone();
+                        let peer    = peer_addr.to_string();
+                        let tls_acc = tls_acceptor.clone();
 
                         // Record connection metrics immediately on accept.
                         metrics.websocket_connects_total.inc();
                         metrics.websocket_connections_active.inc();
 
                         tokio::spawn(async move {
-                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, sql_to, auth_v, rl, pres, ttl, peer_addr.to_string(), sd, met).await {
-                                log::warn!("Client error: {}", e);
+                            if let Some(acceptor) = tls_acc {
+                                match acceptor.accept(stream).await {
+                                    Ok(tls_stream) => {
+                                        if let Err(e) = handle_client(
+                                            tls_stream, tx, subs, tbl, api_key, conns, perms,
+                                            sql_to, auth_v, rl, pres, ttl, peer, sd, met,
+                                        ).await { log::warn!("TLS client error: {}", e); }
+                                    }
+                                    Err(e) => log::warn!("TLS accept error from {}: {}", peer, e),
+                                }
+                            } else {
+                                if let Err(e) = handle_client(
+                                    stream, tx, subs, tbl, api_key, conns, perms,
+                                    sql_to, auth_v, rl, pres, ttl, peer, sd, met,
+                                ).await { log::warn!("Client error: {}", e); }
                             }
                         });
                     }
@@ -183,8 +207,8 @@ pub async fn start_listener(
     Ok(())
 }
 
-async fn handle_client(
-    stream: TcpStream,
+async fn handle_client<S>(
+    stream: S,
     reducer_tx: kanal::AsyncSender<PendingCall>,
     subscription_manager: Arc<SubscriptionManager>,
     tables: Arc<TableStore>,
@@ -199,7 +223,10 @@ async fn handle_client(
     peer_addr: String,
     mut shutdown: Receiver<()>,
     metrics: Arc<Metrics>,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     // ── WebSocket handshake with JWT / API-key auth ───────────────────────────
     let caller_id_cell   = Arc::new(std::sync::Mutex::new(String::new()));
     let caller_role_cell = Arc::new(std::sync::Mutex::new(String::new()));

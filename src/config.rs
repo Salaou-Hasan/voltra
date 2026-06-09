@@ -82,28 +82,19 @@ impl PermissionsConfig {
 }
 
 /// Eviction policy configuration for the in-memory TableStore.
-///
-/// Controls how NeonDB responds to memory pressure from unlimited row writes.
-///
-/// Example in `neondb.toml`:
-/// ```toml
-/// [eviction]
-/// policy = "lru_row_cap"
-/// max_rows_per_table = 100000
-/// ```
-///
-/// Env vars:
-///   `NEONDB_EVICTION_POLICY`       — "none" | "lru_row_cap" | "lru_byte_cap"
-///   `NEONDB_MAX_ROWS_PER_TABLE`    — usize  (used with lru_row_cap)
-///   `NEONDB_MAX_BYTES_TOTAL`       — usize  (used with lru_byte_cap)
 #[derive(Clone, Debug, Default)]
 pub struct EvictionConfig {
-    /// Eviction policy name: "none" (default), "lru_row_cap", or "lru_byte_cap".
     pub policy: String,
-    /// Maximum rows per table before LRU eviction triggers (policy = "lru_row_cap").
     pub max_rows_per_table: usize,
-    /// Maximum total bytes across all tables before eviction triggers (policy = "lru_byte_cap").
     pub max_bytes_total: usize,
+}
+
+/// TLS configuration — enables WSS (WebSocket Secure).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub cert_path: Option<std::path::PathBuf>,
+    pub key_path: Option<std::path::PathBuf>,
 }
 
 /// Server configuration loaded from `neondb.toml`, environment variables, or defaults.
@@ -164,12 +155,12 @@ pub struct Config {
     /// Env: `NEONDB_TTL_SWEEP_INTERVAL_MS`.  Default 5000.
     pub ttl_sweep_interval_ms: u64,
     /// In-memory row eviction configuration.
-    /// Policy defaults to `"none"` (unlimited rows).
     pub eviction: EvictionConfig,
+    /// TLS / WSS configuration.
+    pub tls: TlsConfig,
 }
 
-// These structs mirror the TOML schema. Fields that are not yet wired into
-// Config are kept for forward-compatibility and suppressed individually.
+// These structs mirror the TOML schema.
 #[derive(Deserialize)]
 struct ConfigFile {
     #[allow(dead_code)]
@@ -180,6 +171,7 @@ struct ConfigFile {
     #[serde(rename = "permissions_meta")]
     permissions_meta: Option<ConfigPermissionsMeta>,
     eviction: Option<ConfigEviction>,
+    tls: Option<ConfigTls>,
 }
 
 #[derive(Deserialize)]
@@ -187,6 +179,13 @@ struct ConfigEviction {
     policy: Option<String>,
     max_rows_per_table: Option<usize>,
     max_bytes_total: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct ConfigTls {
+    enabled: Option<bool>,
+    cert_path: Option<String>,
+    key_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -281,6 +280,7 @@ impl Config {
             presence_offline_timeout_ms: 60_000,
             ttl_sweep_interval_ms: 5_000,
             eviction: EvictionConfig::default(),
+            tls: TlsConfig::default(),
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -291,6 +291,7 @@ impl Config {
                     apply_permissions_section(&mut cfg, parsed.permissions);
                     apply_permissions_meta(&mut cfg, parsed.permissions_meta);
                     apply_eviction_section(&mut cfg, parsed.eviction);
+                    apply_tls_section(&mut cfg, parsed.tls);
                 }
             }
         }
@@ -322,6 +323,7 @@ impl Config {
         apply_permissions_section(&mut cfg, parsed.permissions);
         apply_permissions_meta(&mut cfg, parsed.permissions_meta);
         apply_eviction_section(&mut cfg, parsed.eviction);
+        apply_tls_section(&mut cfg, parsed.tls);
         Some(cfg)
     }
 
@@ -467,6 +469,19 @@ fn apply_permissions_section(
         // Preserve any previously-applied default_policy.
         let policy = cfg.permissions.default_policy;
         cfg.permissions = PermissionsConfig { rules, default_policy: policy };
+    }
+}
+
+fn apply_tls_section(cfg: &mut Config, tls: Option<ConfigTls>) {
+    let Some(t) = tls else { return };
+    if let Some(e) = t.enabled {
+        cfg.tls.enabled = e;
+    }
+    if let Some(p) = t.cert_path {
+        cfg.tls.cert_path = Some(PathBuf::from(p));
+    }
+    if let Some(p) = t.key_path {
+        cfg.tls.key_path = Some(PathBuf::from(p));
     }
 }
 
@@ -618,19 +633,22 @@ fn apply_env_overrides(cfg: &mut Config) {
     {
         cfg.eviction.max_bytes_total = b;
     }
+    if let Ok(v) = env::var("NEONDB_TLS_ENABLED") {
+        cfg.tls.enabled = v == "1" || v.eq_ignore_ascii_case("true");
+    }
+    if let Ok(p) = env::var("NEONDB_TLS_CERT_PATH") {
+        cfg.tls.cert_path = Some(PathBuf::from(p));
+    }
+    if let Ok(p) = env::var("NEONDB_TLS_KEY_PATH") {
+        cfg.tls.key_path = Some(PathBuf::from(p));
+    }
 }
 
 fn apply_eviction_section(cfg: &mut Config, eviction: Option<ConfigEviction>) {
     if let Some(e) = eviction {
-        if let Some(p) = e.policy {
-            cfg.eviction.policy = p;
-        }
-        if let Some(n) = e.max_rows_per_table {
-            cfg.eviction.max_rows_per_table = n;
-        }
-        if let Some(b) = e.max_bytes_total {
-            cfg.eviction.max_bytes_total = b;
-        }
+        if let Some(p) = e.policy { cfg.eviction.policy = p; }
+        if let Some(n) = e.max_rows_per_table { cfg.eviction.max_rows_per_table = n; }
+        if let Some(b) = e.max_bytes_total { cfg.eviction.max_bytes_total = b; }
     }
 }
 

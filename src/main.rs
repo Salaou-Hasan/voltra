@@ -946,6 +946,30 @@ async fn run_server(config: Config) -> Result<()> {
     // ── Prometheus metrics ────────────────────────────────────────────────────
     let metrics = Arc::new(Metrics::new());
 
+    // ── TLS configuration ────────────────────────────────────────────────────
+    let tls_server_config: Option<std::sync::Arc<rustls::ServerConfig>> = if config.tls.enabled {
+        match (config.tls.cert_path.as_deref(), config.tls.key_path.as_deref()) {
+            (Some(cert), Some(key)) => {
+                match neondb::network::tls::load_tls_config(cert, key) {
+                    Ok(cfg) => {
+                        log::info!("TLS enabled: cert={}, key={}", cert.display(), key.display());
+                        Some(cfg)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load TLS config, falling back to plaintext: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => {
+                log::warn!("TLS enabled but cert_path/key_path not set. Falling back to plaintext.");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let listener_handle = {
         let config_c = config.clone(); let tx_c = reducer_tx.clone();
         let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
@@ -956,12 +980,13 @@ async fn run_server(config: Config) -> Result<()> {
         let pres_c = presence.clone();
         let ttl_c = ttl_manager.clone();
         let metrics_c = metrics.clone();
+        let tls_cfg = tls_server_config.clone();
         tokio::spawn(async move {
             if let Err(e) = start_listener(
                 config_c.host, config_c.port, tx_c, subs_c, tables_c,
                 config_c.max_connections, config_c.api_key.clone(),
                 conns_c, perms_c, config_c.sql_timeout_ms,
-                auth_c, rl_c, pres_c, ttl_c, rx_shutdown, metrics_c,
+                auth_c, rl_c, pres_c, ttl_c, rx_shutdown, metrics_c, tls_cfg,
             ).await { log::error!("Listener error: {}", e); }
         })
     };
