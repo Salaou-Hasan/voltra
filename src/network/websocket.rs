@@ -26,7 +26,7 @@
 use super::message::{ClientMessage, ReducerResponse, ServerMessage, SqlResult};
 use super::protocol;
 use super::rate_limiter::RateLimiterRegistry;
-use crate::auth::{AuthResult, AuthValidator};
+use crate::auth::{AuthResult, AuthValidator, IdentityIssuer};
 use crate::config::PermissionsConfig;
 use crate::error::{NeonDBError, Result};
 use crate::metrics::Metrics;
@@ -108,6 +108,14 @@ fn parse_bearer(header: &str) -> Option<(String, String)> {
     Some((token.to_string(), String::new()))
 }
 
+/// Returns `true` when the token string looks like a JWT (has exactly 2 dots).
+///
+/// A raw API key never contains dots in this format; JWTs always have the
+/// structure `header.payload.signature`.
+fn is_jwt(token: &str) -> bool {
+    token.chars().filter(|&c| c == '.').count() == 2
+}
+
 /// Start the WebSocket listener.
 ///
 /// `sql_timeout_ms` caps how long a single SQL query may run on the blocking
@@ -128,6 +136,7 @@ pub async fn start_listener(
     rate_limiter: Arc<RateLimiterRegistry>,
     presence: Arc<PresenceManager>,
     ttl_manager: Arc<TtlManager>,
+    identity_issuer: Arc<IdentityIssuer>,
     mut shutdown: Receiver<()>,
     metrics: Arc<Metrics>,
     tls: Option<Arc<rustls::ServerConfig>>,
@@ -169,6 +178,7 @@ pub async fn start_listener(
                         let ttl     = ttl_manager.clone();
                         let sd      = shutdown.clone();
                         let met     = metrics.clone();
+                        let iss     = identity_issuer.clone();
                         let peer    = peer_addr.to_string();
                         let tls_acc = tls_acceptor.clone();
 
@@ -182,7 +192,7 @@ pub async fn start_listener(
                                     Ok(tls_stream) => {
                                         if let Err(e) = handle_client(
                                             tls_stream, tx, subs, tbl, api_key, conns, perms,
-                                            sql_to, auth_v, rl, pres, ttl, peer, sd, met,
+                                            sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met,
                                         ).await { log::warn!("TLS client error: {}", e); }
                                     }
                                     Err(e) => log::warn!("TLS accept error from {}: {}", peer, e),
@@ -190,7 +200,7 @@ pub async fn start_listener(
                             } else {
                                 if let Err(e) = handle_client(
                                     stream, tx, subs, tbl, api_key, conns, perms,
-                                    sql_to, auth_v, rl, pres, ttl, peer, sd, met,
+                                    sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met,
                                 ).await { log::warn!("Client error: {}", e); }
                             }
                         });
@@ -220,6 +230,7 @@ async fn handle_client<S>(
     rate_limiter: Arc<RateLimiterRegistry>,
     presence: Arc<PresenceManager>,
     ttl_manager: Arc<TtlManager>,
+    identity_issuer: Arc<IdentityIssuer>,
     peer_addr: String,
     mut shutdown: Receiver<()>,
     metrics: Arc<Metrics>,
@@ -234,6 +245,7 @@ where
     let caller_role_capture = caller_role_cell.clone();
 
     let auth_v = auth_validator.clone();
+    let iss_v  = identity_issuer.clone();
     let ws_stream = tokio_tungstenite::accept_hdr_async(
         stream,
         move |request: &Request, response: Response| {
@@ -243,7 +255,6 @@ where
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
 
-            // Use AuthValidator for all auth modes (JWT, API key, or open)
             if auth_header.is_empty() {
                 // No auth header provided.
                 // If auth is configured (api_key is Some, or AuthValidator is not in None mode),
@@ -258,16 +269,45 @@ where
                     }
                 }
             } else {
-                match auth_v.validate(auth_header) {
-                    AuthResult::Authenticated { user_id, role, .. } => {
-                        if let Ok(mut cell) = caller_id_capture.lock() { *cell = user_id; }
-                        if let Ok(mut cell) = caller_role_capture.lock() { *cell = role; }
+                // Strip "Bearer " prefix to get the raw token.
+                let raw_token = if let Some(s) = auth_header.strip_prefix("Bearer ") {
+                    s.trim()
+                } else if let Some(s) = auth_header.strip_prefix("bearer ") {
+                    s.trim()
+                } else {
+                    auth_header
+                };
+
+                if is_jwt(raw_token) {
+                    // ── Ed25519 JWT path ──────────────────────────────────────
+                    match iss_v.verify(raw_token) {
+                        Ok(claims) => {
+                            if let Ok(mut cell) = caller_id_capture.lock() {
+                                *cell = claims.sub.clone();
+                            }
+                            if let Ok(mut cell) = caller_role_capture.lock() {
+                                *cell = claims.roles.first().cloned().unwrap_or_default();
+                            }
+                        }
+                        Err(e) => {
+                            return Err(ErrorResponse::new(Some(format!(
+                                "Unauthorized: invalid JWT — {}", e
+                            ))));
+                        }
                     }
-                    AuthResult::Denied(reason) => {
-                        return Err(ErrorResponse::new(Some(format!("Unauthorized: {}", reason))));
-                    }
-                    AuthResult::Anonymous => {
-                        // No auth configured — allow with default identity
+                } else {
+                    // ── Legacy API key / HMAC JWT path ───────────────────────
+                    match auth_v.validate(auth_header) {
+                        AuthResult::Authenticated { user_id, role, .. } => {
+                            if let Ok(mut cell) = caller_id_capture.lock() { *cell = user_id; }
+                            if let Ok(mut cell) = caller_role_capture.lock() { *cell = role; }
+                        }
+                        AuthResult::Denied(reason) => {
+                            return Err(ErrorResponse::new(Some(format!("Unauthorized: {}", reason))));
+                        }
+                        AuthResult::Anonymous => {
+                            // No auth configured — allow with default identity
+                        }
                     }
                 }
             }
@@ -933,5 +973,41 @@ mod tests {
             Ok(_) => panic!("Expected channel to be full after {} sends", CLIENT_SEND_BUFFER_CAPACITY),
             Err(mpsc::error::TrySendError::Closed(_)) => panic!("Channel unexpectedly closed"),
         }
+    }
+
+    // ── is_jwt helper tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_jwt_with_three_segments() {
+        // A real JWT (three base64url segments separated by dots)
+        assert!(is_jwt("eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhbGljZSJ9.SIGNATURE"));
+    }
+
+    #[test]
+    fn test_is_jwt_rejects_api_key() {
+        assert!(!is_jwt("my-secret-api-key"));
+    }
+
+    #[test]
+    fn test_is_jwt_rejects_key_with_role_suffix() {
+        // API key with role: "key:role" — one colon but no dots → not JWT
+        assert!(!is_jwt("my-key:admin"));
+    }
+
+    #[test]
+    fn test_is_jwt_rejects_two_segment_string() {
+        // Only one dot → 2 segments, not 3 → not a JWT
+        assert!(!is_jwt("header.payload"));
+    }
+
+    #[test]
+    fn test_is_jwt_rejects_four_segment_string() {
+        // Three dots → 4 segments — also not a valid JWT
+        assert!(!is_jwt("a.b.c.d"));
+    }
+
+    #[test]
+    fn test_is_jwt_empty_string_not_jwt() {
+        assert!(!is_jwt(""));
     }
 }
