@@ -3,6 +3,11 @@
 // Session 31 — TODO-021: Optimistic updates
 //   call(reducer, args, { optimistic }) applies a speculative cache update
 //   immediately, then rolls back on server error.
+// Session (auto-reconnect) — exponential-backoff reconnect with:
+//   - pending call queue (calls made while disconnected are buffered)
+//   - subscription re-issue after reconnect
+//   - optimistic rollback on disconnect (pitfall #21)
+//   - onDisconnect / onReconnect / onReconnectFailed callbacks
 // ============================================================================
 import { encodeReducerCall, encodeSubscribe, encodeUnsubscribe, encodeArgs, decodeServerMessage, decodeResult, } from "./protocol.js";
 // Use native WebSocket in browsers; dynamically import 'ws' in Node.js.
@@ -29,8 +34,43 @@ function unrkey(key) {
     const idx = key.indexOf(ROLLBACK_KEY_SEP);
     return [key.slice(0, idx), key.slice(idx + 1)];
 }
+// ── Reconnect helpers ─────────────────────────────────────────────────────────
+/** Resolve ReconnectOptions → concrete values with defaults applied. */
+function resolveReconnect(opts) {
+    if (opts.reconnect) {
+        return {
+            enabled: opts.reconnect.enabled ?? true,
+            maxAttempts: opts.reconnect.maxAttempts ?? Infinity,
+            baseDelayMs: opts.reconnect.baseDelayMs ?? 1_000,
+            maxDelayMs: opts.reconnect.maxDelayMs ?? 30_000,
+            jitter: opts.reconnect.jitter ?? true,
+        };
+    }
+    // Legacy: reconnectInterval field.
+    const interval = opts.reconnectInterval ?? 3_000;
+    return {
+        enabled: interval > 0,
+        maxAttempts: Infinity,
+        baseDelayMs: interval,
+        maxDelayMs: interval,
+        jitter: false,
+    };
+}
+/**
+ * Compute exponential-backoff delay for `attempt` (0-based).
+ * Formula: min(maxDelayMs, baseDelayMs * 2^attempt) ± 25% jitter.
+ */
+export function computeBackoffDelay(attempt, baseDelayMs, maxDelayMs, jitter) {
+    const base = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt));
+    if (!jitter)
+        return base;
+    // ±25%: multiply by a uniform value in [0.75, 1.25].
+    const factor = 0.75 + Math.random() * 0.5;
+    return Math.round(base * factor);
+}
 export class NeonDBClient {
     opts;
+    reconnectCfg;
     ws = null;
     pendingCalls = new Map();
     subscriptions = new Map();
@@ -40,6 +80,14 @@ export class NeonDBClient {
     reconnectTimer = null;
     closed = false;
     pendingRoute = null;
+    // ── Reconnect state ───────────────────────────────────────────────────────
+    /** Number of consecutive failed reconnect attempts so far. */
+    reconnectAttempts = 0;
+    /**
+     * Calls issued while the socket was down.  Flushed (in order) immediately
+     * after the next successful reconnect.
+     */
+    callQueue = [];
     // ── Connection lifecycle events ───────────────────────────────────────────
     onConnected;
     onDisconnected;
@@ -49,8 +97,13 @@ export class NeonDBClient {
             reconnectInterval: 3_000,
             callTimeout: 5_000,
             apiKey: "",
+            reconnect: undefined,
+            onDisconnect: undefined,
+            onReconnect: undefined,
+            onReconnectFailed: undefined,
             ...options,
         };
+        this.reconnectCfg = resolveReconnect(options);
     }
     // ── Connection ────────────────────────────────────────────────────────────
     connect() {
@@ -60,6 +113,10 @@ export class NeonDBClient {
         this.closed = false;
         return this.openSocket();
     }
+    /**
+     * Gracefully disconnect.  Sets `userInitiatedClose` so no reconnect fires.
+     * Rejects all pending (in-flight) calls immediately.
+     */
     disconnect() {
         this.closed = true;
         if (this.reconnectTimer != null) {
@@ -69,6 +126,7 @@ export class NeonDBClient {
         this.ws?.close();
         this.ws = null;
         this.rejectAllPending(new Error("Client disconnected"));
+        this.drainCallQueue(new Error("Client disconnected"));
     }
     // ── Reducer calls ─────────────────────────────────────────────────────────
     /**
@@ -100,77 +158,21 @@ export class NeonDBClient {
      *   5. On server **error**: cache is rolled back to the pre-call snapshot
      *      and `onRollback` is called if supplied.
      *
+     * **Disconnected behaviour**: if the socket is not currently open the call
+     * is buffered and automatically flushed once the next reconnect succeeds.
+     * The returned Promise resolves/rejects when the buffered call completes.
+     *
      * @returns Raw result bytes, or `null` if the call succeeded with no result.
      * @throws  If the reducer returned an error or the call timed out.
      */
     call(reducerName, args = [], optimisticOpts) {
-        return new Promise((resolve, reject) => {
-            if (!this.isConnected()) {
-                reject(new Error("Not connected"));
-                return;
-            }
-            const callId = this.nextCallId++;
-            const encodedArgs = encodeArgs(args);
-            const frame = encodeReducerCall(callId, reducerName, encodedArgs);
-            // ── Optimistic: targeted snapshot + apply before sending ─────────────
-            //
-            // The previous implementation snapshotted the ENTIRE rowCache and
-            // restored it on rollback.  That has a race: any subscription diff
-            // arriving between send and error would be wiped by the rollback.
-            //
-            // Instead, we now:
-            //   1. Hand the callback a deep clone of the current cache.
-            //   2. Diff the returned cache against the current cache to find the
-            //      exact (table, rowKey) coordinates the callback mutated.
-            //   3. Snapshot only those pre-call values into `rollbackTouched`.
-            //   4. Apply the new values at those coordinates in the live cache,
-            //      leaving every other row untouched.
-            //   5. On rollback: restore each touched coordinate to its pre-call
-            //      value; rows not in the touched set keep whatever value they
-            //      hold right now (so mid-flight subscription diffs are preserved).
-            let rollbackTouched = null;
-            if (optimisticOpts?.optimistic) {
-                const preCacheClone = this.snapshotCache();
-                const proposed = optimisticOpts.optimistic(preCacheClone);
-                rollbackTouched = this.applyTargetedOptimistic(proposed);
-            }
-            const timer = setTimeout(() => {
-                this.pendingCalls.delete(callId);
-                // Timeout: roll back if we made an optimistic update.
-                if (rollbackTouched !== null) {
-                    this.rollbackTouchedRows(rollbackTouched);
-                    optimisticOpts?.onRollback?.(`call "${reducerName}" timed out`, this.snapshotCache());
-                }
-                reject(new Error(`call "${reducerName}" timed out after ${this.opts.callTimeout}ms`));
-            }, this.opts.callTimeout);
-            this.pendingCalls.set(callId, {
-                resolve: (result) => {
-                    clearTimeout(timer);
-                    if (result.success) {
-                        resolve(result.resultBytes);
-                    }
-                    else {
-                        // Server error: roll back ONLY the rows we touched.
-                        if (rollbackTouched !== null) {
-                            this.rollbackTouchedRows(rollbackTouched);
-                            optimisticOpts?.onRollback?.(result.error ?? "Reducer returned an error", this.snapshotCache());
-                        }
-                        reject(new Error(result.error ?? "Reducer returned an error"));
-                    }
-                },
-                reject: (err) => {
-                    clearTimeout(timer);
-                    if (rollbackTouched !== null) {
-                        this.rollbackTouchedRows(rollbackTouched);
-                    }
-                    reject(err);
-                },
-                timer,
-                rollbackTouched,
-                onRollback: optimisticOpts?.onRollback,
+        // If disconnected, queue the call and return a deferred promise.
+        if (!this.isConnected()) {
+            return new Promise((resolve, reject) => {
+                this.callQueue.push({ reducerName, args, optimisticOpts, resolve, reject });
             });
-            this.send(frame);
-        });
+        }
+        return this.dispatchCall(reducerName, args, optimisticOpts);
     }
     /**
      * Decode MessagePack result bytes into a JavaScript value.
@@ -242,16 +244,6 @@ export class NeonDBClient {
      * Compare `proposed` against the live `rowCache`, find the (table, rowKey)
      * coordinates that DIFFER, snapshot their pre-call values, then apply the
      * proposed value at each one.  Returns the targeted rollback snapshot.
-     *
-     * A coordinate is "touched" if any of:
-     *   - it exists in proposed but not in liveCache (an insert)
-     *   - it exists in liveCache but not in proposed (a delete)
-     *   - both exist but the row data is not referentially identical AND not
-     *     deeply equal (an update)
-     *
-     * NOTE: deep equality here is JSON-string based — fast enough for the
-     * typical small game row, and avoids false-positive rollbacks when the
-     * callback re-clones an unchanged row.
      */
     applyTargetedOptimistic(proposed) {
         const touched = new Map();
@@ -315,6 +307,57 @@ export class NeonDBClient {
         }
     }
     // ── Internal ──────────────────────────────────────────────────────────────
+    /**
+     * Core call dispatch — assumes the socket IS currently open.
+     */
+    dispatchCall(reducerName, args, optimisticOpts) {
+        return new Promise((resolve, reject) => {
+            const callId = this.nextCallId++;
+            const encodedArgs = encodeArgs(args);
+            const frame = encodeReducerCall(callId, reducerName, encodedArgs);
+            // ── Optimistic: targeted snapshot + apply before sending ─────────────
+            let rollbackTouched = null;
+            if (optimisticOpts?.optimistic) {
+                const preCacheClone = this.snapshotCache();
+                const proposed = optimisticOpts.optimistic(preCacheClone);
+                rollbackTouched = this.applyTargetedOptimistic(proposed);
+            }
+            const timer = setTimeout(() => {
+                this.pendingCalls.delete(callId);
+                if (rollbackTouched !== null) {
+                    this.rollbackTouchedRows(rollbackTouched);
+                    optimisticOpts?.onRollback?.(`call "${reducerName}" timed out`, this.snapshotCache());
+                }
+                reject(new Error(`call "${reducerName}" timed out after ${this.opts.callTimeout}ms`));
+            }, this.opts.callTimeout);
+            this.pendingCalls.set(callId, {
+                resolve: (result) => {
+                    clearTimeout(timer);
+                    if (result.success) {
+                        resolve(result.resultBytes);
+                    }
+                    else {
+                        if (rollbackTouched !== null) {
+                            this.rollbackTouchedRows(rollbackTouched);
+                            optimisticOpts?.onRollback?.(result.error ?? "Reducer returned an error", this.snapshotCache());
+                        }
+                        reject(new Error(result.error ?? "Reducer returned an error"));
+                    }
+                },
+                reject: (err) => {
+                    clearTimeout(timer);
+                    if (rollbackTouched !== null) {
+                        this.rollbackTouchedRows(rollbackTouched);
+                    }
+                    reject(err);
+                },
+                timer,
+                rollbackTouched,
+                onRollback: optimisticOpts?.onRollback,
+            });
+            this.send(frame);
+        });
+    }
     async openSocket() {
         const WS = await getWebSocketCtor();
         let opened = false;
@@ -338,23 +381,42 @@ export class NeonDBClient {
         return new Promise((resolve, reject) => {
             ws.onopen = () => {
                 opened = true;
+                // Reset backoff counter on successful connection.
+                const wasReconnect = this.reconnectAttempts > 0;
+                const attemptNumber = this.reconnectAttempts;
+                this.reconnectAttempts = 0;
                 resolve();
                 this.onConnected?.();
+                if (wasReconnect) {
+                    this.opts.onReconnect?.(attemptNumber);
+                }
+                // Re-issue all active subscriptions so the server sends initial snapshots again.
                 for (const [subId, entry] of this.subscriptions) {
                     this.send(encodeSubscribe(subId, entry.query));
                 }
+                // Flush any calls that were queued while we were disconnected.
+                this.flushCallQueue();
             };
             ws.onclose = () => {
                 this.onDisconnected?.();
+                this.opts.onDisconnect?.();
+                // Roll back and reject all in-flight calls (pitfall #21).
                 this.rejectAllPending(new Error("Connection closed"));
                 if (!opened) {
                     reject(new Error("Connection closed before it was established"));
+                    // If this socket was created as a reconnect attempt (reconnectAttempts > 0),
+                    // keep the reconnect loop alive even though the attempt failed to open.
+                    if (!this.closed && this.reconnectCfg.enabled && this.reconnectAttempts > 0) {
+                        this.scheduleReconnect();
+                    }
                     return;
                 }
-                if (!this.closed && this.opts.reconnectInterval > 0) {
-                    this.reconnectTimer = setTimeout(() => {
-                        void this.openSocket();
-                    }, this.opts.reconnectInterval);
+                if (!this.closed && this.reconnectCfg.enabled) {
+                    this.scheduleReconnect();
+                }
+                else if (!this.closed) {
+                    // Reconnect disabled — drain the queue with an error.
+                    this.drainCallQueue(new Error("Connection closed and reconnect is disabled"));
                 }
             };
             ws.onerror = (_evt) => {
@@ -375,6 +437,49 @@ export class NeonDBClient {
             };
         });
     }
+    // ── Reconnect logic ───────────────────────────────────────────────────────
+    scheduleReconnect() {
+        const { maxAttempts, baseDelayMs, maxDelayMs, jitter } = this.reconnectCfg;
+        if (this.reconnectAttempts >= maxAttempts) {
+            const err = new Error(`Reconnect exhausted after ${this.reconnectAttempts} attempt(s)`);
+            this.opts.onReconnectFailed?.(err);
+            this.drainCallQueue(err);
+            return;
+        }
+        const delay = computeBackoffDelay(this.reconnectAttempts, baseDelayMs, maxDelayMs, jitter);
+        this.reconnectAttempts++;
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            if (!this.closed) {
+                void this.openSocket().catch(() => {
+                    // openSocket will have called scheduleReconnect via the onclose handler
+                    // if the connection attempt itself failed.
+                });
+            }
+        }, delay);
+    }
+    /**
+     * Flush the queued calls now that we are connected again.
+     * Each queued item is dispatched as a fresh `dispatchCall()`.
+     */
+    flushCallQueue() {
+        const queue = this.callQueue.splice(0);
+        for (const item of queue) {
+            void this.dispatchCall(item.reducerName, item.args, item.optimisticOpts)
+                .then(item.resolve)
+                .catch(item.reject);
+        }
+    }
+    /**
+     * Drain the call queue by rejecting every buffered call with `err`.
+     */
+    drainCallQueue(err) {
+        const queue = this.callQueue.splice(0);
+        for (const item of queue) {
+            item.reject(err);
+        }
+    }
+    // ── Frame handling ────────────────────────────────────────────────────────
     handleFrame(data) {
         const msg = decodeServerMessage(data);
         switch (msg.type) {
@@ -448,7 +553,7 @@ export class NeonDBClient {
         for (const pending of this.pendingCalls.values()) {
             clearTimeout(pending.timer);
             // Roll back any in-flight optimistic updates on disconnect — but only
-            // the rows each call actually touched.
+            // the rows each call actually touched (pitfall #21).
             if (pending.rollbackTouched !== null) {
                 this.rollbackTouchedRows(pending.rollbackTouched);
             }

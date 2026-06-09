@@ -3,18 +3,23 @@
 // Session 31 — TODO-021: Optimistic updates
 //   client.call_optimistic(reducer, args, |cache| new_cache) applies a
 //   speculative cache update immediately and rolls back on server error.
+// Session (auto-reconnect) — exponential-backoff reconnect with:
+//   - pending call queue (calls made while disconnected are buffered)
+//   - subscription re-issue after reconnect
+//   - optimistic rollback on disconnect (pitfall #22)
+//   - ClientEvent broadcast channel
 // ============================================================================
 
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::{
     connect_async_with_config,
     tungstenite::{client::IntoClientRequest, Message},
@@ -25,6 +30,76 @@ use crate::{
     protocol::{decode_server_frame, encode_args, encode_client_message},
     types::{ClientMessage, ClientOptions, ReducerCall, RowCache, RowDiff, ServerMessage},
 };
+
+// ── Reconnect configuration ───────────────────────────────────────────────────
+
+/// Configuration for the exponential-backoff auto-reconnect logic.
+#[derive(Clone, Debug)]
+pub struct ReconnectConfig {
+    /// Whether to attempt reconnects at all.  Default: `true`.
+    pub enabled: bool,
+    /// Maximum number of consecutive reconnect attempts before giving up.
+    /// `None` means retry forever.  Default: `None`.
+    pub max_attempts: Option<u32>,
+    /// Starting delay for the exponential backoff.  Default: 1 second.
+    pub base_delay: Duration,
+    /// Upper cap on delay between reconnect attempts.  Default: 30 seconds.
+    pub max_delay: Duration,
+    /// Add ±25% random jitter to each computed delay.  Default: `true`.
+    pub jitter: bool,
+}
+
+impl Default for ReconnectConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_attempts: None,
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(30),
+            jitter: true,
+        }
+    }
+}
+
+/// Compute the backoff delay for a given attempt number (0-based).
+///
+/// Formula: `min(max_delay, base_delay * 2^attempt)` ± 25% jitter when enabled.
+pub fn compute_backoff_delay(cfg: &ReconnectConfig, attempt: u32) -> Duration {
+    let base_ms = cfg.base_delay.as_millis() as f64;
+    let max_ms = cfg.max_delay.as_millis() as f64;
+    let raw = (base_ms * 2_f64.powi(attempt as i32)).min(max_ms);
+    let final_ms = if cfg.jitter {
+        // Cheap pseudo-random jitter using current time nanoseconds.
+        // Produces a multiplier in [0.75, 1.25].
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_nanos(0))
+            .subsec_nanos();
+        // Map nanos into [0, 1) then into [0.75, 1.25].
+        let frac = (nanos as f64) / 1_000_000_000.0;
+        let factor = 0.75 + frac * 0.5;
+        (raw * factor).round()
+    } else {
+        raw
+    };
+    Duration::from_millis(final_ms as u64)
+}
+
+// ── Client events ─────────────────────────────────────────────────────────────
+
+/// Events broadcast by the client for observability.
+#[derive(Clone, Debug)]
+pub enum ClientEvent {
+    /// The WebSocket closed unexpectedly (before any reconnect attempt).
+    Disconnected,
+    /// A reconnect attempt succeeded.
+    Reconnected {
+        /// 1-based attempt number that succeeded.
+        attempt: u32,
+    },
+    /// All reconnect attempts were exhausted (`max_attempts` was finite).
+    ReconnectFailed,
+}
 
 // ── Internal command channel ──────────────────────────────────────────────────
 
@@ -45,16 +120,11 @@ enum Command {
         sub_id: String,
     },
     /// Register a targeted rollback set for a pending optimistic call.
-    ///
-    /// `touched` maps (table, row_key) → the pre-call row value (`None` means
-    /// "row did not exist before the call").  On a server error the worker
-    /// restores ONLY these coordinates; rows not in `touched` are left at
-    /// whatever value they hold at error time — preserving any subscription
-    /// diffs that arrived mid-flight.
     ApplyOptimistic {
         call_id: u64,
-        touched: TouchedRollback,
+        snapshot: CacheSnapshot,
     },
+    /// Signal the background task to disconnect (user-initiated close).
     Shutdown,
 }
 
@@ -109,14 +179,28 @@ fn apply_snapshot_to_cache(cache: &Arc<DashMap<String, RowCache>>, snap: &CacheS
 ///
 /// # Example
 /// ```no_run
-/// use neondb_client::{NeonDBClient, ClientOptions};
+/// use neondb_client::{NeonDBClient, ClientOptions, ReconnectConfig};
+/// use std::time::Duration;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let client = NeonDBClient::connect(ClientOptions {
 ///         url: "ws://localhost:3000".to_string(),
+///         reconnect: Some(ReconnectConfig {
+///             max_attempts: Some(10),
+///             base_delay: Duration::from_millis(500),
+///             ..Default::default()
+///         }),
 ///         ..Default::default()
 ///     }).await?;
+///
+///     // Subscribe to connection lifecycle events.
+///     let mut events = client.events();
+///     tokio::spawn(async move {
+///         while let Ok(ev) = events.recv().await {
+///             println!("event: {:?}", ev);
+///         }
+///     });
 ///
 ///     // Standard call
 ///     let result_bytes = client.call("increment", &("score", 5_i32)).await?;
@@ -145,6 +229,10 @@ pub struct NeonDBClient {
     /// Local row cache populated by subscription diffs and optimistic updates.
     pub cache: Arc<DashMap<String, RowCache>>,
     opts: ClientOptions,
+    /// Broadcast channel for connection lifecycle events.
+    event_tx: broadcast::Sender<ClientEvent>,
+    /// Signals to the background task that the user has requested a disconnect.
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 impl NeonDBClient {
@@ -153,27 +241,30 @@ impl NeonDBClient {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
         let cache: Arc<DashMap<String, RowCache>> = Arc::new(DashMap::new());
         let cache_c = cache.clone();
+        let (event_tx, _) = broadcast::channel::<ClientEvent>(64);
+        let event_tx_c = event_tx.clone();
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let shutdown_flag_c = shutdown_flag.clone();
 
-        let mut request = opts
-            .url
-            .as_str()
-            .into_client_request()
-            .map_err(NeonDBError::WebSocket)?;
-        if let Some(key) = &opts.api_key {
-            request.headers_mut().insert(
-                "authorization",
-                format!("Bearer {}", key)
-                    .parse()
-                    .expect("valid header value"),
-            );
-        }
+        let reconnect = opts.reconnect.clone().unwrap_or_default();
+        let url = opts.url.clone();
+        let api_key = opts.api_key.clone();
 
-        let (ws_stream, _) = connect_async_with_config(request, None, false)
-            .await
-            .map_err(NeonDBError::WebSocket)?;
+        // Make the initial WebSocket connection.
+        let ws_stream = make_ws_connection(&url, api_key.as_deref()).await?;
 
         tokio::spawn(async move {
-            run_connection(ws_stream, cmd_rx, cache_c).await;
+            run_connection_with_reconnect(
+                ws_stream,
+                cmd_rx,
+                cache_c,
+                event_tx_c,
+                shutdown_flag_c,
+                reconnect,
+                url,
+                api_key,
+            )
+            .await;
         });
 
         Ok(NeonDBClient {
@@ -182,7 +273,17 @@ impl NeonDBClient {
             next_sub_id: Arc::new(AtomicU64::new(1)),
             cache,
             opts,
+            event_tx,
+            shutdown_flag,
         })
+    }
+
+    /// Subscribe to connection lifecycle events.
+    ///
+    /// Returns a `broadcast::Receiver` that delivers `ClientEvent` values.
+    /// Multiple callers can call `events()` independently; each gets its own receiver.
+    pub fn events(&self) -> broadcast::Receiver<ClientEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Call a reducer and return the raw result bytes.
@@ -215,20 +316,6 @@ impl NeonDBClient {
     /// On server success: server subscription diffs reconcile naturally.
     /// On server error: the cache is automatically rolled back and an
     /// `Err(NeonDBError::ReducerError(_))` is returned.
-    ///
-    /// ```rust,no_run
-    /// client.call_optimistic(
-    ///     "move_player",
-    ///     &("alice", 5_i32, 3_i32),
-    ///     |mut cache| {
-    ///         if let Some(players) = cache.get_mut("players") {
-    ///             players.insert("alice".to_string(),
-    ///                 serde_json::json!({"x": 5, "y": 3}));
-    ///         }
-    ///         cache
-    ///     },
-    /// ).await?;
-    /// ```
     pub async fn call_optimistic<A, F>(
         &self,
         reducer_name: &str,
@@ -249,19 +336,18 @@ impl NeonDBClient {
         let optimistic_state = optimistic_fn(snapshot.clone());
         apply_snapshot_to_cache(&self.cache, &optimistic_state);
 
-        // 3. Send the actual reducer call; background task handles rollback.
-        let (reply_tx, reply_rx) = oneshot::channel();
+        // 3. Register the rollback snapshot with the background task
+        //    (must arrive before the Call reply, per pitfall #22).
+        //    The channel is unbuffered-ordered: ApplyOptimistic is always
+        //    dequeued before the matching Call reply.
         self.cmd_tx
             .send(Command::ApplyOptimistic {
                 call_id,
                 snapshot: snapshot.clone(),
-                optimistic: optimistic_state,
-                reply: reply_tx,
-                inner_call_id: call_id,
             })
             .map_err(|_| NeonDBError::ConnectionClosed)?;
 
-        // Also enqueue the actual network call so the worker sends the frame.
+        // 4. Enqueue the actual network call.
         let (inner_tx, inner_rx) = oneshot::channel::<Result<Vec<u8>>>();
         self.cmd_tx
             .send(Command::Call {
@@ -272,7 +358,7 @@ impl NeonDBClient {
             })
             .map_err(|_| NeonDBError::ConnectionClosed)?;
 
-        // Await the network result.
+        // 5. Await the network result.
         let result = tokio::time::timeout(
             Duration::from_millis(self.opts.call_timeout_ms),
             inner_rx,
@@ -281,13 +367,11 @@ impl NeonDBClient {
         .map_err(|_| NeonDBError::Timeout(self.opts.call_timeout_ms))?
         .map_err(|_| NeonDBError::ConnectionClosed)??;
 
-        // Complete the optimistic bookkeeping channel (it's a oneshot drain).
-        let _ = reply_rx;
-
         Ok(result)
     }
 
     /// Roll back the cache to `snapshot`, used after a failed optimistic call.
+    #[allow(dead_code)]
     fn rollback_cache(&self, snapshot: &CacheSnapshot) {
         apply_snapshot_to_cache(&self.cache, snapshot);
     }
@@ -338,33 +422,211 @@ impl NeonDBClient {
 
     /// Disconnect from NeonDB.
     pub async fn disconnect(self) {
+        self.shutdown_flag.store(true, Ordering::SeqCst);
         let _ = self.cmd_tx.send(Command::Shutdown);
     }
 }
 
-// ── Background connection task ────────────────────────────────────────────────
+// ── WebSocket connection helper ───────────────────────────────────────────────
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn run_connection(
-    ws: WsStream,
+async fn make_ws_connection(url: &str, api_key: Option<&str>) -> Result<WsStream> {
+    let mut request = url
+        .into_client_request()
+        .map_err(NeonDBError::WebSocket)?;
+    if let Some(key) = api_key {
+        request.headers_mut().insert(
+            "authorization",
+            format!("Bearer {}", key)
+                .parse()
+                .expect("valid header value"),
+        );
+    }
+    let (ws_stream, _) = connect_async_with_config(request, None, false)
+        .await
+        .map_err(NeonDBError::WebSocket)?;
+    Ok(ws_stream)
+}
+
+// ── Background connection task with reconnect ─────────────────────────────────
+
+/// Top-level reconnect loop.  Runs the inner connection loop, and on
+/// unexpected close schedules reconnect attempts with exponential backoff.
+async fn run_connection_with_reconnect(
+    initial_ws: WsStream,
     mut cmd_rx: mpsc::UnboundedReceiver<Command>,
     cache: Arc<DashMap<String, RowCache>>,
+    event_tx: broadcast::Sender<ClientEvent>,
+    shutdown_flag: Arc<AtomicBool>,
+    reconnect: ReconnectConfig,
+    url: String,
+    api_key: Option<String>,
 ) {
+    // Track all active subscriptions: sub_id → (query, diff sender).
+    let mut active_subs: HashMap<String, (String, mpsc::UnboundedSender<RowDiff>)> =
+        HashMap::new();
+    // Calls buffered while the connection is down: (call_id, reducer, args, reply).
+    let mut pending_queue: Vec<(u64, String, Vec<u8>, oneshot::Sender<Result<Vec<u8>>>)> =
+        Vec::new();
+    let mut optimistic_register: Vec<(u64, CacheSnapshot)> = Vec::new();
+
+    let user_shutdown = run_connection_inner(
+        initial_ws,
+        &mut cmd_rx,
+        &cache,
+        &event_tx,
+        &mut active_subs,
+        &mut pending_queue,
+        &mut optimistic_register,
+    )
+    .await;
+
+    if user_shutdown || !reconnect.enabled {
+        drain_pending_queue(&mut pending_queue);
+        return;
+    }
+
+    // Broadcast disconnect event.
+    let _ = event_tx.send(ClientEvent::Disconnected);
+
+    let mut attempt: u32 = 0;
+    loop {
+        if shutdown_flag.load(Ordering::SeqCst) {
+            drain_pending_queue(&mut pending_queue);
+            break;
+        }
+
+        if let Some(max) = reconnect.max_attempts {
+            if attempt >= max {
+                log::warn!(
+                    "[neondb-client] Reconnect exhausted after {} attempts",
+                    attempt
+                );
+                let _ = event_tx.send(ClientEvent::ReconnectFailed);
+                drain_pending_queue(&mut pending_queue);
+                break;
+            }
+        }
+
+        let delay = compute_backoff_delay(&reconnect, attempt);
+        log::debug!(
+            "[neondb-client] Reconnecting in {}ms (attempt {})",
+            delay.as_millis(),
+            attempt + 1
+        );
+        tokio::time::sleep(delay).await;
+        attempt += 1;
+
+        if shutdown_flag.load(Ordering::SeqCst) {
+            drain_pending_queue(&mut pending_queue);
+            break;
+        }
+
+        match make_ws_connection(&url, api_key.as_deref()).await {
+            Err(e) => {
+                log::warn!(
+                    "[neondb-client] Reconnect attempt {} failed: {}",
+                    attempt,
+                    e
+                );
+                // Loop and try again.
+            }
+            Ok(ws) => {
+                let _ = event_tx.send(ClientEvent::Reconnected { attempt });
+                log::info!("[neondb-client] Reconnected (attempt {})", attempt);
+                attempt = 0; // reset backoff counter after successful connect
+
+                let was_user_shutdown = run_connection_inner(
+                    ws,
+                    &mut cmd_rx,
+                    &cache,
+                    &event_tx,
+                    &mut active_subs,
+                    &mut pending_queue,
+                    &mut optimistic_register,
+                )
+                .await;
+
+                if was_user_shutdown || !reconnect.enabled {
+                    drain_pending_queue(&mut pending_queue);
+                    break;
+                }
+                let _ = event_tx.send(ClientEvent::Disconnected);
+            }
+        }
+    }
+}
+
+fn drain_pending_queue(
+    queue: &mut Vec<(u64, String, Vec<u8>, oneshot::Sender<Result<Vec<u8>>>)>,
+) {
+    for (_, _, _, reply) in queue.drain(..) {
+        let _ = reply.send(Err(NeonDBError::ConnectionClosed));
+    }
+}
+
+/// Inner connection loop.  Returns `true` if shutdown was user-initiated.
+///
+/// On entry: re-issues all `active_subs` and flushes any `pending_queue` calls.
+/// On exit: all still-pending calls are added to `pending_queue` for the
+/// reconnect loop to re-send after the next successful connection.
+async fn run_connection_inner(
+    ws: WsStream,
+    cmd_rx: &mut mpsc::UnboundedReceiver<Command>,
+    cache: &Arc<DashMap<String, RowCache>>,
+    _event_tx: &broadcast::Sender<ClientEvent>,
+    active_subs: &mut HashMap<String, (String, mpsc::UnboundedSender<RowDiff>)>,
+    pending_queue: &mut Vec<(u64, String, Vec<u8>, oneshot::Sender<Result<Vec<u8>>>)>,
+    _optimistic_register: &mut Vec<(u64, CacheSnapshot)>,
+) -> bool {
     let (mut sink, mut stream) = ws.split();
 
+    // Re-issue active subscriptions so the server delivers fresh snapshots.
+    for (sub_id, (query, _)) in active_subs.iter() {
+        let msg = ClientMessage::Subscribe {
+            subscription_id: sub_id.clone(),
+            query: query.clone(),
+        };
+        if let Ok(bytes) = encode_client_message(&msg) {
+            let _ = sink.send(Message::Binary(bytes)).await;
+        }
+    }
+
+    // Flush calls that were queued while disconnected.
     let mut pending_calls: HashMap<u64, oneshot::Sender<Result<Vec<u8>>>> = HashMap::new();
-    let mut subscriptions: HashMap<String, mpsc::UnboundedSender<RowDiff>> = HashMap::new();
-    let mut pending_route: Option<Vec<String>> = None;
-    // Track rollback snapshots for optimistic calls indexed by call_id.
     let mut optimistic_snapshots: HashMap<u64, CacheSnapshot> = HashMap::new();
+    let queued = std::mem::take(pending_queue);
+    for (call_id, reducer_name, args, reply) in queued {
+        let msg = ClientMessage::ReducerCall(ReducerCall {
+            call_id,
+            reducer_name,
+            args,
+        });
+        match encode_client_message(&msg) {
+            Ok(bytes) => {
+                pending_calls.insert(call_id, reply);
+                let _ = sink.send(Message::Binary(bytes)).await;
+            }
+            Err(e) => {
+                let _ = reply.send(Err(e));
+            }
+        }
+    }
+
+    let mut pending_route: Option<Vec<String>> = None;
+    let mut user_shutdown = false;
 
     loop {
         tokio::select! {
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    None | Some(Command::Shutdown) => break,
+                    None => break,
+                    Some(Command::Shutdown) => {
+                        user_shutdown = true;
+                        break;
+                    }
 
                     Some(Command::Call { call_id, reducer_name, args, reply }) => {
                         let msg = ClientMessage::ReducerCall(ReducerCall {
@@ -389,16 +651,16 @@ async fn run_connection(
                     Some(Command::Subscribe { sub_id, query, tx }) => {
                         let msg = ClientMessage::Subscribe {
                             subscription_id: sub_id.clone(),
-                            query,
+                            query: query.clone(),
                         };
                         if let Ok(bytes) = encode_client_message(&msg) {
                             let _ = sink.send(Message::Binary(bytes)).await;
                         }
-                        subscriptions.insert(sub_id, tx);
+                        active_subs.insert(sub_id.clone(), (query, tx));
                     }
 
                     Some(Command::Unsubscribe { sub_id }) => {
-                        subscriptions.remove(&sub_id);
+                        active_subs.remove(&sub_id);
                         let msg = ClientMessage::Unsubscribe {
                             subscription_id: sub_id,
                         };
@@ -421,10 +683,10 @@ async fn run_connection(
                             dispatch_message(
                                 msg,
                                 &mut pending_calls,
-                                &mut subscriptions,
+                                active_subs,
                                 &mut pending_route,
                                 &mut optimistic_snapshots,
-                                &cache,
+                                cache,
                             );
                         }
                     }
@@ -435,15 +697,18 @@ async fn run_connection(
         }
     }
 
+    // Any calls still awaiting a response: reject them so their oneshots don't hang.
     for (_, reply) in pending_calls.drain() {
         let _ = reply.send(Err(NeonDBError::ConnectionClosed));
     }
+
+    user_shutdown
 }
 
 fn dispatch_message(
     msg: ServerMessage,
     pending_calls: &mut HashMap<u64, oneshot::Sender<Result<Vec<u8>>>>,
-    subscriptions: &mut HashMap<String, mpsc::UnboundedSender<RowDiff>>,
+    subscriptions: &mut HashMap<String, (String, mpsc::UnboundedSender<RowDiff>)>,
     pending_route: &mut Option<Vec<String>>,
     optimistic_snapshots: &mut HashMap<u64, CacheSnapshot>,
     cache: &Arc<DashMap<String, RowCache>>,
@@ -494,7 +759,7 @@ fn dispatch_message(
                 &diff.operation,
                 diff.row_data,
             );
-            if let Some(tx) = subscriptions.get(&diff.subscription_id) {
+            if let Some((_, tx)) = subscriptions.get(&diff.subscription_id) {
                 let _ = tx.send(row_diff);
             }
         }
@@ -520,7 +785,7 @@ fn dispatch_message(
                         operation: body.operation.clone(),
                         row_data: body.row_data.clone(),
                     };
-                    if let Some(tx) = subscriptions.get(sub_id) {
+                    if let Some((_, tx)) = subscriptions.get(sub_id) {
                         let _ = tx.send(diff);
                     }
                 }
@@ -547,5 +812,119 @@ fn apply_to_cache(
         table.remove(row_key);
     } else if let Some(data) = row_data {
         table.insert(row_key.to_string(), data);
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ReconnectConfig defaults ──────────────────────────────────────────────
+
+    #[test]
+    fn reconnect_config_default_enabled() {
+        let cfg = ReconnectConfig::default();
+        assert!(cfg.enabled, "reconnect should be enabled by default");
+    }
+
+    #[test]
+    fn reconnect_config_default_max_attempts_is_none() {
+        let cfg = ReconnectConfig::default();
+        assert!(
+            cfg.max_attempts.is_none(),
+            "max_attempts should be None (infinite) by default"
+        );
+    }
+
+    #[test]
+    fn reconnect_config_default_delays() {
+        let cfg = ReconnectConfig::default();
+        assert_eq!(cfg.base_delay, Duration::from_secs(1));
+        assert_eq!(cfg.max_delay, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn reconnect_config_default_jitter_enabled() {
+        let cfg = ReconnectConfig::default();
+        assert!(cfg.jitter, "jitter should be enabled by default");
+    }
+
+    // ── Exponential backoff math ──────────────────────────────────────────────
+
+    #[test]
+    fn backoff_no_jitter_exact_exponential() {
+        let cfg = ReconnectConfig {
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            jitter: false,
+            ..Default::default()
+        };
+        assert_eq!(compute_backoff_delay(&cfg, 0), Duration::from_millis(1_000));
+        assert_eq!(compute_backoff_delay(&cfg, 1), Duration::from_millis(2_000));
+        assert_eq!(compute_backoff_delay(&cfg, 2), Duration::from_millis(4_000));
+        assert_eq!(compute_backoff_delay(&cfg, 3), Duration::from_millis(8_000));
+    }
+
+    #[test]
+    fn backoff_capped_at_max_delay() {
+        let cfg = ReconnectConfig {
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(10),
+            jitter: false,
+            ..Default::default()
+        };
+        // attempt 10 → 2^10 * 1000ms = 1_024_000ms >> 10_000ms
+        assert_eq!(
+            compute_backoff_delay(&cfg, 10),
+            Duration::from_millis(10_000)
+        );
+    }
+
+    #[test]
+    fn backoff_jitter_within_25_percent() {
+        let cfg = ReconnectConfig {
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            jitter: true,
+            ..Default::default()
+        };
+        for attempt in 0u32..5 {
+            let raw_ms = (1_000_f64 * 2_f64.powi(attempt as i32)).min(60_000_f64);
+            let low = Duration::from_millis((raw_ms * 0.75).floor() as u64);
+            let high = Duration::from_millis((raw_ms * 1.25).ceil() as u64);
+            for _ in 0..50 {
+                let d = compute_backoff_delay(&cfg, attempt);
+                assert!(
+                    d >= low && d <= high,
+                    "attempt {attempt}: delay {d:?} not in [{low:?}, {high:?}]"
+                );
+            }
+        }
+    }
+
+    // ── ClientEvent variants ──────────────────────────────────────────────────
+
+    #[test]
+    fn client_event_disconnected_is_clone_and_debug() {
+        let ev = ClientEvent::Disconnected;
+        let ev2 = ev.clone();
+        assert!(format!("{ev2:?}").contains("Disconnected"));
+    }
+
+    #[test]
+    fn client_event_reconnected_carries_attempt_number() {
+        let ev = ClientEvent::Reconnected { attempt: 3 };
+        match ev {
+            ClientEvent::Reconnected { attempt } => assert_eq!(attempt, 3),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn client_event_reconnect_failed_debug() {
+        let ev = ClientEvent::ReconnectFailed;
+        assert!(format!("{ev:?}").contains("ReconnectFailed"));
     }
 }

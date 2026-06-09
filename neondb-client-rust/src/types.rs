@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::client::ReconnectConfig;
+
 // ── Wire types ────────────────────────────────────────────────────────────────
 
 /// Outgoing: reducer call (rmp_serde array format).
@@ -96,6 +98,9 @@ pub struct ClientOptions {
     pub api_key: Option<String>,
     /// Call timeout in milliseconds. Default: 5000.
     pub call_timeout_ms: u64,
+    /// Auto-reconnect configuration.  `None` uses [`ReconnectConfig::default()`]
+    /// (reconnect enabled, infinite retries, 1 s base delay, 30 s max, jitter on).
+    pub reconnect: Option<ReconnectConfig>,
 }
 
 impl Default for ClientOptions {
@@ -104,6 +109,7 @@ impl Default for ClientOptions {
             url: "ws://localhost:3000".to_string(),
             api_key: None,
             call_timeout_ms: 5_000,
+            reconnect: None,
         }
     }
 }

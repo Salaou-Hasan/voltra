@@ -37,6 +37,6 @@ pub mod error;
 pub mod protocol;
 pub mod types;
 
-pub use client::{NeonDBClient, Subscription};
+pub use client::{ClientEvent, NeonDBClient, ReconnectConfig, Subscription};
 pub use error::{NeonDBError, Result};
 pub use types::{ClientOptions, RowDiff};
