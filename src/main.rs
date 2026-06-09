@@ -839,13 +839,13 @@ async fn run_server(config: Config) -> Result<()> {
     config.apply_global_limits();
 
     let eviction_policy = match config.eviction.policy.trim().to_ascii_lowercase().as_str() {
-        "lru_row_cap" => crate::table::EvictionPolicy::LruRowCap {
+        "lru_row_cap" => neondb::table::EvictionPolicy::LruRowCap {
             max_rows_per_table: config.eviction.max_rows_per_table.max(1),
         },
-        "lru_byte_cap" => crate::table::EvictionPolicy::LruByteCap {
+        "lru_byte_cap" => neondb::table::EvictionPolicy::LruByteCap {
             max_bytes_total: config.eviction.max_bytes_total.max(1),
         },
-        _ => crate::table::EvictionPolicy::None,
+        _ => neondb::table::EvictionPolicy::None,
     };
     let mut ts = TableStore::with_eviction(eviction_policy);
     ts.set_shard(config.shard_id, config.shard_count);
