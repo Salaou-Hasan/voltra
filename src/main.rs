@@ -40,6 +40,7 @@ use neondb::{
     config::{Config, ScheduledReducerConfig},
     cluster::{ClusterBus, ClusterConfig, NodeInfo, PeerEntry},
     error::Result,
+    metrics::Metrics,
     network::{start_listener, PendingCall, RateLimiterConfig, RateLimiterRegistry, ReducerResponse},
     presence::PresenceManager,
     reducer::{ReducerContext, ReducerRegistry},
@@ -942,6 +943,9 @@ async fn run_server(config: Config) -> Result<()> {
     // ── TTL manager ──────────────────────────────────────────────────────────
     let ttl_manager = Arc::new(TtlManager::new());
 
+    // ── Prometheus metrics ────────────────────────────────────────────────────
+    let metrics = Arc::new(Metrics::new());
+
     let listener_handle = {
         let config_c = config.clone(); let tx_c = reducer_tx.clone();
         let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
@@ -951,12 +955,13 @@ async fn run_server(config: Config) -> Result<()> {
         let rl_c = rate_limiter.clone();
         let pres_c = presence.clone();
         let ttl_c = ttl_manager.clone();
+        let metrics_c = metrics.clone();
         tokio::spawn(async move {
             if let Err(e) = start_listener(
                 config_c.host, config_c.port, tx_c, subs_c, tables_c,
                 config_c.max_connections, config_c.api_key.clone(),
                 conns_c, perms_c, config_c.sql_timeout_ms,
-                auth_c, rl_c, pres_c, ttl_c, rx_shutdown,
+                auth_c, rl_c, pres_c, ttl_c, rx_shutdown, metrics_c,
             ).await { log::error!("Listener error: {}", e); }
         })
     };
@@ -1045,8 +1050,9 @@ async fn run_server(config: Config) -> Result<()> {
         let raft_c = raft_handle.clone();
         let raft_node_id_c = raft_node_id;
         let raft_node_addr_c = raft_node_addr.clone();
+        let prom_c = metrics.clone();
         tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, raft_c, raft_node_id_c, raft_node_addr_c, rx_shutdown).await {
+            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, bus_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, raft_c, raft_node_id_c, raft_node_addr_c, prom_c, rx_shutdown).await {
                 log::error!("Metrics server error: {}", e);
             }
         })
@@ -1064,6 +1070,7 @@ async fn run_server(config: Config) -> Result<()> {
         // Raft handle — every committed reducer result goes through consensus.
         let raft_w = raft_handle.clone();
         let mut rx_shutdown_w = shutdown_rx.clone();
+        let metrics_w = metrics.clone();
 
         worker_handles.push(tokio::spawn(async move {
             loop {
@@ -1081,6 +1088,7 @@ async fn run_server(config: Config) -> Result<()> {
                 let ts           = current_timestamp_nanos();
                 let schema_blk   = schema_w.clone();
                 let ttl_blk      = ttl_w.clone();
+                let call_start   = std::time::Instant::now();
 
                 let blk = tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
@@ -1098,8 +1106,16 @@ async fn run_server(config: Config) -> Result<()> {
                 ).await;
 
                 let response = match blk {
-                    Err(_) => { log::warn!("call_id={} timed out", call_id); ReducerResponse::error(call_id, "Reducer timed out".to_string()) }
-                    Ok(Err(e)) => { log::error!("Join error: {}", e); ReducerResponse::error(call_id, "Internal task error".to_string()) }
+                    Err(_) => {
+                        log::warn!("call_id={} timed out", call_id);
+                        metrics_w.reducer_errors_total.inc();
+                        ReducerResponse::error(call_id, "Reducer timed out".to_string())
+                    }
+                    Ok(Err(e)) => {
+                        log::error!("Join error: {}", e);
+                        metrics_w.reducer_errors_total.inc();
+                        ReducerResponse::error(call_id, "Internal task error".to_string())
+                    }
                     Ok(Ok((exec_result, mut ctx))) => match exec_result {
                         Ok(Ok(result_bytes)) => {
                             // ── Raft write path ──────────────────────────────────────────────
@@ -1137,6 +1153,8 @@ async fn run_server(config: Config) -> Result<()> {
                                     let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas.clone());
                                     if let Err(e) = wal_w.append(&entry, seq_num) {
                                         log::warn!("WAL append failed (non-fatal, Raft is durable): {}", e);
+                                    } else {
+                                        metrics_w.wal_entries_written_total.inc();
                                     }
                                     // Cluster fan-out to non-Raft legacy peers (if any).
                                     if !deltas.is_empty() {
@@ -1159,16 +1177,28 @@ async fn run_server(config: Config) -> Result<()> {
                                             }
                                         });
                                     }
+                                    // Record successful reducer call + duration.
+                                    metrics_w.reducer_calls_total.inc();
+                                    metrics_w.reducer_duration_seconds.observe(call_start.elapsed().as_secs_f64());
                                     ReducerResponse::success(call_id, result_bytes)
                                 }
                                 Err(e) => {
                                     log::error!("Raft client_write failed call_id={}: {}", call_id, e);
+                                    metrics_w.reducer_errors_total.inc();
                                     ReducerResponse::error(call_id, format!("Consensus error: {}", e))
                                 }
                             }
                         }
-                        Ok(Err(e)) => { log::warn!("Reducer error: {}", e); ReducerResponse::error(call_id, e.to_string()) }
-                        Err(_) => { log::warn!("Reducer panicked call_id={}", call_id); ReducerResponse::error(call_id, "Reducer panicked".to_string()) }
+                        Ok(Err(e)) => {
+                            log::warn!("Reducer error: {}", e);
+                            metrics_w.reducer_errors_total.inc();
+                            ReducerResponse::error(call_id, e.to_string())
+                        }
+                        Err(_) => {
+                            log::warn!("Reducer panicked call_id={}", call_id);
+                            metrics_w.reducer_errors_total.inc();
+                            ReducerResponse::error(call_id, "Reducer panicked".to_string())
+                        }
                     },
                 };
                 if let Err(e) = call.response_tx.send(response) { log::warn!("send response: {}", e); }
@@ -1296,6 +1326,45 @@ async fn run_server(config: Config) -> Result<()> {
         }));
     }
 
+    // ── Periodic gauge-refresh task (every 5 s) ──────────────────────────────
+    // Reads snapshot of current row count / subscription count / Raft state
+    // and pushes them into the Prometheus gauges.  This is intentionally
+    // separate from the hot path — no lock contention on the hot path.
+    let gauge_handle = {
+        let tables_g = tables.clone();
+        let subs_g   = subscription_manager.clone();
+        let raft_g   = raft_handle.clone();
+        let prom_g   = metrics.clone();
+        let mut rx_g = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(5));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // skip first immediate tick
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        // Row count
+                        prom_g.rows_total.set(tables_g.total_row_count() as i64);
+                        // Subscription count
+                        prom_g.subscriptions_active.set(
+                            subs_g.active_subscriptions() as i64
+                        );
+                        // Raft state
+                        let raft_metrics = raft_g.metrics().borrow().clone();
+                        prom_g.raft_log_index.set(
+                            raft_metrics.last_log_index.unwrap_or(0) as i64
+                        );
+                        let is_leader = raft_metrics.current_leader
+                            .map(|lid| if lid == raft_metrics.id { 1i64 } else { 0i64 })
+                            .unwrap_or(0);
+                        prom_g.raft_is_leader.set(is_leader);
+                    }
+                    _ = rx_g.changed() => break,
+                }
+            }
+        })
+    };
+
     tokio::signal::ctrl_c().await.ok();
     eprintln!("\n[neondb] Shutdown signal — draining...");
     log::info!("Shutdown signal received");
@@ -1332,6 +1401,7 @@ async fn run_server(config: Config) -> Result<()> {
     let _ = gossip_handle.await;
     let _ = presence_handle.await;
     let _ = ttl_handle.await;
+    let _ = gauge_handle.await;
 
     eprintln!("[neondb] Shutdown complete.");
     log::info!("Shutdown complete");
@@ -1466,6 +1536,7 @@ async fn start_metrics_server(
     raft: Arc<neondb::raft::NeonRaft>,
     raft_node_id: u64,
     raft_node_addr: String,
+    prom: Arc<Metrics>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse()
@@ -1484,6 +1555,7 @@ async fn start_metrics_server(
         let raft_svc = raft.clone();
         let nid   = raft_node_id;
         let naddr = raft_node_addr.clone();
+        let prom_svc = prom.clone();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 let subs = subs.clone(); let tbl = tbl.clone();
@@ -1491,7 +1563,8 @@ async fn start_metrics_server(
                 let wal  = wal.clone();  let seq = seq.clone();
                 let pres = pres.clone(); let ttl = ttl.clone();
                 let raft_r = raft_svc.clone(); let nid_r = nid; let naddr_r = naddr.clone();
-                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq, start, pres, ttl, raft_r, nid_r, naddr_r).await }
+                let prom_r = prom_svc.clone();
+                async move { handle_metrics_request(req, subs, tbl, bus, reg, wal, seq, start, pres, ttl, raft_r, nid_r, naddr_r, prom_r).await }
             }))
         }
     });
@@ -1522,19 +1595,20 @@ async fn handle_metrics_request(
     raft: Arc<neondb::raft::NeonRaft>,
     raft_node_id: u64,
     raft_node_addr: String,
+    prom: Arc<Metrics>,
 ) -> Result<Response<Body>> {
     let path = req.uri().path().to_string();
 
     match (req.method(), path.as_str()) {
         (&Method::GET, "/metrics") => {
-            let body = format!(
-                "# NeonDB metrics\nactive_subscriptions {}\nactive_connections {}\ntotal_rows {}\nuptime_seconds {}\n",
-                subscription_manager.active_subscriptions(),
-                subscription_manager.active_connections(),
-                tables.total_row_count(),
-                startup_instant.elapsed().as_secs(),
+            // Prometheus exposition format (text/plain; version=0.0.4)
+            let body = prom.render();
+            let mut r = Response::new(Body::from(body));
+            r.headers_mut().insert(
+                hyper::header::CONTENT_TYPE,
+                hyper::header::HeaderValue::from_static("text/plain; version=0.0.4"),
             );
-            Ok(Response::new(Body::from(body)))
+            Ok(r)
         }
 
         (&Method::GET, "/healthz") => Ok(json_response(serde_json::json!({

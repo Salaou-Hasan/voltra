@@ -29,6 +29,7 @@ use super::rate_limiter::RateLimiterRegistry;
 use crate::auth::{AuthResult, AuthValidator};
 use crate::config::PermissionsConfig;
 use crate::error::{NeonDBError, Result};
+use crate::metrics::Metrics;
 use crate::presence::PresenceManager;
 use crate::ttl::TtlManager;
 use crate::sql::{Executor as SqlExecutor};
@@ -127,6 +128,7 @@ pub async fn start_listener(
     presence: Arc<PresenceManager>,
     ttl_manager: Arc<TtlManager>,
     mut shutdown: Receiver<()>,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
     let bind_addr = format!("{}:{}", addr, port);
     let listener = TcpListener::bind(&bind_addr).await?;
@@ -157,9 +159,14 @@ pub async fn start_listener(
                         let pres    = presence.clone();
                         let ttl     = ttl_manager.clone();
                         let sd      = shutdown.clone();
+                        let met     = metrics.clone();
+
+                        // Record connection metrics immediately on accept.
+                        metrics.websocket_connects_total.inc();
+                        metrics.websocket_connections_active.inc();
 
                         tokio::spawn(async move {
-                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, sql_to, auth_v, rl, pres, ttl, peer_addr.to_string(), sd).await {
+                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, sql_to, auth_v, rl, pres, ttl, peer_addr.to_string(), sd, met).await {
                                 log::warn!("Client error: {}", e);
                             }
                         });
@@ -191,6 +198,7 @@ async fn handle_client(
     ttl_manager: Arc<TtlManager>,
     peer_addr: String,
     mut shutdown: Receiver<()>,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
     // ── WebSocket handshake with JWT / API-key auth ───────────────────────────
     let caller_id_cell   = Arc::new(std::sync::Mutex::new(String::new()));
@@ -643,6 +651,7 @@ async fn handle_client(
     subscription_manager.unregister_client(client_id);
     presence.set_offline(&caller_id);
     rate_limiter.remove(&caller_id);
+    metrics.websocket_connections_active.dec();
 
     drop(write_tx);
     let _ = write_task.await;
