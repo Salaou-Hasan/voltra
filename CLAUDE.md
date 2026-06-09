@@ -339,12 +339,99 @@ neondb get players                       # verify rows landed
 
 ## Current Build Status
 
-After Session 41 (Wave 3 — Raft P0 complete):
-- `cargo build` → **zero errors, zero warnings**.
-- `cargo test --lib` → **410 lib tests passing**.
+After Session 43 (9-feature production-readiness wave, all branches merged):
+- `cargo build --offline` → **zero errors, zero warnings**.
+- `cargo test --lib` → **465 lib tests passing**.
 - `cargo test --test raft_consensus_test` → **6/6 Raft consensus integration tests passing**.
-- Total tested: **416 tests, 0 failures**.
-- P0 Raft consensus: **COMPLETE** — leader election, quorum writes, log replication, membership management, failover, and split-brain prevention all verified in-process.
+- Total tested: **471 tests, 0 failures**.
+- All 9 production features: **COMPLETE AND MERGED** — TLS, graceful shutdown, LRU eviction, Prometheus metrics, row-level security, SDK auto-reconnect, Docker/CI, docs, JWT+Ed25519 identity.
+
+### Session 43 — 9-feature production wave: all branches merged to master
+
+**9 parallel agents worked in separate worktrees; all merged to master in this session.**
+
+**Merged features:**
+
+1. **Docker/CI** (`worktree-agent-a3e166553d5a72911` → `8ef3c55`):
+   - `Dockerfile`, `docker-compose.yml` (3-node Raft), `docker-compose.single.yml`, `.dockerignore`
+   - `.github/workflows/ci.yml`, `.github/workflows/release.yml`
+   - `deploy/neondb.service`, `deploy/install.sh`, `deploy/README.md`
+
+2. **Documentation** (`worktree-agent-a5ea819ef7d1a9efd` → `361fd16`):
+   - `docs/` directory: getting-started, architecture, protocol, reducers, SDK-ts, SDK-rust, deployment, cluster, CLI reference, FAQ
+   - `README.md` full rewrite (108 lines)
+
+3. **SDK auto-reconnect** (`worktree-agent-a2ae98adfdfc5c4ae` → `93ced02`):
+   - TS: `scheduleReconnect()`, `ReconnectOptions`, `pendingCalls`, `activeSubscriptions` re-issue on reconnect, `disconnect()`
+   - Rust: `ReconnectConfig`, `ClientEvent`, `events()`, `disconnect()`
+
+4. **Row-level security** (`worktree-agent-a800c2103673ccb8d` → `aa4f10a`):
+   - `src/schema.rs`: `RlsPolicy { Public, OwnerField, RoleGated, OwnerFieldWithAdmin }`, `rls_check()`, `rls` field on `TableSchema`
+   - `src/error.rs`: `NeonDBError::PermissionDenied(String)`
+   - `src/table/mod.rs`: `get_row_rls()` silently filters denied rows
+   - `src/reducer/context.rs`: RLS enforced in `get_row()` and `commit()`, bypassed for scheduler/system
+
+5. **LRU eviction** (`worktree-agent-a9513896b1b9dfc8a` → `91060fd`):
+   - `src/table/eviction.rs`: `EvictionPolicy { None, LruRowCap, LruByteCap }`, `LruTracker`
+   - `src/table/mod.rs`: `with_eviction()` constructor, eviction in `apply_delta_batch`
+   - `src/config.rs`: `[eviction]` TOML section + `NEONDB_EVICTION_POLICY` env
+
+6. **Graceful shutdown** (`worktree-agent-a4efb4affb025bbea` → `6eef8bd`):
+   - `tokio-util` CancellationToken / `watch::Receiver<()>` shutdown signal
+   - Worker loop uses `select!` to drain reducer queue then exit
+   - 30s drain timeout; `eprintln!("[neondb] Shutdown complete.")`
+   - `handle_client` sends WebSocket Close frame on shutdown
+
+7. **Prometheus metrics** (`worktree-agent-acd03a0abf18790a3` → `19f7ad0`):
+   - `src/metrics.rs`: `Metrics` struct, 11 counters/gauges/histograms, `render()`
+   - Hooked into worker loop (reducer latency histogram), connection lifecycle (connect/disconnect gauges), gauge refresh task
+   - `GET /metrics` endpoint in metrics server returns Prometheus exposition format
+
+8. **TLS (WSS)** (`worktree-agent-a2fccae24b95cf6e4` → `9da491a`):
+   - `src/network/tls.rs`: `load_tls_config()`, `generate_self_signed()`
+   - `handle_client<S>` generic over `AsyncRead + AsyncWrite` — same code path for plain + TLS
+   - `[tls]` TOML config section; auto-generates self-signed cert if paths not configured
+   - Dependencies: `tokio-rustls 0.25`, `rustls 0.22`, `rustls-pemfile 2.0`, `rcgen 0.12`
+
+9. **JWT + Ed25519 identity** (`worktree-agent-aff5cdd7b954d973d` → `297e1b4`):
+   - `src/auth.rs`: `NeonClaims`, `IdentityIssuer` (generate/issue/verify/save/load key pair)
+   - `POST /auth/token` issues JWT; `GET /auth/public-key` returns PEM public key
+   - WebSocket Bearer token branch: detects `eyJ` prefix → JWT verify path; else API key path
+   - Ed25519 key pair persisted to `<wal_dir>/identity_key.pem` across restarts
+   - Dependencies: `jsonwebtoken 9`, `ed25519-dalek 2` (pkcs8+pem features), `pkcs8 0.10`, `rand 0.8`
+
+**Post-merge compile fix:**
+- `crate::table::EvictionPolicy` in `main.rs` binary → `neondb::table::EvictionPolicy` (binary crate's `crate` ≠ lib crate root)
+
+**Final start_listener signature (websocket.rs):**
+```rust
+pub async fn start_listener(
+    host: String, port: u16,
+    reducer_tx: kanal::AsyncSender<PendingCall>,
+    subscription_manager: Arc<SubscriptionManager>,
+    tables: Arc<TableStore>,
+    max_connections: usize,
+    api_key: Option<String>,
+    active_connections: Arc<AtomicUsize>,
+    permissions: Arc<PermissionsConfig>,
+    sql_timeout_ms: u64,
+    auth_validator: Arc<AuthValidator>,
+    rate_limiter: Arc<RateLimiterRegistry>,
+    presence: Arc<PresenceManager>,
+    ttl_manager: Arc<TtlManager>,
+    identity_issuer: Arc<IdentityIssuer>,   // JWT — appended last among older params
+    mut shutdown: watch::Receiver<()>,       // graceful shutdown
+    metrics: Arc<Metrics>,                   // Prometheus
+    tls: Option<Arc<rustls::ServerConfig>>,  // TLS/WSS
+) -> Result<()>
+```
+
+**New pitfalls:**
+54. **`crate::` in `main.rs` binary refers to the binary crate root, not `lib.rs`** — use `neondb::` (the lib crate name) to reference types defined in `src/lib.rs` from within `src/main.rs`. E.g. `neondb::table::EvictionPolicy`, not `crate::table::EvictionPolicy`.
+55. **`start_metrics_server` takes both `prom: Arc<Metrics>` and `identity_issuer: Arc<IdentityIssuer>`** — they come before `mut shutdown: watch::Receiver<()>`. Never drop either param when modifying the signature.
+56. **JWT `is_jwt()` check uses `eyJ` prefix** — JWTs are base64url-encoded JSON starting with `{"`. The first two bytes are always `ey`. Clients send `Authorization: Bearer eyJ...` for JWT auth; the server detects this and verifies via `IdentityIssuer::verify()` rather than raw API key comparison.
+57. **`EvictionPolicy::None` is the default (no eviction)** — do not configure eviction unless explicitly requested. Setting `LruRowCap { max_rows_per_table: 0 }` would evict every row; always `.max(1)` the cap.
+58. **RLS `OwnerField` reads `caller_id` from `ReducerContext`** — the field named by `owner_field` in the stored row must match `ctx.caller_id`. Scheduler-issued writes have `caller_id = "scheduler"` and bypass RLS. Ensure scheduler reducers don't write to RLS-protected tables unless the bypass is intentional.
 
 ### Session 41 — Wave 3 completion: Raft write path + consensus integration tests
 
