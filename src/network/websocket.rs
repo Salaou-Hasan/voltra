@@ -156,9 +156,10 @@ pub async fn start_listener(
                         let rl      = rate_limiter.clone();
                         let pres    = presence.clone();
                         let ttl     = ttl_manager.clone();
+                        let sd      = shutdown.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, sql_to, auth_v, rl, pres, ttl, peer_addr.to_string()).await {
+                            if let Err(e) = handle_client(stream, tx, subs, tbl, api_key, conns, perms, sql_to, auth_v, rl, pres, ttl, peer_addr.to_string(), sd).await {
                                 log::warn!("Client error: {}", e);
                             }
                         });
@@ -189,6 +190,7 @@ async fn handle_client(
     presence: Arc<PresenceManager>,
     ttl_manager: Arc<TtlManager>,
     peer_addr: String,
+    mut shutdown: Receiver<()>,
 ) -> Result<()> {
     // ── WebSocket handshake with JWT / API-key auth ───────────────────────────
     let caller_id_cell   = Arc::new(std::sync::Mutex::new(String::new()));
@@ -333,7 +335,20 @@ async fn handle_client(
     });
 
     // ── Main read loop ────────────────────────────────────────────────────────
-    while let Some(msg) = ws_rx.next().await {
+    let mut send_close_on_exit = false;
+    loop {
+        let msg_opt = tokio::select! {
+            msg = ws_rx.next() => msg,
+            _ = shutdown.changed() => {
+                // Server is shutting down — ask the client to close gracefully.
+                send_close_on_exit = true;
+                break;
+            }
+        };
+        let msg = match msg_opt {
+            Some(m) => m,
+            None    => break,
+        };
         // Implicit heartbeat: any message from the client refreshes presence.
         presence.heartbeat(&caller_id);
 
@@ -614,6 +629,14 @@ async fn handle_client(
                 break;
             }
         }
+    }
+
+    // ── Graceful close frame on server shutdown ───────────────────────────────
+    if send_close_on_exit {
+        log::debug!("Sending WebSocket Close frame to {}", peer_addr);
+        // Queue a Close frame through the write channel; the write task will
+        // deliver it before dropping the connection.
+        let _ = write_tx.try_send(Message::Close(None));
     }
 
     log::debug!("Client disconnected");

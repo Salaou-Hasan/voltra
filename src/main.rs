@@ -1054,10 +1054,14 @@ async fn run_server(config: Config) -> Result<()> {
         let ttl_w = ttl_manager.clone();
         // Raft handle — every committed reducer result goes through consensus.
         let raft_w = raft_handle.clone();
+        let mut rx_shutdown_w = shutdown_rx.clone();
 
         worker_handles.push(tokio::spawn(async move {
             loop {
-                let call = match rx.recv().await { Ok(c) => c, Err(_) => break };
+                let call = tokio::select! {
+                    result = rx.recv() => match result { Ok(c) => c, Err(_) => break },
+                    _ = rx_shutdown_w.changed() => break,
+                };
                 let call_id     = call.call_id;
                 let caller_id   = call.caller_id.clone();
                 let caller_role = call.caller_role.clone();
@@ -1284,19 +1288,43 @@ async fn run_server(config: Config) -> Result<()> {
     }
 
     tokio::signal::ctrl_c().await.ok();
+    eprintln!("\n[neondb] Shutdown signal — draining...");
     log::info!("Shutdown signal received");
+
+    // 1. Stop accepting new connections and signal all background tasks.
     let _ = shutdown_tx.send(());
+
+    // 2. Drop the sender side of the reducer channel so workers drain and exit.
     drop(reducer_tx);
-    for h in worker_handles  { let _ = h.await; }
-    for h in scheduler_handles { let _ = h.await; }
+
+    // 3. Wait for all in-flight reducer workers to finish, with a 30-second deadline.
+    let drain_result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        async {
+            for h in worker_handles  { let _ = h.await; }
+            for h in scheduler_handles { let _ = h.await; }
+        }
+    ).await;
+    if drain_result.is_err() {
+        log::warn!("[neondb] Worker drain timed out after 30s — some in-flight reducers may be incomplete");
+    }
+
+    // 4. Flush any buffered WAL entries to disk before shutting down the writer.
+    if let Err(e) = wal_writer.flush().await {
+        log::error!("WAL flush failed during shutdown: {}", e);
+    }
     if let Ok(writer) = Arc::try_unwrap(wal_writer) {
         if let Err(e) = writer.shutdown() { log::error!("WAL shutdown: {}", e); }
     }
+
+    // 5. Await all remaining task handles (listener sends WebSocket Close frames).
     let _ = listener_handle.await;
     let _ = metrics_handle.await;
     let _ = gossip_handle.await;
     let _ = presence_handle.await;
     let _ = ttl_handle.await;
+
+    eprintln!("[neondb] Shutdown complete.");
     log::info!("Shutdown complete");
     Ok(())
 }

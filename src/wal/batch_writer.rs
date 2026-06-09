@@ -15,6 +15,8 @@ enum FlushCommand {
     /// and open a fresh WAL file. The u64 is the snapshot sequence number
     /// (informational — logged for diagnostics).
     Truncate(u64),
+    /// Flush all buffered writes to disk now, then send `()` on the reply channel.
+    Flush(std::sync::mpsc::SyncSender<()>),
     Shutdown,
 }
 
@@ -81,6 +83,23 @@ impl BatchedWalWriter {
     /// Return the current WAL file size in bytes.
     pub fn wal_file_size_bytes(&self) -> u64 {
         self.file_size.load(Ordering::Relaxed)
+    }
+
+    /// Flush any buffered WAL entries to disk.
+    ///
+    /// Sends a `Flush` command to the background flusher thread and awaits
+    /// confirmation that the write has been completed (with fsync if configured).
+    /// This is a cheap no-op when the buffer is already empty.
+    pub async fn flush(&self) -> Result<()> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.sender
+            .try_send(FlushCommand::Flush(reply_tx))
+            .map_err(|e| NeonDBError::WalError(format!("WAL flush channel error: {}", e)))?;
+        // Move the blocking recv to a blocking task so we don't hold the async executor.
+        tokio::task::spawn_blocking(move || reply_rx.recv())
+            .await
+            .map_err(|e| NeonDBError::WalError(format!("WAL flush task error: {}", e)))?
+            .map_err(|e| NeonDBError::WalError(format!("WAL flush reply error: {}", e)))
     }
 
     pub fn shutdown(mut self) -> Result<()> {
@@ -182,6 +201,20 @@ fn background_flusher(
                 // Reset file size tracking
                 current_file_size = 0;
                 file_size.store(0, Ordering::Relaxed);
+            }
+            Ok(FlushCommand::Flush(reply_tx)) => {
+                if !buffer.is_empty() {
+                    let bytes_written = buffer.len() as u64;
+                    if let Err(e) = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync) {
+                        log::error!("WAL flush error: {}", e);
+                    } else {
+                        current_file_size += bytes_written;
+                        file_size.store(current_file_size, Ordering::Relaxed);
+                    }
+                    last_flush = std::time::Instant::now();
+                }
+                // Notify the caller that the flush is complete.
+                let _ = reply_tx.send(());
             }
             Ok(FlushCommand::Shutdown) => {
                 if !buffer.is_empty() {
