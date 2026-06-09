@@ -1,6 +1,7 @@
 pub mod message;
 pub mod protocol;
 pub mod rate_limiter;
+pub mod tls;
 pub mod websocket;
 
 pub use message::{

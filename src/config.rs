@@ -81,6 +81,27 @@ impl PermissionsConfig {
     }
 }
 
+/// TLS configuration — enables WSS (WebSocket Secure).
+///
+/// Example in `neondb.toml`:
+/// ```toml
+/// [tls]
+/// enabled  = true
+/// cert_path = "/etc/neondb/cert.pem"
+/// key_path  = "/etc/neondb/key.pem"
+/// ```
+///
+/// Environment variables:
+/// - `NEONDB_TLS_ENABLED`    — "1" or "true"
+/// - `NEONDB_TLS_CERT_PATH`  — path to PEM certificate
+/// - `NEONDB_TLS_KEY_PATH`   — path to PEM private key
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub cert_path: Option<std::path::PathBuf>,
+    pub key_path: Option<std::path::PathBuf>,
+}
+
 /// Server configuration loaded from `neondb.toml`, environment variables, or defaults.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -138,6 +159,9 @@ pub struct Config {
     /// TTL sweep interval (ms) — how often the background task checks for expired rows.
     /// Env: `NEONDB_TTL_SWEEP_INTERVAL_MS`.  Default 5000.
     pub ttl_sweep_interval_ms: u64,
+    /// TLS / WSS configuration.  Disabled by default; configure via `[tls]` TOML section
+    /// or `NEONDB_TLS_*` env vars.
+    pub tls: TlsConfig,
 }
 
 // These structs mirror the TOML schema. Fields that are not yet wired into
@@ -151,6 +175,14 @@ struct ConfigFile {
     permissions: Option<HashMap<String, Vec<String>>>,
     #[serde(rename = "permissions_meta")]
     permissions_meta: Option<ConfigPermissionsMeta>,
+    tls: Option<ConfigTls>,
+}
+
+#[derive(Deserialize)]
+struct ConfigTls {
+    enabled: Option<bool>,
+    cert_path: Option<String>,
+    key_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -244,6 +276,7 @@ impl Config {
             presence_heartbeat_timeout_ms: 30_000,
             presence_offline_timeout_ms: 60_000,
             ttl_sweep_interval_ms: 5_000,
+            tls: TlsConfig::default(),
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -253,6 +286,7 @@ impl Config {
                     apply_scheduler_section(&mut cfg, parsed.scheduler);
                     apply_permissions_section(&mut cfg, parsed.permissions);
                     apply_permissions_meta(&mut cfg, parsed.permissions_meta);
+                    apply_tls_section(&mut cfg, parsed.tls);
                 }
             }
         }
@@ -283,6 +317,7 @@ impl Config {
         apply_scheduler_section(&mut cfg, parsed.scheduler);
         apply_permissions_section(&mut cfg, parsed.permissions);
         apply_permissions_meta(&mut cfg, parsed.permissions_meta);
+        apply_tls_section(&mut cfg, parsed.tls);
         Some(cfg)
     }
 
@@ -431,6 +466,19 @@ fn apply_permissions_section(
     }
 }
 
+fn apply_tls_section(cfg: &mut Config, tls: Option<ConfigTls>) {
+    let Some(t) = tls else { return };
+    if let Some(e) = t.enabled {
+        cfg.tls.enabled = e;
+    }
+    if let Some(p) = t.cert_path {
+        cfg.tls.cert_path = Some(PathBuf::from(p));
+    }
+    if let Some(p) = t.key_path {
+        cfg.tls.key_path = Some(PathBuf::from(p));
+    }
+}
+
 fn apply_env_overrides(cfg: &mut Config) {
     if let Ok(h) = env::var("NEONDB_HOST") {
         cfg.host = h;
@@ -565,6 +613,15 @@ fn apply_env_overrides(cfg: &mut Config) {
         .and_then(|v| v.parse().map_err(|_| std::env::VarError::NotPresent))
     {
         cfg.ttl_sweep_interval_ms = t;
+    }
+    if let Ok(v) = env::var("NEONDB_TLS_ENABLED") {
+        cfg.tls.enabled = v == "1" || v.eq_ignore_ascii_case("true");
+    }
+    if let Ok(p) = env::var("NEONDB_TLS_CERT_PATH") {
+        cfg.tls.cert_path = Some(PathBuf::from(p));
+    }
+    if let Ok(p) = env::var("NEONDB_TLS_KEY_PATH") {
+        cfg.tls.key_path = Some(PathBuf::from(p));
     }
 }
 

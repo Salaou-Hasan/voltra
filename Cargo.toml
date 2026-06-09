@@ -48,6 +48,12 @@ anyerror = "0.1"   # error type used by openraft's StorageError constructors
 base64 = "0.21"
 jsonwebtoken = "9"
 
+# TLS support for WSS (WebSocket Secure)
+tokio-rustls = "0.25"
+rustls = "0.22"
+rustls-pemfile = "2.0"
+rcgen = "0.12"
+
 # JS reducer backend (pure-Rust engine, compiles on Windows/Linux/macOS)
 boa_engine = { version = "0.19", features = ["annex-b"] }
 boa_gc = "0.19"
