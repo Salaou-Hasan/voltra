@@ -479,9 +479,10 @@ neondb get players                       # verify rows landed
 
 ## Current Build Status
 
-After Session 50 (horizontal scaling / cluster resurrection complete):
+After Session 51 (memory/RAM optimization):
 - `cargo build` / `cargo build --release` → **zero errors, zero warnings**.
-- `cargo test --lib` → **466 lib tests passing** (+23 cluster tests). Zero failures.
+- `cargo test --lib` → **466 lib tests passing**. Zero failures.
+- Memory: row storage switched from JSON to hybrid MsgPack/zstd encoding; per-row lock DashMap replaced with fixed 512-slot array.
 - Multi-tenancy: full namespace isolation, quota enforcement, WAL-durable admin CRUD, live subscription prefix rewriting.
 - Horizontal scaling: `src/cluster/` fully wired — shard routing, delta fan-out, gossip, proxy calls, dynamic join.
 
