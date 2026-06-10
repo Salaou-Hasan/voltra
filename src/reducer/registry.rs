@@ -237,7 +237,13 @@ impl ReducerRegistry {
         entrypoint: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> Result<ReducerDefinition> {
-        let timeout = timeout_ms.unwrap_or(5_000);
+        // Per-module timeout > NEONDB_REDUCER_TIMEOUT_MS env > 5 s default.
+        let timeout = timeout_ms.unwrap_or_else(|| {
+            std::env::var("NEONDB_REDUCER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5_000)
+        });
 
         match ext {
             "js" => {

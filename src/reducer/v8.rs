@@ -27,6 +27,9 @@
 //
 // SANDBOX:
 //   Memory limit: 64 MiB per runtime (enforced by QuickJS).
+//   CPU limit: wall-clock deadline enforced via QuickJS interrupt handler —
+//     an infinite-loop reducer is killed after `timeout_ms` and the worker
+//     thread survives to serve the next call.
 //   Args/result byte caps enforced here.
 // ============================================================================
 
@@ -38,6 +41,7 @@ use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 // ── JS preamble injected before every user script ─────────────────────────────
 // Wraps raw string-returning host functions with JSON.parse/stringify so
@@ -74,6 +78,34 @@ thread_local! {
     // Raw pointer to the live ReducerContext — set before JS call, cleared after.
     // SAFETY: valid for the entire synchronous eval of reducer(args).
     static CURRENT_CTX: Cell<*mut ReducerContext> = Cell::new(std::ptr::null_mut());
+
+    // Wall-clock deadline for the currently-executing JS call.  Read by the
+    // QuickJS interrupt handler (which fires periodically during execution);
+    // when `Instant::now()` passes the deadline the handler returns `true`
+    // and QuickJS aborts the script with an "interrupted" error.
+    static QJS_DEADLINE: Cell<Option<Instant>> = Cell::new(None);
+}
+
+/// RAII guard: sets the JS execution deadline on construction, clears on drop
+/// (even if the call panics), so a stale deadline can never leak into the
+/// next reducer call on this thread.
+struct DeadlineGuard;
+
+impl DeadlineGuard {
+    fn arm(timeout_ms: u64) -> Self {
+        let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms.max(1));
+        QJS_DEADLINE.with(|d| d.set(Some(deadline)));
+        DeadlineGuard
+    }
+    fn expired() -> bool {
+        QJS_DEADLINE.with(|d| d.get().map(|dl| Instant::now() >= dl).unwrap_or(false))
+    }
+}
+
+impl Drop for DeadlineGuard {
+    fn drop(&mut self) {
+        QJS_DEADLINE.with(|d| d.set(None));
+    }
 }
 
 fn ensure_runtime() -> Result<()> {
@@ -83,6 +115,10 @@ fn ensure_runtime() -> Result<()> {
             let new_rt = Runtime::new()
                 .map_err(|e| NeonDBError::reducer_error(format!("QJS runtime: {}", e)))?;
             new_rt.set_memory_limit(64 * 1024 * 1024);
+            // CPU watchdog: QuickJS invokes this periodically mid-execution.
+            // Returning `true` aborts the running script.  No deadline armed
+            // (None) means never interrupt — e.g. during context build.
+            new_rt.set_interrupt_handler(Some(Box::new(|| DeadlineGuard::expired())));
             *rt = Some(new_rt);
         }
         Ok(())
@@ -216,7 +252,6 @@ fn build_context(rt: &Runtime, script: &str) -> Result<Context> {
 pub struct V8ReducerBackend {
     script_key: String,
     script:     String,
-    #[allow(dead_code)]
     timeout_ms: u64,
 }
 
@@ -268,9 +303,22 @@ impl V8ReducerBackend {
                 let args_qjs = parse_fn.call::<_, rquickjs::Value>((args_json_str,))
                     .map_err(|e| NeonDBError::reducer_error(format!("Args parse: {}", e)))?;
 
-                // Call reducer(args).
+                // Call reducer(args) under a wall-clock deadline.  The
+                // interrupt handler kills the script if it runs past
+                // timeout_ms; the guard clears the deadline on every exit
+                // path (success, error, panic).
+                let _deadline = DeadlineGuard::arm(self.timeout_ms);
                 let result_qjs = reducer_fn.call::<_, rquickjs::Value>((args_qjs,))
-                    .map_err(|e| NeonDBError::reducer_error(format!("Reducer call: {}", e)))?;
+                    .map_err(|e| {
+                        if DeadlineGuard::expired() {
+                            NeonDBError::reducer_error(format!(
+                                "Reducer timeout: exceeded {} ms CPU budget", self.timeout_ms
+                            ))
+                        } else {
+                            NeonDBError::reducer_error(format!("Reducer call: {}", e))
+                        }
+                    })?;
+                drop(_deadline);
 
                 // Stringify result back to JSON then parse as serde_json::Value.
                 let stringify_fn: Function = json_obj.get("stringify")?;
@@ -284,6 +332,18 @@ impl V8ReducerBackend {
         });
 
         CURRENT_CTX.with(|c| c.set(std::ptr::null_mut()));
+
+        // After a timeout the script was killed mid-execution — its JS global
+        // state may be partially mutated.  Evict the warm context so the next
+        // call rebuilds from the pristine source.  (DB state is safe either
+        // way: staged deltas are discarded because the error skips commit.)
+        if let Err(ref e) = result {
+            if e.to_string().contains("Reducer timeout") {
+                QJS_CTXS.with(|map_cell| {
+                    map_cell.borrow_mut().remove(&self.script_key);
+                });
+            }
+        }
 
         result
     }
@@ -461,6 +521,97 @@ function reducer(args) {
         ctx.commit().unwrap();
         assert_eq!(res1["tick"], 1);
         assert_eq!(res2["tick"], 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_v8_infinite_loop_killed_by_timeout() {
+        let path = write_tmp("test_qjs_infloop.js", r#"
+function reducer(args) {
+    while (true) { }  // never returns
+}
+"#);
+        let backend = V8ReducerBackend::from_file(path.clone(), 200).unwrap();
+        let mut ctx = make_ctx();
+        let t0 = std::time::Instant::now();
+        let res = backend.execute(&mut ctx, &[]);
+        let elapsed = t0.elapsed();
+        std::fs::remove_file(&path).ok();
+
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("Reducer timeout"), "expected timeout error, got: {err}");
+        // Killed promptly — well under 5x the budget (generous CI margin).
+        assert!(elapsed.as_millis() < 1000, "took too long to kill: {elapsed:?}");
+    }
+
+    #[test]
+    fn test_v8_worker_survives_after_timeout() {
+        // 1. Run an infinite-loop reducer → killed by deadline.
+        let bad_path = write_tmp("test_qjs_bad.js", r#"
+function reducer(args) { for(;;) {} }
+"#);
+        let bad = V8ReducerBackend::from_file(bad_path.clone(), 150).unwrap();
+        let mut ctx1 = make_ctx();
+        assert!(bad.execute(&mut ctx1, &[]).is_err());
+
+        // 2. Same thread, same runtime: a healthy reducer must still work.
+        let good_path = write_tmp("test_qjs_good_after.js", r#"
+function reducer(args) {
+    __neondb_set("recovery", "check", { alive: true });
+    return { ok: true };
+}
+"#);
+        let good = V8ReducerBackend::from_file(good_path.clone(), 1000).unwrap();
+        let mut ctx2 = make_ctx();
+        let res: Value = rmp_serde::from_slice(&good.execute(&mut ctx2, &[]).unwrap()).unwrap();
+        assert_eq!(res["ok"], true);
+        ctx2.commit().unwrap();
+
+        // 3. The SAME bad script can be retried (fresh context after eviction)
+        //    and is killed again rather than wedging the thread.
+        let mut ctx3 = make_ctx();
+        let err = bad.execute(&mut ctx3, &[]).unwrap_err().to_string();
+        assert!(err.contains("Reducer timeout"), "retry not killed: {err}");
+
+        std::fs::remove_file(&bad_path).ok();
+        std::fs::remove_file(&good_path).ok();
+    }
+
+    #[test]
+    fn test_v8_timeout_discards_staged_writes() {
+        // A reducer that writes a row, then hangs: the write must NOT survive,
+        // because the error path skips commit.
+        let path = write_tmp("test_qjs_partial.js", r#"
+function reducer(args) {
+    __neondb_set("partial", "row1", { x: 1 });
+    while (true) { }
+}
+"#);
+        let backend = V8ReducerBackend::from_file(path.clone(), 150).unwrap();
+        let tables = Arc::new(TableStore::new());
+        let mut ctx = ReducerContext::new(tables.clone(), 2000);
+        assert!(backend.execute(&mut ctx, &[]).is_err());
+        // Worker would call rollback / drop ctx here — simulate by dropping.
+        drop(ctx);
+        assert!(tables.get_row("partial", "row1").unwrap().is_none(),
+            "staged write leaked through after timeout");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_v8_fast_reducer_unaffected_by_deadline() {
+        // Sanity: normal reducers complete fine with a tight-but-fair budget.
+        let path = write_tmp("test_qjs_fast.js", r#"
+function reducer(args) {
+    var total = 0;
+    for (var i = 0; i < 1000; i++) total += i;
+    return { total: total };
+}
+"#);
+        let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
+        let mut ctx = make_ctx();
+        let res: Value = rmp_serde::from_slice(&backend.execute(&mut ctx, &[]).unwrap()).unwrap();
+        assert_eq!(res["total"], 499500);
         std::fs::remove_file(&path).ok();
     }
 

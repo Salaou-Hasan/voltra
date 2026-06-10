@@ -41,6 +41,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use neondb::network::message::{ClientMessage, ReducerCall};
+use neondb::ServerHandle;
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
@@ -202,31 +203,62 @@ impl Metrics {
 #[derive(Clone, Default)]
 struct Health {
     memory_mb:    f64,
-    queue_depth:  u64,
     wal_mb:       f64,
     rows:         u64,
     connections:  u64,
     elapsed_secs: u64,
 }
 
-async fn sample_health(url: &str, elapsed: u64) -> Health {
-    if let Ok(resp) = reqwest::Client::new()
-        .get(format!("{}/healthz", url))
-        .timeout(Duration::from_secs(3))
-        .send().await
+fn get_memory_bytes() -> u64 {
+    #[cfg(target_os = "windows")]
     {
-        if let Ok(v) = resp.json::<serde_json::Value>().await {
-            return Health {
-                memory_mb:   v["memory_usage_bytes"].as_f64().unwrap_or(0.0) / 1e6,
-                queue_depth: v["reducer_queue_depth"].as_u64().unwrap_or(0),
-                wal_mb:      v["wal_file_size_bytes"].as_f64().unwrap_or(0.0) / 1e6,
-                rows:        v["total_rows"].as_u64().unwrap_or(0),
-                connections: v["active_connections"].as_u64().unwrap_or(0),
-                elapsed_secs: elapsed,
-            };
+        use std::mem;
+        type HANDLE  = *mut std::ffi::c_void;
+        type DWORD   = u32;
+        type SIZE_T  = usize;
+        #[repr(C)]
+        struct PROCESS_MEMORY_COUNTERS {
+            cb: DWORD, page_fault_count: DWORD,
+            peak_working_set_size: SIZE_T, working_set_size: SIZE_T,
+            quota_peak_paged_pool_usage: SIZE_T, quota_paged_pool_usage: SIZE_T,
+            quota_peak_non_paged_pool_usage: SIZE_T, quota_non_paged_pool_usage: SIZE_T,
+            pagefile_usage: SIZE_T, peak_pagefile_usage: SIZE_T,
         }
+        #[link(name = "kernel32")] extern "system" { fn GetCurrentProcess() -> HANDLE; }
+        #[link(name = "psapi")] extern "system" {
+            fn GetProcessMemoryInfo(p: HANDLE, m: *mut PROCESS_MEMORY_COUNTERS, cb: DWORD) -> i32;
+        }
+        unsafe {
+            let mut pmc: PROCESS_MEMORY_COUNTERS = mem::zeroed();
+            pmc.cb = mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
+            if GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 {
+                return pmc.working_set_size as u64;
+            }
+        }
+        0
     }
-    Health { elapsed_secs: elapsed, ..Default::default() }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(data) = std::fs::read_to_string("/proc/self/statm") {
+            if let Some(pages) = data.split_whitespace().nth(1).and_then(|s| s.parse::<u64>().ok()) {
+                return pages * 4096;
+            }
+        }
+        0
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    { 0 }
+}
+
+fn sample_health(handle: &ServerHandle, elapsed: u64) -> Health {
+    use std::sync::atomic::Ordering;
+    Health {
+        memory_mb:   get_memory_bytes() as f64 / 1e6,
+        wal_mb:      handle.wal_file_size.load(Ordering::Relaxed) as f64 / 1e6,
+        rows:        handle.tables.total_row_count() as u64,
+        connections: handle.subs.active_connections() as u64,
+        elapsed_secs: elapsed,
+    }
 }
 
 // ─── Embedded reducer scripts ─────────────────────────────────────────────────
@@ -476,18 +508,16 @@ const SIM_REDUCERS: &[(&str, &str)] = &[
 
 // ─── Server startup ───────────────────────────────────────────────────────────
 
-async fn start_embedded_server(ws_port: u16, metrics_port: u16) {
+async fn start_embedded_server(ws_port: u16, metrics_port: u16) -> ServerHandle {
     use std::fs;
     let dir = std::env::temp_dir().join(format!("neondb_sim_{}_{}", ws_port, std::process::id()));
     let modules_dir = dir.join("modules");
     fs::create_dir_all(&modules_dir).unwrap();
 
-    // Write all reducer scripts
     for (name, code) in SIM_REDUCERS {
         fs::write(modules_dir.join(format!("{}.js", name)), code).unwrap();
     }
 
-    // neondb.toml
     let toml = format!(
         "[server]\nhost = \"127.0.0.1\"\nport = {ws}\nmetrics_port = {mp}\n\
          wal_path = \"{wal}\"\nsnapshot_dir = \"{snap}\"\n\
@@ -500,16 +530,25 @@ async fn start_embedded_server(ws_port: u16, metrics_port: u16) {
 
     std::env::set_current_dir(&dir).ok();
     let mut config = neondb::config::Config::from_env();
-    config.port = ws_port;
+    config.port         = ws_port;
     config.metrics_port = metrics_port;
     config.wal_path     = dir.join("wal");
     config.snapshot_dir = dir.join("snaps");
 
-    tokio::spawn(async move {
-        if let Err(e) = neondb::run_server(config).await {
-            eprintln!("[sim-server] error: {e}");
+    match neondb::run_server_with_handle(config).await {
+        Ok((handle, server_fut)) => {
+            tokio::spawn(async move {
+                if let Err(e) = server_fut.await {
+                    eprintln!("[sim-server] error: {e}");
+                }
+            });
+            handle
         }
-    });
+        Err(e) => {
+            eprintln!("[sim-server] startup failed: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn wait_for_server(ws_port: u16) {
@@ -893,6 +932,7 @@ async fn run_game_sim(
     ramp_secs: u64,
     cfg:       &SimConfig,
     metrics:   Arc<Metrics>,
+    server:    &ServerHandle,
 ) -> Vec<Health> {
     let deadline = Instant::now() + Duration::from_secs(ramp_secs + duration);
     let measuring_start = Instant::now() + Duration::from_secs(ramp_secs);
@@ -903,7 +943,7 @@ async fn run_game_sim(
         handles.push(tokio::spawn(game_user(i, url, ak, met, deadline)));
         if i % 20 == 19 { tokio::time::sleep(Duration::from_millis(30)).await; }
     }
-    sample_loop(measuring_start, deadline, &cfg.metrics_url, &metrics, &mut handles).await
+    sample_loop(measuring_start, deadline, &metrics, server, &mut handles).await
 }
 
 async fn run_chat_sim(
@@ -913,6 +953,7 @@ async fn run_chat_sim(
     rooms:     usize,
     cfg:       &SimConfig,
     metrics:   Arc<Metrics>,
+    server:    &ServerHandle,
 ) -> Vec<Health> {
     let deadline = Instant::now() + Duration::from_secs(ramp_secs + duration);
     let measuring_start = Instant::now() + Duration::from_secs(ramp_secs);
@@ -923,14 +964,14 @@ async fn run_chat_sim(
         handles.push(tokio::spawn(chat_user(i, url, ak, met, deadline, r)));
         if i % 20 == 19 { tokio::time::sleep(Duration::from_millis(30)).await; }
     }
-    sample_loop(measuring_start, deadline, &cfg.metrics_url, &metrics, &mut handles).await
+    sample_loop(measuring_start, deadline, &metrics, server, &mut handles).await
 }
 
 async fn sample_loop(
     measuring_start: Instant,
     deadline:        Instant,
-    metrics_url:     &str,
     metrics:         &Arc<Metrics>,
+    server:          &ServerHandle,
     handles:         &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Vec<Health> {
     let sim_start = Instant::now();
@@ -953,11 +994,11 @@ async fn sample_loop(
         let window_tps = (total - last_total) as f64 / last_t.elapsed().as_secs_f64();
         last_total = total; last_t = Instant::now();
 
-        let h = sample_health(metrics_url, elapsed).await;
+        let h = sample_health(server, elapsed);
         println!("[{:>5}s] tps={:>8.0}  ok={:>9}  err={:>5}  mem={:>5.1}MB  \
-                  wal={:>5.1}MB  rows={:>6}  q={:>3}  conn={}",
+                  wal={:>5.1}MB  rows={:>6}  conn={}",
             elapsed, window_tps, total, errors,
-            h.memory_mb, h.wal_mb, h.rows, h.queue_depth, h.connections);
+            h.memory_mb, h.wal_mb, h.rows, h.connections);
         samples.push(h);
 
         if now >= deadline { break; }
@@ -1041,6 +1082,7 @@ async fn run_scale(
     dur:       u64,
     stop_err:  f64,
     cfg:       &SimConfig,
+    server:    &ServerHandle,
 ) {
     println!("\n┌─ Scale test: profile={profile} levels={:?} duration={dur}s/level ─┐", levels);
 
@@ -1054,8 +1096,8 @@ async fn run_scale(
 
         let t0 = Instant::now();
         let samples = match profile {
-            "chat" => run_chat_sim(n, dur, 3, (n/5).max(1), cfg, metrics.clone()).await,
-            _      => run_game_sim(n, dur, 3, cfg, metrics.clone()).await,
+            "chat" => run_chat_sim(n, dur, 3, (n/5).max(1), cfg, metrics.clone(), server).await,
+            _      => run_game_sim(n, dur, 3, cfg, metrics.clone(), server).await,
         };
         let elapsed = t0.elapsed().as_secs_f64() - 3.0;
 
@@ -1105,8 +1147,8 @@ async fn main() {
 
     // Start the embedded server
     println!("┌─ NeonDB Simulation Benchmark ─────────────────────────────────────┐");
-    println!("│  Starting embedded NeonDB server on :{ws_port} (metrics :{metrics_port}) ...");
-    start_embedded_server(ws_port, metrics_port).await;
+    println!("│  Starting embedded NeonDB server on :{ws_port} ...");
+    let server = start_embedded_server(ws_port, metrics_port).await;
     wait_for_server(ws_port).await;
     println!("│  Server ready. {} reducers loaded.", SIM_REDUCERS.len());
     println!("└────────────────────────────────────────────────────────────────────┘\n");
@@ -1126,7 +1168,7 @@ async fn main() {
             println!("   Workload: positions, combat, abilities, economy, quests, matchmaking, world\n");
             let metrics  = Arc::new(Metrics::new(&all_ops));
             let t0       = Instant::now();
-            let samples  = run_game_sim(*players, *duration, *ramp, &cfg, metrics.clone()).await;
+            let samples  = run_game_sim(*players, *duration, *ramp, &cfg, metrics.clone(), &server).await;
             let elapsed  = t0.elapsed().as_secs_f64() - *ramp as f64;
             let label    = format!("GAME  {players} players  {duration}s");
             print_report(&label, &metrics, &samples, elapsed);
@@ -1137,7 +1179,7 @@ async fn main() {
             println!("   Workload: messages, typing, reactions, threads, presence\n");
             let metrics = Arc::new(Metrics::new(&all_ops));
             let t0      = Instant::now();
-            let samples = run_chat_sim(*users, *duration, *ramp, *rooms, &cfg, metrics.clone()).await;
+            let samples = run_chat_sim(*users, *duration, *ramp, *rooms, &cfg, metrics.clone(), &server).await;
             let elapsed = t0.elapsed().as_secs_f64() - *ramp as f64;
             let label   = format!("CHAT  {users} users  {rooms} rooms  {duration}s");
             print_report(&label, &metrics, &samples, elapsed);
@@ -1163,7 +1205,7 @@ async fn main() {
             }
             let samples = sample_loop(
                 Instant::now() + Duration::from_secs(*ramp),
-                deadline_game, &cfg.metrics_url, &metrics, &mut handles,
+                deadline_game, &metrics, &server, &mut handles,
             ).await;
             let elapsed = t0.elapsed().as_secs_f64() - *ramp as f64;
             let label   = format!("MIXED  {players}×game + {users}×chat  {duration}s");
@@ -1173,15 +1215,15 @@ async fn main() {
             let parsed: Vec<usize> = levels.split(',')
                 .filter_map(|s| s.trim().parse().ok())
                 .collect();
-            run_scale(profile, parsed, *duration_per_level, *stop_error_pct, &cfg).await;
+            run_scale(profile, parsed, *duration_per_level, *stop_error_pct, &cfg, &server).await;
         }
     }
 }
 
 fn write_csv(path: &str, samples: &[Health]) {
-    let header = "elapsed_secs,memory_mb,wal_mb,rows,queue_depth,connections";
+    let header = "elapsed_secs,memory_mb,wal_mb,rows,connections";
     let rows: Vec<String> = samples.iter().map(|h| {
-        format!("{},{:.2},{:.2},{},{},{}", h.elapsed_secs, h.memory_mb, h.wal_mb, h.rows, h.queue_depth, h.connections)
+        format!("{},{:.2},{:.2},{},{}", h.elapsed_secs, h.memory_mb, h.wal_mb, h.rows, h.connections)
     }).collect();
     let content = format!("{}\n{}", header, rows.join("\n"));
     if let Err(e) = std::fs::write(path, content) {

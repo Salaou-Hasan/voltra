@@ -41,12 +41,59 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 
+/// Live handles to a running embedded NeonDB server.
+///
+/// Returned by [`run_server_with_handle`] after the server finishes bootstrapping.
+/// All fields are cheaply cloneable `Arc`s — safe to share across threads/tasks.
+pub struct ServerHandle {
+    /// Read-only access to all in-memory tables (row counts, row data).
+    pub tables:        Arc<TableStore>,
+    /// Subscription manager — exposes `active_connections()`.
+    pub subs:          Arc<SubscriptionManager>,
+    /// Shared WAL byte counter — updated after every flush.
+    pub wal_file_size: Arc<AtomicU64>,
+}
+
 #[inline]
 fn now_nanos() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
+}
+
+/// Start an embedded NeonDB server and return a [`ServerHandle`] once the
+/// server has finished bootstrapping (snapshot + WAL replay + listener bound).
+///
+/// The server runs as a background Tokio task; the returned future resolves
+/// immediately once the listener is ready.  Use the handle to sample live stats
+/// (rows, WAL size, connections) without an HTTP round-trip.
+///
+/// # Example
+/// ```rust,ignore
+/// let (handle, server_fut) = neondb::run_server_with_handle(config).await?;
+/// tokio::spawn(server_fut);
+/// // handle.tables.total_row_count(), etc.
+/// ```
+pub async fn run_server_with_handle(config: Config)
+    -> Result<(ServerHandle, impl std::future::Future<Output = Result<()>>)>
+{
+    use tokio::sync::oneshot;
+    let (tx, rx) = oneshot::channel::<ServerHandle>();
+    let fut = run_server_inner(config, Some(tx));
+    // Drive the future just far enough to reach the "listener ready" point,
+    // then hand the remaining future back to the caller to spawn.
+    // We do this by spawning run_server_inner and waiting for the oneshot.
+    let handle_task = tokio::spawn(fut);
+    let handle = rx.await.map_err(|_| {
+        crate::error::NeonDBError::Internal("Server startup failed before sending handle".into())
+    })?;
+    // Wrap the task back into a plain future the caller can await/drop.
+    let server_fut = async move {
+        handle_task.await
+            .map_err(|e| crate::error::NeonDBError::Internal(format!("Server task panicked: {e}")))?
+    };
+    Ok((handle, server_fut))
 }
 
 /// Start a NeonDB server with the given configuration.
@@ -67,6 +114,13 @@ fn now_nanos() -> u64 {
 /// }
 /// ```
 pub async fn run_server(config: Config) -> Result<()> {
+    run_server_inner(config, None).await
+}
+
+async fn run_server_inner(
+    config: Config,
+    handle_tx: Option<tokio::sync::oneshot::Sender<ServerHandle>>,
+) -> Result<()> {
     // ── Graceful shutdown signal ──────────────────────────────────────────────
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
@@ -355,6 +409,15 @@ pub async fn run_server(config: Config) -> Result<()> {
     let max_conns = config.max_connections;
 
     log::info!("[neondb] Listening on {}:{}", host, port);
+
+    // Send stats handle back to the caller (e.g. neondb-sim) before blocking.
+    if let Some(tx) = handle_tx {
+        let _ = tx.send(ServerHandle {
+            tables:        tables.clone(),
+            subs:          subs.clone(),
+            wal_file_size: wal_writer.file_size_arc(),
+        });
+    }
 
     crate::network::start_listener(
         host,

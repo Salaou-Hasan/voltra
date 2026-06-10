@@ -26,7 +26,7 @@ pub use network::{
     start_listener, ClientMessage, PendingCall, ReducerCall, ReducerResponse, ServerMessage,
     SubscriptionDiff,
 };
-pub use server::run_server;
+pub use server::{run_server, run_server_with_handle, ServerHandle};
 pub use reducer::{increment_reducer, IncrementResult, ReducerContext, ReducerRegistry};
 pub use schema::{SchemaRegistry, TableSchema, ColumnDef, ColumnType};
 pub use sql::{Executor as SqlExecutor, QueryResult as SqlQueryResult};

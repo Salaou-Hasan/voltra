@@ -85,6 +85,12 @@ impl BatchedWalWriter {
         self.file_size.load(Ordering::Relaxed)
     }
 
+    /// Clone the inner `Arc<AtomicU64>` so external code can read WAL size without
+    /// holding a reference to the writer itself.
+    pub fn file_size_arc(&self) -> Arc<AtomicU64> {
+        self.file_size.clone()
+    }
+
     /// Flush any buffered WAL entries to disk.
     ///
     /// Sends a `Flush` command to the background flusher thread and awaits
