@@ -83,6 +83,11 @@ path = "src/bin/neondb_bench.rs"
 name = "neondb-soak"
 path = "src/bin/soak.rs"
 
+# ── High-end simulation / stress test ────────────────────────────────────────
+[[bin]]
+name = "neondb-sim"
+path = "src/bin/sim.rs"
+
 # ── Existing benchmarks ───────────────────────────────────────────────────────
 [[bench]]
 name = "throughput"
