@@ -136,110 +136,125 @@ fn background_flusher(
         }
     };
 
+    // GROUP COMMIT: instead of holding entries until a timer fires (which
+    // loses up to flush_interval_ms of ACKED writes on a crash), the loop
+    // drains everything currently queued, writes it in ONE syscall, and
+    // immediately waits for more.  Under load the "batch" is everything that
+    // arrived during the previous write — same throughput as timer batching —
+    // while the durability window shrinks from ~100ms to microseconds.
     let mut buffer = Vec::with_capacity(1024 * 1024);
-    let flush_interval = Duration::from_millis(flush_interval_ms as u64);
-    let mut last_flush = std::time::Instant::now();
+    let flush_interval = Duration::from_millis(flush_interval_ms.max(1) as u64);
     let mut entry_count = 0u64;
     let mut current_file_size: u64 = file_size.load(Ordering::Relaxed);
 
-    loop {
-        match receiver.recv_timeout(flush_interval) {
-            Ok(FlushCommand::Append(encoded, _seq_num)) => {
-                let len = encoded.len() as u32;
-                buffer.extend_from_slice(&len.to_le_bytes());
-                buffer.extend_from_slice(&encoded);
-                entry_count += 1;
+    'outer: loop {
+        // Block for the first command (with a timeout as an idle-flush safety net).
+        let first = receiver.recv_timeout(flush_interval);
 
-                if buffer.len() > 512 * 1024 {
-                    let bytes_written = buffer.len() as u64;
-                    if let Err(e) = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync) {
-                        log::error!("WAL flush error: {}", e);
-                    } else {
-                        current_file_size += bytes_written;
-                        file_size.store(current_file_size, Ordering::Relaxed);
-                    }
-                    last_flush = std::time::Instant::now();
-                }
+        let mut flush_acks: Vec<mpsc::SyncSender<()>> = Vec::new();
+        let mut shutdown = false;
+
+        // Handle the first command, then opportunistically drain the queue.
+        let mut pending = match first {
+            Ok(cmd) => vec![cmd],
+            Err(mpsc::RecvTimeoutError::Timeout) => Vec::new(),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync);
+                break;
             }
-            Ok(FlushCommand::Truncate(sequence)) => {
-                // Flush any pending data first
-                if !buffer.is_empty() {
-                    if let Err(e) = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync) {
-                        log::error!("WAL flush error during truncate: {}", e);
+        };
+        while let Ok(cmd) = receiver.try_recv() {
+            pending.push(cmd);
+            if pending.len() >= 8192 { break; } // bound a single batch
+        }
+
+        for cmd in pending {
+            match cmd {
+                FlushCommand::Append(encoded, _seq_num) => {
+                    let len = encoded.len() as u32;
+                    buffer.extend_from_slice(&len.to_le_bytes());
+                    buffer.extend_from_slice(&encoded);
+                    entry_count += 1;
+
+                    // Mid-batch guard: don't let one giant batch balloon memory.
+                    if buffer.len() > 4 * 1024 * 1024 {
+                        let bytes_written = buffer.len() as u64;
+                        if let Err(e) = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync) {
+                            log::error!("WAL flush error: {}", e);
+                        } else {
+                            current_file_size += bytes_written;
+                            file_size.store(current_file_size, Ordering::Relaxed);
+                        }
                     }
                 }
-                // Close current file (drop it)
-                drop(file);
-
-                // Rename current WAL to .old
-                let old_path = path.with_extension("wal.old");
-                if let Err(e) = std::fs::rename(&path, &old_path) {
-                    log::warn!("WAL rotate: rename to .old failed: {} (continuing with fresh file)", e);
-                } else {
-                    log::info!("WAL rotated at snapshot seq={}: {} -> {}", sequence, path.display(), old_path.display());
-                }
-
-                // Open a fresh WAL file
-                file = match open_wal_file(&path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        log::error!("WAL rotate: failed to open new file after rotation: {}", e);
-                        // Attempt to recover: try re-opening the old file
-                        if old_path.exists() {
-                            let _ = std::fs::rename(&old_path, &path);
+                FlushCommand::Truncate(sequence) => {
+                    // Flush any pending data first
+                    if !buffer.is_empty() {
+                        if let Err(e) = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync) {
+                            log::error!("WAL flush error during truncate: {}", e);
                         }
-                        match open_wal_file(&path) {
-                            Ok(f) => f,
-                            Err(e2) => {
-                                log::error!("WAL rotate: FATAL — cannot re-open WAL: {}", e2);
-                                return;
+                    }
+                    // Close current file (drop it)
+                    drop(file);
+
+                    // Rename current WAL to .old
+                    let old_path = path.with_extension("wal.old");
+                    if let Err(e) = std::fs::rename(&path, &old_path) {
+                        log::warn!("WAL rotate: rename to .old failed: {} (continuing with fresh file)", e);
+                    } else {
+                        log::info!("WAL rotated at snapshot seq={}: {} -> {}", sequence, path.display(), old_path.display());
+                    }
+
+                    // Open a fresh WAL file
+                    file = match open_wal_file(&path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            log::error!("WAL rotate: failed to open new file after rotation: {}", e);
+                            // Attempt to recover: try re-opening the old file
+                            if old_path.exists() {
+                                let _ = std::fs::rename(&old_path, &path);
+                            }
+                            match open_wal_file(&path) {
+                                Ok(f) => f,
+                                Err(e2) => {
+                                    log::error!("WAL rotate: FATAL — cannot re-open WAL: {}", e2);
+                                    break 'outer;
+                                }
                             }
                         }
-                    }
-                };
+                    };
 
-                // Reset file size tracking
-                current_file_size = 0;
-                file_size.store(0, Ordering::Relaxed);
-            }
-            Ok(FlushCommand::Flush(reply_tx)) => {
-                if !buffer.is_empty() {
-                    let bytes_written = buffer.len() as u64;
-                    if let Err(e) = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync) {
-                        log::error!("WAL flush error: {}", e);
-                    } else {
-                        current_file_size += bytes_written;
-                        file_size.store(current_file_size, Ordering::Relaxed);
-                    }
-                    last_flush = std::time::Instant::now();
+                    // Reset file size tracking
+                    current_file_size = 0;
+                    file_size.store(0, Ordering::Relaxed);
                 }
-                // Notify the caller that the flush is complete.
-                let _ = reply_tx.send(());
-            }
-            Ok(FlushCommand::Shutdown) => {
-                if !buffer.is_empty() {
-                    let _ = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync);
+                FlushCommand::Flush(reply_tx) => {
+                    flush_acks.push(reply_tx);
                 }
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if !buffer.is_empty() && last_flush.elapsed() >= flush_interval {
-                    let bytes_written = buffer.len() as u64;
-                    if let Err(e) = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync) {
-                        log::error!("WAL flush error: {}", e);
-                    } else {
-                        current_file_size += bytes_written;
-                        file_size.store(current_file_size, Ordering::Relaxed);
-                    }
-                    last_flush = std::time::Instant::now();
+                FlushCommand::Shutdown => {
+                    shutdown = true;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                if !buffer.is_empty() {
-                    let _ = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync);
-                }
-                break;
+        }
+
+        // Group commit: write everything accumulated in this drain pass.
+        if !buffer.is_empty() {
+            let bytes_written = buffer.len() as u64;
+            if let Err(e) = flush_to_disk(&mut file, &mut buffer, unsafe_no_fsync) {
+                log::error!("WAL flush error: {}", e);
+            } else {
+                current_file_size += bytes_written;
+                file_size.store(current_file_size, Ordering::Relaxed);
             }
+        }
+
+        // Acknowledge explicit Flush requests AFTER the data is on disk.
+        for ack in flush_acks {
+            let _ = ack.send(());
+        }
+
+        if shutdown {
+            break;
         }
     }
 

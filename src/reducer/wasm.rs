@@ -675,6 +675,11 @@ mod tests {
 
     #[test]
     fn test_wasm_get_set_row_via_host() {
+        // Acquire the sandbox lock so this test is not affected by concurrent
+        // tests that temporarily set a reduced max_memory_bytes limit.
+        let _g = crate::reducer::SANDBOX_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // WAT module that calls neondb_set_row then neondb_get_row and returns
         // the retrieved JSON length as new_value to prove the round-trip works.
         let wat_src = r#"(module

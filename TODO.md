@@ -387,7 +387,7 @@ members = [".", "neondb-macros", "neondb-client-ts", "neondb-client-rust"]
 
 ### TODO-028 — Rewrite All Existing Templates Using `#[reducer]` Syntax
 
-**Status**: ❌ NOT STARTED (depends on TODO-027)
+**Status**: ✅ DONE (Session 45)
 **Priority**: HIGH
 **Effort**: 3–4 days
 
@@ -477,7 +477,7 @@ fn send_message(ctx, room: String, author: String, text: String) {
 
 ### TODO-029 — `neondb generate` Code Generator Command
 
-**Status**: ❌ NOT STARTED (depends on TODO-027)
+**Status**: ✅ DONE (Session 48 — TypeScript + GDScript targets)
 **Priority**: HIGH
 **Effort**: 1 week
 
@@ -1073,8 +1073,8 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 
 ── DEVELOPER EXPERIENCE (Session 43+) ──────────────────────────
 27. TODO-027  neondb-macros proc macro crate  ✅ DONE (Session 44 Wave 2)
-28. TODO-028  Rewrite templates w/ #[reducer] ❌ NOT STARTED  ← Wave 3 (needs 027)
-29. TODO-029  neondb generate code generator  ❌ NOT STARTED  ← Wave 3 (needs 027,031)
+28. TODO-028  Rewrite templates w/ #[reducer] ✅ DONE  (Session 45)
+29. TODO-029  neondb generate code generator  ✅ DONE  (Session 48 — TypeScript + GDScript)
 30. TODO-030  Engine-specific init templates  ❌ NOT STARTED  ← Wave 3 (needs 028,029)
               (Unity / Unreal / Godot / Web / GammaRay)
 31. TODO-031  GET /schema endpoint            ✅ DONE  (Session 44 Wave 1)

@@ -35,6 +35,9 @@ pub enum NeonDBError {
 
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
+
+    #[error("Storage error: {0}")]
+    StorageError(String),
 }
 
 impl NeonDBError {
@@ -88,6 +91,12 @@ impl From<rmp_serde::encode::Error> for NeonDBError {
 impl From<std::str::Utf8Error> for NeonDBError {
     fn from(err: std::str::Utf8Error) -> Self {
         NeonDBError::SerializationError(format!("UTF-8 decode error: {}", err))
+    }
+}
+
+impl From<rquickjs::Error> for NeonDBError {
+    fn from(err: rquickjs::Error) -> Self {
+        NeonDBError::ReducerError(format!("JS error: {}", err))
     }
 }
 

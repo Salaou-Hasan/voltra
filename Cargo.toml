@@ -62,14 +62,13 @@ rustls = "0.22"
 rustls-pemfile = "2.0"
 rcgen = "0.12"
 
-# JS reducer backend (pure-Rust engine, compiles on Windows/Linux/macOS)
-boa_engine = { version = "0.19", features = ["annex-b"] }
-boa_gc = "0.19"
+# Disk persistence — pure-Rust embedded key-value store (already in local cache)
+sled = "0.34"
 
 # WASM reducer backend
 wasmtime = { version = "21", features = ["cranelift"] }
 wat = "1.0"
-
+rquickjs = { version = "0.12.0", features = ["full"] }
 [dev-dependencies]
 tokio-test = "0.4"
 criterion = "0.5"
@@ -78,6 +77,11 @@ criterion = "0.5"
 [[bin]]
 name = "neondb-bench"
 path = "src/bin/neondb_bench.rs"
+
+# ── Sustained-load soak test binary ──────────────────────────────────────────
+[[bin]]
+name = "neondb-soak"
+path = "src/bin/soak.rs"
 
 # ── Existing benchmarks ───────────────────────────────────────────────────────
 [[bench]]

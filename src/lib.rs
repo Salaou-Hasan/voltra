@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod backup;
 pub mod metrics;
 pub mod chat;
 pub mod cli;
@@ -8,8 +9,10 @@ pub mod leaderboard;
 pub mod matchmaking;
 pub mod migrations;
 pub mod network;
+pub mod persistence;
 pub mod presence;
 pub mod reducer;
+pub mod replication;
 pub mod schema;
 pub mod sql;
 pub mod subscriptions;

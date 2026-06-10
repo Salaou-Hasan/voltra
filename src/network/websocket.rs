@@ -256,17 +256,12 @@ where
                 .unwrap_or("");
 
             if auth_header.is_empty() {
-                // No auth header provided.
-                // If auth is configured (api_key is Some, or AuthValidator is not in None mode),
-                // check if we should reject or allow anonymous.
-                match auth_v.validate("Bearer ") {
-                    AuthResult::Anonymous => {
-                        // No auth configured — allow anonymous
-                    }
-                    _ => {
-                        // Auth is configured but no header provided — reject.
-                        return Err(ErrorResponse::new(Some("Unauthorized: missing Authorization header".to_string())));
-                    }
+                // No auth header provided.  Allow only when NO auth is
+                // configured (dev mode).  Checking the mode directly — calling
+                // validate() with an empty token would return Denied even in
+                // None mode, locking out all anonymous dev connections.
+                if !matches!(auth_v.mode(), crate::auth::AuthMode::None) {
+                    return Err(ErrorResponse::new(Some("Unauthorized: missing Authorization header".to_string())));
                 }
             } else {
                 // Strip "Bearer " prefix to get the raw token.

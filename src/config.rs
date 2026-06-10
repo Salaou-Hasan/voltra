@@ -162,6 +162,31 @@ pub struct Config {
     /// rejected immediately (fail-fast) rather than blocking the WebSocket loop.
     /// Env: `NEONDB_REDUCER_QUEUE_CAP`.  Default 16 384.
     pub reducer_queue_cap: usize,
+    /// Optional path to a redb database file for durable row persistence.
+    /// When set, all committed row deltas are written to this file.  On restart,
+    /// rows are loaded from redb before WAL replay, avoiding a full replay from
+    /// scratch.  Env: `NEONDB_PERSISTENCE_PATH`.  Default `None` (WAL-only mode).
+    pub persistence_path: Option<PathBuf>,
+    /// Node role: "primary" (default) or "replica".  A replica pulls WAL
+    /// entries from `primary_url`, applies them locally, and rejects all
+    /// reducer calls until promoted via POST /replication/promote.
+    /// Env: `NEONDB_ROLE`.
+    pub role: String,
+    /// Metrics-port base URL of the primary node (e.g. "http://10.0.0.1:3001").
+    /// Required when role == "replica".  Env: `NEONDB_PRIMARY_URL`.
+    pub primary_url: Option<String>,
+    /// How often (ms) a replica polls the primary for new WAL entries.
+    /// Env: `NEONDB_REPLICA_POLL_MS`.  Default 500.
+    pub replica_poll_ms: u64,
+    /// Directory for automated backups.  When set together with
+    /// `backup_interval_secs > 0`, the server takes a backup (snapshot + WAL
+    /// copy) on that interval and rotates old ones.  Env: `NEONDB_BACKUP_DIR`.
+    pub backup_dir: Option<PathBuf>,
+    /// Seconds between automated backups.  0 disables the background task
+    /// (manual `POST /backup` still works).  Env: `NEONDB_BACKUP_INTERVAL_SECS`.
+    pub backup_interval_secs: u64,
+    /// How many rotated backups to keep.  Env: `NEONDB_BACKUP_KEEP`.  Default 5.
+    pub backup_keep: usize,
 }
 
 // These structs mirror the TOML schema.
@@ -235,6 +260,13 @@ struct ConfigServer {
     presence_offline_timeout_ms: Option<u64>,
     ttl_sweep_interval_ms: Option<u64>,
     reducer_queue_cap: Option<usize>,
+    persistence_path: Option<String>,
+    role: Option<String>,
+    primary_url: Option<String>,
+    replica_poll_ms: Option<u64>,
+    backup_dir: Option<String>,
+    backup_interval_secs: Option<u64>,
+    backup_keep: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -287,6 +319,13 @@ impl Config {
             eviction: EvictionConfig::default(),
             tls: TlsConfig::default(),
             reducer_queue_cap: 16_384,
+            persistence_path: None,
+            role: "primary".to_string(),
+            primary_url: None,
+            replica_poll_ms: 500,
+            backup_dir: None,
+            backup_interval_secs: 0,
+            backup_keep: 5,
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -454,6 +493,27 @@ fn apply_server_section(cfg: &mut Config, server: Option<ConfigServer>) {
     }
     if let Some(c) = s.reducer_queue_cap {
         cfg.reducer_queue_cap = c.max(1);
+    }
+    if let Some(p) = s.persistence_path {
+        cfg.persistence_path = Some(PathBuf::from(p));
+    }
+    if let Some(r) = s.role {
+        cfg.role = r;
+    }
+    if let Some(u) = s.primary_url {
+        cfg.primary_url = Some(u);
+    }
+    if let Some(ms) = s.replica_poll_ms {
+        cfg.replica_poll_ms = ms.max(50);
+    }
+    if let Some(d) = s.backup_dir {
+        cfg.backup_dir = Some(PathBuf::from(d));
+    }
+    if let Some(i) = s.backup_interval_secs {
+        cfg.backup_interval_secs = i;
+    }
+    if let Some(k) = s.backup_keep {
+        cfg.backup_keep = k.max(1);
     }
 }
 
@@ -655,6 +715,33 @@ fn apply_env_overrides(cfg: &mut Config) {
     }
     if let Ok(p) = env::var("NEONDB_TLS_KEY_PATH") {
         cfg.tls.key_path = Some(PathBuf::from(p));
+    }
+    if let Ok(p) = env::var("NEONDB_PERSISTENCE_PATH") {
+        cfg.persistence_path = Some(PathBuf::from(p));
+    }
+    if let Ok(r) = env::var("NEONDB_ROLE") {
+        cfg.role = r;
+    }
+    if let Ok(u) = env::var("NEONDB_PRIMARY_URL") {
+        cfg.primary_url = Some(u);
+    }
+    if let Ok(ms) = env::var("NEONDB_REPLICA_POLL_MS")
+        .and_then(|v| v.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.replica_poll_ms = ms.max(50);
+    }
+    if let Ok(d) = env::var("NEONDB_BACKUP_DIR") {
+        cfg.backup_dir = Some(PathBuf::from(d));
+    }
+    if let Ok(i) = env::var("NEONDB_BACKUP_INTERVAL_SECS")
+        .and_then(|v| v.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.backup_interval_secs = i;
+    }
+    if let Ok(k) = env::var("NEONDB_BACKUP_KEEP")
+        .and_then(|v| v.parse::<usize>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.backup_keep = k.max(1);
     }
 }
 

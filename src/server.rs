@@ -24,6 +24,7 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::metrics::Metrics;
 use crate::network::{PendingCall, RateLimiterConfig, RateLimiterRegistry, ReducerResponse};
+use crate::persistence::PersistenceEngine;
 use crate::presence::PresenceManager;
 use crate::reducer::{ReducerContext, ReducerRegistry};
 use crate::subscriptions::SubscriptionManager;
@@ -79,18 +80,67 @@ pub async fn run_server(config: Config) -> Result<()> {
         });
     }
 
-    // ── WAL + snapshot bootstrap ──────────────────────────────────────────────
+    // ── Data structures ───────────────────────────────────────────────────────
     let wal_path   = config.wal_path.clone();
     let tables     = Arc::new(TableStore::new());
     let schema_reg = Arc::new(crate::schema::SchemaRegistry::new());
 
-    // Load the latest snapshot (if any), then replay WAL entries after it.
     let mut initial_seq = 0u64;
 
-    if let Some((snap_path, snap_seq)) = find_latest_snapshot(&wal_path) {
-        load_snapshot(&snap_path, &tables)?;
-        initial_seq = snap_seq;
-        log::info!("[neondb] Loaded snapshot seq={}", snap_seq);
+    // ── Disk persistence (redb) ───────────────────────────────────────────────
+    //
+    // If NEONDB_PERSISTENCE_PATH is set we open the redb store and restore all
+    // rows BEFORE doing snapshot / WAL replay.  When redb has data we advance
+    // initial_seq so WAL replay only applies entries that arrived after the
+    // last redb commit, avoiding redundant replays.
+    let persistence: Option<Arc<PersistenceEngine>> = match &config.persistence_path {
+        Some(path) => {
+            match PersistenceEngine::open(path) {
+                Ok(pe) => {
+                    match pe.load_all(&*tables) {
+                        Ok((rows, last_seq)) => {
+                            if rows > 0 {
+                                initial_seq = last_seq;
+                                log::info!(
+                                    "[neondb] Loaded {} rows from disk store (last_seq={})",
+                                    rows,
+                                    last_seq
+                                );
+                            } else {
+                                log::info!(
+                                    "[neondb] Disk store is empty; will bootstrap from snapshot+WAL"
+                                );
+                            }
+                            Some(Arc::new(pe))
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "[neondb] Disk store load failed ({}); falling back to snapshot+WAL",
+                                e
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[neondb] Could not open disk store at {:?}: {}", path, e);
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
+    // ── WAL + snapshot bootstrap ──────────────────────────────────────────────
+    //
+    // Only run snapshot+WAL loading when we don't have authoritative redb data.
+    let loaded_from_redb = initial_seq > 0;
+    if !loaded_from_redb {
+        if let Some((snap_path, snap_seq)) = find_latest_snapshot(&wal_path) {
+            load_snapshot(&snap_path, &*tables)?;
+            initial_seq = snap_seq;
+            log::info!("[neondb] Loaded snapshot seq={}", snap_seq);
+        }
     }
 
     let wal_file = wal_path.with_extension("wal");
@@ -100,7 +150,7 @@ pub async fn run_server(config: Config) -> Result<()> {
         let mut replayed = 0usize;
         for entry in &entries {
             if entry.header.sequence_number <= initial_seq {
-                continue; // already captured by the snapshot
+                continue; // already captured by the snapshot or redb
             }
             if !entry.verify_checksum() {
                 log::warn!(
@@ -185,16 +235,17 @@ pub async fn run_server(config: Config) -> Result<()> {
     let worker_count = num_cpus::get().max(2);
 
     for _worker_id in 0..worker_count {
-        let rx_w       = rx.clone();
-        let tables_w   = tables.clone();
-        let subs_w     = subs.clone();
-        let registry_w = registry.clone();
-        let wal_w      = wal_writer.clone();
-        let seq_w      = global_seq.clone();
-        let metrics_w  = metrics.clone();
-        let schema_w   = schema_reg.clone();
-        let ttl_w      = ttl_manager.clone();
-        let mut shut_w = shutdown_rx.clone();
+        let rx_w        = rx.clone();
+        let tables_w    = tables.clone();
+        let subs_w      = subs.clone();
+        let registry_w  = registry.clone();
+        let wal_w       = wal_writer.clone();
+        let seq_w       = global_seq.clone();
+        let metrics_w   = metrics.clone();
+        let schema_w    = schema_reg.clone();
+        let ttl_w       = ttl_manager.clone();
+        let persist_w   = persistence.clone();
+        let mut shut_w  = shutdown_rx.clone();
 
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
@@ -211,6 +262,19 @@ pub async fn run_server(config: Config) -> Result<()> {
                 };
 
                 let call_id = call.call_id;
+
+                // Replicas are read-only: reject reducer calls until promoted.
+                if crate::replication::is_replica() {
+                    let resp = ReducerResponse::error(
+                        call_id,
+                        "This node is a read-only replica.".to_string(),
+                    );
+                    if let Err(e) = call.response_tx.send(resp) {
+                        log::warn!("[neondb] Response delivery failed: {}", e);
+                    }
+                    continue;
+                }
+
                 let ts      = now_nanos();
 
                 // Build execution context with schema validation + TTL support.
@@ -253,12 +317,21 @@ pub async fn run_server(config: Config) -> Result<()> {
                                     seq_num,
                                     call.reducer_name.clone(),
                                     call.args.clone(),
-                                    deltas,
+                                    deltas.clone(),
                                 );
                                 if let Err(e) = wal_w.append(&entry, seq_num) {
                                     log::warn!("[neondb] WAL append failed: {}", e);
                                 } else {
                                     metrics_w.wal_entries_written_total.inc();
+                                }
+
+                                // Write-through to disk store (non-fatal on failure).
+                                if let Some(ref pe) = persist_w {
+                                    if !deltas.is_empty() {
+                                        if let Err(e) = pe.persist_deltas(&deltas, seq_num) {
+                                            log::warn!("[neondb] Disk persist failed: {}", e);
+                                        }
+                                    }
                                 }
 
                                 metrics_w.reducer_calls_total.inc();
