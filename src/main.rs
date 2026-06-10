@@ -757,7 +757,7 @@ fn scaffold_rust_basic(p: &Path, name: &str) -> Result<()> {
     // ── Embedded #[reducer] Rust path (single binary, native performance) ────
     wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML
         .replace("__NAME__", &format!("{}-server", name))
-        .replace("__NEONDB_PATH__", env!("CARGO_MANIFEST_DIR")))?;
+        .replace("__NEONDB_PATH__", &env!("CARGO_MANIFEST_DIR").replace('\\', "/")))?;
     wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
     wf(p, "embedded/src/reducers.rs", BASIC_REDUCERS_RS)?;
     print_success(name, "rust/basic", &[
@@ -813,7 +813,7 @@ fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
     // ── Embedded #[reducer] Rust path (single binary, native performance) ────
     wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML
         .replace("__NAME__", &format!("{}-server", name))
-        .replace("__NEONDB_PATH__", env!("CARGO_MANIFEST_DIR")))?;
+        .replace("__NEONDB_PATH__", &env!("CARGO_MANIFEST_DIR").replace('\\', "/")))?;
     wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
     wf(p, "embedded/src/reducers.rs", GAME_REDUCERS_RS)?;
     print_success(name, "rust/game-ready", &[
@@ -857,7 +857,7 @@ fn scaffold_rust_chat(p: &Path, name: &str) -> Result<()> {
     // ── Embedded #[reducer] Rust path (single binary, native performance) ────
     wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML
         .replace("__NAME__", &format!("{}-server", name))
-        .replace("__NEONDB_PATH__", env!("CARGO_MANIFEST_DIR")))?;
+        .replace("__NEONDB_PATH__", &env!("CARGO_MANIFEST_DIR").replace('\\', "/")))?;
     wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
     wf(p, "embedded/src/reducers.rs", CHAT_REDUCERS_RS)?;
     print_success(name, "rust/chat", &[
