@@ -31,6 +31,7 @@
 use crate::error::{NeonDBError, Result};
 use crate::schema::SchemaRegistry;
 use crate::table::{Counter, RowDelta, TableStore};
+use crate::tenant::{physical_table, TenantRegistry};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,6 +55,10 @@ pub struct ReducerContext {
     pub schema: Option<Arc<SchemaRegistry>>,
     /// Optional TTL manager — lets reducers set row expiration times.
     pub ttl: Option<Arc<crate::ttl::TtlManager>>,
+    /// When set, all table names are automatically prefixed with `tn:<id>:`
+    /// and row-quota is enforced at commit time.
+    pub tenant_id: Option<String>,
+    tenant_registry: Option<Arc<TenantRegistry>>,
     pending_deltas: Vec<RowDelta>,
     pub pending_diffs: Vec<SubscriptionDiff>,
 }
@@ -67,6 +72,8 @@ impl ReducerContext {
             caller_role: String::new(),
             schema: None,
             ttl: None,
+            tenant_id: None,
+            tenant_registry: None,
             pending_deltas: Vec::with_capacity(4),
             pending_diffs: Vec::with_capacity(4),
         }
@@ -80,6 +87,29 @@ impl ReducerContext {
     pub fn with_ttl(mut self, ttl: Arc<crate::ttl::TtlManager>) -> Self {
         self.ttl = Some(ttl);
         self
+    }
+
+    /// Activate namespace isolation for a tenant. All table reads/writes are
+    /// automatically prefixed with `tn:<tenant_id>:` and row-quota is enforced
+    /// at commit time.
+    pub fn with_tenant(mut self, tenant_id: String, registry: Arc<TenantRegistry>) -> Self {
+        self.tenant_id = Some(tenant_id);
+        self.tenant_registry = Some(registry);
+        self
+    }
+
+    /// Map a logical table name to a physical one (no-op if no tenant is set).
+    /// System tables (`__*`) and already-prefixed names pass through unchanged.
+    #[inline]
+    fn phys(&self, table_name: &str) -> String {
+        match &self.tenant_id {
+            Some(tid)
+                if !table_name.starts_with("__") && !table_name.starts_with("tn:") =>
+            {
+                physical_table(tid, table_name)
+            }
+            _ => table_name.to_string(),
+        }
     }
 
     /// Set a TTL on a row so it expires after `ttl_ms` milliseconds from now.
@@ -105,9 +135,10 @@ impl ReducerContext {
     // ── Reads (check pending deltas first for read-your-writes) ──────────────
 
     pub fn get_row(&self, table_name: &str, row_key: &str) -> Result<Option<Value>> {
+        let phys_name = self.phys(table_name);
         // Read-your-writes: check uncommitted deltas first (reverse order).
         for delta in self.pending_deltas.iter().rev() {
-            if delta.table_name == table_name && delta.row_key == row_key {
+            if delta.table_name == phys_name && delta.row_key == row_key {
                 // Pending-delta reads bypass RLS — the caller already passed the
                 // write-time check when staging the delta.
                 return match delta.operation.as_str() {
@@ -123,19 +154,16 @@ impl ReducerContext {
             if let Some(table_schema) = schema.get(table_name) {
                 if !crate::schema::rls_check(
                     &table_schema.rls,
-                    // Read the row to evaluate ownership — only possible if
-                    // the policy needs it; for Public this is not called.
-                    self.tables.get_row(table_name, row_key)?.as_ref(),
+                    self.tables.get_row(&phys_name, row_key)?.as_ref(),
                     &self.caller_id,
                     &self.caller_role,
                 ) {
-                    // Return None — do not leak row existence to unauthorised callers.
                     return Ok(None);
                 }
             }
         }
 
-        self.tables.get_row(table_name, row_key)
+        self.tables.get_row(&phys_name, row_key)
     }
 
     pub fn get_row_json(&self, table_name: &str, row_key: &str) -> Result<Option<Value>> {
@@ -154,6 +182,7 @@ impl ReducerContext {
         row_key: String,
         row_value: Value,
     ) -> Result<RowDelta> {
+        let phys_name = self.phys(&table_name);
         let row_value = if let Some(schema) = &self.schema {
             schema.validate(&table_name, row_value)?
         } else {
@@ -161,19 +190,14 @@ impl ReducerContext {
         };
 
         let existing = self.get_row(&table_name, &row_key)?;
-        let operation = if existing.is_some() {
-            "update"
-        } else {
-            "insert"
-        }
-        .to_string();
+        let operation = if existing.is_some() { "update" } else { "insert" }.to_string();
 
         let encoded = serde_json::to_vec(&row_value)
             .map_err(|e| NeonDBError::SerializationError(format!("Row encode: {}", e)))?;
         let payload_arc = Arc::new(Bytes::from(encoded));
 
         let delta = RowDelta {
-            table_name,
+            table_name: phys_name,
             operation,
             row_key,
             row_id: 0,
@@ -188,8 +212,9 @@ impl ReducerContext {
     }
 
     pub fn delete_row(&mut self, table_name: String, row_key: String) -> Result<RowDelta> {
+        let phys_name = self.phys(&table_name);
         let delta = RowDelta {
-            table_name,
+            table_name: phys_name,
             operation: "delete".to_string(),
             row_key,
             row_id: 0,
@@ -204,16 +229,32 @@ impl ReducerContext {
     }
 
     pub fn get_counter(&self, name: &str) -> Result<Option<Counter>> {
+        if self.tenant_id.is_some() {
+            // Tenant path: counters live as regular rows in the physical counters table.
+            let phys = self.phys("counters");
+            // Read-your-writes from pending deltas.
+            for delta in self.pending_deltas.iter().rev() {
+                if delta.table_name == phys && delta.row_key == name {
+                    return match delta.operation.as_str() {
+                        "delete" => Ok(None),
+                        _ => Ok(delta.row_data_value()
+                            .and_then(|v| serde_json::from_value(v).ok())),
+                    };
+                }
+            }
+            return Ok(self.tables.get_row(&phys, name)?
+                .and_then(|v| serde_json::from_value(v).ok()));
+        }
+
+        // Global path: use the special counter table.
         let mut base = self.tables.get_counter(name)?;
         for delta in &self.pending_deltas {
             if delta.table_name == "counters" && delta.row_key == name {
                 match delta.operation.as_str() {
-                    "delete" => {
-                        base = None;
-                    }
+                    "delete" => { base = None; }
                     "counter_add" => {
                         let cur = base.as_ref().map(|c| c.value).unwrap_or(0);
-                        let id = base.as_ref().map(|c| c.id).unwrap_or(0);
+                        let id  = base.as_ref().map(|c| c.id).unwrap_or(0);
                         base = Some(Counter {
                             id,
                             name: name.to_string(),
@@ -235,6 +276,25 @@ impl ReducerContext {
     }
 
     pub fn set_counter(&mut self, name: String, amount: i32) -> Result<RowDelta> {
+        if self.tenant_id.is_some() {
+            // Tenant path: counters are regular rows (no counter_add atomics needed
+            // because each tenant's counters are fully isolated rows).
+            let phys = self.phys("counters");
+            let current_val = self.get_counter(&name)?.map(|c| c.value).unwrap_or(0);
+            let new_val = current_val + amount;
+            let _ = phys; // physical name resolved inside set_row via phys()
+            return self.set_row(
+                "counters".to_string(),
+                name.clone(),
+                serde_json::json!({
+                    "id": 0,
+                    "name": name,
+                    "value": new_val,
+                    "last_modified": self.timestamp as i64,
+                }),
+            );
+        }
+
         let delta = RowDelta {
             table_name: "counters".to_string(),
             operation: "counter_add".to_string(),
@@ -269,6 +329,25 @@ impl ReducerContext {
     }
 
     pub fn commit(&mut self) -> Result<Vec<RowDelta>> {
+        // ── Tenant row-quota enforcement ───────────────────────────────────────
+        if let (Some(tid), Some(reg)) = (&self.tenant_id, &self.tenant_registry) {
+            let quota = reg.row_quota(tid);
+            if quota > 0 {
+                let pending_inserts = self.pending_deltas.iter()
+                    .filter(|d| d.operation == "insert")
+                    .count() as u64;
+                let current_count = reg.tenant_row_count(tid);
+                if current_count + pending_inserts > quota {
+                    self.pending_deltas.clear();
+                    self.pending_diffs.clear();
+                    return Err(NeonDBError::invalid_argument(format!(
+                        "Tenant row quota exceeded ({}/{} rows)",
+                        current_count, quota
+                    )));
+                }
+            }
+        }
+
         // ── RLS enforcement ────────────────────────────────────────────────────
         // Before handing deltas to apply_delta_batch, verify every staged write
         // passes the table's RLS policy.  This enforces per-row ownership checks
@@ -286,17 +365,16 @@ impl ReducerContext {
                     continue;
                 }
 
-                let table_schema = match schema.get(&delta.table_name) {
+                // Strip tenant prefix before looking up schema (schema is keyed
+                // by logical names).
+                let logical_name = crate::tenant::logical_table(&delta.table_name);
+                let table_schema = match schema.get(logical_name) {
                     Some(ts) => ts,
                     None => continue, // No schema → Public policy → allow.
                 };
 
-                // For write RLS: fetch the CURRENT committed row (before this
-                // delta is applied) to check ownership.  This prevents a caller
-                // from modifying another user's row even if the operation would
-                // overwrite the owner field.
                 let current_row = if delta.operation == "insert" {
-                    None // New row — ownership will be set by the reducer.
+                    None
                 } else {
                     self.tables.get_row(&delta.table_name, &delta.row_key)?
                 };

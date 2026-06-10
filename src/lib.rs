@@ -1,7 +1,9 @@
 pub mod auth;
 pub mod backup;
+pub mod cluster;
 pub mod metrics;
 pub mod chat;
+pub mod tenant;
 pub mod cli;
 pub mod config;
 pub mod error;
@@ -22,6 +24,7 @@ pub mod wal;
 pub mod server;
 
 pub use error::{NeonDBError, Result};
+pub use tenant::{TenantRegistry, TenantInfo, physical_table, logical_table};
 pub use network::{
     start_listener, ClientMessage, PendingCall, ReducerCall, ReducerResponse, ServerMessage,
     SubscriptionDiff,

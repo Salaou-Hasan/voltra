@@ -1988,10 +1988,33 @@ async fn run_server(config: Config) -> Result<()> {
             .unwrap_or_else(|_| neondb::schema::SchemaRegistry::new())
     );
 
+    // Tenant registry — hydrated from __tenants table (populated by WAL/snapshot replay above).
+    let tenant_registry = neondb::tenant::TenantRegistry::load(tables.clone());
+    log::info!("[tenant] {} tenant(s) loaded", tenant_registry.count());
+
     let permissions = Arc::new(config.permissions.clone());
 
-    // Distribution removed in Session 44 (TODO-034) — single-node only.
-    log::info!("[neondb] single-node mode");
+    // ── Cluster bus (horizontal scaling) ────────────────────────────────────
+    // Reads NEONDB_PEERS, NEONDB_SHARD_ID, NEONDB_SHARD_COUNT from env.
+    // No-op when NEONDB_PEERS is unset (single-node mode).
+    let my_shard_id: u32 = std::env::var("NEONDB_SHARD_ID")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let shard_count: u32 = std::env::var("NEONDB_SHARD_COUNT")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let cluster_cfg = neondb::cluster::ClusterConfig::from_env(my_shard_id, shard_count);
+    let cluster_bus = neondb::cluster::ClusterBus::new(cluster_cfg);
+    if cluster_bus.is_active() {
+        log::info!(
+            "[cluster] Active — shard {}/{}, {} peer(s): {}",
+            my_shard_id, shard_count,
+            cluster_bus.peers.len(),
+            cluster_bus.healthy_peers().iter()
+                .map(|p| format!("shard{}@{}", p.shard_id, p.metrics_url))
+                .collect::<Vec<_>>().join(", ")
+        );
+    } else {
+        log::info!("[neondb] single-node mode (set NEONDB_PEERS to enable clustering)");
+    }
 
     let (reducer_tx, reducer_rx) = kanal::bounded_async::<PendingCall>(config.reducer_queue_cap);
     let queue_probe = reducer_tx.clone(); // for healthz queue-depth reporting
@@ -2090,12 +2113,14 @@ async fn run_server(config: Config) -> Result<()> {
         let metrics_c = metrics.clone();
         let tls_cfg = tls_server_config.clone();
         let iss_c = identity_issuer.clone();
+        let tenant_registry_ws = tenant_registry.clone();
         tokio::spawn(async move {
             if let Err(e) = start_listener(
                 config_c.host, config_c.port, tx_c, subs_c, tables_c,
                 config_c.max_connections, config_c.api_key.clone(),
                 conns_c, perms_c, config_c.sql_timeout_ms,
                 auth_c, rl_c, pres_c, ttl_c, iss_c, rx_shutdown, metrics_c, tls_cfg,
+                tenant_registry_ws,
             ).await { log::error!("Listener error: {}", e); }
         })
     };
@@ -2129,6 +2154,8 @@ async fn run_server(config: Config) -> Result<()> {
             wal_path: config.wal_path.clone(),
             backup_dir: config.backup_dir.clone(),
             backup_keep: config.backup_keep,
+            tenant_registry: tenant_registry.clone(),
+            cluster_bus: cluster_bus.clone(),
         });
         let schema_c = schema_registry.clone();
         tokio::spawn(async move {
@@ -2208,6 +2235,10 @@ async fn run_server(config: Config) -> Result<()> {
         log::info!("[backup] Automated backups every {}s (keep {})", interval_secs, keep);
     }
 
+    // ── Cluster gossip + fan-out retry tasks ─────────────────────────────────
+    neondb::cluster::gossip::start_gossip(cluster_bus.clone(), shutdown_rx.clone());
+    neondb::cluster::fanout::start_fanout_retry(cluster_bus.clone(), shutdown_rx.clone());
+
     let mut worker_handles = Vec::with_capacity(worker_count);
     for worker_id in 0..worker_count {
         let rx = reducer_rx.clone(); let tables_w = tables.clone();
@@ -2216,6 +2247,8 @@ async fn run_server(config: Config) -> Result<()> {
         let seq_w = global_seq.clone(); let snap_iv = snapshot_interval;
         let snap_dir_ww = snapshot_dir_w.clone(); let schema_w = schema_registry.clone();
         let ttl_w = ttl_manager.clone();
+        let tenant_w = tenant_registry.clone();
+        let cluster_w = cluster_bus.clone();
         let mut rx_shutdown_w = shutdown_rx.clone();
         let metrics_w = metrics.clone();
 
@@ -2237,15 +2270,17 @@ async fn run_server(config: Config) -> Result<()> {
                     continue;
                 }
 
-                let caller_id   = call.caller_id.clone();
-                let caller_role = call.caller_role.clone();
-                let tables_blk  = tables_w.clone();
+                let caller_id    = call.caller_id.clone();
+                let caller_role  = call.caller_role.clone();
+                let call_tenant  = call.tenant_id.clone();
+                let tables_blk   = tables_w.clone();
                 let registry_blk = registry_w.clone();
                 let reducer_name = call.reducer_name.clone();
                 let args         = call.args.clone();
                 let ts           = current_timestamp_nanos();
                 let schema_blk   = schema_w.clone();
                 let ttl_blk      = ttl_w.clone();
+                let tenant_blk   = tenant_w.clone();
                 let call_start   = std::time::Instant::now();
 
                 let blk = tokio::time::timeout(
@@ -2256,6 +2291,9 @@ async fn run_server(config: Config) -> Result<()> {
                             .with_ttl(ttl_blk);
                         ctx.caller_id   = caller_id;
                         ctx.caller_role = caller_role;
+                        if let Some(tid) = call_tenant {
+                            ctx = ctx.with_tenant(tid, tenant_blk);
+                        }
                         let exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                             || registry_blk.execute(&reducer_name, &mut ctx, &args)
                         ));
@@ -2288,6 +2326,8 @@ async fn run_server(config: Config) -> Result<()> {
                                     // Fan out to live subscribers (one encode, Arc<Bytes> reuse).
                                     if !deltas.is_empty() {
                                         subs_w.publish_deltas(&deltas);
+                                        // Fan out to cluster peers (fire-and-forget, no-op if single-node).
+                                        cluster_w.fanout_deltas(&deltas);
                                     }
                                     let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas.clone());
@@ -2445,6 +2485,7 @@ async fn run_server(config: Config) -> Result<()> {
                             args: args_bytes.clone(),
                             caller_id: "scheduler".to_string(),
                             caller_role: "scheduler".to_string(),
+                            tenant_id: None,
                             response_tx: resp_tx,
                         };
                         if tx_sched.send(call).await.is_ok() {
@@ -2601,6 +2642,8 @@ struct AdminState {
     wal_path: PathBuf,
     backup_dir: Option<PathBuf>,
     backup_keep: usize,
+    tenant_registry: Arc<neondb::tenant::TenantRegistry>,
+    cluster_bus: Arc<neondb::cluster::ClusterBus>,
 }
 
 async fn start_metrics_server(
@@ -2656,6 +2699,7 @@ async fn start_metrics_server(
 
     let server = Server::bind(&addr).serve(make_service);
     log::info!("Admin/metrics on http://{}", addr);
+    println!("  Admin console: http://{}/admin", addr);
     server.with_graceful_shutdown(async move { let _ = shutdown.changed().await; }).await
         .map_err(|e| neondb::error::NeonDBError::network_error(format!("Metrics server: {}", e)))
 }
@@ -2664,6 +2708,57 @@ fn json_response(value: serde_json::Value) -> Response<Body> {
     let mut r = Response::new(Body::from(value.to_string()));
     r.headers_mut().insert(hyper::header::CONTENT_TYPE, hyper::header::HeaderValue::from_static("application/json"));
     r
+}
+
+/// The single-file admin console, embedded at compile time.
+const ADMIN_DASHBOARD_HTML: &str = include_str!("admin_dashboard.html");
+
+fn bad_request(msg: String) -> Response<Body> {
+    let mut r = json_response(serde_json::json!({ "error": msg }));
+    *r.status_mut() = StatusCode::BAD_REQUEST;
+    r
+}
+
+fn server_error(msg: String) -> Response<Body> {
+    let mut r = json_response(serde_json::json!({ "error": msg }));
+    *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+    r
+}
+
+/// Minimal percent-decoding for admin query params (UTF-8, lossy on bad bytes).
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok());
+            if let Some(b) = hex { out.push(b); i += 3; continue; }
+        }
+        if bytes[i] == b'+' { out.push(b' '); } else { out.push(bytes[i]); }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Gate mutating admin endpoints behind the API key when one is configured.
+/// With no NEONDB_API_KEY set (dev mode), all requests pass.
+fn admin_auth_check(req: &Request<Body>) -> Option<Response<Body>> {
+    let configured = std::env::var("NEONDB_API_KEY").unwrap_or_default();
+    if configured.is_empty() { return None; }
+    let provided = req.headers()
+        .get(hyper::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim_start_matches("Bearer ")
+        .trim();
+    if provided == configured { return None; }
+    let mut r = json_response(serde_json::json!({
+        "error": "Unauthorized: set your API key in the Operations tab"
+    }));
+    *r.status_mut() = StatusCode::UNAUTHORIZED;
+    Some(r)
 }
 
 async fn handle_metrics_request(
@@ -2685,6 +2780,249 @@ async fn handle_metrics_request(
     let path = req.uri().path().to_string();
 
     match (req.method(), path.as_str()) {
+        // ── Admin dashboard ───────────────────────────────────────────────────
+        //
+        // GET  /admin              — embedded single-file web console
+        // POST /admin/api/call     — invoke a reducer through the real queue
+        // POST /admin/api/sql      — run a SQL query
+        // POST /admin/api/row      — upsert a row (durable: WAL + live fan-out)
+        // DELETE /admin/api/row    — delete a row (durable: WAL + live fan-out)
+        (&Method::GET, "/admin") | (&Method::GET, "/admin/") => {
+            let mut r = Response::new(Body::from(ADMIN_DASHBOARD_HTML));
+            r.headers_mut().insert(
+                hyper::header::CONTENT_TYPE,
+                hyper::header::HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            Ok(r)
+        }
+
+        (&Method::POST, "/admin/api/call") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let name = match payload.get("name").and_then(|v| v.as_str()) {
+                Some(n) if !n.is_empty() => n.to_string(),
+                _ => return Ok(bad_request("Missing 'name' field".into())),
+            };
+            let args_val = payload.get("args").cloned().unwrap_or(serde_json::json!([]));
+            let args_bytes = rmp_serde::to_vec(&args_val)
+                .map_err(|e| neondb::error::NeonDBError::reducer_error(format!("Args encode: {}", e)))?;
+
+            // Dispatch through the real reducer queue so the call gets the
+            // identical execution path as a WebSocket client (permissions
+            // excepted — this endpoint is admin-gated above).
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
+            let call = PendingCall {
+                call_id: 0,
+                reducer_name: name,
+                args: args_bytes,
+                caller_id: "admin-console".to_string(),
+                caller_role: "admin".to_string(),
+                tenant_id: None,
+                response_tx: resp_tx,
+            };
+            if queue_probe.send(call).await.is_err() {
+                return Ok(server_error("Reducer queue closed".into()));
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await {
+                Ok(Some(resp)) => {
+                    let result_json: serde_json::Value = resp.result.as_deref()
+                        .and_then(|b| rmp_serde::from_slice(b).ok())
+                        .unwrap_or(serde_json::Value::Null);
+                    Ok(json_response(serde_json::json!({
+                        "success": resp.success,
+                        "result": result_json,
+                        "error": resp.error,
+                    })))
+                }
+                Ok(None) => Ok(server_error("Worker dropped response channel".into())),
+                Err(_) => Ok(server_error("Reducer call timed out after 30s".into())),
+            }
+        }
+
+        (&Method::POST, "/admin/api/sql") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let query = match payload.get("query").and_then(|v| v.as_str()) {
+                Some(q) if !q.trim().is_empty() => q.to_string(),
+                _ => return Ok(bad_request("Missing 'query' field".into())),
+            };
+            let tbl = tables.clone();
+            let result = tokio::task::spawn_blocking(move || -> std::result::Result<_, String> {
+                let stmt = neondb::sql::parser::parse(&query).map_err(|e| format!("Parse error: {}", e))?;
+                let exec = neondb::SqlExecutor::new(tbl);
+                exec.execute_statement(&stmt).map_err(|e| format!("Execution error: {}", e))
+            }).await;
+            match result {
+                Ok(Ok(res)) => {
+                    let rows: Vec<serde_json::Value> =
+                        res.rows.into_iter().map(serde_json::Value::Object).collect();
+                    Ok(json_response(serde_json::json!({
+                        "columns": res.columns,
+                        "rows": rows,
+                        "rows_affected": res.rows_affected,
+                    })))
+                }
+                Ok(Err(e)) => Ok(bad_request(e)),
+                Err(e) => Ok(server_error(format!("task: {}", e))),
+            }
+        }
+
+        (&Method::POST, "/admin/api/row") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let (table, rkey, data) = match (
+                payload.get("table").and_then(|v| v.as_str()),
+                payload.get("key").and_then(|v| v.as_str()),
+                payload.get("data"),
+            ) {
+                (Some(t), Some(k), Some(d)) if !t.is_empty() && !k.is_empty() =>
+                    (t.to_string(), k.to_string(), d.clone()),
+                _ => return Ok(bad_request("Expected {table, key, data}".into())),
+            };
+            match tables.set_row(table.clone(), rkey.clone(), data) {
+                Ok(delta) => {
+                    // Durable + live: fan out to subscribers and journal to WAL,
+                    // exactly like a reducer write (unlike /seed).
+                    let deltas = vec![delta];
+                    subscription_manager.publish_deltas(&deltas);
+                    let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let entry = neondb::WalEntry::new(
+                        current_timestamp_nanos(), seq,
+                        "__admin_set_row".to_string(), vec![], deltas,
+                    );
+                    if let Err(e) = wal_writer.append(&entry, seq) {
+                        log::warn!("[admin] WAL append failed: {}", e);
+                    }
+                    Ok(json_response(serde_json::json!({ "ok": true, "table": table, "key": rkey })))
+                }
+                Err(e) => Ok(bad_request(e.to_string())),
+            }
+        }
+
+        (&Method::DELETE, "/admin/api/row") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            let query = req.uri().query().unwrap_or("");
+            let mut table = String::new(); let mut rkey = String::new();
+            for pair in query.split('&') {
+                let mut kv = pair.splitn(2, '=');
+                match (kv.next(), kv.next()) {
+                    (Some("table"), Some(v)) => table = url_decode(v),
+                    (Some("key"),   Some(v)) => rkey = url_decode(v),
+                    _ => {}
+                }
+            }
+            if table.is_empty() || rkey.is_empty() {
+                return Ok(bad_request("Expected ?table=X&key=Y".into()));
+            }
+            match tables.delete_row(&table, &rkey) {
+                Ok(delta) => {
+                    let deltas = vec![delta];
+                    subscription_manager.publish_deltas(&deltas);
+                    let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let entry = neondb::WalEntry::new(
+                        current_timestamp_nanos(), seq,
+                        "__admin_delete_row".to_string(), vec![], deltas,
+                    );
+                    if let Err(e) = wal_writer.append(&entry, seq) {
+                        log::warn!("[admin] WAL append failed: {}", e);
+                    }
+                    Ok(json_response(serde_json::json!({ "ok": true })))
+                }
+                Err(e) => Ok(bad_request(e.to_string())),
+            }
+        }
+
+        // ── Tenant management endpoints ───────────────────────────────────────
+        //
+        // GET    /admin/api/tenants         — list all tenants (keys masked)
+        // POST   /admin/api/tenants         — create a tenant
+        // DELETE /admin/api/tenants?id=<id> — delete a tenant and ALL its data
+
+        (&Method::GET, "/admin/api/tenants") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            Ok(json_response(admin.tenant_registry.summary_json(false)))
+        }
+
+        (&Method::POST, "/admin/api/tenants") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let name = match payload.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n.to_string(),
+                None => return Ok(bad_request("Missing 'name' field".into())),
+            };
+            let max_rows = payload.get("max_rows").and_then(|v| v.as_u64()).unwrap_or(0);
+            let max_calls = payload.get("max_calls_per_sec").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+            match admin.tenant_registry.create(&name, max_rows, max_calls) {
+                Ok((info, delta)) => {
+                    // Durably persist: publish + WAL append.
+                    let deltas = vec![delta];
+                    subscription_manager.publish_deltas(&deltas);
+                    let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let entry = neondb::WalEntry::new(
+                        current_timestamp_nanos(), seq,
+                        "__admin_create_tenant".to_string(), vec![], deltas,
+                    );
+                    let _ = wal_writer.append(&entry, seq);
+                    Ok(json_response(serde_json::json!({
+                        "ok": true,
+                        "id": info.id,
+                        "api_key": info.api_key,
+                        "name": info.name,
+                    })))
+                }
+                Err(e) => Ok(bad_request(e.to_string())),
+            }
+        }
+
+        (&Method::DELETE, "/admin/api/tenants") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            let query = req.uri().query().unwrap_or("");
+            let tenant_id = query.split('&')
+                .filter_map(|p| {
+                    let mut kv = p.splitn(2, '=');
+                    if kv.next() == Some("id") { kv.next().map(url_decode) } else { None }
+                })
+                .next()
+                .unwrap_or_default();
+            if tenant_id.is_empty() {
+                return Ok(bad_request("Expected ?id=<tenant_id>".into()));
+            }
+            match admin.tenant_registry.delete(&tenant_id) {
+                Ok(deltas) => {
+                    subscription_manager.publish_deltas(&deltas);
+                    let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let entry = neondb::WalEntry::new(
+                        current_timestamp_nanos(), seq,
+                        "__admin_delete_tenant".to_string(), vec![], deltas,
+                    );
+                    let _ = wal_writer.append(&entry, seq);
+                    Ok(json_response(serde_json::json!({ "ok": true })))
+                }
+                Err(e) => Ok(bad_request(e.to_string())),
+            }
+        }
+
         // ── Replication endpoints ─────────────────────────────────────────────
         //
         // GET  /replication/wal?from_seq=N&max=M — primary serves WAL entries
@@ -2736,6 +3074,126 @@ async fn handle_metrics_request(
                 "promoted": was_replica,
                 "role": "primary",
                 "last_applied_seq": neondb::replication::last_applied_seq(),
+            })))
+        }
+
+        // ── Cluster endpoints ─────────────────────────────────────────────────
+        //
+        // GET  /cluster/health  — liveness probe for gossip heartbeats
+        // GET  /cluster/peers   — current peer list + health + config
+        // POST /cluster/deltas  — receive replicated RowDeltas from a peer
+        // POST /cluster/call    — execute a proxied reducer call
+        // POST /cluster/join    — register a new peer dynamically
+        (&Method::GET, "/cluster/health") => {
+            Ok(json_response(serde_json::json!({
+                "ok": true,
+                "shard_id": admin.cluster_bus.config.my_shard_id,
+            })))
+        }
+
+        (&Method::GET, "/cluster/peers") => {
+            let bus = &admin.cluster_bus;
+            Ok(json_response(serde_json::json!({
+                "cluster_enabled": bus.is_active(),
+                "my_shard_id":     bus.config.my_shard_id,
+                "shard_count":     bus.config.shard_count,
+                "peers":           bus.peers_snapshot(),
+            })))
+        }
+
+        (&Method::POST, "/cluster/deltas") => {
+            let secret = req.headers().get("x-neondb-cluster-secret")
+                .and_then(|v| v.to_str().ok());
+            if !admin.cluster_bus.validate_secret(secret) {
+                let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
+            }
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            match neondb::cluster::fanout::parse_delta_payload(&body_bytes) {
+                Err(e) => Ok(bad_request(e.to_string())),
+                Ok(payload) => {
+                    let row_deltas = neondb::cluster::fanout::wire_to_row_deltas(payload.deltas);
+                    let applied = row_deltas.len();
+                    match neondb::cluster::ClusterBus::apply_peer_deltas(&row_deltas, &tables, &subscription_manager) {
+                        Ok(()) => Ok(json_response(serde_json::json!({ "ok": true, "applied": applied }))),
+                        Err(e) => Ok(server_error(e.to_string())),
+                    }
+                }
+            }
+        }
+
+        (&Method::POST, "/cluster/call") => {
+            let secret = req.headers().get("x-neondb-cluster-secret")
+                .and_then(|v| v.to_str().ok());
+            if !admin.cluster_bus.validate_secret(secret) {
+                let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
+            }
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let pr: neondb::cluster::proxy::ProxyCallRequest = match serde_json::from_slice(&body_bytes) {
+                Ok(r) => r,
+                Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
+            };
+            use base64::Engine as _;
+            let args = match base64::engine::general_purpose::STANDARD.decode(&pr.args_b64) {
+                Ok(b) => b,
+                Err(e) => return Ok(bad_request(format!("Bad args_b64: {}", e))),
+            };
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
+            let call = PendingCall {
+                call_id: 0,
+                reducer_name: pr.reducer_name,
+                args,
+                caller_id: pr.caller_id,
+                caller_role: pr.caller_role,
+                tenant_id: None,
+                response_tx: resp_tx,
+            };
+            if queue_probe.send(call).await.is_err() {
+                return Ok(server_error("Reducer queue closed".into()));
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await {
+                Ok(Some(resp)) => {
+                    if resp.success {
+                        use base64::Engine as _;
+                        let result_b64 = resp.result.as_deref()
+                            .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
+                            .unwrap_or_default();
+                        Ok(json_response(serde_json::json!({ "ok": true, "result_b64": result_b64 })))
+                    } else {
+                        Ok(json_response(serde_json::json!({
+                            "ok": false,
+                            "error": resp.error.unwrap_or_else(|| "Reducer error".to_string()),
+                        })))
+                    }
+                }
+                Ok(None) => Ok(server_error("Worker dropped response channel".into())),
+                Err(_) => Ok(server_error("Proxied call timed out after 30s".into())),
+            }
+        }
+
+        (&Method::POST, "/cluster/join") => {
+            let secret = req.headers().get("x-neondb-cluster-secret")
+                .and_then(|v| v.to_str().ok());
+            if !admin.cluster_bus.validate_secret(secret) {
+                let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
+            }
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let node: neondb::cluster::NodeInfo = match serde_json::from_slice(&body_bytes) {
+                Ok(n) => n,
+                Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
+            };
+            admin.cluster_bus.add_peer(node);
+            Ok(json_response(serde_json::json!({
+                "ok": true,
+                "peers": admin.cluster_bus.peers_snapshot(),
             })))
         }
 

@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeonDB Admin</title>
+<style>
+:root {
+  --bg: #0b0e14; --panel: #11151f; --panel2: #161b28; --border: #232a3b;
+  --text: #d6deeb; --dim: #7a87a3; --accent: #00e5a0; --accent2: #5ac8fa;
+  --warn: #ffb454; --err: #ff5370; --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: var(--accent2); text-decoration: none; }
+
+/* ── Layout ── */
+#app { display: flex; height: 100vh; }
+#sidebar { width: 210px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+#logo { padding: 18px 20px; font-size: 17px; font-weight: 700; letter-spacing: .5px; border-bottom: 1px solid var(--border); }
+#logo span { color: var(--accent); }
+#logo small { display:block; color: var(--dim); font-weight: 400; font-size: 11px; margin-top: 2px; }
+nav { flex: 1; padding: 10px 0; }
+nav button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 20px; background: none; border: none; color: var(--dim); font-size: 14px; cursor: pointer; text-align: left; border-left: 3px solid transparent; }
+nav button:hover { color: var(--text); background: var(--panel2); }
+nav button.active { color: var(--accent); border-left-color: var(--accent); background: var(--panel2); }
+#conn-status { padding: 14px 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--dim); }
+#conn-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--err); margin-right: 6px; }
+#conn-dot.ok { background: var(--accent); }
+main { flex: 1; overflow-y: auto; padding: 24px 28px; }
+.page { display: none; } .page.active { display: block; }
+h2 { font-size: 19px; margin-bottom: 16px; font-weight: 600; }
+h3 { font-size: 14px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin: 18px 0 10px; }
+
+/* ── Cards / stats ── */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+.card .label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+.card .value { font-size: 24px; font-weight: 700; margin-top: 4px; font-family: var(--mono); }
+.card .value small { font-size: 13px; color: var(--dim); font-weight: 400; }
+.card.accent .value { color: var(--accent); }
+.card.blue .value { color: var(--accent2); }
+.card.warn .value { color: var(--warn); }
+
+/* ── Charts ── */
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.chart-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px 6px; }
+.chart-box .title { font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+.chart-box canvas { width: 100%; height: 110px; display: block; }
+
+/* ── Tables ── */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--dim); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+td { padding: 7px 10px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; vertical-align: top; }
+tr:hover td { background: var(--panel2); }
+.clickable { cursor: pointer; }
+.json-cell { max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Controls ── */
+button.btn { background: var(--accent); color: #04261b; border: none; border-radius: 6px; padding: 7px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+button.btn:hover { filter: brightness(1.12); }
+button.btn.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+button.btn.danger { background: var(--err); color: #2b0a12; }
+button.btn:disabled { opacity: .45; cursor: not-allowed; }
+input[type=text], input[type=password], textarea, select {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; font-size: 13px; font-family: var(--mono); outline: none; }
+input:focus, textarea:focus { border-color: var(--accent2); }
+textarea { width: 100%; resize: vertical; }
+.row-flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.muted { color: var(--dim); font-size: 12px; }
+pre.result { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: var(--mono); font-size: 12.5px; overflow-x: auto; white-space: pre-wrap; max-height: 420px; overflow-y: auto; }
+.ok-text { color: var(--accent); } .err-text { color: var(--err); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.badge.green { background: rgba(0,229,160,.12); color: var(--accent); }
+.badge.red { background: rgba(255,83,112,.12); color: var(--err); }
+.badge.blue { background: rgba(90,200,250,.12); color: var(--accent2); }
+
+/* ── Modal ── */
+#modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 10; }
+#modal { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 640px; max-width: 92vw; max-height: 84vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; z-index: 11; }
+#modal h4 { margin-bottom: 12px; font-size: 15px; }
+.split { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
+@media (max-width: 1100px) { .charts { grid-template-columns: 1fr; } .split { grid-template-columns: 1fr; } }
+.list-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; max-height: 70vh; overflow-y: auto; }
+.list-panel .item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; }
+.list-panel .item:hover, .list-panel .item.sel { background: var(--panel2); }
+.list-panel .item .cnt { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+.toolbar-note { margin-left: auto; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <div id="logo">Neon<span>DB</span><small id="version">admin console</small></div>
+    <nav>
+      <button data-page="overview" class="active">📊 Overview</button>
+      <button data-page="tables">🗄️ Tables</button>
+      <button data-page="sql">⌨️ SQL Console</button>
+      <button data-page="reducers">⚡ Reducers</button>
+      <button data-page="schema">📐 Schema</button>
+      <button data-page="ops">🛠️ Operations</button>
+    </nav>
+    <div id="conn-status"><span id="conn-dot"></span><span id="conn-text">connecting…</span></div>
+  </div>
+  <main>
+
+  <!-- ════════ OVERVIEW ════════ -->
+  <section class="page active" id="page-overview">
+    <h2>Overview</h2>
+    <div class="cards">
+      <div class="card accent"><div class="label">Reducer TPS</div><div class="value" id="ov-tps">—</div></div>
+      <div class="card blue"><div class="label">p99 latency</div><div class="value" id="ov-p99">—<small> ms</small></div></div>
+      <div class="card"><div class="label">Connections</div><div class="value" id="ov-conns">—</div></div>
+      <div class="card"><div class="label">Total rows</div><div class="value" id="ov-rows">—</div></div>
+      <div class="card"><div class="label">Memory</div><div class="value" id="ov-mem">—<small> MB</small></div></div>
+      <div class="card"><div class="label">WAL size</div><div class="value" id="ov-wal">—<small> MB</small></div></div>
+      <div class="card"><div class="label">Queue depth</div><div class="value" id="ov-queue">—</div></div>
+      <div class="card"><div class="label">Uptime</div><div class="value" id="ov-uptime">—</div></div>
+      <div class="card"><div class="label">Role</div><div class="value" id="ov-role" style="font-size:16px">—</div></div>
+      <div class="card warn"><div class="label">Reducer errors</div><div class="value" id="ov-errors">—</div></div>
+    </div>
+    <div class="charts">
+      <div class="chart-box"><div class="title">Reducer calls / sec</div><canvas id="ch-tps"></canvas></div>
+      <div class="chart-box"><div class="title">Memory (MB)</div><canvas id="ch-mem"></canvas></div>
+      <div class="chart-box"><div class="title">Active connections</div><canvas id="ch-conn"></canvas></div>
+      <div class="chart-box"><div class="title">Reducer queue depth</div><canvas id="ch-queue"></canvas></div>
+    </div>
+  </section>
+
+  <!-- ════════ TABLES ════════ -->
+  <section class="page" id="page-tables">
+    <h2>Tables</h2>
+    <div class="split">
+      <div>
+        <div class="row-flex">
+          <button class="btn secondary" onclick="loadTables()">↻ Refresh</button>
+        </div>
+        <div class="list-panel" id="table-list"></div>
+      </div>
+      <div>
+        <div class="row-flex">
+          <input type="text" id="row-filter" placeholder="filter rows…" style="flex:1" oninput="renderRows()">
+          <button class="btn" onclick="openRowEditor(null)">+ Add row</button>
+          <span class="muted toolbar-note" id="row-count"></span>
+        </div>
+        <div style="overflow-x:auto">
+        <table id="rows-table">
+          <thead><tr><th style="width:180px">Key</th><th>Data</th><th style="width:110px"></th></tr></thead>
+          <tbody id="rows-body"><tr><td colspan="3" class="muted">select a table</td></tr></tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ SQL ════════ -->
+  <section class="page" id="page-sql">
+    <h2>SQL Console</h2>
+    <textarea id="sql-input" rows="4" placeholder="SELECT * FROM players WHERE hp > 100 LIMIT 20" spellcheck="false"></textarea>
+    <div class="row-flex" style="margin-top:8px">
+      <button class="btn" onclick="runSql()">Run (Ctrl+Enter)</button>
+      <span class="muted" id="sql-meta"></span>
+    </div>
+    <div id="sql-out"></div>
+    <h3>History</h3>
+    <div id="sql-history" class="muted" style="font-family:var(--mono);font-size:12px"></div>
+  </section>
+
+  <!-- ════════ REDUCERS ════════ -->
+  <section class="page" id="page-reducers">
+    <h2>Reducers</h2>
+    <div class="split">
+      <div>
+        <div class="row-flex"><button class="btn secondary" onclick="loadReducers()">↻ Refresh</button></div>
+        <div class="list-panel" id="reducer-list"></div>
+      </div>
+      <div>
+        <h3 id="red-name">Invoke</h3>
+        <div class="muted" style="margin-bottom:6px">Args — JSON array, e.g. <code>["alice", 5]</code></div>
+        <textarea id="red-args" rows="3" spellcheck="false">[]</textarea>
+        <div class="row-flex" style="margin-top:8px">
+          <button class="btn" id="red-invoke" onclick="invokeReducer()" disabled>⚡ Invoke</button>
+          <span class="muted" id="red-meta"></span>
+        </div>
+        <pre class="result" id="red-result">—</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ SCHEMA ════════ -->
+  <section class="page" id="page-schema">
+    <h2>Schema</h2>
+    <div class="row-flex"><button class="btn secondary" onclick="loadSchema()">↻ Refresh</button></div>
+    <div id="schema-out"></div>
+  </section>
+
+  <!-- ════════ OPERATIONS ════════ -->
+  <section class="page" id="page-ops">
+    <h2>Operations</h2>
+
+    <h3>Authentication</h3>
+    <div class="row-flex">
+      <input type="password" id="api-key" placeholder="API key (if configured)" style="width:280px">
+      <button class="btn secondary" onclick="saveKey()">Save</button>
+      <span class="muted">Stored locally; sent as Bearer on admin actions.</span>
+    </div>
+
+    <h3>Backup</h3>
+    <div class="row-flex">
+      <button class="btn" onclick="runBackup()">📦 Backup now</button>
+      <span id="backup-out" class="muted"></span>
+    </div>
+
+    <h3>Replication</h3>
+    <div class="row-flex">
+      <button class="btn secondary" onclick="loadRepl()">↻ Status</button>
+      <button class="btn danger" onclick="promote()">⬆ Promote to primary</button>
+    </div>
+    <pre class="result" id="repl-out">—</pre>
+
+    <h3>Apply migration</h3>
+    <div class="muted" style="margin-bottom:6px">Paste a migration TOML (same format as <code>migrations/*.toml</code>)</div>
+    <input type="text" id="mig-name" placeholder="002_add_field.toml" style="width:280px;margin-bottom:6px">
+    <textarea id="mig-body" rows="6" spellcheck="false" placeholder="[[op]]&#10;kind = &quot;add_field&quot;&#10;table = &quot;players&quot;&#10;field = &quot;mana&quot;&#10;default = 100"></textarea>
+    <div class="row-flex" style="margin-top:8px">
+      <button class="btn" onclick="applyMigration()">Apply</button>
+      <span class="muted" id="mig-out"></span>
+    </div>
+
+    <h3>Server</h3>
+    <pre class="result" id="server-info">—</pre>
+  </section>
+
+  </main>
+</div>
+
+<!-- ── Row editor modal ── -->
+<div id="modal-bg" onclick="closeModal()"></div>
+<div id="modal">
+  <h4 id="modal-title">Edit row</h4>
+  <div class="row-flex"><label class="muted" style="width:50px">Key</label><input type="text" id="modal-key" style="flex:1"></div>
+  <div class="muted" style="margin:8px 0 4px">Data (JSON object)</div>
+  <textarea id="modal-data" rows="12" spellcheck="false"></textarea>
+  <div class="row-flex" style="margin-top:12px; justify-content:flex-end">
+    <span class="err-text" id="modal-err"></span>
+    <button class="btn secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn" onclick="saveRow()">Save</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ═══════════ State ═══════════
+const S = {
+  page: "overview",
+  tables: [], selTable: null, rows: [],
+  reducers: [], selReducer: null,
+  hist: { tps: [], mem: [], conn: [], queue: [] },
+  lastCalls: null, lastErrors: 0, lastT: null,
+  sqlHistory: JSON.parse(localStorage.getItem("ndb_sql_hist") || "[]"),
+  editingKey: null,
+};
+function key() { return localStorage.getItem("ndb_api_key") || ""; }
+function hdrs(json) {
+  const h = {};
+  if (json) h["Content-Type"] = "application/json";
+  const k = key(); if (k) h["Authorization"] = "Bearer " + k;
+  return h;
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...hdrs(!!opts.body), ...(opts.headers||{}) } });
+  const text = await r.text();
+  let body; try { body = JSON.parse(text); } catch { body = { raw: text }; }
+  if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+  return body;
+}
+const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// ═══════════ Navigation ═══════════
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll(".page").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  S.page = b.dataset.page;
+  document.getElementById("page-" + S.page).classList.add("active");
+  if (S.page === "tables") loadTables();
+  if (S.page === "reducers") loadReducers();
+  if (S.page === "schema") loadSchema();
+  if (S.page === "ops") { loadRepl(); loadServerInfo(); }
+});
+
+// ═══════════ Overview / polling ═══════════
+function parseProm(text, name) {
+  // returns {value, labels:{...}} list for a metric name
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (!line.startsWith(name)) continue;
+    const sp = line.lastIndexOf(" ");
+    if (sp < 0) continue;
+    out.push(parseFloat(line.slice(sp + 1)));
+  }
+  return out;
+}
+function promQuantile(text, name, q) {
+  // crude histogram quantile from cumulative buckets
+  const buckets = [];
+  let total = 0;
+  for (const line of text.split("\n")) {
+    if (line.startsWith(name + "_bucket")) {
+      const le = /le="([^"]+)"/.exec(line);
+      const sp = line.lastIndexOf(" ");
+      if (le && sp > 0) buckets.push([le[1] === "+Inf" ? Infinity : parseFloat(le[1]), parseFloat(line.slice(sp+1))]);
+    }
+    if (line.startsWith(name + "_count")) total = parseFloat(line.slice(line.lastIndexOf(" ")+1));
+  }
+  if (!total || !buckets.length) return null;
+  buckets.sort((a,b) => a[0]-b[0]);
+  const target = total * q;
+  for (const [le, cum] of buckets) if (cum >= target) return le;
+  return buckets[buckets.length-1][0];
+}
+async function poll() {
+  try {
+    const [hz, prom] = await Promise.all([
+      fetch("/healthz").then(r => r.json()),
+      fetch("/metrics").then(r => r.text()),
+    ]);
+    document.getElementById("conn-dot").className = "ok";
+    document.getElementById("conn-text").textContent = location.host;
+
+    const calls  = parseProm(prom, "neondb_reducer_calls_total")[0] ?? 0;
+    const errors = parseProm(prom, "neondb_reducer_errors_total")[0] ?? 0;
+    const now = performance.now();
+    let tps = 0;
+    if (S.lastCalls !== null && now > S.lastT) tps = Math.max(0, (calls - S.lastCalls) / ((now - S.lastT)/1000));
+    S.lastCalls = calls; S.lastT = now; S.lastErrors = errors;
+
+    const p99s = promQuantile(prom, "neondb_reducer_duration_seconds", 0.99);
+    const memMB = (hz.memory_usage_bytes||0)/1e6, walMB = (hz.wal_file_size_bytes||0)/1e6;
+
+    setText("ov-tps", fmt(Math.round(tps)));
+    document.getElementById("ov-p99").innerHTML = (p99s===null?"—":(p99s*1000).toFixed(2)) + "<small> ms</small>";
+    setText("ov-conns", hz.active_connections);
+    setText("ov-rows", fmt(hz.total_rows));
+    document.getElementById("ov-mem").innerHTML = memMB.toFixed(1) + "<small> MB</small>";
+    document.getElementById("ov-wal").innerHTML = walMB.toFixed(1) + "<small> MB</small>";
+    setText("ov-queue", hz.reducer_queue_depth);
+    setText("ov-uptime", fmtUptime(hz.uptime_seconds));
+    setText("ov-role", hz.role || "primary");
+    setText("ov-errors", fmt(errors));
+
+    push(S.hist.tps, tps); push(S.hist.mem, memMB);
+    push(S.hist.conn, hz.active_connections); push(S.hist.queue, hz.reducer_queue_depth);
+    drawChart("ch-tps", S.hist.tps, "#00e5a0");
+    drawChart("ch-mem", S.hist.mem, "#5ac8fa");
+    drawChart("ch-conn", S.hist.conn, "#c792ea");
+    drawChart("ch-queue", S.hist.queue, "#ffb454");
+  } catch (e) {
+    document.getElementById("conn-dot").className = "";
+    document.getElementById("conn-text").textContent = "disconnected";
+  }
+}
+function setText(id, v) { document.getElementById(id).textContent = v; }
+function fmtUptime(s) { if (s==null) return "—"; const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
+  return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m ${s%60}s`; }
+function push(arr, v) { arr.push(v); if (arr.length > 90) arr.shift(); }
+function drawChart(id, data, color) {
+  const c = document.getElementById(id); if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== w*dpr) { c.width = w*dpr; c.height = h*dpr; }
+  const ctx = c.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  if (data.length < 2) return;
+  const max = Math.max(...data, 1) * 1.15;
+  ctx.strokeStyle = "#232a3b"; ctx.lineWidth = 1;
+  for (let i=1; i<4; i++) { ctx.beginPath(); ctx.moveTo(0, h*i/4); ctx.lineTo(w, h*i/4); ctx.stroke(); }
+  ctx.beginPath();
+  data.forEach((v,i) => { const x = i/(data.length-1)*w, y = h - (v/max)*h*.92 - 2;
+    i ? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+  const g = ctx.createLinearGradient(0,0,0,h);
+  g.addColorStop(0, color + "33"); g.addColorStop(1, color + "00");
+  ctx.fillStyle = g; ctx.fill();
+  ctx.fillStyle = "#7a87a3"; ctx.font = "10px monospace";
+  ctx.fillText(fmt(Math.round(max/1.15)), 4, 10);
+}
+setInterval(poll, 2000); poll();
+
+// ═══════════ Tables ═══════════
+async function loadTables() {
+  try {
+    const d = await api("/tables");
+    S.tables = d.tables || [];
+    const el = document.getElementById("table-list");
+    el.innerHTML = S.tables.map(t =>
+      `<div class="item ${t.name===S.selTable?'sel':''}" onclick="selectTable('${esc(t.name)}')">
+        <span>${esc(t.name)}</span><span class="cnt">${fmt(t.rows)}</span></div>`).join("")
+      || `<div class="item muted">no tables yet</div>`;
+  } catch (e) { console.error(e); }
+}
+async function selectTable(name) {
+  S.selTable = name;
+  loadTables();
+  try {
+    const d = await api("/tables/" + encodeURIComponent(name));
+    S.rows = d.rows || [];
+    renderRows();
+  } catch (e) { document.getElementById("rows-body").innerHTML = `<tr><td colspan=3 class="err-text">${esc(e.message)}</td></tr>`; }
+}
+function renderRows() {
+  const f = document.getElementById("row-filter").value.toLowerCase();
+  const rows = S.rows.filter(r => !f || r.row_key.toLowerCase().includes(f) || JSON.stringify(r.data).toLowerCase().includes(f));
+  document.getElementById("row-count").textContent = `${rows.length} / ${S.rows.length} rows`;
+  document.getElementById("rows-body").innerHTML = rows.slice(0, 500).map(r => `
+    <tr><td>${esc(r.row_key)}</td>
+        <td class="json-cell" title="${esc(JSON.stringify(r.data))}">${esc(JSON.stringify(r.data))}</td>
+        <td><a class="clickable" onclick='openRowEditor(${JSON.stringify(r.row_key)})'>edit</a> ·
+            <a class="clickable err-text" onclick='deleteRow(${JSON.stringify(r.row_key)})'>del</a></td></tr>`).join("")
+    || `<tr><td colspan=3 class="muted">no rows</td></tr>`;
+}
+function openRowEditor(rowKey) {
+  if (!S.selTable) { alert("Select a table first"); return; }
+  S.editingKey = rowKey;
+  document.getElementById("modal-title").textContent = rowKey ? `Edit ${S.selTable} / ${rowKey}` : `New row in ${S.selTable}`;
+  document.getElementById("modal-key").value = rowKey || "";
+  document.getElementById("modal-key").disabled = !!rowKey;
+  const row = rowKey ? S.rows.find(r => r.row_key === rowKey) : null;
+  document.getElementById("modal-data").value = JSON.stringify(row ? row.data : {}, null, 2);
+  document.getElementById("modal-err").textContent = "";
+  document.getElementById("modal-bg").style.display = "block";
+  document.getElementById("modal").style.display = "block";
+}
+function closeModal() {
+  document.getElementById("modal-bg").style.display = "none";
+  document.getElementById("modal").style.display = "none";
+}
+async function saveRow() {
+  const k = document.getElementById("modal-key").value.trim();
+  if (!k) { document.getElementById("modal-err").textContent = "key required"; return; }
+  let data;
+  try { data = JSON.parse(document.getElementById("modal-data").value); }
+  catch (e) { document.getElementById("modal-err").textContent = "invalid JSON: " + e.message; return; }
+  try {
+    await api("/admin/api/row", { method: "POST", body: JSON.stringify({ table: S.selTable, key: k, data }) });
+    closeModal(); selectTable(S.selTable);
+  } catch (e) { document.getElementById("modal-err").textContent = e.message; }
+}
+async function deleteRow(rowKey) {
+  if (!confirm(`Delete ${S.selTable} / ${rowKey}?`)) return;
+  try {
+    await api(`/admin/api/row?table=${encodeURIComponent(S.selTable)}&key=${encodeURIComponent(rowKey)}`, { method: "DELETE" });
+    selectTable(S.selTable);
+  } catch (e) { alert(e.message); }
+}
+
+// ═══════════ SQL ═══════════
+async function runSql() {
+  const q = document.getElementById("sql-input").value.trim();
+  if (!q) return;
+  const t0 = performance.now();
+  const out = document.getElementById("sql-out");
+  try {
+    const d = await api("/admin/api/sql", { method: "POST", body: JSON.stringify({ query: q }) });
+    const ms = (performance.now() - t0).toFixed(1);
+    document.getElementById("sql-meta").innerHTML = `<span class="ok-text">${d.rows.length} rows</span> · ${ms} ms` +
+      (d.rows_affected ? ` · ${d.rows_affected} affected` : "");
+    if (d.rows.length) {
+      const cols = d.columns.length ? d.columns : Object.keys(d.rows[0]);
+      out.innerHTML = `<div style="overflow-x:auto;margin-top:10px"><table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>` +
+        d.rows.slice(0,1000).map(r => `<tr>${cols.map(c=>`<td>${esc(typeof r[c]==="object"?JSON.stringify(r[c]):r[c]??"")}</td>`).join("")}</tr>`).join("") +
+        `</tbody></table></div>`;
+    } else out.innerHTML = `<pre class="result" style="margin-top:10px">OK — no rows returned</pre>`;
+    S.sqlHistory.unshift(q); S.sqlHistory = [...new Set(S.sqlHistory)].slice(0, 20);
+    localStorage.setItem("ndb_sql_hist", JSON.stringify(S.sqlHistory));
+    renderSqlHistory();
+  } catch (e) {
+    document.getElementById("sql-meta").innerHTML = `<span class="err-text">error</span>`;
+    out.innerHTML = `<pre class="result err-text" style="margin-top:10px">${esc(e.message)}</pre>`;
+  }
+}
+function renderSqlHistory() {
+  document.getElementById("sql-history").innerHTML = S.sqlHistory.map(q =>
+    `<div class="clickable" style="padding:3px 0" onclick='document.getElementById("sql-input").value=${JSON.stringify(q)}'>▸ ${esc(q)}</div>`).join("");
+}
+document.getElementById("sql-input").addEventListener("keydown", e => {
+  if ((e.ctrlKey||e.metaKey) && e.key === "Enter") runSql();
+});
+renderSqlHistory();
+
+// ═══════════ Reducers ═══════════
+async function loadReducers() {
+  try {
+    const d = await api("/schema");
+    document.getElementById("version").textContent = "v" + (d.version || "?") + " · admin console";
+    S.reducers = (d.reducers || []).sort();
+    document.getElementById("reducer-list").innerHTML = S.reducers.map(r =>
+      `<div class="item ${r===S.selReducer?'sel':''}" onclick="selectReducer('${esc(r)}')"><span>⚡ ${esc(r)}</span></div>`).join("")
+      || `<div class="item muted">no reducers</div>`;
+  } catch (e) { console.error(e); }
+}
+function selectReducer(name) {
+  S.selReducer = name;
+  document.getElementById("red-name").textContent = "Invoke: " + name;
+  document.getElementById("red-invoke").disabled = false;
+  loadReducers();
+}
+async function invokeReducer() {
+  if (!S.selReducer) return;
+  let args;
+  try { args = JSON.parse(document.getElementById("red-args").value || "[]"); }
+  catch (e) { document.getElementById("red-result").textContent = "Invalid args JSON: " + e.message; return; }
+  if (!Array.isArray(args)) { document.getElementById("red-result").textContent = "Args must be a JSON array"; return; }
+  const t0 = performance.now();
+  try {
+    const d = await api("/admin/api/call", { method: "POST", body: JSON.stringify({ name: S.selReducer, args }) });
+    const ms = (performance.now() - t0).toFixed(1);
+    document.getElementById("red-meta").innerHTML = d.success
+      ? `<span class="ok-text">success</span> · ${ms} ms` : `<span class="err-text">error</span> · ${ms} ms`;
+    document.getElementById("red-result").textContent = JSON.stringify(d.success ? d.result : d.error, null, 2);
+  } catch (e) {
+    document.getElementById("red-meta").innerHTML = `<span class="err-text">failed</span>`;
+    document.getElementById("red-result").textContent = e.message;
+  }
+}
+
+// ═══════════ Schema ═══════════
+async function loadSchema() {
+  try {
+    const d = await api("/schema");
+    const names = Object.keys(d.tables || {}).sort();
+    document.getElementById("schema-out").innerHTML = names.map(n => {
+      const t = d.tables[n];
+      const cols = (t.columns || []);
+      return `<h3>${esc(n)} <span class="badge blue">${fmt(t.rows||0)} rows</span>${t.rls && t.rls!=="Public" ? ` <span class="badge green">RLS: ${esc(t.rls)}</span>`:""}</h3>` +
+        (cols.length
+          ? `<table style="margin-bottom:14px"><thead><tr><th>Column</th><th>Type</th><th>Required</th><th>Default</th><th>Key</th></tr></thead><tbody>` +
+            cols.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.type)}</td><td>${c.required?"✓":""}</td><td>${c.default!=null?esc(JSON.stringify(c.default)):""}</td><td>${c.key?"🔑":""}</td></tr>`).join("") +
+            `</tbody></table>`
+          : `<div class="muted" style="margin-bottom:14px">open schema (no column definitions)</div>`);
+    }).join("") || `<div class="muted">no tables</div>`;
+  } catch (e) { document.getElementById("schema-out").innerHTML = `<pre class="result err-text">${esc(e.message)}</pre>`; }
+}
+
+// ═══════════ Operations ═══════════
+function saveKey() {
+  localStorage.setItem("ndb_api_key", document.getElementById("api-key").value);
+  alert("Saved.");
+}
+document.getElementById("api-key").value = key();
+async function runBackup() {
+  const el = document.getElementById("backup-out");
+  el.textContent = "running…";
+  try {
+    const d = await api("/backup", { method: "POST" });
+    el.innerHTML = `<span class="ok-text">✓ ${esc(d.path)} (${fmt(d.row_count)} rows, seq ${d.last_seq})</span>`;
+  } catch (e) { el.innerHTML = `<span class="err-text">${esc(e.message)}</span>`; }
+}
+async function loadRepl() {
+  try {
+    const d = await api("/replication/status");
+    document.getElementById("repl-out").textContent = JSON.stringify(d, null, 2);
+  } catch (e) { document.getElementById("repl-out").textContent = e.message; }
+}
+async function promote() {
+  if (!confirm("Promote this node to PRIMARY? It will start accepting writes.")) return;
+  try {
+    const d = await api("/replication/promote", { method: "POST" });
+    document.getElementById("repl-out").textContent = JSON.stringify(d, null, 2);
+  } catch (e) { alert(e.message); }
+}
+async function applyMigration() {
+  const name = document.getElementById("mig-name").value.trim() || "adhoc.toml";
+  const content = document.getElementById("mig-body").value;
+  const el = document.getElementById("mig-out");
+  if (!content.trim()) { el.textContent = "migration body is empty"; return; }
+  try {
+    const d = await api("/migrate", { method: "POST", body: JSON.stringify({ migrations: [{ filename: name, content }] }) });
+    el.innerHTML = d.errors
+      ? `<span class="err-text">${esc(d.errors.join("; "))}</span>`
+      : `<span class="ok-text">✓ applied=${d.applied} skipped=${d.skipped}</span>`;
+  } catch (e) { el.innerHTML = `<span class="err-text">${esc(e.message)}</span>`; }
+}
+async function loadServerInfo() {
+  try {
+    const d = await api("/healthz");
+    document.getElementById("server-info").textContent = JSON.stringify(d, null, 2);
+  } catch (e) { document.getElementById("server-info").textContent = e.message; }
+}
+</script>
+</body>
+</html>

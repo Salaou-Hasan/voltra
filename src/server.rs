@@ -419,6 +419,7 @@ async fn run_server_inner(
         });
     }
 
+    let tenant_registry = crate::tenant::TenantRegistry::load(tables.clone());
     crate::network::start_listener(
         host,
         port,
@@ -438,6 +439,7 @@ async fn run_server_inner(
         shutdown_rx,
         metrics,
         tls_config,
+        tenant_registry,
     )
     .await
 }

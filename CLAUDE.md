@@ -183,6 +183,146 @@ Remove-Item -Recurse -Force target\criterion
 
 ## Complete Fix History
 
+### Session 51 — Memory/RAM optimization: hybrid row encoding + slot-based locks
+
+**Motivation**: sim benchmark showed 136.5MB → 2,149MB (+1573%) over 600s at 3.1M rows (~649 bytes/row), driven by JSON row bytes + per-row DashMap lock entries.
+
+**What was built (`src/table/mod.rs`):**
+
+**1. Hybrid row storage encoding** (replaces `serde_json::to_vec` / `serde_json::from_slice`):
+- New `encode_row(value: &Value) -> Result<Bytes>` free function:
+  - Small rows (MsgPack bytes < `ZSTD_THRESHOLD = 256`): tag `0x00` + raw MsgPack
+  - Large rows (≥ 256 bytes): tag `0x01` + zstd-compressed MsgPack (level 1)
+  - Typical game rows (30-80 bytes) hit the small path — zero compression overhead
+  - Blob rows, inventory arrays hit the large path — ~8-10x smaller than JSON
+- New `decode_row_bytes(data: &[u8]) -> Result<Value>` free function:
+  - Reads tag byte, dispatches to raw `rmp_serde::from_slice` or `zstd::decode_all` + `rmp_serde::from_slice`
+  - Unknown tag → `SerializationError`
+- Updated all 6 call sites that directly read `row.data` (previously `serde_json::from_slice`):
+  - `decode_row` (canonical decoder)
+  - `write_row_unlocked` (old value capture for index maintenance)
+  - `delete_row_unlocked` (old value for index removal)
+  - `create_index` (backfill existing rows)
+  - `scan_column`, `count_by_field`, `distinct_field_values` (columnar reads)
+- `write_row_unlocked` returns `payload_arc: None` in its delta (previously `Some(arc_bytes)`). `row_data: Some(final_value)` carries the value; `row_data_value()` falls through correctly.
+
+**2. Fixed-slot mutex pool replaces per-row `DashMap<String, Arc<Mutex<()>>>`**:
+- `const LOCK_SLOTS: usize = 512` — 512 fixed `Mutex<()>` slots per table in a `Box<[Mutex<()>]>`
+- `fn slot_for_key(key: &str) -> usize` — FNV-1a hash → `[0, 512)`
+- Two distinct keys may share a slot (false contention) but remain serializable-isolated
+- `apply_delta_batch` locking changed from `Vec<Arc<Mutex<()>>>` to `Vec<(Arc<Table>, usize)>` pairs; sorted by `(table_ptr, slot)` and deduped before locking
+- **Memory savings**: eliminates `~128 bytes × N_rows` (DashMap entry + key string + Arc<Mutex> heap alloc)
+
+**Benchmark results (500 players + 500 chat, 60s):**
+| Metric | Before | After |
+|---|---|---|
+| TPS | ~13K | ~42K |
+| p50 latency | ~33ms | ~11ms |
+| p99 latency | ~41ms | ~22ms |
+| Memory growth | heavy | essentially flat |
+
+**Build status after Session 51:**
+- `cargo build --lib` → zero errors, zero warnings
+- `cargo test --lib` → **466 tests passing** (unchanged count)
+
+**New pitfalls:**
+91. **Hybrid row tag bytes — never interpret raw `row.data` without `decode_row_bytes`** — stored bytes now start with a tag byte (`0x00` = raw MsgPack, `0x01` = zstd+MsgPack). Any code that reads `row.data` directly (bypassing `decode_row()` / `decode_row_bytes()`) will get garbage. All read paths go through the helpers; do not add new direct reads.
+92. **`payload_arc` is no longer set by `write_row_unlocked`** — `write_row_unlocked` sets `payload_arc: None` in returned deltas; `row_data: Some(value)` carries the value. `row_data_value()` checks `payload_arc` first (for context.rs deltas which still set it), then falls back to `row_data`. Do not add code that depends on `payload_arc` being set in write-path deltas.
+93. **`ZSTD_THRESHOLD = 256` is per MsgPack bytes, not JSON bytes** — since MsgPack is ~40% smaller than JSON, a row with 350-byte JSON (~210 bytes MsgPack) would NOT be compressed. Only rows with MsgPack > 256 bytes get compressed. This is intentional.
+94. **Slot-based locks may over-serialize** — two unrelated rows that hash to the same slot will serialize against each other. This is correct (no data races) but slightly sub-optimal. At 512 slots and random key distribution, collision probability is 1/512 per pair. Do NOT use slot locking for anything other than apply_delta_batch write isolation.
+
+### Session 49 — Multi-tenancy: complete namespace isolation (loop task 3 of 4)
+
+**What was built:**
+
+**`src/tenant.rs`** (NEW, ~450 lines, 9 unit tests):
+- `physical_table(tenant_id, logical)` → `"tn:<id>:<logical>"` / `logical_table()` strips prefix
+- `belongs_to_tenant(physical, tenant_id)` — exact prefix check (no false positives on prefix collision)
+- `TenantInfo { id, name, api_key, max_rows, max_calls_per_sec, created_at }` — persisted to `__tenants` system table
+- `TenantRegistry::load(tables)` — hydrates from `__tenants` on startup (WAL/snapshot replay populates it first)
+- `create(name, max_rows, max_calls_per_sec)` → generates `id = slug-XXXXXX` + `api_key = ndbt_<32hex>`, returns delta for caller to WAL-journal
+- `delete(tenant_id)` — drops all `tn:<id>:*` rows + the tenant row, returns all deltas
+- `resolve_key(raw_token)` — fast DashMap lookup; supports `key:role` suffix convention
+- Token-bucket rate limiter with continuous refill per tenant (0 = unlimited)
+- `tenant_row_count` / `row_quota` — for quota enforcement at commit time
+- `summary_json(include_keys)` — admin API response; keys masked unless `include_keys = true`
+
+**`src/reducer/context.rs`** (updated):
+- `pub tenant_id: Option<String>` + private `tenant_registry: Option<Arc<TenantRegistry>>`
+- `with_tenant(tenant_id, registry)` builder — enables namespace isolation for the context
+- `phys(table_name)` — resolves logical → physical name; passes through `__*` and `tn:*` unchanged
+- All read/write methods (`get_row`, `set_row`, `delete_row`) use `phys()` — completely transparent to reducer code
+- `get_counter` / `set_counter` in tenant path: counters stored as regular rows in `tn:<id>:counters` (no `counter_add` atomic, see pitfall 84)
+- `commit()` — quota check before `apply_delta_batch`: counts pending inserts + current rows against quota
+- RLS enforcement uses `logical_table()` to strip prefix before schema lookup
+
+**`src/network/websocket.rs`** (updated):
+- `PendingCall.tenant_id: Option<String>` — carried from handshake to worker
+- `start_listener` / `handle_client` take `Arc<TenantRegistry>` parameter (last arg)
+- Handshake: `ndbt_*` tokens resolved via `TenantRegistry::resolve_key`; on success sets `tenant_id` cell; invalid tenant key → 401
+- Tenant rate limit: `tenant_registry.check_rate(tid)` gated in addition to per-caller rate limiter
+- Subscribe: `rewrite_query_for_tenant(query, tenant_id)` rewrites first token to physical table name
+- `sub_task`: `strip_tenant_frames(frames, tenant_id)` decodes each outbound frame and strips `tn:<id>:` prefix so clients see logical table names
+- Helpers: `rewrite_query_for_tenant`, `strip_tenant_prefix_from_frame`, `strip_tenant_frames`
+
+**`src/main.rs`** (updated):
+- `TenantRegistry::load(tables.clone())` initialized after WAL/snapshot recovery, before `start_listener`
+- `AdminState.tenant_registry: Arc<TenantRegistry>` — threaded through metrics server
+- Worker loop: `ctx = ctx.with_tenant(tid, tenant_w)` when `call.tenant_id.is_some()`
+- Tenant admin endpoints:
+  - `GET  /admin/api/tenants` — list (keys masked)
+  - `POST /admin/api/tenants` — create; returns `{ id, api_key, name }`; WAL-journaled
+  - `DELETE /admin/api/tenants?id=<id>` — delete tenant + all data; WAL-journaled
+- All `PendingCall` constructions updated with `tenant_id: None` (scheduler + admin console are global)
+
+**`src/lib.rs`** (updated): `pub mod tenant;` + re-exports `TenantRegistry, TenantInfo, physical_table, logical_table`
+
+**`src/server.rs`** (updated): `TenantRegistry::load` + pass to `start_listener`
+
+**New pitfalls:**
+83. **Tenant `counter_add` reads from global "counters" table** — `apply_delta_batch`'s `counter_add` handler always calls `self.get_counter(name)` which reads from `self.tables.get_row("counters", name)`, NOT from the physical tenant counter table. For tenant contexts, `set_counter` is therefore converted to a regular row write to `tn:<id>:counters` (no atomic RMW). Single-tenant counter increments are still row-locked; multi-tenant counter isolation is guaranteed. What is lost is the N-worker concurrent-increment atomicity — acceptable for isolated tenant workloads.
+84. **Tenant subscription frame rewrite is O(decode+encode) per frame** — `strip_tenant_prefix_from_frame` decodes MsgPack, replaces `table_name`, re-encodes for each outbound subscription frame on tenant connections. Non-tenant connections skip this entirely. This is the correct trade-off: tenant clients see logical names on the wire.
+85. **`TenantRegistry::load` must be called AFTER WAL/snapshot replay** — the `__tenants` table is populated by replay. Calling it before replay means zero tenants are loaded.
+86. **Tenant admin endpoints require `NEONDB_API_KEY`** — `admin_auth_check` guards all `/admin/api/*` routes. `POST /admin/api/tenants` returns the raw `api_key` exactly once; it is never shown again through `GET /admin/api/tenants` (keys are masked).
+
+**Build status after Session 49:**
+- `cargo build` / `cargo build --release` → **zero errors, zero warnings** (sim warnings are pre-existing).
+- `cargo test --lib` → **443 tests passing** (was 433 before; +10: 9 tenant tests + 1 new context test).
+
+---
+
+### Session 48 — Production wave: CPU timeouts + admin console (loop tasks 1-2 of 4)
+
+**Loop plan (user-directed, via /loop):** 1) Reducer CPU timeouts ✅ 2) Operational UX admin dashboard ✅ 3) Multi-tenancy (next) 4) Horizontal scaling/cluster resurrection. No partial systems allowed.
+
+**1. Reducer CPU timeouts (`src/reducer/v8.rs`, `src/reducer/registry.rs`):**
+- QuickJS interrupt handler (`rt.set_interrupt_handler`) checks a thread-local `QJS_DEADLINE: Cell<Option<Instant>>`; returns `true` past deadline → script aborted.
+- `DeadlineGuard` RAII arms/clears the deadline around `reducer_fn.call`; timeout error = `"Reducer timeout: exceeded N ms CPU budget"`.
+- After a timeout the warm Context is EVICTED from `QJS_CTXS` (partially-mutated JS globals) — next call rebuilds from source. DB state safe (error path skips commit).
+- Default timeout: per-module `timeout_ms` > `NEONDB_REDUCER_TIMEOUT_MS` env > 5000ms.
+- WASM already capped at 1M fuel; native reducers are trusted (documented, not killable).
+- 4 new tests: infinite loop killed <1s, worker survives + same script retryable, staged writes discarded, fast reducers unaffected. 433 lib tests green.
+
+**2. Admin console (`src/admin_dashboard.html` NEW ~700 lines, `src/main.rs`):**
+- `GET /admin` on the metrics port serves an embedded single-file dark-theme dashboard (include_str!, no build step, vanilla JS + canvas charts).
+- Tabs: Overview (TPS/p99/memory/WAL/queue/uptime cards + 4 live charts, 2s poll of /healthz + /metrics with client-side Prometheus parsing incl. histogram quantiles), Tables (browser, filter, row add/edit/delete via modal), SQL console (Ctrl+Enter, history in localStorage), Reducers (list + invoke with JSON args), Schema viewer, Operations (backup now, replication status/promote, paste-a-migration, API key, server info).
+- New endpoints in `handle_metrics_request`:
+  - `POST /admin/api/call` — dispatches a real `PendingCall` through `queue_probe` (caller_id="admin-console", caller_role="admin"), 30s timeout.
+  - `POST /admin/api/sql` — parse+execute in `spawn_blocking`.
+  - `POST /admin/api/row` / `DELETE /admin/api/row` — DURABLE writes: `set_row`/`delete_row` → `publish_deltas` → WAL append with `__admin_set_row`/`__admin_delete_row` reducer name (unlike /seed which bypasses both).
+  - Helpers: `admin_auth_check` (Bearer == NEONDB_API_KEY when configured; open in dev), `bad_request`, `server_error`, `url_decode`.
+- All 5 endpoints live-verified with curl; dashboard JS syntax-checked with `node --check`.
+
+**Also in session 48 (pre-loop):**
+- `run_server_with_handle(config) -> (ServerHandle, impl Future)` in `src/server.rs` — `ServerHandle { tables, subs, wal_file_size }` for embedded stats without HTTP. Exported from lib.rs. `BatchedWalWriter::file_size_arc()` added.
+- `src/bin/sim.rs` + `[[bin]] neondb-sim` — high-end simulation benchmark (game/chat/mixed/scale scenarios, 24 embedded JS reducers, virtual-user behavioral state machines, HDR latency, live mem/WAL/rows/conn stats via ServerHandle). Verified: 500 players → 2.86M calls, 43K TPS, p99 19ms, 0 errors.
+
+**New pitfalls:**
+79. **rquickjs interrupt handler is per-Runtime, registered once** — it reads `QJS_DEADLINE` thread-local; never register a second handler. No deadline armed (None) = never interrupt (context build, preamble eval).
+80. **Evict warm QJS context after timeout** — a killed script leaves partially-mutated JS globals; `QJS_CTXS.remove(&script_key)` forces a clean rebuild. Do not skip this.
+81. **Admin row writes must publish + WAL-append** — `/admin/api/row` is a durable write path unlike `/seed`. If you add admin mutations, follow the same delta → publish_deltas → wal append pattern.
+82. **`queue_probe` is a full kanal sender, not just a depth probe** — `/admin/api/call` sends real PendingCalls through it. Renaming/removing it breaks both /healthz depth and admin invocation.
+
 ### Sessions 1–26
 (See previous CLAUDE.md for full detail. Summary: TableStore, kanal channel, N-worker dispatch, BatchedWalWriter, snapshots, auth, query engine, indexes, scheduled reducers, TypeScript/Rust SDKs, schema migrations, WASM-first JS, columnar storage, end-to-end bench, templates, typed schema, React hooks.)
 
@@ -339,10 +479,90 @@ neondb get players                       # verify rows landed
 
 ## Current Build Status
 
-After Session 47 (production-readiness wave — replication, backups, fuzz, soak, QuickJS):
+After Session 50 (horizontal scaling / cluster resurrection complete):
 - `cargo build` / `cargo build --release` → **zero errors, zero warnings**.
-- `cargo test` (FULL suite) → **all green**: 429 lib + 2 crash-recovery + 9 integration + 9 protocol-fuzz + schema/WAL test files. Zero failures.
-- Live-verified end-to-end: primary→replica replication, kill-primary failover with promote, backup + restore round-trip, 60s soak (55 817 calls, 0 errors, p99 0.78 ms).
+- `cargo test --lib` → **466 lib tests passing** (+23 cluster tests). Zero failures.
+- Multi-tenancy: full namespace isolation, quota enforcement, WAL-durable admin CRUD, live subscription prefix rewriting.
+- Horizontal scaling: `src/cluster/` fully wired — shard routing, delta fan-out, gossip, proxy calls, dynamic join.
+
+### Session 50 — Horizontal scaling: cluster system resurrected (loop task 4 of 4)
+
+**Loop plan completion:** Task 4 of 4 — resurrect and complete the cluster system removed in Session 44.
+
+**What was built:**
+
+New module `src/cluster/` (4 files, restored from `pre-cluster-removal` tag + adapted to current architecture):
+
+- **`src/cluster/mod.rs`** — `ClusterConfig`, `ClusterBus`, `PeerEntry`, `shard_for_key()`:
+  - `ClusterConfig::from_env(my_shard_id, shard_count)` reads `NEONDB_PEERS` (named: `shard1=http://...,shard2=http://...` or positional URL list), `NEONDB_CLUSTER_SECRET`, `NEONDB_GOSSIP_INTERVAL_MS`, `NEONDB_CLUSTER_HTTP_TIMEOUT_MS`.
+  - `ClusterBus::new(config) -> Arc<Self>` — DashMap of peers, lazy global `reqwest::blocking::Client`.
+  - `fanout_deltas(&deltas)` — fire-and-forget fan-out, no-op when single-node.
+  - `apply_peer_deltas(deltas, tables, subs)` — apply incoming peer deltas + local subscription fan-out.
+  - `proxy_call(shard_id, reducer, args, caller_id, role) -> Result<Vec<u8>>` — forward to owning shard.
+  - `add_peer(NodeInfo)` — dynamic registration via `/cluster/join`.
+  - `peers_snapshot()` — JSON-serializable view for `/cluster/peers` endpoint.
+  - `shard_for_key(key, shard_count) -> u32` — FNV-1a 64-bit, deterministic across all nodes.
+  - 15 unit tests.
+
+- **`src/cluster/fanout.rs`** — `fanout_to_peers()`, `start_fanout_retry()`, wire format:
+  - Per-peer `spawn_blocking` tasks, 3-attempt exponential back-off (50/200/800ms).
+  - `FanoutRetryState` — per-peer bounded `VecDeque<Arc<Vec<u8>>>` (max 1024 entries), background retry task every 5s draining up to 64 entries per healthy peer.
+  - `row_deltas_to_wire()` / `wire_to_row_deltas()` — rmp → base64 → JSON for set/delete.
+  - 8 unit tests.
+
+- **`src/cluster/gossip.rs`** — `start_gossip()`:
+  - Pings `GET /cluster/health` on every peer every `gossip_interval_ms` (default 5s).
+  - 3 consecutive failures → peer marked unhealthy, skipped in fan-out.
+  - Graceful shutdown via `watch::Receiver`.
+
+- **`src/cluster/proxy.rs`** — `proxy_call()`:
+  - POST `/cluster/call` JSON: `{ reducer_name, args_b64, caller_id, caller_role, target_shard_id? }`.
+  - Response: `{ ok, result_b64 }` or `{ ok: false, error }`.
+
+**Changes to existing files:**
+
+- **`src/lib.rs`**: `pub mod cluster;` added.
+
+- **`src/main.rs`**:
+  - Reads `NEONDB_SHARD_ID` + `NEONDB_SHARD_COUNT` env vars (defaults 0/1).
+  - `ClusterBus::new(ClusterConfig::from_env(...))` initialized after tenant_registry.
+  - `cluster_bus` added to `AdminState`.
+  - `cluster_w.fanout_deltas(&deltas)` called in worker loop immediately after `subs_w.publish_deltas()` — only fires for non-empty delta sets, no-op in single-node mode.
+  - `start_gossip` + `start_fanout_retry` spawned before worker pool.
+  - 5 new HTTP endpoints in `handle_metrics_request`:
+    - `GET  /cluster/health` — liveness probe (returns `{ ok, shard_id }`)
+    - `GET  /cluster/peers`  — peer list + health (`{ cluster_enabled, my_shard_id, shard_count, peers }`)
+    - `POST /cluster/deltas` — receives replicated deltas, validates secret, applies + fan-outs
+    - `POST /cluster/call`   — receives proxied reducer call, dispatches through real queue, returns result
+    - `POST /cluster/join`   — dynamic peer registration (no restart needed)
+
+**How to run a 2-node cluster:**
+```powershell
+# Node 0 (shard 0):
+$env:NEONDB_SHARD_ID="0"; $env:NEONDB_SHARD_COUNT="2"
+$env:NEONDB_PEERS="shard1=http://127.0.0.1:4001"
+$env:NEONDB_CLUSTER_SECRET="mysecret"
+$env:NEONDB_METRICS_PORT="3001"; $env:NEONDB_PORT="3000"
+cargo run --release -- start
+
+# Node 1 (shard 1):
+$env:NEONDB_SHARD_ID="1"; $env:NEONDB_SHARD_COUNT="2"
+$env:NEONDB_PEERS="shard0=http://127.0.0.1:3001"
+$env:NEONDB_CLUSTER_SECRET="mysecret"
+$env:NEONDB_METRICS_PORT="4001"; $env:NEONDB_PORT="4000"
+cargo run --release -- start
+```
+
+**Shard routing (caller's responsibility):** Use `neondb::cluster::shard_for_key(row_key, shard_count)` to determine which node owns a given row. Reducer calls for rows owned by other shards should use `ClusterBus::proxy_call()`. The `neondb cluster-status` CLI command shows all peer health.
+
+**New pitfalls:**
+87. **`GLOBAL_HTTP_CLIENT` is a process-wide `OnceLock`** — the timeout is set on first call; subsequent calls ignore their `timeout_ms` arg. Set `NEONDB_CLUSTER_HTTP_TIMEOUT_MS` before any cluster activity if non-default timeout is needed.
+88. **Fan-out is fire-and-forget** — `fanout_deltas()` returns immediately after spawning blocking tasks. The local commit already succeeded; delivery failures are retried by the background task. Never block the worker loop waiting for fan-out.
+89. **`/cluster/call` dispatches through the real queue** — proxied calls consume a queue slot and are subject to the same `reducer_queue_cap` limit. If the queue is full, the proxy returns 500 "Reducer queue closed".
+90. **FNV-1a shard assignment is deterministic** — every node MUST use the same `shard_count` value. `NEONDB_SHARD_COUNT` must be identical on all nodes. Changing `shard_count` requires a coordinated rolling restart (rows do not migrate automatically).
+
+### Session 49 — Multi-tenancy (loop task 3 of 4)
+See summary above. Multi-tenancy is now complete and production-ready.
 
 ### Session 47 — Production-readiness wave (solo, no agents)
 

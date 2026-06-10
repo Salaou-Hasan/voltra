@@ -31,10 +31,12 @@ use crate::config::PermissionsConfig;
 use crate::error::{NeonDBError, Result};
 use crate::metrics::Metrics;
 use crate::presence::PresenceManager;
+use crate::tenant::TenantRegistry;
 use crate::ttl::TtlManager;
 use crate::sql::{Executor as SqlExecutor};
 use crate::subscriptions::{OutboundFrames, SubscriptionManager};
 use crate::table::TableStore;
+use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -60,6 +62,9 @@ pub struct PendingCall {
     /// Role of the caller, parsed from `Bearer <key>:<role>`.
     /// Empty string when no role suffix was provided.
     pub caller_role: String,
+    /// Tenant ID if the connection authenticated with a tenant API key (`ndbt_…`).
+    /// None for non-tenant connections (global or scheduler calls).
+    pub tenant_id: Option<String>,
     pub response_tx: mpsc::UnboundedSender<ReducerResponse>,
 }
 
@@ -140,6 +145,7 @@ pub async fn start_listener(
     mut shutdown: Receiver<()>,
     metrics: Arc<Metrics>,
     tls: Option<Arc<rustls::ServerConfig>>,
+    tenant_registry: Arc<TenantRegistry>,
 ) -> Result<()> {
     let bind_addr = format!("{}:{}", addr, port);
     let listener = TcpListener::bind(&bind_addr).await?;
@@ -181,6 +187,7 @@ pub async fn start_listener(
                         let iss     = identity_issuer.clone();
                         let peer    = peer_addr.to_string();
                         let tls_acc = tls_acceptor.clone();
+                        let ten     = tenant_registry.clone();
 
                         // Record connection metrics immediately on accept.
                         metrics.websocket_connects_total.inc();
@@ -192,7 +199,7 @@ pub async fn start_listener(
                                     Ok(tls_stream) => {
                                         if let Err(e) = handle_client(
                                             tls_stream, tx, subs, tbl, api_key, conns, perms,
-                                            sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met,
+                                            sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten,
                                         ).await { log::warn!("TLS client error: {}", e); }
                                     }
                                     Err(e) => log::warn!("TLS accept error from {}: {}", peer, e),
@@ -200,7 +207,7 @@ pub async fn start_listener(
                             } else {
                                 if let Err(e) = handle_client(
                                     stream, tx, subs, tbl, api_key, conns, perms,
-                                    sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met,
+                                    sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten,
                                 ).await { log::warn!("Client error: {}", e); }
                             }
                         });
@@ -234,18 +241,22 @@ async fn handle_client<S>(
     peer_addr: String,
     mut shutdown: Receiver<()>,
     metrics: Arc<Metrics>,
+    tenant_registry: Arc<TenantRegistry>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     // ── WebSocket handshake with JWT / API-key auth ───────────────────────────
-    let caller_id_cell   = Arc::new(std::sync::Mutex::new(String::new()));
-    let caller_role_cell = Arc::new(std::sync::Mutex::new(String::new()));
+    let caller_id_cell    = Arc::new(std::sync::Mutex::new(String::new()));
+    let caller_role_cell  = Arc::new(std::sync::Mutex::new(String::new()));
+    let tenant_id_cell    = Arc::new(std::sync::Mutex::new(Option::<String>::None));
     let caller_id_capture   = caller_id_cell.clone();
     let caller_role_capture = caller_role_cell.clone();
+    let tenant_id_capture   = tenant_id_cell.clone();
 
-    let auth_v = auth_validator.clone();
-    let iss_v  = identity_issuer.clone();
+    let auth_v  = auth_validator.clone();
+    let iss_v   = identity_issuer.clone();
+    let tenant_v = tenant_registry.clone();
     let ws_stream = tokio_tungstenite::accept_hdr_async(
         stream,
         move |request: &Request, response: Response| {
@@ -290,6 +301,26 @@ where
                             ))));
                         }
                     }
+                } else if raw_token.starts_with("ndbt_") {
+                    // ── Tenant API key path ───────────────────────────────────
+                    match tenant_v.resolve_key(raw_token) {
+                        Some(tid) => {
+                            if let Ok(mut cell) = caller_id_capture.lock() {
+                                *cell = format!("tenant:{}", tid);
+                            }
+                            if let Ok(mut cell) = caller_role_capture.lock() {
+                                *cell = "tenant".to_string();
+                            }
+                            if let Ok(mut cell) = tenant_id_capture.lock() {
+                                *cell = Some(tid);
+                            }
+                        }
+                        None => {
+                            return Err(ErrorResponse::new(Some(
+                                "Unauthorized: invalid tenant API key".to_string()
+                            )));
+                        }
+                    }
                 } else {
                     // ── Legacy API key / HMAC JWT path ───────────────────────
                     match auth_v.validate(auth_header) {
@@ -327,6 +358,9 @@ where
     };
     let caller_role: String = {
         caller_role_cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    };
+    let tenant_id: Option<String> = {
+        tenant_id_cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
     };
 
     // ── Presence: mark user online ───────────────────────────────────────────
@@ -375,8 +409,15 @@ where
     let client_id = subscription_manager.register_client(sub_tx);
 
     let write_tx_sub = write_tx.clone();
+    let sub_tenant_id = tenant_id.clone();
     let sub_task = tokio::spawn(async move {
         while let Some(frames) = sub_rx.recv().await {
+            // For tenant connections, strip the physical table prefix from
+            // outbound subscription frames so clients see logical table names.
+            let frames = match &sub_tenant_id {
+                Some(tid) => strip_tenant_frames(frames, tid),
+                None => frames,
+            };
             let full = match frames {
                 OutboundFrames::One(bytes) => {
                     matches!(
@@ -427,7 +468,11 @@ where
                 match protocol::decode_client_message(&data) {
                     Ok(ClientMessage::ReducerCall(call)) => {
                         // ── Rate limit check ─────────────────────────────────
-                        if !rate_limiter.check(&caller_id) {
+                        let rate_ok = rate_limiter.check(&caller_id)
+                            && tenant_id.as_deref()
+                                .map(|tid| tenant_registry.check_rate(tid))
+                                .unwrap_or(true);
+                        if !rate_ok {
                             log::debug!("Rate limited: caller_id='{}'", caller_id);
                             let limited = ReducerResponse::error(
                                 call.call_id,
@@ -471,6 +516,7 @@ where
                             args: call.args,
                             caller_id: caller_id.clone(),
                             caller_role: caller_role.clone(),
+                            tenant_id: tenant_id.clone(),
                             response_tx: response_tx.clone(),
                         };
                         if let Err(_) = reducer_tx.try_send(pending) {
@@ -485,10 +531,15 @@ where
                     }
 
                     Ok(ClientMessage::Subscribe { subscription_id, query }) => {
+                        // Rewrite query to use the physical table name for tenant clients.
+                        let physical_query = match &tenant_id {
+                            Some(tid) => rewrite_query_for_tenant(&query, tid),
+                            None => query,
+                        };
                         let result = subscription_manager.subscribe_with_snapshot(
                             client_id,
                             subscription_id.clone(),
-                            query,
+                            physical_query,
                             Some(&tables),
                         );
                         let ack = match result {
@@ -675,6 +726,7 @@ where
                                     args: call.args,
                                     caller_id: caller_id.clone(),
                                     caller_role: caller_role.clone(),
+                                    tenant_id: tenant_id.clone(),
                                     response_tx: response_tx.clone(),
                                 };
                                 if let Err(_) = reducer_tx.try_send(pending) {
@@ -735,6 +787,68 @@ where
     Ok(())
 }
 
+// ── Tenant helpers ────────────────────────────────────────────────────────────
+
+/// Rewrite a subscription query's first token (table name) to the physical name
+/// for a tenant.  System tables (`__*`) and already-prefixed names pass through.
+fn rewrite_query_for_tenant(query: &str, tenant_id: &str) -> String {
+    let trimmed = query.trim();
+    let (table_name, rest) = match trimmed.find(|c: char| c.is_whitespace()) {
+        Some(i) => (&trimmed[..i], &trimmed[i..]),
+        None => (trimmed, ""),
+    };
+    if table_name.starts_with("__") || table_name.starts_with("tn:") {
+        return query.to_string();
+    }
+    format!("tn:{}:{}{}", tenant_id, table_name, rest)
+}
+
+/// Strip the tenant prefix from `table_name` in an outbound subscription frame.
+/// Returns the original `Arc<Bytes>` unchanged if no rewrite is needed.
+fn strip_tenant_prefix_from_frame(bytes: &Arc<Bytes>, prefix: &str) -> Arc<Bytes> {
+    let msg: ServerMessage = match rmp_serde::from_slice(bytes) {
+        Ok(m) => m,
+        Err(_) => return bytes.clone(),
+    };
+    let modified = match msg {
+        ServerMessage::SubscriptionDiff(mut diff) => {
+            if let Some(logical) = diff.table_name.strip_prefix(prefix) {
+                diff.table_name = logical.to_string();
+                ServerMessage::SubscriptionDiff(diff)
+            } else {
+                return bytes.clone();
+            }
+        }
+        ServerMessage::SubscriptionBody(mut body) => {
+            if let Some(logical) = body.table_name.strip_prefix(prefix) {
+                body.table_name = logical.to_string();
+                ServerMessage::SubscriptionBody(body)
+            } else {
+                return bytes.clone();
+            }
+        }
+        _ => return bytes.clone(),
+    };
+    match rmp_serde::to_vec(&modified) {
+        Ok(b) => Arc::new(Bytes::from(b)),
+        Err(_) => bytes.clone(),
+    }
+}
+
+/// Strip tenant prefix from all frames in an `OutboundFrames` envelope.
+fn strip_tenant_frames(frames: OutboundFrames, tenant_id: &str) -> OutboundFrames {
+    let prefix = format!("tn:{}:", tenant_id);
+    match frames {
+        OutboundFrames::One(bytes) => {
+            OutboundFrames::One(strip_tenant_prefix_from_frame(&bytes, &prefix))
+        }
+        OutboundFrames::Two { first, second } => OutboundFrames::Two {
+            first: strip_tenant_prefix_from_frame(&first, &prefix),
+            second: strip_tenant_prefix_from_frame(&second, &prefix),
+        },
+    }
+}
+
 // ── SQL execution helper ──────────────────────────────────────────────────────
 
 /// Parse and execute a SQL string against the live TableStore.
@@ -778,6 +892,7 @@ mod tests {
             args: vec![],
             caller_id: String::new(),
             caller_role: String::new(),
+            tenant_id: None,
             response_tx: _tx,
         };
         assert_eq!(call.call_id, 1);
