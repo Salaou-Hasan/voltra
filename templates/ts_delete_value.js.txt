@@ -19,6 +19,9 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [key] = args;
-if (!__neondb_get("kv", key)) { result = { error: "not_found" }; }
-else { __neondb_delete("kv", key); result = { ok: true }; }
+function reducer(args) {
+  const [key] = args;
+  if (!__neondb_get("kv", key)) { return { error: "not_found" }; }
+  __neondb_delete("kv", key);
+  return { ok: true };
+}

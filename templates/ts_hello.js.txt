@@ -18,8 +18,10 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [name, delta] = args;
-const current = __neondb_get("counters", name);
-const value = (current && typeof current.value === "number" ? current.value : 0) + (delta || 1);
-__neondb_set("counters", name, { name, value });
-result = { name, value };
+function reducer(args) {
+  const [name, delta] = args;
+  const current = __neondb_get("counters", name);
+  const value = (current && typeof current.value === "number" ? current.value : 0) + (delta || 1);
+  __neondb_set("counters", name, { name, value });
+  return { name, value };
+}

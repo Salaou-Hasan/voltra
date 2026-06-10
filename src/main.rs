@@ -175,6 +175,46 @@ enum Commands {
         #[arg(long, default_value = "50")] warmup: usize,
         #[arg(long)] api_key: Option<String>,
     },
+    /// Trigger an immediate backup on a running server
+    Backup {
+        #[arg(long, default_value = "http://127.0.0.1:3001")] metrics_url: String,
+    },
+    /// List backups in a backup directory
+    Backups {
+        #[arg(value_name = "DIR", help = "Backup directory")]
+        dir: PathBuf,
+    },
+    /// Restore a backup into live data dirs (server must be STOPPED)
+    Restore {
+        #[arg(value_name = "BACKUP", help = "Path to a backup_<ts>_<seq> directory")]
+        backup: PathBuf,
+        #[arg(long = "wal-path", help = "Live WAL file path to restore into")]
+        wal_path: PathBuf,
+        #[arg(long = "snapshot-dir", help = "Live snapshot directory to restore into")]
+        snapshot_dir: PathBuf,
+        #[arg(long = "until-ts", help = "Point-in-time cutoff (unix NANOSECONDS); WAL entries after this are dropped")]
+        until_ts: Option<u64>,
+    },
+    /// Promote a replica to primary (failover)
+    Promote {
+        #[arg(long, default_value = "http://127.0.0.1:3001")] metrics_url: String,
+    },
+    /// Generate typed client code from the running server's schema
+    ///
+    /// Examples:
+    ///   neondb generate --lang typescript --out ./client/src/generated
+    ///   neondb generate --lang gdscript  --out ./godot/addons/neondb/generated
+    Generate {
+        /// Target language: typescript, gdscript
+        #[arg(long, default_value = "typescript")]
+        lang: String,
+        /// Output directory for generated files (created if absent)
+        #[arg(long, short = 'o', default_value = ".")]
+        out: PathBuf,
+        /// Admin/metrics server URL to read the schema from
+        #[arg(long, default_value = "http://127.0.0.1:3001")]
+        metrics_url: String,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -209,12 +249,274 @@ async fn main() -> Result<()> {
         Commands::Migrate { dir, metrics_url, dry_run } => neondb::cli::cmd_migrate(&metrics_url, &dir, dry_run).await,
         Commands::GenerateNpc { npc_type, context, url, api_key } => neondb::cli::cmd_generate_npc(&url, &npc_type, context.as_deref(), api_key.as_deref()).await,
         Commands::Bench { url, clients, calls, warmup, api_key } => run_cli_bench(&url, clients, calls, warmup, api_key.as_deref()).await,
+        Commands::Backup { metrics_url } => cmd_backup(&metrics_url).await,
+        Commands::Backups { dir } => { cmd_list_backups(&dir); Ok(()) }
+        Commands::Restore { backup, wal_path, snapshot_dir, until_ts } => {
+            let (seq, n) = neondb::backup::restore_to_dirs(&backup, &wal_path, &snapshot_dir, until_ts)?;
+            println!("Restored snapshot seq={} plus {} WAL entries.", seq, n);
+            println!("Start the server with --wal-path {:?} to load the restored data.", wal_path);
+            Ok(())
+        }
+        Commands::Promote { metrics_url } => cmd_promote(&metrics_url).await,
+        Commands::Generate { lang, out, metrics_url } => cmd_generate(&metrics_url, &lang, &out).await,
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // neondb cluster-status
 // ─────────────────────────────────────────────────────────────────────────────
+
+async fn cmd_backup(metrics_url: &str) -> Result<()> {
+    let url = format!("{}/backup", metrics_url);
+    let resp = reqwest::Client::new().post(&url).send().await.map_err(|e| {
+        neondb::error::NeonDBError::network_error(format!("Cannot reach {}: {}", url, e))
+    })?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
+    if status.is_success() {
+        println!("Backup written: {}", body["path"].as_str().unwrap_or("?"));
+        println!("  seq:  {}", body["last_seq"]);
+        println!("  rows: {}", body["row_count"]);
+    } else {
+        eprintln!("Backup failed (HTTP {}): {}", status, body);
+        return Err(neondb::error::NeonDBError::internal("backup failed"));
+    }
+    Ok(())
+}
+
+fn cmd_list_backups(dir: &Path) {
+    let backups = neondb::backup::list_backups(dir);
+    if backups.is_empty() {
+        println!("No backups found in {:?}", dir);
+        return;
+    }
+    println!("{:<24} {:>12} {:>10}  PATH", "CREATED", "SEQ", "ROWS");
+    for (path, ts, seq) in &backups {
+        let rows = neondb::backup::read_meta(path).map(|m| m.row_count).unwrap_or(0);
+        let dt = chrono_like_fmt(*ts);
+        println!("{:<24} {:>12} {:>10}  {}", dt, seq, rows, path.display());
+    }
+}
+
+/// Minimal unix-secs → "YYYY-MM-DD HH:MM:SS UTC" formatter (no chrono dep).
+fn chrono_like_fmt(unix_secs: u64) -> String {
+    let days_in_month = |y: u64, m: u64| -> u64 {
+        match m {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            _ => if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 29 } else { 28 },
+        }
+    };
+    let secs = unix_secs % 86_400;
+    let mut days = unix_secs / 86_400;
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let mut year = 1970u64;
+    loop {
+        let yd = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
+        if days < yd { break; }
+        days -= yd; year += 1;
+    }
+    let mut month = 1u64;
+    loop {
+        let md = days_in_month(year, month);
+        if days < md { break; }
+        days -= md; month += 1;
+    }
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", year, month, days + 1, h, m, s)
+}
+
+async fn cmd_promote(metrics_url: &str) -> Result<()> {
+    let url = format!("{}/replication/promote", metrics_url);
+    let resp = reqwest::Client::new().post(&url).send().await.map_err(|e| {
+        neondb::error::NeonDBError::network_error(format!("Cannot reach {}: {}", url, e))
+    })?;
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
+    println!("{}", serde_json::to_string_pretty(&body).unwrap_or_default());
+    Ok(())
+}
+
+async fn cmd_generate(metrics_url: &str, lang: &str, out: &Path) -> Result<()> {
+    // Fetch the full schema from the running server.
+    let url = format!("{}/schema", metrics_url);
+    let schema: serde_json::Value = reqwest::Client::new()
+        .get(&url)
+        .send().await
+        .map_err(|e| neondb::error::NeonDBError::network_error(format!("Cannot reach {}: {}", url, e)))?
+        .json().await
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Invalid schema JSON: {}", e)))?;
+
+    std::fs::create_dir_all(out).map_err(|e| {
+        neondb::error::NeonDBError::internal(format!("Cannot create output dir: {}", e))
+    })?;
+
+    let tables = schema["tables"].as_object().cloned().unwrap_or_default();
+    let reducers = schema["reducers"].as_array().cloned().unwrap_or_default();
+    let version = schema["version"].as_str().unwrap_or("?");
+
+    match lang {
+        "typescript" | "ts" => {
+            generate_typescript(&tables, &reducers, version, out)?;
+        }
+        "gdscript" | "godot" => {
+            generate_gdscript(&tables, &reducers, version, out)?;
+        }
+        other => {
+            return Err(neondb::error::NeonDBError::invalid_argument(
+                format!("Unknown --lang '{}'. Supported: typescript, gdscript", other)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn col_type_to_ts(type_str: &str) -> &'static str {
+    match type_str.to_lowercase().as_str() {
+        "string" | "str" | "text" => "string",
+        "i64" | "i32" | "int" | "integer" | "number" => "number",
+        "f64" | "f32" | "float" | "double" => "number",
+        "bool" | "boolean" => "boolean",
+        "bytes" | "blob" => "Uint8Array",
+        _ => "unknown",
+    }
+}
+
+fn col_type_to_gd(type_str: &str) -> &'static str {
+    match type_str.to_lowercase().as_str() {
+        "string" | "str" | "text" => "String",
+        "i64" | "i32" | "int" | "integer" | "number" => "int",
+        "f64" | "f32" | "float" | "double" => "float",
+        "bool" | "boolean" => "bool",
+        "bytes" | "blob" => "PackedByteArray",
+        _ => "Variant",
+    }
+}
+
+fn snake_to_pascal(s: &str) -> String {
+    s.split('_').map(|w| {
+        let mut c = w.chars();
+        match c.next() {
+            None => String::new(),
+            Some(f) => f.to_uppercase().to_string() + c.as_str(),
+        }
+    }).collect()
+}
+
+fn generate_typescript(
+    tables: &serde_json::Map<String, serde_json::Value>,
+    reducers: &[serde_json::Value],
+    version: &str,
+    out: &Path,
+) -> Result<()> {
+    // ── tables.ts ─────────────────────────────────────────────────────────────
+    let mut tables_ts = format!(
+        "// tables.ts — AUTO-GENERATED by `neondb generate` from server v{}\n// DO NOT EDIT — run `neondb generate` to regenerate\n\n",
+        version
+    );
+    for (table_name, schema) in tables {
+        let pascal = snake_to_pascal(table_name);
+        tables_ts.push_str(&format!("export interface {} {{\n", pascal));
+        if let Some(cols) = schema["columns"].as_array() {
+            for col in cols {
+                let name = col["name"].as_str().unwrap_or("_");
+                let type_str = col["type"].as_str().unwrap_or("any");
+                let required = col["required"].as_bool().unwrap_or(true);
+                let ts_type = col_type_to_ts(type_str);
+                let opt = if required { "" } else { "?" };
+                tables_ts.push_str(&format!("  {}{}: {};\n", name, opt, ts_type));
+            }
+        } else {
+            tables_ts.push_str("  [key: string]: unknown;\n");
+        }
+        tables_ts.push_str("}\n\n");
+    }
+
+    // ── reducers.ts ───────────────────────────────────────────────────────────
+    let mut reducers_ts = format!(
+        "// reducers.ts — AUTO-GENERATED by `neondb generate` from server v{}\n// DO NOT EDIT — run `neondb generate` to regenerate\n\nimport type {{ NeonDBClient }} from 'neondb-client';\n\nexport const Reducers = {{\n",
+        version
+    );
+    for r in reducers {
+        let name = match r.as_str() { Some(s) => s, None => continue };
+        let camel: String = {
+            let mut parts = name.split('_');
+            let first = parts.next().unwrap_or("");
+            let rest: String = parts.map(|w| {
+                let mut c = w.chars();
+                match c.next() { None => String::new(), Some(f) => f.to_uppercase().to_string() + c.as_str() }
+            }).collect();
+            format!("{}{}", first, rest)
+        };
+        reducers_ts.push_str(&format!(
+            "  {}: (db: NeonDBClient, ...args: unknown[]) => db.call('{}', args),\n",
+            camel, name
+        ));
+    }
+    reducers_ts.push_str("};\n");
+
+    write_generated(out, "tables.ts", &tables_ts)?;
+    write_generated(out, "reducers.ts", &reducers_ts)?;
+    println!("TypeScript: wrote {}/tables.ts and {}/reducers.ts", out.display(), out.display());
+    println!("  {} table type(s), {} reducer(s)", tables.len(), reducers.len());
+    Ok(())
+}
+
+fn generate_gdscript(
+    tables: &serde_json::Map<String, serde_json::Value>,
+    reducers: &[serde_json::Value],
+    version: &str,
+    out: &Path,
+) -> Result<()> {
+    // ── tables.gd ─────────────────────────────────────────────────────────────
+    let mut tables_gd = format!(
+        "# tables.gd — AUTO-GENERATED by `neondb generate` from server v{}\n# DO NOT EDIT — run `neondb generate` to regenerate\n\n",
+        version
+    );
+    for (table_name, schema) in tables {
+        let pascal = snake_to_pascal(table_name);
+        tables_gd.push_str(&format!("class {}:\n", pascal));
+        if let Some(cols) = schema["columns"].as_array() {
+            if cols.is_empty() {
+                tables_gd.push_str("\tpass\n\n");
+                continue;
+            }
+            for col in cols {
+                let name = col["name"].as_str().unwrap_or("_");
+                let type_str = col["type"].as_str().unwrap_or("any");
+                let gd_type = col_type_to_gd(type_str);
+                tables_gd.push_str(&format!("\tvar {}: {}\n", name, gd_type));
+            }
+        } else {
+            tables_gd.push_str("\tpass\n");
+        }
+        tables_gd.push('\n');
+    }
+
+    // ── reducers.gd ───────────────────────────────────────────────────────────
+    let mut reducers_gd = format!(
+        "# reducers.gd — AUTO-GENERATED by `neondb generate` from server v{}\n# DO NOT EDIT — run `neondb generate` to regenerate\n\nclass_name NeonDBReducers\n\n",
+        version
+    );
+    for r in reducers {
+        let name = match r.as_str() { Some(s) => s, None => continue };
+        reducers_gd.push_str(&format!(
+            "static func {}(db, args: Array = []):\n\treturn await db.call_reducer(\"{}\", args)\n\n",
+            name, name
+        ));
+    }
+
+    write_generated(out, "tables.gd", &tables_gd)?;
+    write_generated(out, "reducers.gd", &reducers_gd)?;
+    println!("GDScript: wrote {}/tables.gd and {}/reducers.gd", out.display(), out.display());
+    println!("  {} table class(es), {} reducer(s)", tables.len(), reducers.len());
+    Ok(())
+}
+
+fn write_generated(out: &Path, filename: &str, content: &str) -> Result<()> {
+    let path = out.join(filename);
+    std::fs::write(&path, content).map_err(|e| {
+        neondb::error::NeonDBError::internal(format!("Cannot write {}: {}", path.display(), e))
+    })
+}
 
 async fn cmd_cluster_status(metrics_url: &str) -> Result<()> {
     let url = format!("{}/cluster/peers", metrics_url);
@@ -382,7 +684,7 @@ fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -
         "rust/game-ready" =>
             "\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"cleanup_sessions\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"refresh\"\ninterval_ms = 5000\n",
         "rust/chat" =>
-            "\n[[scheduler]]\nreducer = \"cleanup_expired_presence\"\ninterval_ms = 30000\n",
+            "\n[[scheduler]]\nreducer = \"cleanup_presence\"\ninterval_ms = 30000\n",
         _ => "\n# [[scheduler]]\n# reducer = \"cleanup_expired\"\n# interval_ms = 60000\n",
     };
 
@@ -397,7 +699,7 @@ fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -
     let toml = format!(
         "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\n\
         [server]\nhost = \"127.0.0.1\"\nport = 3000\nmetrics_port = 3001\n\
-        wal_path = \"./wal\"\n\
+        wal_path = \"./wal\"\nsnapshot_dir = \"./snapshots\"\n\
         # api_key = \"change-me\"\nfsync_interval_ms = 0\n\
         # snapshot_interval = 1000000\n\
         {scheduler}{permissions}\n",
@@ -453,7 +755,9 @@ fn scaffold_rust_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "PERFORMANCE.md",                    PERF_MD)?;
     wf(p, "README.md", &format!("# {} — Basic Template\n\n{}", name, BASIC_README))?;
     // ── Embedded #[reducer] Rust path (single binary, native performance) ────
-    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML.replace("__NAME__", &format!("{}-server", name)))?;
+    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML
+        .replace("__NAME__", &format!("{}-server", name))
+        .replace("__NEONDB_PATH__", env!("CARGO_MANIFEST_DIR")))?;
     wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
     wf(p, "embedded/src/reducers.rs", BASIC_REDUCERS_RS)?;
     print_success(name, "rust/basic", &[
@@ -507,7 +811,9 @@ fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
     wf(p, "seed.json",                          GAME_SEED_JSON)?;
     wf(p, "README.md", &format!("# {} — Game-Ready Template\n\n{}", name, GAME_README))?;
     // ── Embedded #[reducer] Rust path (single binary, native performance) ────
-    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML.replace("__NAME__", &format!("{}-server", name)))?;
+    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML
+        .replace("__NAME__", &format!("{}-server", name))
+        .replace("__NEONDB_PATH__", env!("CARGO_MANIFEST_DIR")))?;
     wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
     wf(p, "embedded/src/reducers.rs", GAME_REDUCERS_RS)?;
     print_success(name, "rust/game-ready", &[
@@ -549,7 +855,9 @@ fn scaffold_rust_chat(p: &Path, name: &str) -> Result<()> {
     wf(p, "PERFORMANCE.md",                     PERF_MD)?;
     wf(p, "README.md", &format!("# {} — Chat Template\n\n{}", name, CHAT_README))?;
     // ── Embedded #[reducer] Rust path (single binary, native performance) ────
-    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML.replace("__NAME__", &format!("{}-server", name)))?;
+    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML
+        .replace("__NAME__", &format!("{}-server", name))
+        .replace("__NEONDB_PATH__", env!("CARGO_MANIFEST_DIR")))?;
     wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
     wf(p, "embedded/src/reducers.rs", CHAT_REDUCERS_RS)?;
     print_success(name, "rust/chat", &[
@@ -1817,12 +2125,88 @@ async fn run_server(config: Config) -> Result<()> {
         let prom_c = metrics.clone();
         let issuer_c = identity_issuer.clone();
         let qprobe_c = queue_probe.clone();
+        let admin_c = Arc::new(AdminState {
+            wal_path: config.wal_path.clone(),
+            backup_dir: config.backup_dir.clone(),
+            backup_keep: config.backup_keep,
+        });
+        let schema_c = schema_registry.clone();
         tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, prom_c, issuer_c, qprobe_c, rx_shutdown).await {
+            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, prom_c, issuer_c, qprobe_c, admin_c, schema_c, rx_shutdown).await {
                 log::error!("Metrics server error: {}", e);
             }
         })
     };
+
+    // ── Replication: replica mode ────────────────────────────────────────────
+    // A replica pulls committed WAL entries from the primary, applies them
+    // locally, and rejects reducer calls until promoted (POST /replication/promote).
+    if config.role.eq_ignore_ascii_case("replica") {
+        match config.primary_url.clone() {
+            Some(primary) => {
+                neondb::replication::set_replica(true);
+                // Resume from the highest locally recovered sequence.
+                neondb::replication::init_replica_from_local_wal(initial_seq.saturating_sub(1));
+                let tables_r = tables.clone();
+                let subs_r = subscription_manager.clone();
+                let wal_r = wal_writer.clone();
+                let seq_r = global_seq.clone();
+                let poll = config.replica_poll_ms;
+                let shut_r = shutdown_rx.clone();
+                tokio::spawn(async move {
+                    neondb::replication::run_replica_loop(
+                        primary, tables_r, subs_r, wal_r, seq_r, poll, shut_r,
+                    ).await;
+                });
+                log::info!("[replication] Started in REPLICA mode (read-only)");
+            }
+            None => {
+                log::error!(
+                    "[replication] NEONDB_ROLE=replica but NEONDB_PRIMARY_URL is not set — \
+                     starting as primary instead"
+                );
+            }
+        }
+    }
+
+    // ── Automated backups ────────────────────────────────────────────────────
+    if let (Some(backup_dir), true) = (config.backup_dir.clone(), config.backup_interval_secs > 0) {
+        let tables_b = tables.clone();
+        let wal_path_b = config.wal_path.clone();
+        let seq_b = global_seq.clone();
+        let keep = config.backup_keep;
+        let interval_secs = config.backup_interval_secs;
+        let mut shut_b = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs.max(10)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // skip the immediate first tick
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let tbl = tables_b.clone();
+                        let wal = wal_path_b.clone();
+                        let dir = backup_dir.clone();
+                        let seq = seq_b.load(std::sync::atomic::Ordering::Relaxed);
+                        let res = tokio::task::spawn_blocking(move || {
+                            let p = neondb::backup::backup_now(&tbl, &wal, &dir, seq)?;
+                            let removed = neondb::backup::rotate_backups(&dir, keep)?;
+                            Ok::<_, neondb::error::NeonDBError>((p, removed))
+                        }).await;
+                        match res {
+                            Ok(Ok((path, removed))) => log::info!(
+                                "[backup] Automated backup at {:?} ({} old rotated out)", path, removed
+                            ),
+                            Ok(Err(e)) => log::error!("[backup] Automated backup failed: {}", e),
+                            Err(e)     => log::error!("[backup] Backup task panicked: {}", e),
+                        }
+                    }
+                    _ = shut_b.changed() => break,
+                }
+            }
+        });
+        log::info!("[backup] Automated backups every {}s (keep {})", interval_secs, keep);
+    }
 
     let mut worker_handles = Vec::with_capacity(worker_count);
     for worker_id in 0..worker_count {
@@ -1842,6 +2226,17 @@ async fn run_server(config: Config) -> Result<()> {
                     _ = rx_shutdown_w.changed() => break,
                 };
                 let call_id     = call.call_id;
+
+                // Replicas are read-only: reject reducer calls until promoted.
+                if neondb::replication::is_replica() {
+                    let resp = ReducerResponse::error(
+                        call_id,
+                        "This node is a read-only replica. Write to the primary, or promote this node via POST /replication/promote.".to_string(),
+                    );
+                    if let Err(e) = call.response_tx.send(resp) { log::warn!("send response: {}", e); }
+                    continue;
+                }
+
                 let caller_id   = call.caller_id.clone();
                 let caller_role = call.caller_role.clone();
                 let tables_blk  = tables_w.clone();
@@ -2201,6 +2596,13 @@ async fn run_cli_bench(ws_url: &str, num_clients: usize, calls_per_client: usize
 // Metrics / admin HTTP server
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Paths + backup policy needed by the admin endpoints (backup, replication).
+struct AdminState {
+    wal_path: PathBuf,
+    backup_dir: Option<PathBuf>,
+    backup_keep: usize,
+}
+
 async fn start_metrics_server(
     host: String,
     port: u16,
@@ -2215,6 +2617,8 @@ async fn start_metrics_server(
     prom: Arc<Metrics>,
     identity_issuer: Arc<IdentityIssuer>,
     queue_probe: kanal::AsyncSender<PendingCall>,
+    admin: Arc<AdminState>,
+    schema_registry: Arc<neondb::schema::SchemaRegistry>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse()
@@ -2232,6 +2636,8 @@ async fn start_metrics_server(
         let prom_svc = prom.clone();
         let iss   = identity_issuer.clone();
         let qp    = queue_probe.clone();
+        let adm   = admin.clone();
+        let sch   = schema_registry.clone();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 let subs = subs.clone(); let tbl = tbl.clone();
@@ -2241,7 +2647,9 @@ async fn start_metrics_server(
                 let prom_r = prom_svc.clone();
                 let iss_r = iss.clone();
                 let qp_r = qp.clone();
-                async move { handle_metrics_request(req, subs, tbl, reg, wal, seq, start, pres, ttl, prom_r, iss_r, qp_r).await }
+                let adm_r = adm.clone();
+                let sch_r = sch.clone();
+                async move { handle_metrics_request(req, subs, tbl, reg, wal, seq, start, pres, ttl, prom_r, iss_r, qp_r, adm_r, sch_r).await }
             }))
         }
     });
@@ -2271,10 +2679,104 @@ async fn handle_metrics_request(
     prom: Arc<Metrics>,
     identity_issuer: Arc<IdentityIssuer>,
     queue_probe: kanal::AsyncSender<PendingCall>,
+    admin: Arc<AdminState>,
+    schema_registry: Arc<neondb::schema::SchemaRegistry>,
 ) -> Result<Response<Body>> {
     let path = req.uri().path().to_string();
 
     match (req.method(), path.as_str()) {
+        // ── Replication endpoints ─────────────────────────────────────────────
+        //
+        // GET  /replication/wal?from_seq=N&max=M — primary serves WAL entries
+        // GET  /replication/status              — role + lag info
+        // POST /replication/promote             — replica → primary failover
+        (&Method::GET, "/replication/wal") => {
+            let query = req.uri().query().unwrap_or("");
+            let mut from_seq = 0u64;
+            let mut max = 2048usize;
+            for pair in query.split('&') {
+                let mut kv = pair.splitn(2, '=');
+                match (kv.next(), kv.next()) {
+                    (Some("from_seq"), Some(v)) => from_seq = v.parse().unwrap_or(0),
+                    (Some("max"), Some(v))      => max = v.parse::<usize>().unwrap_or(2048).clamp(1, 8192),
+                    _ => {}
+                }
+            }
+            let wal_path = admin.wal_path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                neondb::replication::serve_wal_entries(&wal_path, from_seq, max)
+            }).await;
+            match result {
+                Ok(Ok((entries, last_seq))) => Ok(json_response(serde_json::json!({
+                    "entries": neondb::replication::encode_entries(&entries),
+                    "last_seq": last_seq,
+                }))),
+                Ok(Err(e)) => {
+                    let mut r = json_response(serde_json::json!({ "error": e.to_string() }));
+                    *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR; Ok(r)
+                }
+                Err(e) => {
+                    let mut r = json_response(serde_json::json!({ "error": format!("task: {}", e) }));
+                    *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR; Ok(r)
+                }
+            }
+        }
+
+        (&Method::GET, "/replication/status") => {
+            Ok(json_response(neondb::replication::status_json()))
+        }
+
+        (&Method::POST, "/replication/promote") => {
+            let was_replica = neondb::replication::is_replica();
+            neondb::replication::set_replica(false);
+            if was_replica {
+                log::warn!("[replication] PROMOTED to primary via /replication/promote");
+            }
+            Ok(json_response(serde_json::json!({
+                "promoted": was_replica,
+                "role": "primary",
+                "last_applied_seq": neondb::replication::last_applied_seq(),
+            })))
+        }
+
+        // ── Backup endpoint ───────────────────────────────────────────────────
+        (&Method::POST, "/backup") => {
+            let Some(backup_dir) = admin.backup_dir.clone() else {
+                let mut r = json_response(serde_json::json!({
+                    "error": "No backup directory configured. Set NEONDB_BACKUP_DIR or [server] backup_dir."
+                }));
+                *r.status_mut() = StatusCode::BAD_REQUEST;
+                return Ok(r);
+            };
+            let tbl = tables.clone();
+            let wal_path = admin.wal_path.clone();
+            let keep = admin.backup_keep;
+            let last_seq = global_seq.load(std::sync::atomic::Ordering::Relaxed);
+            let result = tokio::task::spawn_blocking(move || {
+                let path = neondb::backup::backup_now(&tbl, &wal_path, &backup_dir, last_seq)?;
+                let _ = neondb::backup::rotate_backups(&backup_dir, keep);
+                Ok::<_, neondb::error::NeonDBError>(path)
+            }).await;
+            match result {
+                Ok(Ok(path)) => {
+                    let meta = neondb::backup::read_meta(&path);
+                    Ok(json_response(serde_json::json!({
+                        "path": path.to_string_lossy(),
+                        "last_seq": last_seq,
+                        "row_count": meta.map(|m| m.row_count).unwrap_or(0),
+                    })))
+                }
+                Ok(Err(e)) => {
+                    let mut r = json_response(serde_json::json!({ "error": e.to_string() }));
+                    *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR; Ok(r)
+                }
+                Err(e) => {
+                    let mut r = json_response(serde_json::json!({ "error": format!("task: {}", e) }));
+                    *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR; Ok(r)
+                }
+            }
+        }
+
         (&Method::GET, "/metrics") => {
             // Prometheus exposition format (text/plain; version=0.0.4)
             let body = prom.render();
@@ -2288,6 +2790,8 @@ async fn handle_metrics_request(
 
         (&Method::GET, "/healthz") => Ok(json_response(serde_json::json!({
             "status": "ok",
+            "role": if neondb::replication::is_replica() { "replica" } else { "primary" },
+            "replication_lag_entries": neondb::replication::replication_lag(),
             "total_rows": tables.total_row_count(),
             "active_connections": subscription_manager.active_connections(),
             "active_subscriptions": subscription_manager.active_subscriptions(),
@@ -2406,20 +2910,38 @@ async fn handle_metrics_request(
         }
 
         (&Method::GET, "/schema") => {
-            // Machine-readable schema — used by `neondb generate` (TODO-029).
-            // Returns all registered tables + their column definitions.
-            let table_schemas: serde_json::Value = {
-                let mut map = serde_json::Map::new();
-                for table_name in tables.list_tables() {
-                    // Provide basic row-count info; full column schema requires SchemaRegistry
-                    let rows = tables.list_rows_with_keys(&table_name).map(|r| r.len()).unwrap_or(0);
-                    map.insert(table_name, serde_json::json!({ "rows": rows }));
+            // Full machine-readable schema — used by `neondb generate`.
+            // Tables: from SchemaRegistry (column defs) merged with live table list.
+            let mut table_map = serde_json::Map::new();
+            // First include all registered schemas with full column info.
+            for table_name in schema_registry.list_tables() {
+                if let Some(schema) = schema_registry.get(table_name) {
+                    let cols: Vec<_> = schema.columns.iter().map(|c| serde_json::json!({
+                        "name": c.name,
+                        "type": c.type_str,
+                        "required": c.required,
+                        "default": c.default,
+                        "key": schema.primary_key.as_deref() == Some(&c.name),
+                    })).collect();
+                    let rows = tables.list_rows_with_keys(table_name).map(|r| r.len()).unwrap_or(0);
+                    table_map.insert(table_name.to_string(), serde_json::json!({
+                        "columns": cols,
+                        "primary_key": schema.primary_key,
+                        "rls": format!("{:?}", schema.rls),
+                        "rows": rows,
+                    }));
                 }
-                serde_json::Value::Object(map)
-            };
+            }
+            // Also include live tables that have no schema registered (open schema).
+            for table_name in tables.list_tables() {
+                if !table_map.contains_key(&table_name) {
+                    let rows = tables.list_rows_with_keys(&table_name).map(|r| r.len()).unwrap_or(0);
+                    table_map.insert(table_name, serde_json::json!({ "columns": [], "rows": rows }));
+                }
+            }
             let reducer_list: Vec<_> = registry.list_reducers();
             Ok(json_response(serde_json::json!({
-                "tables": table_schemas,
+                "tables": serde_json::Value::Object(table_map),
                 "reducers": reducer_list,
                 "version": env!("CARGO_PKG_VERSION"),
             })))
@@ -2551,17 +3073,44 @@ fn current_timestamp_nanos() -> u64 {
 fn get_memory_usage_bytes() -> u64 {
     #[cfg(target_os = "windows")]
     {
-        let pid = std::process::id();
-        if let Ok(output) = std::process::Command::new("wmic")
-            .args(["process", "where", &format!("ProcessId={}", pid), "get", "WorkingSetSize"])
-            .output()
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            for line in text.lines() {
-                let trimmed = line.trim();
-                if let Ok(val) = trimmed.parse::<u64>() {
-                    return val; // WorkingSetSize is already in bytes
-                }
+        // Use GetProcessMemoryInfo via psapi — no child process, no wmic (deprecated Win11).
+        use std::mem;
+        #[allow(non_camel_case_types)]
+        type HANDLE = *mut std::ffi::c_void;
+        #[allow(non_camel_case_types)]
+        type DWORD = u32;
+        #[allow(non_camel_case_types)]
+        type SIZE_T = usize;
+        #[repr(C)]
+        struct PROCESS_MEMORY_COUNTERS {
+            cb: DWORD,
+            page_fault_count: DWORD,
+            peak_working_set_size: SIZE_T,
+            working_set_size: SIZE_T,
+            quota_peak_paged_pool_usage: SIZE_T,
+            quota_paged_pool_usage: SIZE_T,
+            quota_peak_non_paged_pool_usage: SIZE_T,
+            quota_non_paged_pool_usage: SIZE_T,
+            pagefile_usage: SIZE_T,
+            peak_pagefile_usage: SIZE_T,
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> HANDLE;
+        }
+        #[link(name = "psapi")]
+        extern "system" {
+            fn GetProcessMemoryInfo(
+                process: HANDLE,
+                ppsmemcounters: *mut PROCESS_MEMORY_COUNTERS,
+                cb: DWORD,
+            ) -> i32;
+        }
+        unsafe {
+            let mut pmc: PROCESS_MEMORY_COUNTERS = mem::zeroed();
+            pmc.cb = mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
+            if GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 {
+                return pmc.working_set_size as u64;
             }
         }
         0

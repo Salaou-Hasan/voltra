@@ -18,6 +18,8 @@
 // Performance: runs on Boa JS engine (no JIT).
 //   Run `neondb build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
-const [key, value] = args;
-__neondb_set("kv", key, { key, value });
-result = { ok: true, key, value };
+function reducer(args) {
+  const [key, value] = args;
+  __neondb_set("kv", key, { key, value });
+  return { ok: true, key, value };
+}

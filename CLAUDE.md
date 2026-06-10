@@ -339,6 +339,59 @@ neondb get players                       # verify rows landed
 
 ## Current Build Status
 
+After Session 47 (production-readiness wave — replication, backups, fuzz, soak, QuickJS):
+- `cargo build` / `cargo build --release` → **zero errors, zero warnings**.
+- `cargo test` (FULL suite) → **all green**: 429 lib + 2 crash-recovery + 9 integration + 9 protocol-fuzz + schema/WAL test files. Zero failures.
+- Live-verified end-to-end: primary→replica replication, kill-primary failover with promote, backup + restore round-trip, 60s soak (55 817 calls, 0 errors, p99 0.78 ms).
+
+### Session 47 — Production-readiness wave (solo, no agents)
+
+**1. JS backend: Boa → rquickjs (QuickJS)** (`src/reducer/v8.rs` rewritten, `Cargo.toml`):
+- `boa_engine`/`boa_gc` REMOVED; `rquickjs = "0.12"` (features=["full"]) added.
+- One `Runtime` per OS thread (thread-local, 64 MiB memory cap via `set_memory_limit`), one `Context` per (thread, script path) — warm after first call.
+- `Value<'js>` is invariant over `'js` → host fns CANNOT return `Value` from `Func::from` closures. Solution: raw host fns return `Option<String>` (JSON), a JS preamble (`JS_PREAMBLE`) wraps them with JSON.parse/stringify (`__neondb_get` etc. defined in JS over `__neondb_get_raw` etc.).
+- `CURRENT_CTX: Cell<*mut ReducerContext>` thread-local pinned before each call.
+- `EvalOptions` is NOT Clone — build a fresh one per eval_with_options call.
+- `From<rquickjs::Error> for NeonDBError` added to `src/error.rs`.
+
+**2. Disk persistence (sled)** (`src/persistence/mod.rs`, prior session, kept):
+- `NEONDB_PERSISTENCE_PATH` enables write-through row persistence; rows load before snapshot+WAL on boot.
+
+**3. WAL streaming replication + failover** (`src/replication/mod.rs` NEW):
+- Async log-shipping: replica polls primary `GET /replication/wal?from_seq=N&max=M` (entries = base64(rmp(WalEntry))), applies deltas, fans out to its own subscribers, appends to its own WAL.
+- Config: `NEONDB_ROLE=replica` + `NEONDB_PRIMARY_URL=http://primary:3001` + `NEONDB_REPLICA_POLL_MS` (default 500).
+- Global `IS_REPLICA: AtomicBool` — worker loops (both main.rs AND server.rs) reject reducer calls on replicas with "read-only replica" error. Reads + subscriptions still work.
+- Failover: `POST /replication/promote` (or `neondb promote`) flips to primary, pull loop stops, writes accepted. `global_seq.fetch_max(last_applied+1)` prevents seq reuse after promotion.
+- `GET /replication/status` + role/lag in `/healthz`.
+
+**4. Automated backups + restore + PITR** (`src/backup.rs` NEW):
+- `backup_now()` = snapshot + WAL copy + backup.json into `<dir>/backup_<unixsecs>_<seq>/`; `rotate_backups(keep)`; `restore_to_dirs(backup, wal_path, snap_dir, until_ts_nanos)` — PITR rewrites WAL keeping only entries with timestamp <= cutoff.
+- Background task: `NEONDB_BACKUP_DIR` + `NEONDB_BACKUP_INTERVAL_SECS` (+ `NEONDB_BACKUP_KEEP`, default 5).
+- Endpoints/CLI: `POST /backup`, `neondb backup`, `neondb backups <dir>`, `neondb restore <backup> --wal-path W --snapshot-dir S [--until-ts NANOS]`, `neondb promote`.
+- `AdminState` struct (wal_path, backup_dir, backup_keep) threaded through `start_metrics_server` → `handle_metrics_request`.
+
+**5. WAL group commit — durability fix** (`src/wal/batch_writer.rs`):
+- OLD: flusher held entries until 100ms timer or 512KB — server ACKED writes up to 100ms before they hit the OS; kill -9 lost them (crash_recovery tests were red).
+- NEW: group commit — drain everything queued, write in one syscall, repeat. Same throughput under load (next batch = arrivals during previous write), durability window now microseconds. Explicit `Flush` acks sent only AFTER data is on disk.
+
+**6. Anonymous-auth bug fix** (`src/network/websocket.rs`):
+- With NO auth configured, connections without an Authorization header were REJECTED: the code called `auth_v.validate("Bearer ")` which returns `Denied("Empty token")` before the `AuthMode::None` arm. Now checks `matches!(auth_v.mode(), AuthMode::None)` directly. (Integration tests never caught it — they always send a Bearer header.)
+
+**7. Protocol fuzz tests** (`tests/protocol_fuzz_test.rs` NEW — 9 tests, ~45k hostile inputs):
+- Random bytes / bit-flipped valid frames / every-byte truncations into `decode_client_message` + `decode_reducer_call`; msgpack allocation-bomb headers (str32/array32/map32/bin32 claiming 4 GiB); 1000-deep nested JSON; garbage + corrupted WAL files into WalReader; garbage into `replication::decode_entries`. Deterministic xorshift PRNG (seed printed on failure).
+
+**8. Soak harness** (`src/bin/soak.rs` NEW, `[[bin]] neondb-soak`):
+- N clients × rate × duration with auto-reconnect; samples `/healthz` (memory/queue/WAL/rows) every interval; CSV export; HDR latency percentiles; PASS/FAIL verdict (error rate > `--max-error-pct` or memory growth > `--max-memory-growth-pct` ⇒ exit 1).
+- Week-long run: `neondb-soak --duration-secs 604800 --clients 100 --csv soak.csv`.
+
+**New pitfalls:**
+73. **rquickjs `Value<'js>` invariance** — never try to return `Value` from a `Func::from` closure; use the raw-string + JS-preamble bridge pattern in v8.rs.
+74. **rquickjs `EvalOptions` is not Clone** — construct a fresh one per eval call.
+75. **`Start-Process -Environment` does not exist in PowerShell 5.1** — use the Bash tool with env-var prefixes to spawn servers with custom env.
+76. **WAL flusher must group-commit** — do not reintroduce timer-only flushing; ACKed writes must reach the OS promptly or crash tests fail (correctly).
+77. **Anonymous auth check uses `auth_v.mode()`** — never `validate("Bearer ")` with an empty token to probe whether auth is configured.
+78. **Replica seq handoff** — after applying replicated entries, `global_seq.fetch_max(last+1)`; without it a promoted replica reuses sequence numbers.
+
 After Session 45 (TODO-028 complete — `run_server` library API + scaffold `#[reducer]` templates):
 - `cargo build` → **zero errors, zero warnings** (full workspace: neondb + neondb-macros).
 - `cargo test --lib` → **417 lib tests passing**, zero failures.

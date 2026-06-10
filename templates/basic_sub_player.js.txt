@@ -22,5 +22,7 @@
 function reducer(args) {
   const [username] = args;
   const user = __neondb_get("users", username);
-  return user ? { ok: true, user } : { error: "no_such_user" };
+  if (!user) { return { error: "no_such_user" }; }
+  const { password_hash, ...safe } = user;
+  return { ok: true, user: safe };
 }
