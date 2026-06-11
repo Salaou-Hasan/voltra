@@ -33,8 +33,10 @@
 // ============================================================================
 
 pub mod eviction;
+pub mod dispatcher;
 
 pub use eviction::{EvictionPolicy, LruTracker};
+pub use dispatcher::{LobbyDispatcher, parse_lobby_key};
 
 use crate::error::{NeonDBError, Result};
 use bytes::Bytes;
