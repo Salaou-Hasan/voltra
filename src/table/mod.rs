@@ -34,9 +34,11 @@
 
 pub mod eviction;
 pub mod dispatcher;
+pub mod columnar;
 
 pub use eviction::{EvictionPolicy, LruTracker};
 pub use dispatcher::{LobbyDispatcher, parse_lobby_key};
+pub use columnar::{ColumnIndex, intersect_results};
 
 use crate::error::{NeonDBError, Result};
 use bytes::Bytes;
