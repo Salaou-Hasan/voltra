@@ -233,6 +233,12 @@ pub struct SubscriptionManager {
     table_index: DashMap<String, DashMap<ClientId, Vec<String>>>,
     next_id: AtomicU64,
     two_frame: bool,
+    /// Tick coalescing: latest pending delta per (table, row_key).
+    /// Real game engines sync state at 10–20Hz, not per-write — coalescing
+    /// the hot row (e.g. a player's position updated 30×/s) into one frame
+    /// per tick cuts fan-out volume 5–10× with no gameplay-visible cost.
+    pending: DashMap<(String, String), crate::table::RowDelta>,
+    tick_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl SubscriptionManager {
@@ -246,7 +252,40 @@ impl SubscriptionManager {
             table_index: DashMap::with_capacity_and_shard_amount(32, 8),
             next_id: AtomicU64::new(1),
             two_frame,
+            pending: DashMap::new(),
+            tick_enabled: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Enable tick-coalesced delivery and spawn the flush task.
+    /// Call once at server startup; `tick_ms` of 0 keeps immediate delivery.
+    pub fn start_tick_flusher(self: &std::sync::Arc<Self>, tick_ms: u64) {
+        if tick_ms == 0 {
+            return;
+        }
+        self.tick_enabled.store(true, Ordering::Release);
+        let weak = std::sync::Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_millis(tick_ms.max(5)));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let Some(mgr) = weak.upgrade() else { break };
+                if mgr.pending.is_empty() {
+                    continue;
+                }
+                let keys: Vec<(String, String)> =
+                    mgr.pending.iter().map(|e| e.key().clone()).collect();
+                let mut batch = Vec::with_capacity(keys.len());
+                for k in keys {
+                    if let Some((_, d)) = mgr.pending.remove(&k) {
+                        batch.push(d);
+                    }
+                }
+                mgr.publish_now(&batch);
+            }
+        });
     }
 
     pub fn register_client(&self, tx: Sender<OutboundFrames>) -> ClientId {
@@ -428,6 +467,23 @@ impl SubscriptionManager {
     // ── Hot path: publish_deltas ───────────────────────────────────────────────
 
     pub fn publish_deltas(&self, deltas: &[RowDelta]) {
+        if self.clients.is_empty() || deltas.is_empty() {
+            return;
+        }
+        // Tick mode: stage latest-per-row; the flush task delivers each tick.
+        // Last write wins within a tick (deletes included) — correct for
+        // state-sync semantics, and it batches matching + encoding too.
+        if self.tick_enabled.load(Ordering::Acquire) {
+            for delta in deltas {
+                self.pending
+                    .insert((delta.table_name.clone(), delta.row_key.clone()), delta.clone());
+            }
+            return;
+        }
+        self.publish_now(deltas);
+    }
+
+    fn publish_now(&self, deltas: &[RowDelta]) {
         if self.clients.is_empty() || deltas.is_empty() {
             return;
         }

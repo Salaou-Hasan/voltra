@@ -143,13 +143,21 @@ impl RowDelta {
 }
 
 // ── Internal row representation ───────────────────────────────────────────────
-
+//
+// `data` is stored as plain `Bytes` (not `Arc<Bytes>`).  `Bytes` already carries
+// an internal Arc for O(1) clones; wrapping in another Arc was double-boxing —
+// two heap allocations per row for no benefit.  Removing the outer Arc saves
+// ~16 bytes per live row (the Arc header) and one heap allocation per insert.
 #[derive(Clone, Debug)]
 struct StoredRow {
     row_id: RowId,
     shard_id: u32,
-    data: Arc<Bytes>,
+    data: Bytes,
     blob_offset: Option<u64>,
+    /// Optimistic-concurrency version: bumped on every write. Reducers record
+    /// the version they read; commit aborts (and retries) if a concurrent
+    /// write bumped it — eliminates silent lost updates in read-modify-write.
+    version: u64,
 }
 
 // ── Blob store ────────────────────────────────────────────────────────────────
@@ -472,6 +480,36 @@ impl TableStore {
         Ok(Some(value))
     }
 
+    /// Row fetch that also returns its OCC version (single entry read — the
+    /// value and version are guaranteed consistent). Missing rows read as
+    /// version 0, so "read nothing, then someone inserted" also conflicts.
+    pub fn get_row_with_version(&self, table_name: &str, key: &str) -> Result<Option<(Value, u64)>> {
+        let table = match self.tables.get(table_name) {
+            Some(t) => t.clone(),
+            None => return Ok(None),
+        };
+        let row = match table.rows.get(key) {
+            Some(r) => r.clone(),
+            None => return Ok(None),
+        };
+        if !self.row_matches_shard(row.shard_id) {
+            return Ok(None);
+        }
+        let mut value = Self::decode_row(&row)?;
+        if let Some(offset) = row.blob_offset {
+            self.load_blob_into_value(&mut value, offset)?;
+        }
+        Ok(Some((value, row.version)))
+    }
+
+    /// Current OCC version of a row (0 = absent).
+    pub fn row_version(&self, table_name: &str, key: &str) -> u64 {
+        self.tables
+            .get(table_name)
+            .and_then(|t| t.rows.get(key).map(|r| r.version))
+            .unwrap_or(0)
+    }
+
     /// RLS-aware row fetch.
     ///
     /// Reads the row as normal, then evaluates the table's RLS policy.
@@ -536,10 +574,10 @@ impl TableStore {
     fn write_row_unlocked(&self, table_name: &str, key: &str, value: Value) -> Result<RowDelta> {
         let table = self.get_or_create_table(table_name);
 
-        let (operation, row_id) = if let Some(existing) = table.rows.get(key) {
-            ("update".to_string(), existing.row_id)
+        let (operation, row_id, version) = if let Some(existing) = table.rows.get(key) {
+            ("update".to_string(), existing.row_id, existing.version + 1)
         } else {
-            ("insert".to_string(), self.alloc_row_id())
+            ("insert".to_string(), self.alloc_row_id(), 1)
         };
 
         // Capture the old row data for index maintenance (before overwriting).
@@ -554,13 +592,12 @@ impl TableStore {
 
         let (final_value, blob_offset) = self.prepare_value(table_name, key, value)?;
 
-        let arc_bytes = Arc::new(encode_row(&final_value)?);
-
         let stored = StoredRow {
             row_id,
             shard_id: self.shard_id,
-            data: arc_bytes,
+            data: encode_row(&final_value)?,
             blob_offset,
+            version,
         };
         table.rows.insert(key.to_string(), stored);
 
@@ -653,6 +690,20 @@ impl TableStore {
     //   and the amount is added to it.  This makes the full read-modify-write
     //   cycle atomic — the read is no longer outside the lock window.
     pub fn apply_delta_batch(&self, deltas: &[RowDelta]) -> Result<Vec<RowDelta>> {
+        self.apply_delta_batch_versioned(deltas, &[])
+    }
+
+    /// Like `apply_delta_batch`, but with optimistic-concurrency validation:
+    /// `read_versions` lists `(table, key, version_seen)` for every row the
+    /// transaction read. Inside the row locks, any read row that this batch
+    /// ALSO WRITES must still be at its seen version — otherwise the whole
+    /// batch aborts with `NeonDBError::TxnConflict` (first-committer-wins;
+    /// the caller re-executes the reducer against fresh state).
+    pub fn apply_delta_batch_versioned(
+        &self,
+        deltas: &[RowDelta],
+        read_versions: &[(String, String, u64)],
+    ) -> Result<Vec<RowDelta>> {
         if deltas.is_empty() {
             return Ok(vec![]);
         }
@@ -690,6 +741,23 @@ impl TableStore {
             .iter()
             .map(|(t, slot)| t.row_locks[*slot].lock().expect("Row lock poisoned"))
             .collect();
+
+        // ── 2b. OCC validation (inside the locks) ────────────────────────────
+        // Lost-update guard: every row this txn read AND writes must still be
+        // at the version it read. `lock_keys` is the sorted written-key set.
+        for (t, k, seen) in read_versions {
+            let written = lock_keys
+                .binary_search_by(|(lt, lk)| (lt.as_str(), lk.as_str()).cmp(&(t.as_str(), k.as_str())))
+                .is_ok();
+            if written {
+                let current = self.row_version(t, k);
+                if current != *seen {
+                    return Err(NeonDBError::TxnConflict(format!(
+                        "{t}/{k}: read v{seen}, now v{current}"
+                    )));
+                }
+            }
+        }
 
         // ── 3. Apply each delta, rolling back on error ───────────────────────
         let mut applied: Vec<(String, String, Option<StoredRow>)> = Vec::new();

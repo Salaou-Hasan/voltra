@@ -61,6 +61,12 @@ pub struct ReducerContext {
     tenant_registry: Option<Arc<TenantRegistry>>,
     pending_deltas: Vec<RowDelta>,
     pub pending_diffs: Vec<SubscriptionDiff>,
+    /// OCC read set: (physical table, row key) → version seen at first read.
+    /// Validated against rows this txn writes at commit; mismatch = conflict
+    /// (the worker re-executes the reducer). Eliminates silent lost updates.
+    /// Mutex because `get_row` takes `&self`; contexts are per-call, so the
+    /// lock is always uncontended.
+    read_versions: std::sync::Mutex<std::collections::HashMap<(String, String), u64>>,
 }
 
 impl ReducerContext {
@@ -76,6 +82,7 @@ impl ReducerContext {
             tenant_registry: None,
             pending_deltas: Vec::with_capacity(4),
             pending_diffs: Vec::with_capacity(4),
+            read_versions: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -148,13 +155,25 @@ impl ReducerContext {
             }
         }
 
+        // Single fetch with OCC version (value + version are consistent).
+        let fetched = self.tables.get_row_with_version(&phys_name, row_key)?;
+
+        // Record the version this transaction first saw (missing row = 0).
+        // Commit validates these against any row the txn also writes.
+        if let Ok(mut rv) = self.read_versions.lock() {
+            rv.entry((phys_name.clone(), row_key.to_string()))
+                .or_insert(fetched.as_ref().map(|(_, v)| *v).unwrap_or(0));
+        }
+
+        let value = fetched.map(|(v, _)| v);
+
         // ── RLS check on committed rows ────────────────────────────────────────
         // Schedulers and system callers bypass all policies.
         if let Some(schema) = &self.schema {
             if let Some(table_schema) = schema.get(table_name) {
                 if !crate::schema::rls_check(
                     &table_schema.rls,
-                    self.tables.get_row(&phys_name, row_key)?.as_ref(),
+                    value.as_ref(),
                     &self.caller_id,
                     &self.caller_role,
                 ) {
@@ -163,7 +182,7 @@ impl ReducerContext {
             }
         }
 
-        self.tables.get_row(&phys_name, row_key)
+        Ok(value)
     }
 
     pub fn get_row_json(&self, table_name: &str, row_key: &str) -> Result<Option<Value>> {
@@ -399,10 +418,31 @@ impl ReducerContext {
             }
         }
 
-        let committed = self.tables.apply_delta_batch(&self.pending_deltas)?;
+        // ── OCC commit: validate read versions against written rows ───────────
+        let read_set: Vec<(String, String, u64)> = self
+            .read_versions
+            .lock()
+            .map(|rv| rv.iter().map(|((t, k), v)| (t.clone(), k.clone(), *v)).collect())
+            .unwrap_or_default();
+        let committed = self
+            .tables
+            .apply_delta_batch_versioned(&self.pending_deltas, &read_set)?;
         self.pending_deltas.clear();
         self.pending_diffs.clear();
+        if let Ok(mut rv) = self.read_versions.lock() {
+            rv.clear();
+        }
         Ok(committed)
+    }
+
+    /// Reset for a conflict retry: discard staged writes AND the read set so
+    /// the re-executed reducer observes fresh state.
+    pub fn reset_for_retry(&mut self) {
+        self.pending_deltas.clear();
+        self.pending_diffs.clear();
+        if let Ok(mut rv) = self.read_versions.lock() {
+            rv.clear();
+        }
     }
 
     /// Extract staged deltas WITHOUT applying them to the TableStore.
@@ -421,6 +461,9 @@ impl ReducerContext {
     }
 
     pub fn rollback(&mut self) {
+        if let Ok(mut rv) = self.read_versions.lock() {
+            rv.clear();
+        }
         self.pending_deltas.clear();
         self.pending_diffs.clear();
     }
@@ -496,6 +539,94 @@ mod tests {
 
     fn ctx() -> ReducerContext {
         ReducerContext::new(Arc::new(TableStore::new()), 1000)
+    }
+
+    /// THE lost-update regression test. Two reducers read the same row, both
+    /// modify it, both commit. Without OCC the second commit silently
+    /// overwrites the first (hp 100 → both read 100 → -30 and -20 → final
+    /// value is whichever wrote last, losing one hit). With OCC the second
+    /// commit MUST abort with TxnConflict.
+    #[test]
+    fn test_concurrent_rmw_conflict_detected() {
+        let tables = Arc::new(TableStore::new());
+        tables
+            .set_row("players".into(), "p1".into(), serde_json::json!({"hp": 100}))
+            .unwrap();
+
+        let mut ctx_a = ReducerContext::new(tables.clone(), 1);
+        let mut ctx_b = ReducerContext::new(tables.clone(), 2);
+
+        // Both read hp=100 (recording version 1).
+        let hp_a = ctx_a.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        let hp_b = ctx_b.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        assert_eq!((hp_a, hp_b), (100, 100));
+
+        // A commits hp-30 first.
+        ctx_a.set_row("players".into(), "p1".into(), serde_json::json!({"hp": hp_a - 30})).unwrap();
+        ctx_a.commit().unwrap();
+
+        // B's commit of hp-20 (computed from stale hp=100) must conflict.
+        ctx_b.set_row("players".into(), "p1".into(), serde_json::json!({"hp": hp_b - 20})).unwrap();
+        let err = ctx_b.commit().unwrap_err();
+        assert!(
+            matches!(err, NeonDBError::TxnConflict(_)),
+            "expected TxnConflict, got: {err}"
+        );
+
+        // A's write survived untouched.
+        let hp = tables.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        assert_eq!(hp, 70);
+
+        // Retry path: B re-reads fresh state and succeeds.
+        ctx_b.reset_for_retry();
+        let hp_b2 = ctx_b.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        assert_eq!(hp_b2, 70);
+        ctx_b.set_row("players".into(), "p1".into(), serde_json::json!({"hp": hp_b2 - 20})).unwrap();
+        ctx_b.commit().unwrap();
+        let hp = tables.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        assert_eq!(hp, 50); // both hits landed — zero lost updates
+    }
+
+    /// Reading a row you don't write must NOT conflict (no write-skew
+    /// enforcement — only the lost-update guard).
+    #[test]
+    fn test_read_only_rows_do_not_conflict() {
+        let tables = Arc::new(TableStore::new());
+        tables.set_row("cfg".into(), "world".into(), serde_json::json!({"tick": 1})).unwrap();
+        tables.set_row("players".into(), "p1".into(), serde_json::json!({"hp": 100})).unwrap();
+
+        let mut ctx_a = ReducerContext::new(tables.clone(), 1);
+        // A reads cfg (won't write it) and writes players/p1.
+        ctx_a.get_row("cfg", "world").unwrap();
+        let hp = ctx_a.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+
+        // Someone else updates cfg meanwhile.
+        tables.set_row("cfg".into(), "world".into(), serde_json::json!({"tick": 2})).unwrap();
+
+        ctx_a.set_row("players".into(), "p1".into(), serde_json::json!({"hp": hp - 1})).unwrap();
+        ctx_a.commit().expect("read-only rows must not abort the commit");
+    }
+
+    /// Insert race: two transactions both observe a key as absent (v0) and
+    /// both insert it — the second must conflict instead of overwriting.
+    #[test]
+    fn test_insert_race_detected() {
+        let tables = Arc::new(TableStore::new());
+        let mut ctx_a = ReducerContext::new(tables.clone(), 1);
+        let mut ctx_b = ReducerContext::new(tables.clone(), 2);
+
+        assert!(ctx_a.get_row("items", "sword#1").unwrap().is_none());
+        assert!(ctx_b.get_row("items", "sword#1").unwrap().is_none());
+
+        ctx_a.set_row("items".into(), "sword#1".into(), serde_json::json!({"owner": "alice"})).unwrap();
+        ctx_a.commit().unwrap();
+
+        ctx_b.set_row("items".into(), "sword#1".into(), serde_json::json!({"owner": "bob"})).unwrap();
+        let err = ctx_b.commit().unwrap_err();
+        assert!(matches!(err, NeonDBError::TxnConflict(_)));
+
+        let owner = tables.get_row("items", "sword#1").unwrap().unwrap()["owner"].clone();
+        assert_eq!(owner, "alice");
     }
 
     #[test]

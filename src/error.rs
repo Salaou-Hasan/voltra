@@ -38,6 +38,11 @@ pub enum NeonDBError {
 
     #[error("Storage error: {0}")]
     StorageError(String),
+
+    /// Optimistic-concurrency conflict: a row this transaction read was
+    /// modified before it committed. The caller should retry the reducer.
+    #[error("Transaction conflict: {0}")]
+    TxnConflict(String),
 }
 
 impl NeonDBError {

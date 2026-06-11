@@ -32,15 +32,21 @@ dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 console = "0.15"
 
 # High-throughput concurrency primitives
+smallvec = { version = "1.11", features = ["union"] }  # inline batch storage, no heap alloc for ≤N items
 dashmap = "5.5"                          # lock-free concurrent HashMap
 kanal = "0.1"                            # fast MPMC channel (replaces SegQueue + sleep)
-bytes = "1.5"                            # Arc<Bytes> for zero-copy sub fan-out
+bytes = { version = "1.5", features = ["serde"] }  # zero-copy buffers (serde for MVCC AOF)
 crossbeam = "0.8"                        # crossbeam utilities
 crossbeam-channel = "0.5"               # used in WAL batch writer
 num_cpus = "1.16"                        # parallel reducer workers
 hdrhistogram = "7.5"                     # latency percentile tracking (bench + end_to_end)
 arc-swap = "1.6"                         # atomic Arc swaps for hot config
 flume = "0.11"                           # backup MPSC channel
+
+# MVCC engine + Redis/PostgreSQL protocol layers
+im            = { version = "15", features = ["serde"] }   # persistent HAMT/Vector/OrdSet — O(1) version clones
+ordered-float = { version = "4", features = ["serde"] }    # total-ordered f64 for sorted-set score index
+sqlparser     = "0.45"                                     # PostgreSQL-dialect SQL parser (pg wire layer)
 
 # Macro support: auto-registration of #[reducer]-annotated functions
 inventory    = "0.3"

@@ -136,7 +136,19 @@ async fn run_server_inner(
 
     // ── Data structures ───────────────────────────────────────────────────────
     let wal_path   = config.wal_path.clone();
-    let tables     = Arc::new(TableStore::new());
+
+    // Apply eviction policy from config so embedded callers (sim, tests) can
+    // configure LRU bounds without going through the main CLI binary.
+    let eviction_policy = match config.eviction.policy.trim().to_ascii_lowercase().as_str() {
+        "lru_row_cap" => crate::table::EvictionPolicy::LruRowCap {
+            max_rows_per_table: config.eviction.max_rows_per_table.max(1),
+        },
+        "lru_byte_cap" => crate::table::EvictionPolicy::LruByteCap {
+            max_bytes_total: config.eviction.max_bytes_total.max(1),
+        },
+        _ => crate::table::EvictionPolicy::None,
+    };
+    let tables     = Arc::new(crate::table::TableStore::with_eviction(eviction_policy));
     let schema_reg = Arc::new(crate::schema::SchemaRegistry::new());
 
     let mut initial_seq = 0u64;
@@ -239,6 +251,7 @@ async fn run_server_inner(
 
     // ── Support services ──────────────────────────────────────────────────────
     let subs               = Arc::new(SubscriptionManager::new());
+    subs.start_tick_flusher(config.sub_tick_ms);
     let active_connections = Arc::new(AtomicUsize::new(0));
     let metrics            = Arc::new(Metrics::new());
 
@@ -286,7 +299,7 @@ async fn run_server_inner(
     let (tx, rx)  = kanal::bounded_async::<PendingCall>(queue_cap);
 
     // ── Worker pool ───────────────────────────────────────────────────────────
-    let worker_count = num_cpus::get().max(2);
+    let worker_count = if config.workers > 0 { config.workers } else { num_cpus::get().max(2) };
 
     for _worker_id in 0..worker_count {
         let rx_w        = rx.clone();
@@ -303,6 +316,13 @@ async fn run_server_inner(
 
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
+            // Maximum extra calls to drain per wakeup before going back to sleep.
+            // Amortises OS thread wakeup cost at high CCU: one wakeup processes up
+            // to BATCH+1 calls instead of 1.  Pure-computation reducers (no DB
+            // writes) are safe to batch; JS/WASM reducers benefit too because each
+            // one is still executed serially on this thread.
+            const DRAIN_LIMIT: usize = 15;
+
             loop {
                 // Block until a call arrives or shutdown fires.
                 let call: PendingCall = match rt.block_on(async {
@@ -314,6 +334,25 @@ async fn run_server_inner(
                     Some(c) => c,
                     None    => break,
                 };
+
+                // Build a micro-batch: drain up to DRAIN_LIMIT more calls that are
+                // already queued (non-blocking).  If the channel is empty we fall
+                // through immediately with a batch of 1.
+                let mut batch: smallvec::SmallVec<[PendingCall; 16]> =
+                    smallvec::smallvec![call];
+                for _ in 0..DRAIN_LIMIT {
+                    // Zero-duration timeout = "give me one if available, otherwise skip"
+                    match rt.block_on(tokio::time::timeout(
+                        std::time::Duration::ZERO,
+                        rx_w.recv(),
+                    )) {
+                        Ok(Ok(extra)) => batch.push(extra),
+                        _ => break,
+                    }
+                }
+
+                // ── Execute every call in the batch serially ──────────────────
+                for call in batch {
 
                 let call_id = call.call_id;
 
@@ -338,10 +377,17 @@ async fn run_server_inner(
                 ctx.caller_id   = call.caller_id.clone();
                 ctx.caller_role = call.caller_role.clone();
 
-                // Execute the reducer.
-                let exec = registry_w.execute(&call.reducer_name, &mut ctx, &call.args);
+                // Execute with OCC conflict retry: if a concurrent worker
+                // committed a row this reducer read AND writes, the commit
+                // aborts and we re-execute against fresh state. This is what
+                // makes read-modify-write reducers lose zero updates.
+                const MAX_CONFLICT_RETRIES: usize = 5;
+                let mut attempt = 0;
+                let response = loop {
+                    attempt += 1;
+                    let exec = registry_w.execute(&call.reducer_name, &mut ctx, &call.args);
 
-                let response = match exec {
+                    break match exec {
                     Err(e) => {
                         ctx.rollback();
                         metrics_w.reducer_errors_total.inc();
@@ -350,6 +396,12 @@ async fn run_server_inner(
                     Ok(result_bytes) => {
                         // Commit staged writes atomically.
                         match ctx.commit() {
+                            Err(crate::error::NeonDBError::TxnConflict(_))
+                                if attempt < MAX_CONFLICT_RETRIES =>
+                            {
+                                ctx.reset_for_retry();
+                                continue;
+                            }
                             Err(e) => {
                                 log::error!(
                                     "[neondb] Commit failed for '{}': {}",
@@ -393,12 +445,14 @@ async fn run_server_inner(
                             }
                         }
                     }
+                    };
                 };
 
                 // Deliver response back to the waiting WebSocket handler.
                 if let Err(e) = call.response_tx.send(response) {
                     log::warn!("[neondb] Response delivery failed: {}", e);
                 }
+                } // end for call in batch
             }
         });
     }
@@ -419,7 +473,11 @@ async fn run_server_inner(
         });
     }
 
+    // ── Redis + PostgreSQL protocol listeners (MVCC engine) ──────────────────
+    spawn_protocol_listeners(&config);
+
     let tenant_registry = crate::tenant::TenantRegistry::load(tables.clone());
+    let inline_registry = crate::network::build_inline_registry();
     crate::network::start_listener(
         host,
         port,
@@ -440,6 +498,46 @@ async fn run_server_inner(
         metrics,
         tls_config,
         tenant_registry,
+        inline_registry,
     )
     .await
+}
+
+/// Start the Redis (RESP) and PostgreSQL (pgwire) listeners over a shared
+/// MVCC store. Bind failures are non-fatal: the core WebSocket server keeps
+/// running (important when parallel test servers race for the same ports).
+pub fn spawn_protocol_listeners(config: &Config) {
+    if config.redis_port == 0 && config.pg_port == 0 {
+        return;
+    }
+    let mvcc_dir = config.wal_path.parent().map(|p| p.join("mvcc_data"));
+    let store = match crate::mvcc::MvccStore::open(crate::mvcc::MvccConfig {
+        data_dir: mvcc_dir,
+        fsync: crate::mvcc::FsyncPolicy::EverySec,
+    }) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[mvcc] store failed to open ({e}); Redis/PG protocols disabled");
+            return;
+        }
+    };
+    if config.redis_port > 0 {
+        let ctx = crate::redis::RedisCtx::new(store.clone(), config.redis_password.clone());
+        let (host, port) = (config.host.clone(), config.redis_port);
+        tokio::spawn(async move {
+            if let Err(e) = crate::redis::start_redis_listener(host, port, ctx).await {
+                log::warn!("[redis] listener on port {port} unavailable: {e}");
+            }
+        });
+    }
+    if config.pg_port > 0 {
+        let engine = crate::pg::executor::PgEngine::new(store);
+        let ctx = crate::pg::PgCtx::new(engine, config.pg_password.clone());
+        let (host, port) = (config.host.clone(), config.pg_port);
+        tokio::spawn(async move {
+            if let Err(e) = crate::pg::start_pg_listener(host, port, ctx).await {
+                log::warn!("[pg] listener on port {port} unavailable: {e}");
+            }
+        });
+    }
 }

@@ -60,10 +60,37 @@ impl ReducerRegistry {
             reducers: HashMap::new(),
         };
 
-        // Built-in native reducer — always available.
+        // Built-in native reducers — always available.
         registry.register_native(
             "increment",
             NativeReducerBackend::new(NativeReducerBackend::increment_reducer),
+        );
+        // Stress-test reducers: pure overhead measurement (ping) and minimal write path (write).
+        registry.register_native(
+            "stress_ping",
+            NativeReducerBackend::new(|_ctx, _args| {
+                Ok(rmp_serde::to_vec(&serde_json::json!({ "ok": true }))?)
+            }),
+        );
+        registry.register_native(
+            "stress_write",
+            NativeReducerBackend::new(|ctx, args| {
+                let key: String = if args.is_empty() {
+                    "k".to_string()
+                } else {
+                    rmp_serde::from_slice::<(String,)>(args)
+                        .map(|(k,)| k)
+                        .unwrap_or_else(|_| "k".to_string())
+                };
+                let n = ctx
+                    .get_row("stress", &key)?
+                    .as_ref()
+                    .and_then(|v| v.get("n").and_then(|n| n.as_i64()))
+                    .unwrap_or(0)
+                    + 1;
+                ctx.set_row("stress".to_string(), key, serde_json::json!({ "n": n }))?;
+                Ok(rmp_serde::to_vec(&serde_json::json!({ "ok": true }))?)
+            }),
         );
 
         // Auto-register all reducers submitted via `#[reducer]` + inventory.

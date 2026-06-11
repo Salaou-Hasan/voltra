@@ -70,6 +70,8 @@ const TEMPLATES: &[Template] = &[
     Template { name: "native/game-ready", category: "Native Rust", description: "Rust reducers compiled to WASM — near-native throughput, no NeonDB source needed" },
     Template { name: "csharp-reducers", category: "Multi-language", description: "C# reducers compiled to WASM via .NET 8 WASI workload" },
     Template { name: "go-reducers",     category: "Multi-language", description: "Go reducers compiled to WASM via TinyGo (wasm32-wasi)" },
+    Template { name: "unity",           category: "Game engine",  description: "Unity C# client — single file, calls + live subscriptions, main-thread dispatch" },
+    Template { name: "godot",           category: "Game engine",  description: "Godot 4 GDScript client — autoload singleton, signals for live row updates" },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -670,8 +672,49 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
         "native/game-ready" => scaffold_native_game_ready(&project_path, &project_name)?,
         "csharp-reducers"   => scaffold_csharp_reducers(&project_path, &project_name)?,
         "go-reducers"       => scaffold_go_reducers(&project_path, &project_name)?,
+        "unity"             => scaffold_unity(&project_path, &project_name)?,
+        "godot"             => scaffold_godot(&project_path, &project_name)?,
         _                   => unreachable!(),
     }
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Game engine client templates
+// ─────────────────────────────────────────────────────────────────────────────
+
+const UNITY_CLIENT_CS: &str = include_str!("engine_templates/unity_NeonDBClient.cs");
+const UNITY_BEHAVIOUR_CS: &str = include_str!("engine_templates/unity_NeonDBBehaviour.cs");
+const UNITY_README: &str = include_str!("engine_templates/unity_README.md");
+const GODOT_CLIENT_GD: &str = include_str!("engine_templates/godot_neondb_client.gd");
+const GODOT_README: &str = include_str!("engine_templates/godot_README.md");
+
+fn scaffold_unity(p: &Path, _name: &str) -> Result<()> {
+    let dir = p.join("unity");
+    fs::create_dir_all(&dir)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("mkdir failed: {e}")))?;
+    fs::write(dir.join("NeonDBClient.cs"), UNITY_CLIENT_CS)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
+    fs::write(dir.join("NeonDBBehaviour.cs"), UNITY_BEHAVIOUR_CS)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
+    fs::write(dir.join("README.md"), UNITY_README)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
+    println!("  unity/NeonDBClient.cs      — protocol + client (copy into Assets/Scripts/)");
+    println!("  unity/NeonDBBehaviour.cs   — MonoBehaviour wrapper (main-thread dispatch)");
+    println!("  unity/README.md            — setup + examples");
+    Ok(())
+}
+
+fn scaffold_godot(p: &Path, _name: &str) -> Result<()> {
+    let dir = p.join("godot");
+    fs::create_dir_all(&dir)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("mkdir failed: {e}")))?;
+    fs::write(dir.join("neondb_client.gd"), GODOT_CLIENT_GD)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
+    fs::write(dir.join("README.md"), GODOT_README)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
+    println!("  godot/neondb_client.gd     — autoload client (Project Settings → Autoload)");
+    println!("  godot/README.md            — setup + examples");
     Ok(())
 }
 
@@ -1992,6 +2035,9 @@ async fn run_server(config: Config) -> Result<()> {
     let tenant_registry = neondb::tenant::TenantRegistry::load(tables.clone());
     log::info!("[tenant] {} tenant(s) loaded", tenant_registry.count());
 
+    // Redis (RESP) + PostgreSQL (pgwire) protocol listeners over the MVCC engine.
+    neondb::server::spawn_protocol_listeners(&config);
+
     let permissions = Arc::new(config.permissions.clone());
 
     // ── Cluster bus (horizontal scaling) ────────────────────────────────────
@@ -2019,6 +2065,7 @@ async fn run_server(config: Config) -> Result<()> {
     let (reducer_tx, reducer_rx) = kanal::bounded_async::<PendingCall>(config.reducer_queue_cap);
     let queue_probe = reducer_tx.clone(); // for healthz queue-depth reporting
     let subscription_manager = Arc::new(SubscriptionManager::new_with_options(config.two_frame_protocol));
+    subscription_manager.start_tick_flusher(config.sub_tick_ms);
 
     let active_connections = Arc::new(AtomicUsize::new(0));
     let (shutdown_tx, shutdown_rx) = watch::channel(());
@@ -2101,6 +2148,8 @@ async fn run_server(config: Config) -> Result<()> {
         None
     };
 
+    let inline_registry = neondb::network::build_inline_registry();
+
     let listener_handle = {
         let config_c = config.clone(); let tx_c = reducer_tx.clone();
         let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
@@ -2114,13 +2163,14 @@ async fn run_server(config: Config) -> Result<()> {
         let tls_cfg = tls_server_config.clone();
         let iss_c = identity_issuer.clone();
         let tenant_registry_ws = tenant_registry.clone();
+        let inl_c = inline_registry.clone();
         tokio::spawn(async move {
             if let Err(e) = start_listener(
                 config_c.host, config_c.port, tx_c, subs_c, tables_c,
                 config_c.max_connections, config_c.api_key.clone(),
                 conns_c, perms_c, config_c.sql_timeout_ms,
                 auth_c, rl_c, pres_c, ttl_c, iss_c, rx_shutdown, metrics_c, tls_cfg,
-                tenant_registry_ws,
+                tenant_registry_ws, inl_c,
             ).await { log::error!("Listener error: {}", e); }
         })
     };
@@ -2128,7 +2178,7 @@ async fn run_server(config: Config) -> Result<()> {
     let wal_writer = Arc::new(BatchedWalWriter::open(
         &config.wal_path, config.wal_batch_interval_ms, config.wal_batch_size, config.unsafe_no_fsync,
     )?);
-    let worker_count = num_cpus::get().max(1);
+    let worker_count = if config.workers > 0 { config.workers } else { num_cpus::get().max(1) };
     log::info!("Starting {} reducer workers", worker_count);
 
     let timeout_ms        = config.reducer_timeout_ms;
@@ -2283,6 +2333,17 @@ async fn run_server(config: Config) -> Result<()> {
                 let tenant_blk   = tenant_w.clone();
                 let call_start   = std::time::Instant::now();
 
+                // Execute + commit with OCC conflict retry: when a concurrent
+                // worker committed a row this reducer read AND writes, the
+                // commit aborts and we re-execute against fresh state (max 5).
+                // Zero silent lost updates in read-modify-write reducers.
+                enum Outcome {
+                    Done(Vec<u8>, Vec<neondb::table::RowDelta>),
+                    ReducerErr(String),
+                    Panicked,
+                    CommitErr(String),
+                }
+
                 let blk = tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
                     tokio::task::spawn_blocking(move || {
@@ -2294,10 +2355,28 @@ async fn run_server(config: Config) -> Result<()> {
                         if let Some(tid) = call_tenant {
                             ctx = ctx.with_tenant(tid, tenant_blk);
                         }
-                        let exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                            || registry_blk.execute(&reducer_name, &mut ctx, &args)
-                        ));
-                        (exec, ctx)
+                        const MAX_CONFLICT_RETRIES: usize = 5;
+                        let mut attempt = 0;
+                        loop {
+                            attempt += 1;
+                            let exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                || registry_blk.execute(&reducer_name, &mut ctx, &args)
+                            ));
+                            break match exec {
+                                Ok(Ok(result_bytes)) => match ctx.commit() {
+                                    Ok(deltas) => Outcome::Done(result_bytes, deltas),
+                                    Err(neondb::error::NeonDBError::TxnConflict(_))
+                                        if attempt < MAX_CONFLICT_RETRIES =>
+                                    {
+                                        ctx.reset_for_retry();
+                                        continue;
+                                    }
+                                    Err(e) => Outcome::CommitErr(e.to_string()),
+                                },
+                                Ok(Err(e)) => Outcome::ReducerErr(e.to_string()),
+                                Err(_) => Outcome::Panicked,
+                            };
+                        }
                     }),
                 ).await;
 
@@ -2312,65 +2391,56 @@ async fn run_server(config: Config) -> Result<()> {
                         metrics_w.reducer_errors_total.inc();
                         ReducerResponse::error(call_id, "Internal task error".to_string())
                     }
-                    Ok(Ok((exec_result, mut ctx))) => match exec_result {
-                        Ok(Ok(result_bytes)) => {
-                            // ── Single-node write path ───────────────────────────────────────
-                            //
-                            // Commit the staged deltas to the local TableStore (the sole atomic
-                            // write entry point), fan out to live subscribers, then append to the
-                            // WAL for crash recovery. Distribution/consensus was removed in
-                            // Session 44 — see TODO-034. The pre-cluster-removal git tag preserves
-                            // the Raft path for later resurrection.
-                            match ctx.commit() {
-                                Ok(deltas) => {
-                                    // Fan out to live subscribers (one encode, Arc<Bytes> reuse).
-                                    if !deltas.is_empty() {
-                                        subs_w.publish_deltas(&deltas);
-                                        // Fan out to cluster peers (fire-and-forget, no-op if single-node).
-                                        cluster_w.fanout_deltas(&deltas);
-                                    }
-                                    let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas.clone());
-                                    if let Err(e) = wal_w.append(&entry, seq_num) {
-                                        log::warn!("WAL append failed: {}", e);
-                                    } else {
-                                        metrics_w.wal_entries_written_total.inc();
-                                    }
-                                    // Periodic snapshot.
-                                    if snap_iv > 0 && (seq_num + 1) % snap_iv == 0 {
-                                        let tbl = tables_w.clone(); let dir = snap_dir_ww.clone(); let ts2 = current_timestamp_nanos();
-                                        let wal_rotate = wal_w.clone();
-                                        tokio::spawn(async move {
-                                            match tokio::task::spawn_blocking(move || save_snapshot(&tbl, &dir, seq_num, ts2)).await {
-                                                Ok(Ok(())) => {
-                                                    log::info!("Snapshot written at seq {}", seq_num);
-                                                    if let Err(e) = wal_rotate.truncate_before(seq_num) {
-                                                        log::error!("WAL rotation after snapshot failed: {}", e);
-                                                    }
-                                                }
-                                                Ok(Err(e)) => log::error!("Snapshot failed: {}", e),
-                                                Err(e)     => log::error!("Snapshot panicked: {}", e),
-                                            }
-                                        });
-                                    }
-                                    // Record successful reducer call + duration.
-                                    metrics_w.reducer_calls_total.inc();
-                                    metrics_w.reducer_duration_seconds.observe(call_start.elapsed().as_secs_f64());
-                                    ReducerResponse::success(call_id, result_bytes)
-                                }
-                                Err(e) => {
-                                    log::error!("Commit failed call_id={}: {}", call_id, e);
-                                    metrics_w.reducer_errors_total.inc();
-                                    ReducerResponse::error(call_id, format!("Commit error: {}", e))
-                                }
+                    Ok(Ok(outcome)) => match outcome {
+                        Outcome::Done(result_bytes, deltas) => {
+                            // ── Single-node write path (commit already applied) ──────────────
+                            // Fan out to live subscribers, then append to the WAL for crash
+                            // recovery. Distribution/consensus was removed in Session 44.
+                            if !deltas.is_empty() {
+                                subs_w.publish_deltas(&deltas);
+                                // Fan out to cluster peers (fire-and-forget, no-op if single-node).
+                                cluster_w.fanout_deltas(&deltas);
                             }
+                            let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas.clone());
+                            if let Err(e) = wal_w.append(&entry, seq_num) {
+                                log::warn!("WAL append failed: {}", e);
+                            } else {
+                                metrics_w.wal_entries_written_total.inc();
+                            }
+                            // Periodic snapshot.
+                            if snap_iv > 0 && (seq_num + 1) % snap_iv == 0 {
+                                let tbl = tables_w.clone(); let dir = snap_dir_ww.clone(); let ts2 = current_timestamp_nanos();
+                                let wal_rotate = wal_w.clone();
+                                tokio::spawn(async move {
+                                    match tokio::task::spawn_blocking(move || save_snapshot(&tbl, &dir, seq_num, ts2)).await {
+                                        Ok(Ok(())) => {
+                                            log::info!("Snapshot written at seq {}", seq_num);
+                                            if let Err(e) = wal_rotate.truncate_before(seq_num) {
+                                                log::error!("WAL rotation after snapshot failed: {}", e);
+                                            }
+                                        }
+                                        Ok(Err(e)) => log::error!("Snapshot failed: {}", e),
+                                        Err(e)     => log::error!("Snapshot panicked: {}", e),
+                                    }
+                                });
+                            }
+                            // Record successful reducer call + duration.
+                            metrics_w.reducer_calls_total.inc();
+                            metrics_w.reducer_duration_seconds.observe(call_start.elapsed().as_secs_f64());
+                            ReducerResponse::success(call_id, result_bytes)
                         }
-                        Ok(Err(e)) => {
+                        Outcome::CommitErr(e) => {
+                            log::error!("Commit failed call_id={}: {}", call_id, e);
+                            metrics_w.reducer_errors_total.inc();
+                            ReducerResponse::error(call_id, format!("Commit error: {}", e))
+                        }
+                        Outcome::ReducerErr(e) => {
                             log::warn!("Reducer error: {}", e);
                             metrics_w.reducer_errors_total.inc();
-                            ReducerResponse::error(call_id, e.to_string())
+                            ReducerResponse::error(call_id, e)
                         }
-                        Err(_) => {
+                        Outcome::Panicked => {
                             log::warn!("Reducer panicked call_id={}", call_id);
                             metrics_w.reducer_errors_total.inc();
                             ReducerResponse::error(call_id, "Reducer panicked".to_string())

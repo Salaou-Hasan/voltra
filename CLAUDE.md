@@ -183,6 +183,126 @@ Remove-Item -Recurse -Force target\criterion
 
 ## Complete Fix History
 
+### Session 53 — Benchmark harness split (serve/external) + eviction-thrash fix → 15K CCU PASS
+
+**Root causes of the 7K-CCU collapse (diagnosed, both fixed):**
+1. **LRU eviction thrash** — sim's `max_rows_per_table = 50_000` sat below the legitimate working set at 7K+ players (`sim_inventory` ≈ 9 rows/player). Every insert past the cap triggered eviction inside the write path: game TPS collapsed 21K → 2.2K. Fixed: cap raised to 2_000_000 (pure OOM safety net). **Diagnostic that proved it wasn't locks:** 7K connections of pure `stress_ping` (zero TableStore work) sustained 41K TPS at the same p50 (134ms) as game@5K — the latency floor was scheduling, the TPS collapse was eviction.
+2. **Shared-runtime harness** — bot clients and server ran in ONE process/runtime; at 7K+ connections the tokio scheduler thrashed (14K+ tasks). Fixed by splitting the harness.
+
+**sim.rs changes:**
+- `neondb-sim serve [--ws-port 3777] [--metrics-port 3778]` — server-only mode: embedded server + native reducers + minimal HTTP `/healthz` (raw tokio TCP responder, `spawn_health_server`), parks forever.
+- `--external` global flag — client-only mode: skips embedded server, connects to `--url`, samples server stats over HTTP (`StatsSource::Remote` / `fetch_health`). `StatsSource` enum replaced `&ServerHandle` through `run_game_sim`/`run_chat_sim`/`sample_loop`/`run_scale`.
+- `--id-offset N` global flag — multiple client processes simulate distinct players (offsets 0/5000/10000…). Threaded via `SimConfig.id_offset`.
+
+**Measured results (24-core box, server + clients SHARING the machine):**
+| Setup | CCU | TPS | p50 | p99 | Errors |
+|---|---|---|---|---|---|
+| game, 1 client proc | 5K | 43.3K | 58ms | 172ms | 0.12% |
+| game, 1 client proc | 10K | 38.7K | 172ms | 293ms | 0.13% ✅ (was 63% FAIL) |
+| game, 3 client procs | **15K** | **46.9K** | 289ms | 386ms | 0.12% ✅ |
+| chat, 3 client procs | 15K | 5.6K | ~400ms | 2.2s | ~0.01% ✅ |
+| game, 6 client procs | 30K | n/a | **3ms** (connected calls) | — | host saturated |
+
+**30K finding:** the box cannot host 30K WS client connections + 6 client processes + the server; bots stalled in connect retries. But calls that DID get through saw **p50 2-6ms** — the database is not the limiter; client hardware is. 30K validation needs client machines separate from the server (`neondb-sim serve` on the server box, `--external --id-offset` clients elsewhere).
+
+**New pitfalls:**
+102. **Never set the sim LRU cap below the working set** — eviction inside `apply_delta_batch` on every insert is a TPS cliff, not a graceful degradation. Cap = OOM safety net only.
+103. **Benchmarks above ~5K connections MUST use serve/--external split** — in-process numbers above that measure tokio scheduler thrash, not the database. Building neondb-sim while `serve` is running fails at link time (exe lock) — kill it first.
+104. **`--id-offset` must differ per client process** — otherwise processes fight over the same `gp_N` player rows and spawn/respawn semantics skew.
+
+### Session 53b — Lobby-partitioned game sim (75 players/instance)
+
+Owner direction: real games shard players into instances (~75/lobby), nobody runs 15K players in one shared world. Sim restructured to match:
+- `game --lobby-size 75` (default 75). `lobby = id / lobby_size`; all keys lobby-prefixed (`l{lobby}_p{id}`, `l{lobby}_npc_…`); peers (sim_transfer targets) picked within the same lobby only — instances are fully isolated key spaces.
+- `Metrics.lobby_hists: DashMap<usize, Mutex<Histogram>>` + `record_lobby()`; report prints per-instance latency: median/best/worst lobby p50+p99 (`print_lobby_summary`).
+- **Measured (15K CCU = 202 lobbies × 75, server+3 client procs sharing the box): 53.0K TPS combined, p99 333ms, per-lobby p99 spread best 328ms → worst 336ms (8ms!) — zero noisy-neighbor effect. PASS, 0.1% errors, memory flat 670MB.**
+- Pitfall 105: per-lobby latency floor in these runs is host scheduling (15K bots + server on one box) — per-lobby *fairness* is the meaningful metric in-box; absolute latency needs remote clients.
+
+### Session 54 — OCC lost-update fix + third-party driver validation + write ceiling + soak
+
+**1. Lost-update race FIXED — optimistic concurrency control on TableStore (the production-blocker):**
+- `StoredRow.version: u64` — bumped on every write (`write_row_unlocked`); rebuilt naturally on WAL replay.
+- `TableStore::get_row_with_version` / `row_version`; `apply_delta_batch_versioned(deltas, read_versions)` validates INSIDE the row locks: every row the txn read AND writes must still be at its read version, else `NeonDBError::TxnConflict` (new variant). Plain `apply_delta_batch` = versioned with empty read set.
+- `ReducerContext.read_versions: Mutex<HashMap<(table,key),u64>>` — recorded on first `get_row` of each key (missing row = v0, so insert races conflict too); `commit()` passes the read set; `reset_for_retry()` clears writes+reads for re-execution. Read-only rows do NOT conflict (lost-update guard only, no write-skew enforcement — same as Redis WATCH-on-written-keys).
+- **Both worker loops retry on TxnConflict (max 5)**: server.rs inline loop; main.rs moved execute+commit INSIDE spawn_blocking with an `Outcome` enum (Done/ReducerErr/Panicked/CommitErr) since retry needs the ctx.
+- 3 regression tests in context.rs: concurrent RMW conflicts + retry converges (100-30-20=50, zero lost), read-only rows don't abort, insert race detected. **541 lib tests green.**
+- PITFALL 109: any new write path that bypasses `ctx.commit()` (admin endpoints use set_row directly) skips OCC — fine for last-write-wins admin ops, never route reducer RMW through them.
+
+**2. Third-party driver mileage (caveat 3): ioredis + node-postgres, 21/21 PASS** against the live binary — ioredis: PING/SET/INCR/EXPIRE/HSET/LPUSH/SADD/ZADD WITHSCORES/MULTI-EXEC/SCAN/DBSIZE/100-deep pipeline/pub-sub; node-postgres: version()/CREATE/INSERT..RETURNING/**parameterized queries (extended protocol $1)**/aggregates/BEGIN-COMMIT/information_schema. (No Python pip on this box; Node drivers are the mainstream choice anyway.)
+
+**3. Write-path ceiling measured (caveat 2, data half): 351K TPS** — `stress --clients 50 --pipeline 512 --reducer stress_write` = 8.78M full-path writes in 25s, 0 errors, p99 95ms, memory flat, WITH OCC checks active. 30K real players @5-10 actions/s = 150-300K TPS → inside the ceiling. Connection-count half of 30K validation still requires remote client machines.
+
+**4. 24h soak RUNNING** (caveat 2, soak half): server on :3500/:3501 (dirs in %TEMP%/neondb_soak), `neondb-soak --duration-secs 86400 --clients 100 --rate-per-client 10 --csv /tmp/neondb_soak/soak.csv`, logs /tmp/neondb_soak/soak.log. First sample: 1023 TPS, 0 err, 24.5MB. Leak detector fails the run if memory grows >200%. For the full week: same command with `--duration-secs 604800`.
+
+### Session 53d — 20Hz tick coalescing + Unity & Godot client templates
+
+**Tick coalescing (subscriptions.rs, config.rs):** `SubscriptionManager.pending: DashMap<(table,row_key), RowDelta>` + `start_tick_flusher(tick_ms)` (spawned in both server.rs and main.rs startup). When enabled, `publish_deltas` stages latest-per-row; the flush task drains every tick and calls the old path (`publish_now`). Coalescing happens BEFORE matching/encoding so it cuts predicate-matching + encode + delivery by the same factor. Config `sub_tick_ms` default **50ms (20Hz)**, env `NEONDB_SUB_TICK_MS`, 0 = immediate (Manager::new defaults off — lib tests unaffected). Last-write-wins per row incl. deletes; cross-row ordering within a tick is not preserved (state-sync semantics).
+**Measured:** 1K subscribed players (the run that previously wedged the server): **p50 1.78ms, worst-lobby p99 8.13ms, PASS**; fan-out demand ~1M frames/s coalesced to 41.5K/s delivered (24×). 5K subscribed: p50 6.4ms, 19.1K TPS, PASS (tail spikes during connect ramp noted).
+
+**Unity + Godot templates (`neondb init --template unity|godot`):** `src/engine_templates/` — `unity_NeonDBClient.cs` (zero-dep C# client: minimal MessagePack writer/reader, ClientWebSocket, async Call + Subscribe, MainThreadQueue), `unity_NeonDBBehaviour.cs` (MonoBehaviour pumping callbacks on Update), `godot_neondb_client.gd` (Godot 4 autoload: WebSocketPeer, awaitable call_reducer, row_update signal, inner MsgPack class), + READMEs. Wire format follows neondb-client-ts/src/protocol.ts conventions (structs=arrays, enums=1-entry maps, Vec<u8>=bin, bare ReducerResponse arrays). PITFALL 108: any new client SDK must mirror protocol.ts — rmp_serde encodes structs positionally.
+
+### Session 53c — Subscription fan-out stress mode + 3 server fixes → 567K frames/s sustained
+
+Game bots now subscribe to their lobby (`sim_players WHERE lobby = 'lN'`) like real clients; `sim_spawn` writes a `lobby` field parsed from the pid prefix. `WsConn::call` decodes `ServerMessage` properly (fan-out frames counted in `SUB_FRAMES`, only `ReducerResponse` completes a call — also makes `ok` reflect `r.success`). Report prints fan-out frames/s.
+
+**Three server bugs found and fixed under fan-out load (websocket.rs):**
+1. **Per-frame flush** — write task did `sink.send()` per message = one flush syscall per frame; at 344K frames/s the server drowned (TPS 31K→4.1K). Fixed: drain-and-feed batching — `feed()` up to 256 queued frames, `flush()` once.
+2. **Cooperative-scheduling starvation from fix #1** — `feed()`+`flush()` on a writable socket can complete without ever returning Pending; 1000 hot write tasks starved the entire runtime (accepts, reads, health endpoint — server appeared dead while alive). Fixed: `tokio::task::yield_now().await` per batch. PITFALL 106: any hot loop of always-ready awaits needs an explicit yield.
+3. **Reducer responses dropped under flood** — responses and fan-out frames share the per-client write channel (cap 256, both `try_send`); when fan-out filled it, responses were dropped → 5s client timeouts (1.1% errors). Fixed: response task uses blocking `send().await` (backpressure on that client only); fan-out frames remain droppable (stale game state is shed first). PITFALL 107.
+
+**Measured (single box, server+client sharing 24 cores):**
+- 500 players subscribed (7 lobbies×75): **567K fan-out frames/s sustained**, p50 11ms, worst-lobby p99 44ms, PASS — silky WITH live subscriptions.
+- 1000 players subscribed: 13.2K TPS / p50 19ms while healthy, but ~1M frames/s demand exceeds the shared box → cascade collapse at ~20s (client can't decode fast enough → TCP backpressure → server write queues fill → response backpressure → timeouts).
+
+**Known next step (designed, not built): tick-based delta coalescing** — real engines sync state at 10–20Hz, not per-write. Per-subscription tick aggregation (latest version of each row per tick window) would cut fan-out volume ~5–10× and is the proper fix for >1M frames/s demand. Slow-consumer eviction (Redis-style client-output-buffer-limit) is the companion safety valve.
+
+### Session 52 — MVCC engine + full Redis (RESP) + PostgreSQL (pgwire) protocol layers
+
+**Direction from owner**: build all three at once, full compatibility: 1) MVCC store, 2) Redis protocol, 3) PostgreSQL protocol.
+
+**New deps**: `im 15` (persistent HAMT/Vector/OrdSet — O(1) clones for version creation), `ordered-float 4` (zset score index), `sqlparser 0.45` (PostgreSQL-dialect SQL parser), `bytes` serde feature.
+
+**1. MVCC engine — `src/mvcc/` (mod.rs + aof.rs, 16 tests)**
+- `MvccStore`: `DashMap<NsKey, Chain>` of version chains (`SmallVec<[Version; 2]>`, newest first). Readers pick newest version with `commit_ts <= read_ts` — readers never block writers, writers never block readers.
+- **Single sequencer OS thread** owns ALL mutation (Redis-style): `Batch::Apply` closures get a `Writer` with linearizable read-modify-write (INCR semantics for free); `Batch::Commit` does first-committer-wins conflict detection (PostgreSQL snapshot isolation). Group commit: drains up to 512 batches per wakeup, one AOF write + policy fsync.
+- `pin_snapshot() -> SnapshotGuard` (RAII, refcounted BTreeMap) — GC floor. GC thread prunes dead versions + tombstoned chains every 5s; active expiry reaps TTL'd keys through the sequencer every 100ms (versioned + AOF-durable deletes).
+- Namespaces: 0–15 Redis DBs, 64 PG catalog, 65+ PG tables.
+- Datum enum: Str(Bytes)/Hash/List/Set/ZSet (im collections)/Row(im::HashMap<String, Scalar>). ZSet = dual index (by_member + by_score OrdSet).
+- AOF: `[len][crc32][rmp(AofRecord{ts, ops})]`, torn-tail tolerant; SAVE writes snapshot (tmp+rename) and truncates AOF; replay skips records ≤ snapshot ts (crash between rename and truncate is safe). FsyncPolicy: Always/EverySec (default, Redis-like)/No.
+- Effects (`WriteOp::Put/Del`) are resolved BEFORE logging — nondeterministic commands (SPOP etc.) replay deterministically.
+
+**2. Redis layer — `src/redis/` (resp, engine, cmd_string, cmd_hash_list, cmd_set_zset, pubsub, mod, 40 tests)**
+- ~150 commands: full strings (SET with EX/PX/EXAT/PXAT/NX/XX/KEEPTTL/GET, GETEX/GETDEL, INCR*, bitmaps SETBIT/GETBIT/BITCOUNT), keys (EXPIRE w/ NX/XX/GT/LT, RENAME, COPY, SCAN w/ MATCH/COUNT/TYPE, KEYS, RANDOMKEY, FLUSHDB/ALL, SWAPDB), hashes (incl. HRANDFIELD, HSCAN NOVALUES), lists (LMOVE/RPOPLPUSH, LPOS, LINSERT; blocking BLPOP/BRPOP/BLMOVE/BRPOPLPUSH via 20ms sequencer polls), sets (SINTERCARD, S*STORE), zsets (ZADD NX/XX/GT/LT/CH/INCR, unified ZRANGE BYSCORE/BYLEX/REV/LIMIT, ZRANGEBYLEX, Z*STORE w/ WEIGHTS/AGGREGATE), MULTI/EXEC/DISCARD/WATCH (MVCC ts-based conflict abort), full pub/sub (channels + glob patterns), HELLO 2/3 (RESP2+RESP3), AUTH, SELECT 0-15, INFO/CONFIG/CLIENT/COMMAND/DBSIZE/SAVE/TIME/DEBUG SLEEP/MEMORY USAGE/ACL stubs.
+- **Key design — `Db` trait** (`engine.rs`): every data command implemented ONCE against the trait. `SnapDb` (lock-free snapshot) runs reads on connection tasks in parallel across cores; `mvcc::Writer` runs writes inside the sequencer. `is_write()` routes. EXEC = one Apply closure dispatching all queued commands atomically.
+- RESP2/RESP3 parser handles inline commands, rejects allocation bombs; encoder degrades RESP3 types (Map/Set/Push/Double/Bool/Verbatim) for proto-2 clients.
+- Not supported (returns clear errors): Lua scripting (→ reducers), streams, cluster commands, REPLICAOF (→ NeonDB replication).
+
+**3. PostgreSQL layer — `src/pg/` (types, catalog, executor, mod, tests; 18 tests)**
+- pgwire v3: startup (SSLRequest declined politely), trust + cleartext auth, ParameterStatus/BackendKeyData, simple query (multi-statement), extended protocol (Parse/Bind/Describe/Execute/Close/Sync, $n params, text+binary param decode). Describe(portal) executes eagerly + caches (single execution guaranteed); Describe(statement) resolves column metadata from catalog without executing.
+- SQL executor (sqlparser 0.45 AST): CREATE/DROP TABLE (SERIAL/PK/NOT NULL), INSERT multi-row VALUES + INSERT..SELECT + RETURNING, SELECT (WHERE, expressions, INNER/LEFT JOIN..ON, GROUP BY + COUNT/SUM/AVG/MIN/MAX + HAVING, ORDER BY incl. output aliases + positions, LIMIT/OFFSET, DISTINCT, non-correlated subqueries: IN (SELECT), scalar, EXISTS), UPDATE/DELETE + RETURNING, TRUNCATE, BEGIN/COMMIT/ROLLBACK, SET/SHOW, scalar fns (LOWER/UPPER/LENGTH/CONCAT/COALESCE/NULLIF/GREATEST/LEAST/ABS/ROUND/FLOOR/CEIL/NOW/VERSION/RANDOM), CASE, CAST/::, LIKE/ILIKE, BETWEEN, IS NULL.
+- **Transactions = real snapshot isolation**: BEGIN pins MVCC snapshot; reads see frozen state + own writes (overlay); COMMIT submits effects with conflict keys → concurrent update aborts with `could not serialize access` (40001). Aborted txn rejects statements until ROLLBACK (25P02).
+- Catalog persisted as JSON blobs in ns 64; rowid counters rebuilt from key scan on boot (survives AOF replay). Rows = `Datum::Row` keyed by 8-byte BE rowid.
+- `information_schema.tables/columns`, `pg_catalog.pg_tables` shims; `version()` → "PostgreSQL 16.4 (NeonDB)".
+
+**4. Wiring (config.rs, server.rs, main.rs, sim.rs)**
+- Config: `redis_port` (default 6379), `pg_port` (default 5432), `redis_password`, `pg_password`; 0 = disabled. Env: NEONDB_REDIS_PORT/NEONDB_PG_PORT/NEONDB_REDIS_PASSWORD/NEONDB_PG_PASSWORD.
+- `server::spawn_protocol_listeners(&config)` — called in both main.rs start path and run_server; **bind failures are non-fatal** (warn + continue) so parallel test servers don't die racing for 6379/5432. MVCC data dir = `<wal dir>/mvcc_data`.
+- sim.rs embedded/stress servers set both ports to 0.
+
+**Live-verified** (production binary, raw TCP): Redis PING/SET/GET/HSET/HGETALL/INCR/ZADD/ZRANGE/EXPIRE/TTL/DBSIZE; PG startup + CREATE/INSERT/SELECT/aggregates/BEGIN-UPDATE-COMMIT; **kill -9 + restart recovered everything** (strings, hashes, counters, zsets, ticking TTLs, SQL table + transactional update, catalog + rowid counters).
+
+**Build status after Session 52:**
+- `cargo build` → zero errors. `cargo test --lib` → **538 tests passing** (was 466; +72: 16 mvcc + 40 redis + 18 pg, with 2 prior duplicates renumbered).
+
+**New pitfalls:**
+95. **All MVCC mutation goes through the sequencer** — never mutate `chains` outside `sequencer_loop`/`apply_ops` (GC pruning of strictly-dead versions is the one exception). Redis write commands MUST be dispatched via `store.apply()`, never against `SnapDb`.
+96. **`Writer::get` lazily expires** — reading an expired key inside the sequencer auto-stages a `Del`. Helpers in `redis::engine` read the value BEFORE the TTL (`read_hash` etc. return `(coll, exp)`); preserve that order or a dead TTL gets re-attached.
+97. **`is_write()` and `is_data_command()` must stay in sync** — a write command missing from `is_write` would dispatch to a read-only snapshot (debug_assert + silently lost write in release). Test `write_classification_is_complete` guards this; extend it when adding commands.
+98. **sqlparser 0.45 uses struct variants** — `Statement::Insert { .. }`, `Statement::CreateTable { .. }`, `Statement::Delete { from: FromTable, .. }`, `Function.args: Vec<FunctionArg>`. Do NOT upgrade sqlparser without sweeping `src/pg/executor.rs`; 0.46+ moved these to tuple variants + `FunctionArguments`.
+99. **PG DDL auto-commits** even inside BEGIN (v1 behavior, documented in exec_create_table).
+100. **MvccStore lifecycle** — `close()` sets the shutdown flag; background threads poll it at 100ms. Tests must call `store.close()`; the AOF test sleeps ~250ms before reopening the same data dir so the old sequencer releases the file handle.
+101. **Protocol listener bind failures must stay non-fatal** — integration tests spawn 9 parallel servers that all race for 6379/5432; only one wins, the rest log warnings. Never convert `spawn_protocol_listeners` errors into a process exit.
+
 ### Session 51 — Memory/RAM optimization: hybrid row encoding + slot-based locks
 
 **Motivation**: sim benchmark showed 136.5MB → 2,149MB (+1573%) over 600s at 3.1M rows (~649 bytes/row), driven by JSON row bytes + per-row DashMap lock entries.

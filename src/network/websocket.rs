@@ -26,6 +26,7 @@
 use super::message::{ClientMessage, ReducerResponse, ServerMessage, SqlResult};
 use super::protocol;
 use super::rate_limiter::RateLimiterRegistry;
+use super::InlineRegistry;
 use crate::auth::{AuthResult, AuthValidator, IdentityIssuer};
 use crate::config::PermissionsConfig;
 use crate::error::{NeonDBError, Result};
@@ -146,6 +147,7 @@ pub async fn start_listener(
     metrics: Arc<Metrics>,
     tls: Option<Arc<rustls::ServerConfig>>,
     tenant_registry: Arc<TenantRegistry>,
+    inline_registry: Arc<InlineRegistry>,
 ) -> Result<()> {
     let bind_addr = format!("{}:{}", addr, port);
     let listener = TcpListener::bind(&bind_addr).await?;
@@ -163,6 +165,10 @@ pub async fn start_listener(
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, peer_addr)) => {
+                        // Disable Nagle's algorithm — send frames immediately
+                        // instead of buffering up to 40ms.  Critical for reducer
+                        // response latency at high CCU.
+                        let _ = stream.set_nodelay(true);
                         log::debug!("New connection from {}", peer_addr);
 
                         if active_connections.load(Ordering::SeqCst) >= max_connections {
@@ -188,6 +194,7 @@ pub async fn start_listener(
                         let peer    = peer_addr.to_string();
                         let tls_acc = tls_acceptor.clone();
                         let ten     = tenant_registry.clone();
+                        let inl     = inline_registry.clone();
 
                         // Record connection metrics immediately on accept.
                         metrics.websocket_connects_total.inc();
@@ -199,7 +206,7 @@ pub async fn start_listener(
                                     Ok(tls_stream) => {
                                         if let Err(e) = handle_client(
                                             tls_stream, tx, subs, tbl, api_key, conns, perms,
-                                            sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten,
+                                            sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten, inl,
                                         ).await { log::warn!("TLS client error: {}", e); }
                                     }
                                     Err(e) => log::warn!("TLS accept error from {}: {}", peer, e),
@@ -207,7 +214,7 @@ pub async fn start_listener(
                             } else {
                                 if let Err(e) = handle_client(
                                     stream, tx, subs, tbl, api_key, conns, perms,
-                                    sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten,
+                                    sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten, inl,
                                 ).await { log::warn!("Client error: {}", e); }
                             }
                         });
@@ -242,6 +249,7 @@ async fn handle_client<S>(
     mut shutdown: Receiver<()>,
     metrics: Arc<Metrics>,
     tenant_registry: Arc<TenantRegistry>,
+    inline_registry: Arc<InlineRegistry>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -378,11 +386,35 @@ where
     let write_task = {
         let mut sink = ws_sink;
         tokio::spawn(async move {
-            while let Some(msg) = write_rx.recv().await {
-                if let Err(e) = sink.send(msg).await {
-                    log::warn!("WebSocket write error: {}", e);
-                    break;
+            // Group commit for outbound frames: drain everything queued,
+            // feed without flushing, then flush ONCE. Under subscription
+            // fan-out this turns hundreds of per-frame flush syscalls into
+            // one — the difference between 4K and 30K+ TPS at high CCU.
+            'conn: while let Some(msg) = write_rx.recv().await {
+                if sink.feed(msg).await.is_err() {
+                    break 'conn;
                 }
+                let mut batched = 1usize;
+                while batched < 256 {
+                    match write_rx.try_recv() {
+                        Ok(m) => {
+                            if sink.feed(m).await.is_err() {
+                                break 'conn;
+                            }
+                            batched += 1;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if let Err(e) = sink.flush().await {
+                    log::warn!("WebSocket write error: {}", e);
+                    break 'conn;
+                }
+                // feed()+flush() on a writable socket can complete without
+                // ever returning Pending — under sustained fan-out this loop
+                // would never yield and starves the runtime (accepts, reads,
+                // every other task). Force a scheduler yield per batch.
+                tokio::task::yield_now().await;
             }
         })
     };
@@ -394,9 +426,12 @@ where
         while let Some(response) = response_rx.recv().await {
             match protocol::encode_response(&response) {
                 Ok(data) => {
-                    if let Err(mpsc::error::TrySendError::Full(_)) = write_tx_response.try_send(Message::Binary(data)) {
-                        log::warn!("Client send buffer full (response task), dropping connection");
-                        break;
+                    // Reducer responses must NEVER be dropped — a lost response
+                    // is a 5s client timeout. When subscription fan-out fills
+                    // the shared write queue, responses wait (backpressure on
+                    // this client only); fan-out frames stay droppable.
+                    if write_tx_response.send(Message::Binary(data)).await.is_err() {
+                        break; // connection closed
                     }
                 }
                 Err(e) => log::warn!("Failed to encode response: {}", e),
@@ -510,6 +545,20 @@ where
                         }
 
                         let call_id = call.call_id;
+
+                        // ── Inline fast path ─────────────────────────────────────
+                        // Reducers in the inline registry are pure-computation with
+                        // no DB writes.  Execute them directly in this async task —
+                        // zero channel hops, zero OS thread wakeups.  This path
+                        // enables 300K-500K TPS for ping/pong style reducers.
+                        if let Some(inline_fn) = inline_registry.get(&call.reducer_name) {
+                            let result_bytes = inline_fn(&call.args);
+                            let resp = ReducerResponse::success(call_id, result_bytes);
+                            let _ = response_tx.send(resp);
+                            metrics.reducer_calls_total.inc();
+                            continue;
+                        }
+
                         let pending = PendingCall {
                             call_id,
                             reducer_name: call.reducer_name,

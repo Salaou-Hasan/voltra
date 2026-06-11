@@ -187,6 +187,25 @@ pub struct Config {
     pub backup_interval_secs: u64,
     /// How many rotated backups to keep.  Env: `NEONDB_BACKUP_KEEP`.  Default 5.
     pub backup_keep: usize,
+    /// Worker thread count.  0 = auto (num_cpus, min 2).
+    /// Env: `NEONDB_WORKERS`.  Only increase beyond num_cpus for benchmarking.
+    pub workers: usize,
+    /// Redis protocol (RESP) listener port.  0 = disabled.
+    /// Env: `NEONDB_REDIS_PORT`.  Default 6379.
+    pub redis_port: u16,
+    /// Redis AUTH password.  None = no auth required.
+    /// Env: `NEONDB_REDIS_PASSWORD`.
+    pub redis_password: Option<String>,
+    /// PostgreSQL wire protocol listener port.  0 = disabled.
+    /// Env: `NEONDB_PG_PORT`.  Default 5432.
+    pub pg_port: u16,
+    /// PostgreSQL cleartext password.  None = trust auth.
+    /// Env: `NEONDB_PG_PASSWORD`.
+    pub pg_password: Option<String>,
+    /// Subscription delivery tick (ms). Writes to the same row within a tick
+    /// coalesce into one fan-out frame (game-engine state sync, 20Hz default).
+    /// 0 = deliver every write immediately.  Env: `NEONDB_SUB_TICK_MS`.
+    pub sub_tick_ms: u64,
 }
 
 // These structs mirror the TOML schema.
@@ -326,6 +345,12 @@ impl Config {
             backup_dir: None,
             backup_interval_secs: 0,
             backup_keep: 5,
+            workers: 0,
+            redis_port: 6379,
+            redis_password: None,
+            pg_port: 5432,
+            pg_password: None,
+            sub_tick_ms: 50,
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -742,6 +767,36 @@ fn apply_env_overrides(cfg: &mut Config) {
         .and_then(|v| v.parse::<usize>().map_err(|_| std::env::VarError::NotPresent))
     {
         cfg.backup_keep = k.max(1);
+    }
+    if let Ok(w) = env::var("NEONDB_WORKERS")
+        .and_then(|v| v.parse::<usize>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.workers = w;
+    }
+    if let Ok(p) = env::var("NEONDB_REDIS_PORT")
+        .and_then(|v| v.parse::<u16>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.redis_port = p;
+    }
+    if let Ok(p) = env::var("NEONDB_REDIS_PASSWORD") {
+        if !p.is_empty() {
+            cfg.redis_password = Some(p);
+        }
+    }
+    if let Ok(p) = env::var("NEONDB_PG_PORT")
+        .and_then(|v| v.parse::<u16>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.pg_port = p;
+    }
+    if let Ok(p) = env::var("NEONDB_PG_PASSWORD") {
+        if !p.is_empty() {
+            cfg.pg_password = Some(p);
+        }
+    }
+    if let Ok(t) = env::var("NEONDB_SUB_TICK_MS")
+        .and_then(|v| v.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.sub_tick_ms = t;
     }
 }
 
