@@ -590,13 +590,20 @@ fn cmd_list_templates() {
     println!();
     println!("  NeonDB Project Templates");
     println!();
-    let mut last_cat = "";
+    let mut categories: Vec<&'static str> = Vec::new();
     for t in TEMPLATES {
-        if t.category != last_cat {
-            println!("  ── {} ─────────────────────────────────────────", t.category);
-            last_cat = t.category;
+        if !categories.contains(&t.category) {
+            categories.push(t.category);
         }
-        println!("    {:22}  {}", t.name, t.description);
+    }
+    for cat in &categories {
+        println!("  {cat}");
+        let members: Vec<&Template> = TEMPLATES.iter().filter(|t| t.category == *cat).collect();
+        for (i, t) in members.iter().enumerate() {
+            let branch = if i + 1 == members.len() { "└──" } else { "├──" };
+            println!("  {branch} {:20} — {}", t.name, t.description);
+        }
+        println!();
     }
     println!();
     println!("  Usage:");
@@ -646,16 +653,52 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
             t
         }
         None => {
-            let options: Vec<String> = TEMPLATES.iter()
-                .map(|t| format!("{:22} — {}", t.name, t.description))
-                .collect();
-            let selection = Select::with_theme(&theme)
-                .with_prompt("Select a template")
-                .default(0)
-                .items(&options)
-                .interact()
-                .map_err(|e| neondb::error::NeonDBError::internal(format!("Prompt error: {}", e)))?;
-            TEMPLATES[selection].name.to_string()
+            // ── Tree selection: pick a branch (category), then a template ────
+            // Branches open into their templates; "← Back" returns to the tree.
+            let mut categories: Vec<&'static str> = Vec::new();
+            for t in TEMPLATES {
+                if !categories.contains(&t.category) {
+                    categories.push(t.category);
+                }
+            }
+            loop {
+                let branch_items: Vec<String> = categories
+                    .iter()
+                    .map(|c| {
+                        let members: Vec<&str> = TEMPLATES
+                            .iter()
+                            .filter(|t| t.category == *c)
+                            .map(|t| t.name.rsplit('/').next().unwrap_or(t.name))
+                            .collect();
+                        format!("{:14} ▸ {}", c, members.join(", "))
+                    })
+                    .collect();
+                let branch = Select::with_theme(&theme)
+                    .with_prompt("Select a template category")
+                    .default(0)
+                    .items(&branch_items)
+                    .interact()
+                    .map_err(|e| neondb::error::NeonDBError::internal(format!("Prompt error: {}", e)))?;
+                let category = categories[branch];
+
+                let in_branch: Vec<&Template> =
+                    TEMPLATES.iter().filter(|t| t.category == category).collect();
+                let mut leaf_items: Vec<String> = in_branch
+                    .iter()
+                    .map(|t| format!("{:22} — {}", t.name, t.description))
+                    .collect();
+                leaf_items.push("← Back".to_string());
+                let leaf = Select::with_theme(&theme)
+                    .with_prompt(format!("{category} templates"))
+                    .default(0)
+                    .items(&leaf_items)
+                    .interact()
+                    .map_err(|e| neondb::error::NeonDBError::internal(format!("Prompt error: {}", e)))?;
+                if leaf == in_branch.len() {
+                    continue; // ← Back
+                }
+                break in_branch[leaf].name.to_string();
+            }
         }
     };
 
@@ -689,7 +732,31 @@ const UNITY_README: &str = include_str!("engine_templates/unity_README.md");
 const GODOT_CLIENT_GD: &str = include_str!("engine_templates/godot_neondb_client.gd");
 const GODOT_README: &str = include_str!("engine_templates/godot_README.md");
 
-fn scaffold_unity(p: &Path, _name: &str) -> Result<()> {
+/// Write the embedded native game server (28 `#[reducer]` functions compiled
+/// to machine code) into a template directory. Game-engine templates ship
+/// this so client + full-speed server come out of one `neondb init`.
+fn write_native_game_server(p: &Path, name: &str) -> Result<()> {
+    let w = |rel: &str, content: &str| -> Result<()> {
+        let path = p.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| neondb::error::NeonDBError::internal(format!("mkdir failed: {e}")))?;
+        }
+        fs::write(path, content)
+            .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))
+    };
+    w(
+        "server/Cargo.toml",
+        &EMBEDDED_CARGO_TOML
+            .replace("__NAME__", &format!("{}-server", name))
+            .replace("__NEONDB_PATH__", &env!("CARGO_MANIFEST_DIR").replace('\\', "/")),
+    )?;
+    w("server/src/main.rs", EMBEDDED_MAIN_RS)?;
+    w("server/src/reducers.rs", GAME_REDUCERS_RS)?;
+    Ok(())
+}
+
+fn scaffold_unity(p: &Path, name: &str) -> Result<()> {
     let dir = p.join("unity");
     fs::create_dir_all(&dir)
         .map_err(|e| neondb::error::NeonDBError::internal(format!("mkdir failed: {e}")))?;
@@ -699,13 +766,16 @@ fn scaffold_unity(p: &Path, _name: &str) -> Result<()> {
         .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
     fs::write(dir.join("README.md"), UNITY_README)
         .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
+    write_native_game_server(p, name)?;
     println!("  unity/NeonDBClient.cs      — protocol + client (copy into Assets/Scripts/)");
     println!("  unity/NeonDBBehaviour.cs   — MonoBehaviour wrapper (main-thread dispatch)");
     println!("  unity/README.md            — setup + examples");
+    println!("  server/                    — native Rust game server (28 #[reducer] fns)");
+    println!("                                cd server && cargo run --release");
     Ok(())
 }
 
-fn scaffold_godot(p: &Path, _name: &str) -> Result<()> {
+fn scaffold_godot(p: &Path, name: &str) -> Result<()> {
     let dir = p.join("godot");
     fs::create_dir_all(&dir)
         .map_err(|e| neondb::error::NeonDBError::internal(format!("mkdir failed: {e}")))?;
@@ -713,8 +783,11 @@ fn scaffold_godot(p: &Path, _name: &str) -> Result<()> {
         .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
     fs::write(dir.join("README.md"), GODOT_README)
         .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
+    write_native_game_server(p, name)?;
     println!("  godot/neondb_client.gd     — autoload client (Project Settings → Autoload)");
     println!("  godot/README.md            — setup + examples");
+    println!("  server/                    — native Rust game server (28 #[reducer] fns)");
+    println!("                                cd server && cargo run --release");
     Ok(())
 }
 

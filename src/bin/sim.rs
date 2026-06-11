@@ -513,6 +513,12 @@ struct Args {
     #[arg(long, default_value = "0")]
     id_offset: usize,
 
+    /// Per-action think-time in ms for game bots (0 = fire as fast as possible).
+    /// ~200 ≈ 5 actions/sec, a realistic human rate; keeps the client side light
+    /// enough to sustain tens of thousands of live connections.
+    #[arg(long, default_value = "0")]
+    think_ms: u64,
+
     #[command(subcommand)]
     scenario: ScenarioCmd,
 }
@@ -1477,9 +1483,22 @@ async fn game_user(
             }
             _ => {}
         }
+        // Think-time: real players don't fire back-to-back. With think-time the
+        // client side stays light enough to sustain tens of thousands of live
+        // connections — and the load profile matches actual humans (~5/s).
+        let think = THINK_MS.load(Ordering::Relaxed);
+        if think > 0 {
+            // Jitter ±50% so all bots don't fire on the same beat.
+            let jitter = rng.range(think as i32 / 2, think as i32 + think as i32 / 2).max(1) as u64;
+            tokio::time::sleep(Duration::from_millis(jitter)).await;
+        }
     }
     let _ = ws.inner.close(None).await;
 }
+
+/// Per-action think-time (ms) for game bots. 0 = fire as fast as possible
+/// (old behavior). ~200ms ≈ 5 actions/sec, a realistic human rate.
+static THINK_MS: AtomicU64 = AtomicU64::new(0);
 
 // ─── Chat virtual user ────────────────────────────────────────────────────────
 
@@ -2074,6 +2093,7 @@ async fn run_scale(
 async fn main() {
     env_logger::init();
     let args = Args::parse();
+    THINK_MS.store(args.think_ms, Ordering::Relaxed);
 
     // Derive ports from URL (default: 3777/3778 to avoid collisions)
     let ws_port: u16      = 3777;

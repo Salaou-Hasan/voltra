@@ -218,6 +218,13 @@ Owner direction: real games shard players into instances (~75/lobby), nobody run
 - **Measured (15K CCU = 202 lobbies × 75, server+3 client procs sharing the box): 53.0K TPS combined, p99 333ms, per-lobby p99 spread best 328ms → worst 336ms (8ms!) — zero noisy-neighbor effect. PASS, 0.1% errors, memory flat 670MB.**
 - Pitfall 105: per-lobby latency floor in these runs is host scheduling (15K bots + server on one box) — per-lobby *fairness* is the meaningful metric in-box; absolute latency needs remote clients.
 
+### Session 54b — Template performance parity (native everywhere)
+
+- **game_reducers.rs.txt: 18 → 28 `#[reducer]` fns** — ported the 10 missing JS reducers to native (apply_damage incl. player-or-NPC fallback, open_loot_box seeded roll, guild_create/invite/accept/kick incl. `ctx.caller_id` owner check, accept_quest/complete_quest, create_match, reset_weekly via `ctx.tables.list_rows_with_keys`). chat_reducers.rs.txt already had full parity (15/15).
+- **`ReducerContext::timestamp()` method added** — template code called `ctx.timestamp()` but only the field existed; embedded templates had never been compile-checked. (Rust allows same-name field+method.)
+- **Embedded scaffold VERIFIED end-to-end**: `neondb init --template rust/game-ready` → `cd embedded && cargo build --release` compiles clean and boots with all 28 native reducers auto-registered. On THIS box use `cargo +stable-x86_64-pc-windows-gnu build` (no MSVC installed; repo pins gnu via rust-toolchain.toml, scaffolds don't — correct for normal users). PITFALL 110: building scaffolded projects from MSYS bash hits coreutils `link` shadowing → use PowerShell.
+- **Unity + Godot templates now ship `server/`** — the full native game server (EMBEDDED_* + GAME_REDUCERS_RS via `write_native_game_server`), so `neondb init --template unity|godot` = client + native-speed backend in one scaffold. "Same or better across templates" now holds: native/WASM templates at full benchmark speed; JS templates remain the dev on-ramp with `neondb build` → WASM as their production path.
+
 ### Session 54 — OCC lost-update fix + third-party driver validation + write ceiling + soak
 
 **1. Lost-update race FIXED — optimistic concurrency control on TableStore (the production-blocker):**

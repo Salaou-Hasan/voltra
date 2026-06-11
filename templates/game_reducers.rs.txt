@@ -265,3 +265,164 @@ fn cleanup_sessions(ctx: ReducerContext) {
     }
     ret!({ "ok": true, "removed": removed })
 }
+
+// ── Combat: server-authoritative damage (players or NPCs) ────────────────────
+
+#[reducer]
+fn apply_damage(ctx: ReducerContext, target_id: String, amount: i64) {
+    let (table, mut t) = match ctx.get("players", &target_id)? {
+        Some(p) => ("players", p),
+        None => match ctx.get("npcs", &target_id)? {
+            Some(n) => ("npcs", n),
+            None => ret!({ "error": "not_found" }),
+        },
+    };
+    let hp = (t["hp"].as_i64().unwrap_or(0) - amount.max(0)).max(0);
+    t["hp"] = json!(hp);
+    ctx.set(table, &target_id, t)?;
+    ret!({ "ok": true, "hp": hp })
+}
+
+// ── Loot: deterministic roll from a seed ──────────────────────────────────────
+
+#[reducer]
+fn open_loot_box(ctx: ReducerContext, player_id: String, _box_id: String, seed: i64) {
+    if ctx.get("players", &player_id)?.is_none() {
+        ret!({ "error": "not_found" });
+    }
+    let items = ["sword", "potion", "shield", "gold"];
+    let idx = (seed.rem_euclid(items.len() as i64)) as usize;
+    let reward = items[idx];
+    let k = format!("{player_id}:{reward}");
+    let mut inv = ctx.get("inventory", &k)?
+        .unwrap_or_else(|| json!({ "player_id": player_id, "item_id": reward, "qty": 0 }));
+    let qty = inv["qty"].as_i64().unwrap_or(0) + 1;
+    inv["qty"] = json!(qty);
+    ctx.set("inventory", &k, inv)?;
+    ret!({ "ok": true, "reward": reward, "qty": qty })
+}
+
+// ── Guilds ────────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn guild_create(ctx: ReducerContext, guild_id: String, name: String, owner_id: String) {
+    if ctx.get("guilds", &guild_id)?.is_some() {
+        ret!({ "error": "exists" });
+    }
+    ctx.set("guilds", &guild_id, json!({
+        "guild_id": &guild_id, "name": name, "owner": owner_id,
+        "members": [owner_id], "created_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true, "guild_id": guild_id })
+}
+
+#[reducer]
+fn guild_invite(ctx: ReducerContext, guild_id: String, invitee: String) {
+    if ctx.get("guilds", &guild_id)?.is_none() {
+        ret!({ "error": "no_such_guild" });
+    }
+    let k = format!("{guild_id}:{invitee}");
+    ctx.set("guild_invites", &k, json!({
+        "guild_id": guild_id, "invitee": invitee, "status": "pending",
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn guild_accept(ctx: ReducerContext, guild_id: String, invitee: String) {
+    let k = format!("{guild_id}:{invitee}");
+    let invite = ctx.get("guild_invites", &k)?;
+    let mut g = match (invite, ctx.get("guilds", &guild_id)?) {
+        (Some(_), Some(g)) => g,
+        _ => ret!({ "error": "no_invite" }),
+    };
+    let members = g["members"].as_array_mut();
+    if let Some(m) = members {
+        let v = json!(invitee);
+        if !m.contains(&v) {
+            m.push(v);
+        }
+    }
+    let members_out = g["members"].clone();
+    ctx.set("guilds", &guild_id, g)?;
+    ctx.delete("guild_invites", &k)?;
+    ret!({ "ok": true, "members": members_out })
+}
+
+#[reducer]
+fn guild_kick(ctx: ReducerContext, guild_id: String, member: String) {
+    let mut g = match ctx.get("guilds", &guild_id)? {
+        Some(g) => g,
+        None => ret!({ "error": "no_such_guild" }),
+    };
+    if g["owner"].as_str().unwrap_or("") != ctx.caller_id {
+        ret!({ "error": "forbidden" });
+    }
+    if let Some(m) = g["members"].as_array_mut() {
+        m.retain(|v| v.as_str() != Some(member.as_str()));
+    }
+    let members_out = g["members"].clone();
+    ctx.set("guilds", &guild_id, g)?;
+    ret!({ "ok": true, "members": members_out })
+}
+
+// ── Quests ────────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn accept_quest(ctx: ReducerContext, player_id: String, quest_id: String) {
+    let k = format!("{player_id}:{quest_id}");
+    if ctx.get("quests", &k)?.is_some() {
+        ret!({ "error": "already_active" });
+    }
+    ctx.set("quests", &k, json!({
+        "player_id": player_id, "quest_id": &quest_id,
+        "progress": 0, "status": "active",
+    }))?;
+    ret!({ "ok": true, "quest_id": quest_id })
+}
+
+#[reducer]
+fn complete_quest(ctx: ReducerContext, player_id: String, quest_id: String, xp: i64, gold: i64) {
+    let k = format!("{player_id}:{quest_id}");
+    let mut q = match ctx.get("quests", &k)? {
+        Some(q) => q,
+        None => ret!({ "error": "not_found" }),
+    };
+    let mut p = match ctx.get("players", &player_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "not_found" }),
+    };
+    q["status"] = json!("complete");
+    ctx.set("quests", &k, q)?;
+    let new_xp = p["xp"].as_i64().unwrap_or(0) + xp;
+    let new_gold = p["currency"].as_i64().unwrap_or(0) + gold;
+    p["xp"] = json!(new_xp);
+    p["currency"] = json!(new_gold);
+    ctx.set("players", &player_id, p)?;
+    ret!({ "ok": true, "xp": new_xp, "currency": new_gold })
+}
+
+// ── Matches ───────────────────────────────────────────────────────────────────
+
+#[reducer]
+fn create_match(ctx: ReducerContext, match_id: String, player_a: String, player_b: String) {
+    ctx.delete("matchmaking", &player_a)?;
+    ctx.delete("matchmaking", &player_b)?;
+    ctx.set("matches", &match_id, json!({
+        "match_id": &match_id, "players": [player_a, player_b],
+        "status": "starting", "created_at": ctx.timestamp(),
+    }))?;
+    ret!({ "ok": true, "match_id": match_id })
+}
+
+// ── Maintenance ───────────────────────────────────────────────────────────────
+
+#[reducer]
+fn reset_weekly(ctx: ReducerContext) {
+    let entries = ctx.tables.list_rows_with_keys("leaderboard").unwrap_or_default();
+    let cleared = entries.len();
+    for (key, _) in entries {
+        ctx.delete("leaderboard", &key)?;
+    }
+    ret!({ "ok": true, "cleared": cleared })
+}

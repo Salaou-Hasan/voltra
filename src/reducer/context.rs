@@ -86,6 +86,12 @@ impl ReducerContext {
         }
     }
 
+    /// Wall-clock timestamp of this call (nanoseconds since epoch).
+    /// Method form so `#[reducer]` template code can write `ctx.timestamp()`.
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
     pub fn with_schema(mut self, schema: Arc<SchemaRegistry>) -> Self {
         self.schema = Some(schema);
         self
