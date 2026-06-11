@@ -1,17 +1,28 @@
+# Single-node NeonDB via plain `docker compose up` (no Dokploy).
+# For a Dokploy deployment use docker-compose.dokploy.yml + deploy/DOKPLOY.md.
 services:
   neondb:
     build: .
+    restart: unless-stopped
     environment:
-      NEONDB_NODE_ID: "1"
-      NEONDB_SHARD_COUNT: "1"
-      NEONDB_METRICS_PORT: "3001"
-      NEONDB_WS_PORT: "3000"
+      NEONDB_HOST: "0.0.0.0"             # required inside a container
+      NEONDB_PORT: "3000"                # WebSocket game protocol
+      NEONDB_METRICS_PORT: "3001"        # metrics + admin + /healthz
+      NEONDB_REDIS_PORT: "6379"
+      NEONDB_PG_PORT: "5432"
+      NEONDB_API_KEY: "${NEONDB_API_KEY:-changeme-set-a-real-secret}"
+      NEONDB_WAL_PATH: "/var/lib/neondb/data/neondb.wal"
+      NEONDB_SNAPSHOT_DIR: "/var/lib/neondb/data/snapshots"
+      NEONDB_BACKUP_DIR: "/var/lib/neondb/data/backups"
+      NEONDB_BACKUP_INTERVAL_SECS: "3600"
+      NEONDB_BACKUP_KEEP: "24"
     volumes:
-      - neondb-data:/var/lib/neondb
+      - neondb-data:/var/lib/neondb/data
     ports:
       - "3000:3000"
-      - "3001:3001"
-    restart: unless-stopped
+      - "3001:3001"   # ⚠ admin/metrics — firewall in production
+      - "6379:6379"
+      - "5432:5432"
 
 volumes:
   neondb-data:

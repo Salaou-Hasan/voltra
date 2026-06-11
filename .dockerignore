@@ -1,7 +1,9 @@
-target/
+target/**
+**/target/**
 .git/
+**/node_modules/**
 *.log
-node_modules/
-**/*.bak
 .env
-neondb-client-ts/node_modules/
+.github/
+mygame/
+my-project/
