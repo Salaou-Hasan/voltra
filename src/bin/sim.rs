@@ -530,8 +530,8 @@ enum ScenarioCmd {
         /// Concurrent virtual players
         #[arg(short, long, default_value = "200")]
         players: usize,
-        /// Simulation duration in seconds
-        #[arg(short, long, default_value = "60")]
+        /// Simulation duration in seconds (alias: --duration-secs)
+        #[arg(short, long, visible_alias = "duration-secs", default_value = "60")]
         duration: u64,
         /// Ramp-up seconds before metrics collection starts
         #[arg(long, default_value = "5")]
@@ -546,8 +546,8 @@ enum ScenarioCmd {
         /// Concurrent virtual users
         #[arg(short, long, default_value = "200")]
         users: usize,
-        /// Simulation duration in seconds
-        #[arg(short, long, default_value = "60")]
+        /// Simulation duration in seconds (alias: --duration-secs)
+        #[arg(short, long, visible_alias = "duration-secs", default_value = "60")]
         duration: u64,
         /// Pre-created rooms (users round-robin join them)
         #[arg(long, default_value = "20")]
@@ -562,7 +562,7 @@ enum ScenarioCmd {
         players: usize,
         #[arg(long, default_value = "100")]
         users: usize,
-        #[arg(short, long, default_value = "60")]
+        #[arg(short, long, visible_alias = "duration-secs", default_value = "60")]
         duration: u64,
         #[arg(long, default_value = "5")]
         ramp: u64,

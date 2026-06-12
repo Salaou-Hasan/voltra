@@ -9,6 +9,172 @@ into concrete, prioritized tasks for the next agent(s) to execute.
 
 ---
 
+## CURRENT ADDENDUM - NEON V1 LOW-LATENCY GAME RUNTIME
+
+**Added**: 2026-06-12  
+**Current Build Check**: `cargo check --bin neondb` and `cargo check --bin neondb-sim` pass.  
+**Current Product Direction**: Neon V1 - a minimal-latency game database/server/runtime.
+
+This section supersedes the older SpacetimeDB-parity framing as the current product direction, but
+the older roadmap/history below is intentionally preserved for context.
+
+### Mission
+
+NeonDB is being rebuilt into **Neon V1**: a low-latency authoritative game database/server/runtime.
+
+Every major change must improve or preserve p50/p99 latency, hot-path allocation rate, fanout cost,
+tick cost, memory per player/lobby, bandwidth per player, crash recovery, durability, and developer
+speed through modular templates.
+
+### Keep From Current NeonDB
+
+- Native Rust `#[reducer]` workflow.
+- JS/WASM reducer loading where useful for developer flexibility.
+- `TableStore` for durable gameplay records.
+- WAL and snapshot recovery.
+- WebSocket + MessagePack protocol.
+- Subscription manager and tick-coalesced fanout.
+- TypeScript and Rust SDKs.
+- Unity/Godot client templates.
+- Redis/PostgreSQL protocol surfaces where they do not touch the hot simulation path.
+- `neondb-sim serve --external` benchmark split.
+- Existing auth, permissions, presence, TTL, metrics, backups, and admin surfaces where still useful.
+
+### Neon V1 Architecture Target
+
+Neon V1 needs two complementary state models:
+
+1. **Durable Gameplay State**
+   - Stored in `TableStore`.
+   - Good for inventory, economy, guilds, quests, chat, matchmaking records, profiles, leaderboards.
+   - Mutated through reducers and protected by WAL/snapshots.
+
+2. **Hot Runtime State**
+   - Stored in lobby-owned ECS/SoA memory.
+   - Good for movement, position, velocity, combat state, hit detection, NPC state, AOI.
+   - Updated on ticks with minimal allocation and no blocking I/O.
+
+Account data must stay outside the runtime behind an Auth Adapter. The hot path should only see
+player id, session id, roles/permissions, and runtime character/state id.
+
+### Completed In This Pivot
+
+- Package version moved to `1.0.0`.
+- `neondb --version` prints `neondb 1`.
+- Added `src/runtime/mod.rs` with runtime module catalog, dependency resolution, and genre recipes.
+- Added `neondb modules` command.
+- Added `docs/neon-v1-runtime.md`.
+- Added `--duration-secs` compatibility alias for `neondb-sim`.
+- Raised OCC conflict retry limit from 5 to 64 in both server entry paths.
+- Added a thread yield between OCC retries.
+
+### Immediate Neon V1 TODOs
+
+#### TODO-V1-001 - Replace Preset Templates With Module-First Recipes
+
+**Status**: Not started  
+**Priority**: Critical
+
+Current templates are preset-first. Neon V1 needs module-first composition:
+
+```text
+fps = lobby + tick + ecs + aoi + movement + weapons + combat + hit-detection + matchmaking
+mmo = lobby + tick + ecs + aoi + movement + combat + inventory + equipment + economy + quests + guilds + chat
+battle-royale = lobby + tick + ecs + aoi + movement + weapons + combat + hit-detection + replay
+racing = lobby + tick + ecs + aoi + movement + matchmaking + leaderboard + replay
+social = lobby + sessions + parties + chat + presence
+```
+
+Target CLI:
+
+```powershell
+neondb init my-game --genre fps
+neondb init my-game --genre mmo --with chat,guilds,trading
+neondb init my-game --modules lobby,movement,combat,inventory
+neondb init my-game --client unity --genre survival
+```
+
+Keep old templates until the new scaffolder works. Then move old presets under `legacy/*` or hide
+them from default listing.
+
+#### TODO-V1-002 - Add Lobby Runtime Skeleton
+
+**Status**: Not started  
+**Priority**: Critical
+
+Add a first-class `LobbyManager`. A lobby should own its simulation state, ECS world, AOI,
+subscriptions, reducers/systems, runtime persistence lifecycle, and metrics.
+
+#### TODO-V1-003 - Add ECS/SoA Hot-State Foundation
+
+**Status**: Not started  
+**Priority**: Critical
+
+Add the first narrow ECS storage layer for hot simulation: entity id, lobby id, player/session
+association, transform/position, velocity, and health/alive state.
+
+#### TODO-V1-004 - Add AOI / Interest Management Foundation
+
+**Status**: Not started  
+**Priority**: Critical
+
+Build spatial interest management over lobby ECS state. Avoid O(n^2) fanout and per-tick allocation.
+
+#### TODO-V1-005 - Add Runtime Delta Encoder
+
+**Status**: Not started  
+**Priority**: High
+
+Create a compact, transport-agnostic runtime delta format for hot-state updates.
+
+#### TODO-V1-006 - Add Auth Adapter Boundary
+
+**Status**: Not started  
+**Priority**: High
+
+Separate account validation from runtime state. Runtime accepts validated session tokens; account
+credentials, billing, OAuth secrets, and business/account records stay outside the tick path.
+
+#### TODO-V1-007 - Integrate Module Recipes Into `neondb init`
+
+**Status**: Not started  
+**Priority**: High
+
+Wire `src/runtime/mod.rs` into scaffolding with `--genre`, `--modules`, `--with`, and `--client`.
+
+#### TODO-V1-008 - 10k CCU 24h Game Simulation Validation
+
+**Status**: Ready to run after release rebuild; not yet validated  
+**Priority**: High
+
+```powershell
+cargo build --release --bin neondb-sim
+.\target\release\neondb-sim.exe serve --ws-port 3777 --metrics-port 3778
+.\target\release\neondb-sim.exe --external --url ws://127.0.0.1:3777 --metrics-url http://127.0.0.1:3778 --id-offset 0 game --players 5000 --duration-secs 86400 --lobby-size 75
+.\target\release\neondb-sim.exe --external --url ws://127.0.0.1:3777 --metrics-url http://127.0.0.1:3778 --id-offset 5000 game --players 5000 --duration-secs 86400 --lobby-size 75
+```
+
+Watch error rate, p50/p99 latency, memory growth, WAL growth, connection count stability, and health
+samples that incorrectly show `mem=0`, `wal=0`, `rows=0`, `conn=0`.
+
+### Production Issues Still Worth Tracking
+
+- **PROD-001**: Health samples sometimes report zeroes during sim. Report sample unavailable instead.
+- **PROD-002**: Clean up `neondb-sim` warnings.
+- **PROD-003**: OCC retry increase is a mitigation, not the final hot-row strategy.
+- **PROD-004**: Confirm full crash recovery end to end after runtime work begins.
+
+### Deferred For Now
+
+- Multi-node clustering.
+- Raft/consensus.
+- Multi-region coordination.
+- QUIC/raw UDP transport replacement.
+- Full generic account-management system.
+- Microservices/Kubernetes architecture.
+
+---
+
 ## 🎯 THE GOAL (Session 44 — set by project owner)
 
 **Make NeonDB a single-node, production-ready game backend at full feature + performance parity

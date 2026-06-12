@@ -18,6 +18,7 @@ pub mod pg;
 pub mod presence;
 pub mod reducer;
 pub mod replication;
+pub mod runtime;
 pub mod schema;
 pub mod sql;
 pub mod subscriptions;

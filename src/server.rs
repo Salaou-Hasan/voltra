@@ -380,8 +380,10 @@ async fn run_server_inner(
                 // Execute with OCC conflict retry: if a concurrent worker
                 // committed a row this reducer read AND writes, the commit
                 // aborts and we re-execute against fresh state. This is what
-                // makes read-modify-write reducers lose zero updates.
-                const MAX_CONFLICT_RETRIES: usize = 5;
+                // makes read-modify-write reducers lose zero updates. Heavy
+                // game simulations can legitimately race the same hot row many
+                // times, so retry generously before surfacing a conflict.
+                const MAX_CONFLICT_RETRIES: usize = 64;
                 let mut attempt = 0;
                 let response = loop {
                     attempt += 1;
@@ -400,6 +402,7 @@ async fn run_server_inner(
                                 if attempt < MAX_CONFLICT_RETRIES =>
                             {
                                 ctx.reset_for_retry();
+                                std::thread::yield_now();
                                 continue;
                             }
                             Err(e) => {

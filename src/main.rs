@@ -80,7 +80,7 @@ const TEMPLATES: &[Template] = &[
 
 #[derive(Parser, Debug)]
 #[command(name = "neondb")]
-#[command(author, version, about = "NeonDB — self-hosted real-time game backend")]
+#[command(author, version = "1", about = "NeonDB — self-hosted real-time game backend")]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
@@ -98,6 +98,8 @@ enum Commands {
     },
     /// List available project templates
     Templates,
+    /// List Neon V1 modular runtime modules and genre recipes
+    Modules,
     /// Compile JS reducers in modules/ to WASM (requires `javy`)
     Build {
         #[arg(short = 'm', long, default_value = "modules")]
@@ -229,6 +231,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init { path, template } => { init_project(path, template)?; Ok(()) }
         Commands::Templates => { cmd_list_templates(); Ok(()) }
+        Commands::Modules => { cmd_list_runtime_modules(); Ok(()) }
         Commands::Build { modules_dir } => {
             build_wasm_modules(modules_dir.as_deref().unwrap_or(Path::new("modules")))
         }
@@ -611,6 +614,36 @@ fn cmd_list_templates() {
     println!("    neondb init my-game    --template rust/game-ready");
     println!("    neondb init my-chat    --template rust/chat");
     println!("    neondb init my-ts-app  --template typescript");
+    println!();
+}
+
+fn cmd_list_runtime_modules() {
+    println!();
+    println!("  Neon V1 Runtime Modules");
+    println!();
+    for module in neondb::runtime::builtin_modules() {
+        let deps = if module.dependencies.is_empty() {
+            "none".to_string()
+        } else {
+            module.dependencies.join(", ")
+        };
+        println!(
+            "  {:18} [{:?}] - {}",
+            module.id, module.domain, module.description
+        );
+        println!("    deps: {deps}");
+    }
+
+    println!();
+    println!("  Genre Recipes");
+    println!();
+    for recipe in neondb::runtime::builtin_genres() {
+        println!("  {:18} - {}", recipe.id, recipe.description);
+        println!("    modules: {}", recipe.modules.join(", "));
+    }
+    println!();
+    println!("  These are the Neon V1 composition primitives. Upcoming init work will");
+    println!("  scaffold projects from recipes, e.g. fps + chat or mmo + trading.");
     println!();
 }
 
@@ -2428,7 +2461,7 @@ async fn run_server(config: Config) -> Result<()> {
                         if let Some(tid) = call_tenant {
                             ctx = ctx.with_tenant(tid, tenant_blk);
                         }
-                        const MAX_CONFLICT_RETRIES: usize = 5;
+                        const MAX_CONFLICT_RETRIES: usize = 64;
                         let mut attempt = 0;
                         loop {
                             attempt += 1;
@@ -2442,6 +2475,7 @@ async fn run_server(config: Config) -> Result<()> {
                                         if attempt < MAX_CONFLICT_RETRIES =>
                                     {
                                         ctx.reset_for_retry();
+                                        std::thread::yield_now();
                                         continue;
                                     }
                                     Err(e) => Outcome::CommitErr(e.to_string()),
