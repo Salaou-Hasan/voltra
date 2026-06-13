@@ -922,23 +922,10 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
 
 // ── New game-focused scaffold functions ───────────────────────────────────────
 
-/// Return the path to the neondb crate root, resolved from the running binary.
-fn find_neondb_root() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(root) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
-            if root.join("Cargo.toml").exists() {
-                return root.to_path_buf();
-            }
-        }
-    }
-    std::path::PathBuf::from(".")
-}
-
 /// Generate a Cargo.toml that embeds the NeonDB server as a library.
 fn game_cargo_toml(name: &str) -> String {
-    let path = find_neondb_root().to_string_lossy().replace('\\', "/");
     format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ path = \"{path}\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.1\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
     )
 }
 
@@ -956,7 +943,7 @@ fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "SCALING.md",                  SCALING_MD)?;
     wf(p, "README.md", &format!("# {name}\n\nNeonDB embedded game server.\n\nSee SCALING.md for the scaling guide.\n"))?;
     print_success(name, "game/basic", &[
-        ("Cargo.toml",                  "cargo build --release && cargo run --release -- start"),
+        ("Cargo.toml",                  "neondb game server (run `neondb start` from this folder)"),
         ("src/reducers/spawn.rs",       "spawn(player_id, lobby, class)"),
         ("src/reducers/move_player.rs", "move_player(player_id, x, y)"),
         ("src/reducers/despawn.rs",     "despawn(player_id)"),
