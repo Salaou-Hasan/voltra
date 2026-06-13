@@ -117,6 +117,11 @@ enum Commands {
         #[arg(value_name = "MODULE", help = "chat | inventory | leaderboard | matchmaking | guilds | quests | economy | combat | world")]
         module: String,
     },
+    /// Check for and install updates to all NeonDB binaries
+    Update {
+        #[arg(long, help = "Only check — do not download")]
+        check: bool,
+    },
     /// List available project templates
     Templates,
     /// List available add-on modules (`neon add <module>`)
@@ -263,12 +268,15 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init { path, template } => { init_project(path, template)?; Ok(()) }
         Commands::Add { module } => { cmd_add_module(&module, &std::env::current_dir()?)?; Ok(()) }
+        Commands::Update { check } => { neondb::updater::cmd_update(check) }
         Commands::Templates => { cmd_list_templates(); Ok(()) }
         Commands::Modules => { cmd_list_modules(); Ok(()) }
         Commands::Build { modules_dir } => {
             build_wasm_modules(modules_dir.as_deref().unwrap_or(Path::new("modules")))
         }
         Commands::Start { host, port, data_dir, wal_path, fsync_interval_ms } => {
+            // Non-blocking background version hint — prints one line if behind
+            std::thread::spawn(neondb::updater::check_and_hint);
             let mut config = Config::from_env();
             if let Some(h) = host { config.host = h; }
             if let Some(p) = port { config.port = p; }

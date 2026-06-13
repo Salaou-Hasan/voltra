@@ -27,6 +27,7 @@ pub mod table;
 pub mod ttl;
 pub mod wal;
 pub mod server;
+pub mod updater;
 pub mod worker_pool;
 
 pub use error::{NeonDBError, Result};
