@@ -1,0 +1,21 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn spawn(ctx: Ctx, player_id: String, lobby: String, class: String) {
+    if ctx.get("players", &player_id)?.is_some() {
+        ret!({ "error": "already spawned" })
+    }
+    ctx.set("players", &player_id, json!({
+        "player_id": player_id, "lobby": lobby, "region": "default",
+        "x": 0.0, "y": 0.0, "hp": 100, "max_hp": 100,
+        "class": class, "alive": true
+    }))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis() as i64;
+    ctx.set("sessions", &player_id, json!({
+        "player_id": player_id, "connected_at": now, "last_seen": now
+    }))?;
+    ret!({ "ok": true })
+}

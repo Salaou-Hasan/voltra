@@ -1,0 +1,6 @@
+mod reducers;
+
+fn main() {
+    neondb::run_server_blocking(neondb::config::Config::from_env())
+        .expect("NeonDB server exited with error");
+}

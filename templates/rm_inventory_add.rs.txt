@@ -1,0 +1,24 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn add_item(ctx: Ctx, player_id: String, item_id: String, qty: i64) {
+    let key = format!("{}:{}", player_id, item_id);
+    let existing = ctx.get("inventory", &key)?;
+    let current_qty = existing
+        .as_ref()
+        .and_then(|r| r["qty"].as_i64())
+        .unwrap_or(0);
+    let new_qty = current_qty + qty;
+
+    ctx.set("inventory", &key, json!({
+        "key": key,
+        "player_id": player_id,
+        "item_id": item_id,
+        "qty": new_qty,
+        "equipped": existing.as_ref().and_then(|r| r["equipped"].as_bool()).unwrap_or(false),
+        "slot": existing.as_ref().and_then(|r| r["slot"].as_str()).unwrap_or("")
+    }))?;
+
+    ret!({ "new_qty": new_qty })
+}

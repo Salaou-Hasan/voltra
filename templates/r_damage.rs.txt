@@ -1,0 +1,16 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn damage(ctx: Ctx, target_id: String, amount: i64) {
+    let mut player = match ctx.get("players", &target_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "target not found" }),
+    };
+    let hp = player["hp"].as_i64().unwrap_or(0);
+    let new_hp = (hp - amount).max(0);
+    player["hp"] = json!(new_hp);
+    player["alive"] = json!(new_hp > 0);
+    ctx.set("players", &target_id, player)?;
+    ret!({ "ok": true, "new_hp": new_hp, "alive": new_hp > 0 })
+}

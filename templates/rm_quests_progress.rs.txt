@@ -1,0 +1,22 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn update_quest_progress(ctx: Ctx, player_id: String, quest_id: String, amount: i64) {
+    let key = format!("{}:{}", player_id, quest_id);
+    let existing = ctx.get("player_quests", &key)?
+        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Quest not found"))?;
+
+    let current_progress = existing["progress"].as_i64().unwrap_or(0);
+    let new_progress = current_progress + amount;
+
+    ctx.set("player_quests", &key, json!({
+        "key": key,
+        "player_id": player_id,
+        "quest_id": quest_id,
+        "progress": new_progress,
+        "status": existing["status"]
+    }))?;
+
+    ret!({ "new_progress": new_progress })
+}

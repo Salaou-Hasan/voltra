@@ -1,0 +1,13 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn queue_player(ctx: Ctx, player_id: String, rating: i64) {
+    ctx.set("matchmaking", &player_id, json!({
+        "player_id": player_id,
+        "rating": rating,
+        "queued_at": ctx.timestamp() as i64
+    }))?;
+
+    ret!({ "ok": true })
+}

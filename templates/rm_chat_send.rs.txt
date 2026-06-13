@@ -1,0 +1,28 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn send_message(ctx: Ctx, room: String, player_id: String, text: String) {
+    // Read or create the room row
+    let room_row = ctx.get("rooms", &room)?;
+    if room_row.is_none() {
+        ctx.set("rooms", &room, json!({
+            "room": room,
+            "member_count": 0,
+            "created_at": ctx.timestamp()
+        }))?;
+    }
+
+    // Write the message keyed by room:player_id:timestamp
+    let ts = ctx.timestamp();
+    let msg_key = format!("{}:{}:{}", room, player_id, ts);
+    ctx.set("messages", &msg_key, json!({
+        "key": msg_key,
+        "room": room,
+        "player_id": player_id,
+        "text": text,
+        "sent_at": ts
+    }))?;
+
+    ret!({ "ok": true })
+}

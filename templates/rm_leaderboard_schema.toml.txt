@@ -1,0 +1,22 @@
+[[table]]
+name = "leaderboard"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "player_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "board"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "score"
+type = "i64"
+required = true

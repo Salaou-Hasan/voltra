@@ -1,0 +1,30 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn kick_from_guild(ctx: Ctx, guild_id: String, target_id: String) {
+    let caller = ctx.caller_id.clone();
+
+    // Verify caller is the guild owner
+    let guild = ctx.get("guilds", &guild_id)?
+        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Guild not found"))?;
+
+    if guild["owner"].as_str().unwrap_or("") != caller {
+        ret!({ "ok": false, "error": "Only the guild owner can kick players" })
+    }
+
+    // Delete the member row
+    let member_key = format!("{}:{}", guild_id, target_id);
+    ctx.delete("guild_members", &member_key)?;
+
+    // Decrement member_count
+    let member_count = guild["member_count"].as_i64().unwrap_or(1);
+    ctx.set("guilds", &guild_id, json!({
+        "guild_id": guild_id,
+        "name": guild["name"],
+        "owner": guild["owner"],
+        "member_count": (member_count - 1).max(0)
+    }))?;
+
+    ret!({ "ok": true })
+}

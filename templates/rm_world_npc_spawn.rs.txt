@@ -1,0 +1,18 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn spawn_npc(ctx: Ctx, npc_id: String, lobby: String, npc_type: String) {
+    ctx.set("npcs", &npc_id, json!({
+        "npc_id": npc_id,
+        "lobby": lobby,
+        "npc_type": npc_type,
+        "hp": 100,
+        "max_hp": 100,
+        "alive": true,
+        "x": 0.0_f64,
+        "y": 0.0_f64
+    }))?;
+
+    ret!({ "ok": true })
+}

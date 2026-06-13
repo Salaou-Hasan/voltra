@@ -1,0 +1,18 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn respawn(ctx: Ctx, player_id: String) {
+    let player = ctx.get("players", &player_id)?
+        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Player not found"))?;
+
+    let max_hp = player["max_hp"].as_i64().unwrap_or(100);
+    let mut updated = player.clone();
+    updated["hp"] = json!(max_hp);
+    updated["alive"] = json!(true);
+    updated["x"] = json!(0.0_f64);
+    updated["y"] = json!(0.0_f64);
+    ctx.set("players", &player_id, updated)?;
+
+    ret!({ "ok": true })
+}

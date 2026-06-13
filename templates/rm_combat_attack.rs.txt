@@ -1,0 +1,27 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn attack(ctx: Ctx, attacker_id: String, target_id: String, damage: i64) {
+    let _ = attacker_id; // future: validate attacker exists
+
+    // Try players first, then npcs
+    let (table, target) = if let Some(p) = ctx.get("players", &target_id)? {
+        ("players", p)
+    } else if let Some(n) = ctx.get("npcs", &target_id)? {
+        ("npcs", n)
+    } else {
+        ret!({ "ok": false, "error": "Target not found" })
+    };
+
+    let current_hp = target["hp"].as_i64().unwrap_or(0);
+    let new_hp = (current_hp - damage).max(0);
+    let alive = new_hp > 0;
+
+    let mut updated = target.clone();
+    updated["hp"] = json!(new_hp);
+    updated["alive"] = json!(alive);
+    ctx.set(table, &target_id, updated)?;
+
+    ret!({ "target_id": target_id, "new_hp": new_hp, "alive": alive })
+}

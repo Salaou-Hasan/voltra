@@ -1,0 +1,42 @@
+[[table]]
+name = "npcs"
+
+[[table.columns]]
+name = "npc_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "lobby"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "npc_type"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "hp"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "max_hp"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "alive"
+type = "bool"
+required = true
+
+[[table.columns]]
+name = "x"
+type = "f64"
+required = true
+
+[[table.columns]]
+name = "y"
+type = "f64"
+required = true

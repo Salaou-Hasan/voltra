@@ -1,0 +1,44 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn equip_item(ctx: Ctx, player_id: String, item_id: String, slot: String) {
+    let equip_key = format!("{}:{}", player_id, slot);
+
+    // Unequip the currently equipped item in this slot, if any
+    if let Some(currently_equipped) = ctx.get("inventory", &equip_key)? {
+        let old_item_id = currently_equipped["item_id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if !old_item_id.is_empty() {
+            let old_key = format!("{}:{}", player_id, old_item_id);
+            if let Some(old_row) = ctx.get("inventory", &old_key)? {
+                ctx.set("inventory", &old_key, json!({
+                    "key": old_key,
+                    "player_id": player_id,
+                    "item_id": old_item_id,
+                    "qty": old_row["qty"],
+                    "equipped": false,
+                    "slot": ""
+                }))?;
+            }
+        }
+    }
+
+    // Equip the new item
+    let new_key = format!("{}:{}", player_id, item_id);
+    let existing = ctx.get("inventory", &new_key)?;
+    let qty = existing.as_ref().and_then(|r| r["qty"].as_i64()).unwrap_or(1);
+
+    ctx.set("inventory", &new_key, json!({
+        "key": new_key,
+        "player_id": player_id,
+        "item_id": item_id,
+        "qty": qty,
+        "equipped": true,
+        "slot": slot
+    }))?;
+
+    ret!({ "ok": true })
+}

@@ -1,0 +1,13 @@
+use neondb::{reducer, ret};
+
+#[reducer]
+fn despawn(ctx: Ctx, player_id: String) {
+    let is_owner = ctx.caller_id == player_id;
+    let is_admin = ctx.caller_role == "admin";
+    if !is_owner && !is_admin {
+        ret!({ "error": "not your player" })
+    }
+    ctx.delete("players", &player_id)?;
+    ctx.delete("sessions", &player_id)?;
+    ret!({ "ok": true })
+}

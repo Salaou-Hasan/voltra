@@ -1,0 +1,33 @@
+[[table]]
+name = "inventory"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "player_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "item_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "qty"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "equipped"
+type = "bool"
+required = false
+default = false
+
+[[table.columns]]
+name = "slot"
+type = "String"
+required = false

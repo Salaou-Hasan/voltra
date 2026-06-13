@@ -1,0 +1,26 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn transfer_gold(ctx: Ctx, from_id: String, to_id: String, amount: i64) {
+    let from = ctx.get("players", &from_id)?
+        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Sender not found"))?;
+    let to = ctx.get("players", &to_id)?
+        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Recipient not found"))?;
+
+    let from_gold = from["gold"].as_i64().unwrap_or(0);
+    if from_gold < amount {
+        ret!({ "ok": false, "error": "Not enough gold" })
+    }
+
+    let mut updated_from = from.clone();
+    updated_from["gold"] = json!(from_gold - amount);
+    ctx.set("players", &from_id, updated_from)?;
+
+    let to_gold = to["gold"].as_i64().unwrap_or(0);
+    let mut updated_to = to.clone();
+    updated_to["gold"] = json!(to_gold + amount);
+    ctx.set("players", &to_id, updated_to)?;
+
+    ret!({ "ok": true })
+}

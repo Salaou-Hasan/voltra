@@ -1,0 +1,24 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn move_player(ctx: Ctx, player_id: String, x: f64, y: f64) {
+    let mut player = match ctx.get("players", &player_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "player not found" }),
+    };
+    if !player["alive"].as_bool().unwrap_or(false) {
+        ret!({ "error": "player is dead" })
+    }
+    player["x"] = json!(x);
+    player["y"] = json!(y);
+    ctx.set("players", &player_id, player)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis() as i64;
+    if let Ok(Some(mut session)) = ctx.get("sessions", &player_id) {
+        session["last_seen"] = json!(now);
+        ctx.set("sessions", &player_id, session)?;
+    }
+    ret!({ "ok": true })
+}

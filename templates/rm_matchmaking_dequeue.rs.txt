@@ -1,0 +1,7 @@
+use neondb::{reducer, ret};
+
+#[reducer]
+fn dequeue_player(ctx: Ctx, player_id: String) {
+    ctx.delete("matchmaking", &player_id)?;
+    ret!({ "ok": true })
+}

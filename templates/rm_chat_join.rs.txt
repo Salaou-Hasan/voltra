@@ -1,0 +1,31 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn join_room(ctx: Ctx, room: String, player_id: String) {
+    // Create or update the rooms row, incrementing member_count
+    let existing = ctx.get("rooms", &room)?;
+    let member_count = existing
+        .as_ref()
+        .and_then(|r| r["member_count"].as_i64())
+        .unwrap_or(0);
+
+    ctx.set("rooms", &room, json!({
+        "room": room,
+        "member_count": member_count + 1,
+        "created_at": existing
+            .as_ref()
+            .and_then(|r| r["created_at"].as_i64())
+            .unwrap_or_else(|| ctx.timestamp() as i64)
+    }))?;
+
+    // Create the room_members row
+    let member_key = format!("{}:{}", room, player_id);
+    ctx.set("room_members", &member_key, json!({
+        "key": member_key,
+        "room": room,
+        "player_id": player_id
+    }))?;
+
+    ret!({ "ok": true })
+}

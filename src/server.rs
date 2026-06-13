@@ -117,6 +117,14 @@ pub async fn run_server(config: Config) -> Result<()> {
     run_server_inner(config, None).await
 }
 
+/// Blocking entry point for embedded game servers.
+/// Creates a Tokio runtime internally — callers do not need to add tokio as a dep.
+pub fn run_server_blocking(config: Config) -> Result<()> {
+    tokio::runtime::Runtime::new()
+        .map_err(|e| crate::error::NeonDBError::internal(format!("Tokio runtime: {}", e)))?
+        .block_on(run_server(config))
+}
+
 async fn run_server_inner(
     config: Config,
     handle_tx: Option<tokio::sync::oneshot::Sender<ServerHandle>>,

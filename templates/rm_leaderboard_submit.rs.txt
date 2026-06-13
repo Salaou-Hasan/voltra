@@ -1,0 +1,28 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn submit_score(ctx: Ctx, player_id: String, score: i64, board: String) {
+    let key = format!("{}:{}", board, player_id);
+    let existing = ctx.get("leaderboard", &key)?;
+    let previous_score = existing
+        .as_ref()
+        .and_then(|r| r["score"].as_i64())
+        .unwrap_or(0);
+
+    // Only write if the new score is higher
+    if score > previous_score {
+        ctx.set("leaderboard", &key, json!({
+            "key": key,
+            "player_id": player_id,
+            "board": board,
+            "score": score
+        }))?;
+    }
+
+    ret!({
+        "ok": true,
+        "previous_score": previous_score,
+        "new_score": if score > previous_score { score } else { previous_score }
+    })
+}

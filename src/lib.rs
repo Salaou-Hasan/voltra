@@ -35,7 +35,7 @@ pub use network::{
     start_listener, ClientMessage, PendingCall, ReducerCall, ReducerResponse, ServerMessage,
     SubscriptionDiff,
 };
-pub use server::{run_server, run_server_with_handle, ServerHandle};
+pub use server::{run_server, run_server_blocking, run_server_with_handle, ServerHandle};
 pub use reducer::{increment_reducer, IncrementResult, ReducerContext, ReducerRegistry};
 pub use schema::{SchemaRegistry, TableSchema, ColumnDef, ColumnType};
 pub use sql::{Executor as SqlExecutor, QueryResult as SqlQueryResult};
@@ -50,6 +50,11 @@ pub use wal::{SnapshotMeta, WalEntry, WalReader, WalWriter};
 /// users to add `inventory` as a direct dependency.
 #[doc(hidden)]
 pub use inventory;
+
+/// Re-export `rmp_serde` so the `ret!` macro can use `$crate::rmp_serde`
+/// without requiring users to add `rmp_serde` as a direct dependency.
+#[doc(hidden)]
+pub use rmp_serde;
 
 // Re-export the attribute macros so users can write `#[neondb::reducer]`
 // or `use neondb::reducer` after `use neondb::*`.
@@ -72,7 +77,7 @@ pub use neondb_macros::{reducer, table};
 #[macro_export]
 macro_rules! ret {
     ($($json:tt)*) => {{
-        let __ret_bytes = ::rmp_serde::to_vec(&::serde_json::json!($($json)*))
+        let __ret_bytes = $crate::rmp_serde::to_vec(&::serde_json::json!($($json)*))
             .map_err(|e| $crate::error::NeonDBError::reducer_error(e.to_string()))?;
         return Ok(__ret_bytes);
     }};

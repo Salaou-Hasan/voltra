@@ -91,7 +91,7 @@ fn expand_inner(input: ItemFn) -> Result<TokenStream, syn::Error> {
             struct __NeonDBArgs {
                 #(#fields)*
             }
-            let __neondb_args: __NeonDBArgs = ::rmp_serde::from_slice(args)
+            let __neondb_args: __NeonDBArgs = ::neondb::rmp_serde::from_slice(args)
                 .map_err(|e| ::neondb::error::NeonDBError::reducer_error(
                     format!("arg parse for reducer '{}': {}", #fn_name_lit, e)
                 ))?;
@@ -113,7 +113,7 @@ fn expand_inner(input: ItemFn) -> Result<TokenStream, syn::Error> {
                 // User-supplied body — `ret!(…)` is available here.
                 #body
                 // Default return when the body falls through without ret!
-                Ok(::rmp_serde::to_vec(&::serde_json::json!({ "ok": true }))
+                Ok(::neondb::rmp_serde::to_vec(&::serde_json::json!({ "ok": true }))
                     .map_err(|e| ::neondb::error::NeonDBError::reducer_error(e.to_string()))?)
             }
         }

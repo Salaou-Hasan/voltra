@@ -1,0 +1,16 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn heal(ctx: Ctx, target_id: String, amount: i64) {
+    let mut player = match ctx.get("players", &target_id)? {
+        Some(p) => p,
+        None => ret!({ "error": "target not found" }),
+    };
+    let hp     = player["hp"].as_i64().unwrap_or(0);
+    let max_hp = player["max_hp"].as_i64().unwrap_or(100);
+    let new_hp = (hp + amount).min(max_hp);
+    player["hp"] = json!(new_hp);
+    ctx.set("players", &target_id, player)?;
+    ret!({ "ok": true, "new_hp": new_hp })
+}

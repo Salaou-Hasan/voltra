@@ -1,0 +1,50 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn use_ability(ctx: Ctx, player_id: String, target_id: String, ability: String) {
+    match ability.as_str() {
+        "heal" => {
+            // Restore 30 hp to self
+            let player = ctx.get("players", &player_id)?
+                .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Player not found"))?;
+            let hp = player["hp"].as_i64().unwrap_or(0);
+            let max_hp = player["max_hp"].as_i64().unwrap_or(100);
+            let mut updated = player.clone();
+            updated["hp"] = json!((hp + 30).min(max_hp));
+            ctx.set("players", &player_id, updated)?;
+            ret!({ "ability": "heal", "applied": true })
+        }
+        "shield" => {
+            // Set target shield:true
+            let target = if let Some(p) = ctx.get("players", &target_id)? {
+                ("players", p)
+            } else if let Some(n) = ctx.get("npcs", &target_id)? {
+                ("npcs", n)
+            } else {
+                ret!({ "ok": false, "error": "Target not found" })
+            };
+            let mut updated = target.1.clone();
+            updated["shield"] = json!(true);
+            ctx.set(target.0, &target_id, updated)?;
+            ret!({ "ability": "shield", "applied": true })
+        }
+        "stun" => {
+            // Set target stunned:true
+            let target = if let Some(p) = ctx.get("players", &target_id)? {
+                ("players", p)
+            } else if let Some(n) = ctx.get("npcs", &target_id)? {
+                ("npcs", n)
+            } else {
+                ret!({ "ok": false, "error": "Target not found" })
+            };
+            let mut updated = target.1.clone();
+            updated["stunned"] = json!(true);
+            ctx.set(target.0, &target_id, updated)?;
+            ret!({ "ability": "stun", "applied": true })
+        }
+        _ => {
+            ret!({ "ok": false, "error": "Unknown ability" })
+        }
+    }
+}

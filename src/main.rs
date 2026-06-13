@@ -852,140 +852,103 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
 
 // ── New game-focused scaffold functions ───────────────────────────────────────
 
+/// Return the path to the neondb crate root, resolved from the running binary.
+fn find_neondb_root() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(root) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            if root.join("Cargo.toml").exists() {
+                return root.to_path_buf();
+            }
+        }
+    }
+    std::path::PathBuf::from(".")
+}
+
+/// Generate a Cargo.toml that embeds the NeonDB server as a library.
+fn game_cargo_toml(name: &str) -> String {
+    let path = find_neondb_root().to_string_lossy().replace('\\', "/");
+    format!(
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ path = \"{path}\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+    )
+}
+
 fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
-    // Core: spawn, move, despawn, damage, heal
-    wf(p, "reducers/spawn.js",    BASIC_SPAWN_JS)?;
-    wf(p, "reducers/move.js",     BASIC_MOVE_JS)?;
-    wf(p, "reducers/despawn.js",  BASIC_DESPAWN_JS)?;
-    wf(p, "reducers/damage.js",   BASIC_DAMAGE_JS)?;
-    wf(p, "reducers/heal.js",     BASIC_HEAL_JS)?;
-    wf(p, "schema.toml",          BASIC_GAME_SCHEMA)?;
-    wf(p, "PERFORMANCE.md",       PERF_MD)?;
-    wf(p, "SCALING.md",           SCALING_MD)?;
-    wf(p, "README.md",            &format!("# {}\n\n{}", name, BASIC_GAME_README))?;
-    write_shared_files(p, name, "game/basic")?;
+    wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
+    wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
+    wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
+    wf(p, "src/reducers/mod.rs",         R_MOD_BASIC)?;
+    wf(p, "src/reducers/spawn.rs",       R_SPAWN_RS)?;
+    wf(p, "src/reducers/move_player.rs", R_MOVE_RS)?;
+    wf(p, "src/reducers/despawn.rs",     R_DESPAWN_RS)?;
+    wf(p, "src/reducers/damage.rs",      R_DAMAGE_RS)?;
+    wf(p, "src/reducers/heal.rs",        R_HEAL_RS)?;
+    wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
+    wf(p, "SCALING.md",                  SCALING_MD)?;
+    wf(p, "README.md", &format!("# {name}\n\nNeonDB embedded game server.\n\nSee SCALING.md for the scaling guide.\n"))?;
     print_success(name, "game/basic", &[
-        ("reducers/spawn.js",   "Player joins lobby — writes player row"),
-        ("reducers/move.js",    "Player moves — updates x, y"),
-        ("reducers/despawn.js", "Player leaves — removes player + session"),
-        ("reducers/damage.js",  "Apply damage — reduces hp, sets alive=false at 0"),
-        ("reducers/heal.js",    "Heal player — increases hp up to max_hp"),
-        ("schema.toml",         "players + sessions tables"),
-        ("SCALING.md",          "1-node → 12-node cluster → multi-region"),
+        ("Cargo.toml",                  "cargo build --release && cargo run --release -- start"),
+        ("src/reducers/spawn.rs",       "spawn(player_id, lobby, class)"),
+        ("src/reducers/move_player.rs", "move_player(player_id, x, y)"),
+        ("src/reducers/despawn.rs",     "despawn(player_id)"),
+        ("src/reducers/damage.rs",      "damage(target_id, amount)"),
+        ("src/reducers/heal.rs",        "heal(target_id, amount)"),
+        ("schema.toml",                 "players + sessions tables"),
     ]);
     println!("  Next steps:");
-    println!("    cd {name} && neon start");
+    println!("    cd {name}");
+    println!("    cargo run --release -- start");
     println!("    neon call spawn '[\"alice\", \"lobby_1\", \"warrior\"]'");
-    println!("    neon watch 'players WHERE lobby = \"lobby_1\"'");
     println!();
     println!("  Add systems:");
-    println!("    neon add combat       # attack, respawn, abilities");
-    println!("    neon add inventory    # items, equip slots");
-    println!("    neon add matchmaking  # queue, ELO pairing");
-    println!("    neon add leaderboard  # score submit, top-N");
-    println!("    neon add chat         # rooms, messages");
+    println!("    neon add combat    # attack, respawn, abilities");
+    println!("    neon add inventory # items, equip slots");
+    println!("    neon add chat      # rooms, messages");
     println!();
     Ok(())
 }
 
 fn scaffold_game_full(p: &Path, name: &str) -> Result<()> {
-    // Core
-    wf(p, "reducers/spawn.js",              BASIC_SPAWN_JS)?;
-    wf(p, "reducers/move.js",               BASIC_MOVE_JS)?;
-    wf(p, "reducers/despawn.js",            BASIC_DESPAWN_JS)?;
-    wf(p, "reducers/damage.js",             BASIC_DAMAGE_JS)?;
-    wf(p, "reducers/heal.js",               BASIC_HEAL_JS)?;
-    // Combat
-    wf(p, "reducers/combat/attack.js",      M_COMBAT_ATTACK_JS)?;
-    wf(p, "reducers/combat/respawn.js",     M_COMBAT_RESPAWN_JS)?;
-    wf(p, "reducers/combat/ability.js",     M_COMBAT_ABILITY_JS)?;
-    wf(p, "reducers/combat/npc_spawn.js",   M_WORLD_NPC_SPAWN_JS)?;
-    // Inventory
-    wf(p, "reducers/inventory/add.js",      M_INV_ADD_JS)?;
-    wf(p, "reducers/inventory/remove.js",   M_INV_REMOVE_JS)?;
-    wf(p, "reducers/inventory/equip.js",    M_INV_EQUIP_JS)?;
-    // Economy
-    wf(p, "reducers/economy/buy.js",        M_ECON_BUY_JS)?;
-    wf(p, "reducers/economy/sell.js",       M_ECON_SELL_JS)?;
-    wf(p, "reducers/economy/transfer.js",   M_ECON_TRANSFER_JS)?;
-    wf(p, "reducers/economy/loot.js",       M_ECON_LOOT_JS)?;
-    // Matchmaking
-    wf(p, "reducers/matchmaking/queue.js",  M_MM_QUEUE_JS)?;
-    wf(p, "reducers/matchmaking/dequeue.js",M_MM_DEQUEUE_JS)?;
-    wf(p, "reducers/matchmaking/match.js",  M_MM_MATCH_JS)?;
-    // Guilds
-    wf(p, "reducers/guilds/create.js",      M_GUILD_CREATE_JS)?;
-    wf(p, "reducers/guilds/invite.js",      M_GUILD_INVITE_JS)?;
-    wf(p, "reducers/guilds/accept.js",      M_GUILD_ACCEPT_JS)?;
-    wf(p, "reducers/guilds/kick.js",        M_GUILD_KICK_JS)?;
-    // Quests
-    wf(p, "reducers/quests/accept.js",      M_QUEST_ACCEPT_JS)?;
-    wf(p, "reducers/quests/progress.js",    M_QUEST_PROGRESS_JS)?;
-    wf(p, "reducers/quests/complete.js",    M_QUEST_COMPLETE_JS)?;
-    // Leaderboard
-    wf(p, "reducers/leaderboard/submit.js", M_LB_SUBMIT_JS)?;
-    wf(p, "reducers/leaderboard/reset.js",  M_LB_RESET_JS)?;
-    // Chat
-    wf(p, "reducers/chat/send.js",          M_CHAT_SEND_JS)?;
-    wf(p, "reducers/chat/join.js",          M_CHAT_JOIN_JS)?;
-    wf(p, "reducers/chat/leave.js",         M_CHAT_LEAVE_JS)?;
-    // World
-    wf(p, "reducers/world/tick.js",         M_WORLD_TICK_JS)?;
-    wf(p, "reducers/world/cleanup.js",      M_WORLD_CLEANUP_JS)?;
-    // Schema (merged)
-    wf(p, "schema.toml", &[
-        BASIC_GAME_SCHEMA, M_COMBAT_SCHEMA, M_INV_SCHEMA, M_LB_SCHEMA,
-        M_MM_SCHEMA, M_GUILD_SCHEMA, M_QUEST_SCHEMA, M_ECON_SCHEMA,
-        M_WORLD_SCHEMA, M_CHAT_SCHEMA,
-    ].join("\n"))?;
-    wf(p, "PERFORMANCE.md", PERF_MD)?;
-    wf(p, "SCALING.md",     SCALING_MD)?;
-    wf(p, "README.md",      &format!("# {}\n\n{}", name, BASIC_GAME_README))?;
-    write_shared_files(p, name, "game/full")?;
-    print_success(name, "game/full", &[
-        ("reducers/",          "spawn, move, despawn, damage, heal"),
-        ("reducers/combat/",   "attack, respawn, ability, npc_spawn"),
-        ("reducers/inventory/","add, remove, equip"),
-        ("reducers/economy/",  "buy, sell, transfer, loot box"),
-        ("reducers/matchmaking/","queue, dequeue, match (scheduled)"),
-        ("reducers/guilds/",   "create, invite, accept, kick"),
-        ("reducers/quests/",   "accept, progress, complete"),
-        ("reducers/leaderboard/","submit, reset (scheduled)"),
-        ("reducers/chat/",     "send, join, leave"),
-        ("reducers/world/",    "tick (1s), cleanup (60s)"),
-    ]);
-    println!("  Next steps:");
-    println!("    cd {name} && neon start");
-    println!("    neon call spawn '[\"alice\", \"lobby_1\", \"warrior\"]'");
+    // Core reducers
+    scaffold_game_basic(p, name)?;
+    // All 9 modules pre-installed
+    add_module_files(p, "chat")?;
+    add_module_files(p, "inventory")?;
+    add_module_files(p, "leaderboard")?;
+    add_module_files(p, "matchmaking")?;
+    add_module_files(p, "guilds")?;
+    add_module_files(p, "quests")?;
+    add_module_files(p, "economy")?;
+    add_module_files(p, "combat")?;
+    add_module_files(p, "world")?;
+    println!("  All 9 modules included. See src/reducers/ for the full source.");
+    println!("  Add to neondb.toml for scheduled reducers:");
+    println!("    [[scheduler]]");
+    println!("    reducer = \"world_tick\"");
+    println!("    interval_ms = 1000");
     println!();
     Ok(())
 }
 
+
 fn scaffold_game_unity(p: &Path, name: &str) -> Result<()> {
-    // Unity SDK
+    scaffold_game_full(p, name)?;
     wf(p, "unity/NeonDBClient.cs",    UNITY_CLIENT_CS)?;
     wf(p, "unity/NeonDBBehaviour.cs", UNITY_BEHAVIOUR_CS)?;
     wf(p, "unity/NeonDBManager.cs",   UNITY_MANAGER_CS)?;
     wf(p, "unity/README.md",          UNITY_GAME_README)?;
-    // Server (same as game/full)
-    scaffold_game_full(p, name)?;
-    println!("  Unity SDK:");
+    println!("  Unity C# SDK → unity/");
     println!("    Copy unity/ into Assets/Scripts/NeonDB/");
-    println!("    Add NeonDBManager to your scene → set Server URL → press Play");
+    println!("    Add NeonDBManager to your scene, set Server URL, press Play.");
     Ok(())
 }
 
 fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
-    // Godot SDK
+    scaffold_game_full(p, name)?;
     wf(p, "godot/neondb_client.gd",   GODOT_CLIENT_GD)?;
     wf(p, "godot/NeonDBManager.gd",   GODOT_MANAGER_GD)?;
     wf(p, "godot/README.md",          GODOT_GAME_README)?;
-    // Server (same as game/full)
-    scaffold_game_full(p, name)?;
-    println!("  Godot SDK:");
-    println!("    Copy godot/ into your Godot project");
-    println!("    Add NeonDBManager as an autoload (Project Settings → Autoload)");
-    println!("    Set server_url → run the game");
+    println!("  Godot 4 GDScript SDK → godot/");
+    println!("    Add godot/ to your project, add NeonDBManager as an Autoload.");
     Ok(())
 }
 
@@ -993,137 +956,112 @@ fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
 // neon add <module>
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Write Rust files for a module into src/reducers/<module>/ and register in mod.rs.
+fn add_module_files(p: &Path, module: &str) -> Result<()> {
+    match module {
+        "chat" => {
+            wf(p, "src/reducers/chat/mod.rs",   RM_CHAT_MOD_RS)?;
+            wf(p, "src/reducers/chat/send.rs",   RM_CHAT_SEND_RS)?;
+            wf(p, "src/reducers/chat/join.rs",   RM_CHAT_JOIN_RS)?;
+            wf(p, "src/reducers/chat/leave.rs",  RM_CHAT_LEAVE_RS)?;
+            append_schema(p, RM_CHAT_SCHEMA)?;
+        }
+        "inventory" => {
+            wf(p, "src/reducers/inventory/mod.rs",    RM_INV_MOD_RS)?;
+            wf(p, "src/reducers/inventory/add.rs",    RM_INV_ADD_RS)?;
+            wf(p, "src/reducers/inventory/remove.rs", RM_INV_REMOVE_RS)?;
+            wf(p, "src/reducers/inventory/equip.rs",  RM_INV_EQUIP_RS)?;
+            append_schema(p, RM_INV_SCHEMA)?;
+        }
+        "leaderboard" => {
+            wf(p, "src/reducers/leaderboard/mod.rs",    RM_LB_MOD_RS)?;
+            wf(p, "src/reducers/leaderboard/submit.rs", RM_LB_SUBMIT_RS)?;
+            wf(p, "src/reducers/leaderboard/reset.rs",  RM_LB_RESET_RS)?;
+            append_schema(p, RM_LB_SCHEMA)?;
+        }
+        "matchmaking" => {
+            wf(p, "src/reducers/matchmaking/mod.rs",      RM_MM_MOD_RS)?;
+            wf(p, "src/reducers/matchmaking/queue.rs",    RM_MM_QUEUE_RS)?;
+            wf(p, "src/reducers/matchmaking/dequeue.rs",  RM_MM_DEQUEUE_RS)?;
+            wf(p, "src/reducers/matchmaking/match_players.rs", RM_MM_MATCH_RS)?;
+            append_schema(p, RM_MM_SCHEMA)?;
+        }
+        "guilds" => {
+            wf(p, "src/reducers/guilds/mod.rs",    RM_GUILD_MOD_RS)?;
+            wf(p, "src/reducers/guilds/create.rs", RM_GUILD_CREATE_RS)?;
+            wf(p, "src/reducers/guilds/invite.rs", RM_GUILD_INVITE_RS)?;
+            wf(p, "src/reducers/guilds/accept.rs", RM_GUILD_ACCEPT_RS)?;
+            wf(p, "src/reducers/guilds/kick.rs",   RM_GUILD_KICK_RS)?;
+            append_schema(p, RM_GUILD_SCHEMA)?;
+        }
+        "quests" => {
+            wf(p, "src/reducers/quests/mod.rs",      RM_QUEST_MOD_RS)?;
+            wf(p, "src/reducers/quests/accept.rs",   RM_QUEST_ACCEPT_RS)?;
+            wf(p, "src/reducers/quests/progress.rs", RM_QUEST_PROGRESS_RS)?;
+            wf(p, "src/reducers/quests/complete.rs", RM_QUEST_COMPLETE_RS)?;
+            append_schema(p, RM_QUEST_SCHEMA)?;
+        }
+        "economy" => {
+            wf(p, "src/reducers/economy/mod.rs",      RM_ECON_MOD_RS)?;
+            wf(p, "src/reducers/economy/buy.rs",      RM_ECON_BUY_RS)?;
+            wf(p, "src/reducers/economy/sell.rs",     RM_ECON_SELL_RS)?;
+            wf(p, "src/reducers/economy/transfer.rs", RM_ECON_TRANSFER_RS)?;
+            wf(p, "src/reducers/economy/loot.rs",     RM_ECON_LOOT_RS)?;
+            append_schema(p, RM_ECON_SCHEMA)?;
+        }
+        "combat" => {
+            wf(p, "src/reducers/combat/mod.rs",      RM_COMBAT_MOD_RS)?;
+            wf(p, "src/reducers/combat/attack.rs",   RM_COMBAT_ATTACK_RS)?;
+            wf(p, "src/reducers/combat/respawn.rs",  RM_COMBAT_RESPAWN_RS)?;
+            wf(p, "src/reducers/combat/ability.rs",  RM_COMBAT_ABILITY_RS)?;
+            append_schema(p, RM_COMBAT_SCHEMA)?;
+        }
+        "world" => {
+            wf(p, "src/reducers/world/mod.rs",       RM_WORLD_MOD_RS)?;
+            wf(p, "src/reducers/world/tick.rs",      RM_WORLD_TICK_RS)?;
+            wf(p, "src/reducers/world/npc_spawn.rs", RM_WORLD_NPC_RS)?;
+            wf(p, "src/reducers/world/cleanup.rs",   RM_WORLD_CLEANUP_RS)?;
+            append_schema(p, RM_WORLD_SCHEMA)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
-    // Verify we're in a NeonDB project
     if !project_path.join("schema.toml").exists() {
         eprintln!("No schema.toml found. Run `neon add` from inside your project directory.");
         return Err(neondb::error::NeonDBError::invalid_argument("not a NeonDB project directory"));
     }
-
+    // Also add `pub mod <module>;` to src/reducers/mod.rs if it exists
+    let mod_rs = project_path.join("src/reducers/mod.rs");
+    let mod_line = format!("pub mod {module};\n");
+    if mod_rs.exists() {
+        let current = fs::read_to_string(&mod_rs).unwrap_or_default();
+        if !current.contains(&mod_line) {
+            let mut f = fs::OpenOptions::new().append(true).open(&mod_rs)
+                .map_err(|e| neondb::error::NeonDBError::internal(format!("open mod.rs: {e}")))?;
+            use std::io::Write as _;
+            write!(f, "{mod_line}")
+                .map_err(|e| neondb::error::NeonDBError::internal(format!("write mod.rs: {e}")))?;
+        }
+    }
     match module {
-        "chat" => {
-            wf(project_path, "reducers/chat/send.js",  M_CHAT_SEND_JS)?;
-            wf(project_path, "reducers/chat/join.js",  M_CHAT_JOIN_JS)?;
-            wf(project_path, "reducers/chat/leave.js", M_CHAT_LEAVE_JS)?;
-            append_schema(project_path, M_CHAT_SCHEMA)?;
-            println!("  Added chat module:");
-            println!("    reducers/chat/send.js   — chat_send(room_id, text)");
-            println!("    reducers/chat/join.js   — chat_join(room_id)");
-            println!("    reducers/chat/leave.js  — chat_leave(room_id)");
-        }
-        "inventory" => {
-            wf(project_path, "reducers/inventory/add.js",    M_INV_ADD_JS)?;
-            wf(project_path, "reducers/inventory/remove.js", M_INV_REMOVE_JS)?;
-            wf(project_path, "reducers/inventory/equip.js",  M_INV_EQUIP_JS)?;
-            append_schema(project_path, M_INV_SCHEMA)?;
-            println!("  Added inventory module:");
-            println!("    reducers/inventory/add.js    — inv_add(player_id, item_id, name, qty)");
-            println!("    reducers/inventory/remove.js — inv_remove(player_id, item_id, qty)");
-            println!("    reducers/inventory/equip.js  — inv_equip(player_id, item_id, slot)");
-        }
-        "leaderboard" => {
-            wf(project_path, "reducers/leaderboard/submit.js", M_LB_SUBMIT_JS)?;
-            wf(project_path, "reducers/leaderboard/reset.js",  M_LB_RESET_JS)?;
-            append_schema(project_path, M_LB_SCHEMA)?;
-            println!("  Added leaderboard module:");
-            println!("    reducers/leaderboard/submit.js — lb_submit(score, display_name)");
-            println!("    reducers/leaderboard/reset.js  — lb_reset() [scheduled weekly]");
+        "chat" | "inventory" | "leaderboard" | "matchmaking" |
+        "guilds" | "quests" | "economy" | "combat" | "world" => {
+            add_module_files(project_path, module)?;
             println!();
-            println!("  Add to neondb.toml to enable weekly reset:");
-            println!("    [[scheduler]]");
-            println!("    reducer = \"lb_reset\"");
-            println!("    interval_ms = 604800000");
-        }
-        "matchmaking" => {
-            wf(project_path, "reducers/matchmaking/queue.js",   M_MM_QUEUE_JS)?;
-            wf(project_path, "reducers/matchmaking/dequeue.js", M_MM_DEQUEUE_JS)?;
-            wf(project_path, "reducers/matchmaking/match.js",   M_MM_MATCH_JS)?;
-            append_schema(project_path, M_MM_SCHEMA)?;
-            println!("  Added matchmaking module:");
-            println!("    reducers/matchmaking/queue.js   — mm_queue(rating)");
-            println!("    reducers/matchmaking/dequeue.js — mm_dequeue()");
-            println!("    reducers/matchmaking/match.js   — mm_match() [scheduled]");
-            println!();
-            println!("  Add to neondb.toml to enable auto-matching:");
-            println!("    [[scheduler]]");
-            println!("    reducer = \"mm_match\"");
-            println!("    interval_ms = 5000");
-        }
-        "guilds" => {
-            wf(project_path, "reducers/guilds/create.js", M_GUILD_CREATE_JS)?;
-            wf(project_path, "reducers/guilds/invite.js", M_GUILD_INVITE_JS)?;
-            wf(project_path, "reducers/guilds/accept.js", M_GUILD_ACCEPT_JS)?;
-            wf(project_path, "reducers/guilds/kick.js",   M_GUILD_KICK_JS)?;
-            append_schema(project_path, M_GUILD_SCHEMA)?;
-            println!("  Added guilds module:");
-            println!("    reducers/guilds/create.js — guild_create(guild_id, name)");
-            println!("    reducers/guilds/invite.js — guild_invite(guild_id, invitee_id)");
-            println!("    reducers/guilds/accept.js — guild_accept(invite_id)");
-            println!("    reducers/guilds/kick.js   — guild_kick(guild_id, target_id)");
-        }
-        "quests" => {
-            wf(project_path, "reducers/quests/accept.js",   M_QUEST_ACCEPT_JS)?;
-            wf(project_path, "reducers/quests/progress.js", M_QUEST_PROGRESS_JS)?;
-            wf(project_path, "reducers/quests/complete.js", M_QUEST_COMPLETE_JS)?;
-            append_schema(project_path, M_QUEST_SCHEMA)?;
-            println!("  Added quests module:");
-            println!("    reducers/quests/accept.js   — quest_accept(quest_id, goal)");
-            println!("    reducers/quests/progress.js — quest_progress(quest_id, amount)");
-            println!("    reducers/quests/complete.js — quest_complete(quest_id)");
-        }
-        "economy" => {
-            wf(project_path, "reducers/economy/buy.js",      M_ECON_BUY_JS)?;
-            wf(project_path, "reducers/economy/sell.js",     M_ECON_SELL_JS)?;
-            wf(project_path, "reducers/economy/transfer.js", M_ECON_TRANSFER_JS)?;
-            wf(project_path, "reducers/economy/loot.js",     M_ECON_LOOT_JS)?;
-            append_schema(project_path, M_ECON_SCHEMA)?;
-            println!("  Added economy module:");
-            println!("    reducers/economy/buy.js      — shop_buy(item_id)");
-            println!("    reducers/economy/sell.js     — shop_sell(item_id, qty, gold_per_unit)");
-            println!("    reducers/economy/transfer.js — gold_transfer(to_player_id, amount)");
-            println!("    reducers/economy/loot.js     — open_loot(box_type)");
-        }
-        "combat" => {
-            wf(project_path, "reducers/combat/attack.js",    M_COMBAT_ATTACK_JS)?;
-            wf(project_path, "reducers/combat/respawn.js",   M_COMBAT_RESPAWN_JS)?;
-            wf(project_path, "reducers/combat/ability.js",   M_COMBAT_ABILITY_JS)?;
-            wf(project_path, "reducers/combat/npc_spawn.js", M_WORLD_NPC_SPAWN_JS)?;
-            append_schema(project_path, M_COMBAT_SCHEMA)?;
-            println!("  Added combat module:");
-            println!("    reducers/combat/attack.js    — attack(target_id, weapon, damage)");
-            println!("    reducers/combat/respawn.js   — respawn(player_id)");
-            println!("    reducers/combat/ability.js   — use_ability(ability_name, target_id)");
-            println!("    reducers/combat/npc_spawn.js — npc_spawn(lobby_id, type, x, y)");
-        }
-        "world" => {
-            wf(project_path, "reducers/world/tick.js",     M_WORLD_TICK_JS)?;
-            wf(project_path, "reducers/world/npc.js",      M_WORLD_NPC_SPAWN_JS)?;
-            wf(project_path, "reducers/world/cleanup.js",  M_WORLD_CLEANUP_JS)?;
-            append_schema(project_path, M_WORLD_SCHEMA)?;
-            println!("  Added world module:");
-            println!("    reducers/world/tick.js    — world_tick() [scheduled 1s]");
-            println!("    reducers/world/npc.js     — npc_spawn(lobby_id, type, x, y)");
-            println!("    reducers/world/cleanup.js — session_cleanup() [scheduled 60s]");
-            println!();
-            println!("  Add to neondb.toml:");
-            println!("    [[scheduler]]");
-            println!("    reducer = \"world_tick\"");
-            println!("    interval_ms = 1000");
-            println!();
-            println!("    [[scheduler]]");
-            println!("    reducer = \"session_cleanup\"");
-            println!("    interval_ms = 60000");
+            println!("  Added {module} module → src/reducers/{module}/");
+            println!("  Rebuild: cargo build --release");
+            println!("  Restart: cargo run --release -- start");
         }
         other => {
             let names: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
             eprintln!("Unknown module '{}'. Available: {}", other, names.join(", "));
-            return Err(neondb::error::NeonDBError::invalid_argument(format!("unknown module '{}'", other)));
+            return Err(neondb::error::NeonDBError::invalid_argument(
+                format!("unknown module '{}'", other)));
         }
     }
-    println!();
-    println!("  Schema appended to schema.toml.");
-    println!("  Restart the server to pick up the new tables:");
-    println!("    neon start");
     println!();
     Ok(())
 }
@@ -1135,7 +1073,7 @@ fn append_schema(project_path: &Path, extra: &str) -> Result<()> {
     // Extract table names from extra to skip already-present tables
     let new_content: String = extra.lines()
         .collect::<Vec<_>>()
-        .split(|l: &&str| l.trim().starts_with("[[tables]]"))
+        .split(|l: &&str| l.trim().starts_with("[[table]]"))
         .filter(|block| {
             // Find the `name = "..."` line in this block
             let block_name = block.iter()
@@ -1145,7 +1083,7 @@ fn append_schema(project_path: &Path, extra: &str) -> Result<()> {
                 .unwrap_or(true)
         })
         .flat_map(|block| {
-            std::iter::once("[[tables]]").chain(block.iter().copied())
+            std::iter::once("[[table]]").chain(block.iter().copied())
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -1180,53 +1118,64 @@ const MIGRATIONS_README: &str = "# Migrations\nPlace `.toml` files here.\n";
 const PERF_MD: &str           = include_str!("../templates/performance.md.txt");
 const SCALING_MD: &str        = include_str!("../templates/scaling.md.txt");
 
-// ── game/basic core ───────────────────────────────────────────────────────────
-const BASIC_SPAWN_JS: &str    = include_str!("../templates/g_basic_spawn.js.txt");
-const BASIC_MOVE_JS: &str     = include_str!("../templates/g_basic_move.js.txt");
-const BASIC_DESPAWN_JS: &str  = include_str!("../templates/g_basic_despawn.js.txt");
-const BASIC_DAMAGE_JS: &str   = include_str!("../templates/g_basic_damage.js.txt");
-const BASIC_HEAL_JS: &str     = include_str!("../templates/g_basic_heal.js.txt");
-const BASIC_GAME_SCHEMA: &str = include_str!("../templates/g_basic_schema.toml.txt");
-const BASIC_GAME_README: &str = include_str!("../templates/g_basic_readme.md.txt");
+// ── Rust game templates ───────────────────────────────────────────────────────
+const GAME_MAIN_RS: &str         = include_str!("../templates/r_game_main.rs.txt");
+const RUST_TOOLCHAIN: &str       = include_str!("../templates/rust_toolchain.toml.txt");
+const R_MOD_BASIC: &str          = include_str!("../templates/r_reducers_mod_basic.rs.txt");
+const R_SPAWN_RS: &str           = include_str!("../templates/r_spawn.rs.txt");
+const R_MOVE_RS: &str            = include_str!("../templates/r_move.rs.txt");
+const R_DESPAWN_RS: &str         = include_str!("../templates/r_despawn.rs.txt");
+const R_DAMAGE_RS: &str          = include_str!("../templates/r_damage.rs.txt");
+const R_HEAL_RS: &str            = include_str!("../templates/r_heal.rs.txt");
+const R_BASIC_SCHEMA: &str       = include_str!("../templates/r_basic_schema.toml.txt");
 
-// ── modules (neon add <name>) ─────────────────────────────────────────────────
-const M_CHAT_SEND_JS: &str      = include_str!("../templates/m_chat_send.js.txt");
-const M_CHAT_JOIN_JS: &str      = include_str!("../templates/m_chat_join.js.txt");
-const M_CHAT_LEAVE_JS: &str     = include_str!("../templates/m_chat_leave.js.txt");
-const M_CHAT_SCHEMA: &str       = include_str!("../templates/m_chat_schema.toml.txt");
-const M_INV_ADD_JS: &str        = include_str!("../templates/m_inventory_add.js.txt");
-const M_INV_REMOVE_JS: &str     = include_str!("../templates/m_inventory_remove.js.txt");
-const M_INV_EQUIP_JS: &str      = include_str!("../templates/m_inventory_equip.js.txt");
-const M_INV_SCHEMA: &str        = include_str!("../templates/m_inventory_schema.toml.txt");
-const M_LB_SUBMIT_JS: &str      = include_str!("../templates/m_leaderboard_submit.js.txt");
-const M_LB_RESET_JS: &str       = include_str!("../templates/m_leaderboard_reset.js.txt");
-const M_LB_SCHEMA: &str         = include_str!("../templates/m_leaderboard_schema.toml.txt");
-const M_MM_QUEUE_JS: &str       = include_str!("../templates/m_matchmaking_queue.js.txt");
-const M_MM_DEQUEUE_JS: &str     = include_str!("../templates/m_matchmaking_dequeue.js.txt");
-const M_MM_MATCH_JS: &str       = include_str!("../templates/m_matchmaking_match.js.txt");
-const M_MM_SCHEMA: &str         = include_str!("../templates/m_matchmaking_schema.toml.txt");
-const M_GUILD_CREATE_JS: &str   = include_str!("../templates/m_guilds_create.js.txt");
-const M_GUILD_INVITE_JS: &str   = include_str!("../templates/m_guilds_invite.js.txt");
-const M_GUILD_ACCEPT_JS: &str   = include_str!("../templates/m_guilds_accept.js.txt");
-const M_GUILD_KICK_JS: &str     = include_str!("../templates/m_guilds_kick.js.txt");
-const M_GUILD_SCHEMA: &str      = include_str!("../templates/m_guilds_schema.toml.txt");
-const M_QUEST_ACCEPT_JS: &str   = include_str!("../templates/m_quests_accept.js.txt");
-const M_QUEST_PROGRESS_JS: &str = include_str!("../templates/m_quests_progress.js.txt");
-const M_QUEST_COMPLETE_JS: &str = include_str!("../templates/m_quests_complete.js.txt");
-const M_QUEST_SCHEMA: &str      = include_str!("../templates/m_quests_schema.toml.txt");
-const M_ECON_BUY_JS: &str       = include_str!("../templates/m_economy_buy.js.txt");
-const M_ECON_SELL_JS: &str      = include_str!("../templates/m_economy_sell.js.txt");
-const M_ECON_TRANSFER_JS: &str  = include_str!("../templates/m_economy_transfer.js.txt");
-const M_ECON_LOOT_JS: &str      = include_str!("../templates/m_economy_loot.js.txt");
-const M_ECON_SCHEMA: &str       = include_str!("../templates/m_economy_schema.toml.txt");
-const M_COMBAT_ATTACK_JS: &str  = include_str!("../templates/m_combat_attack.js.txt");
-const M_COMBAT_RESPAWN_JS: &str = include_str!("../templates/m_combat_respawn.js.txt");
-const M_COMBAT_ABILITY_JS: &str = include_str!("../templates/m_combat_ability.js.txt");
-const M_COMBAT_SCHEMA: &str     = include_str!("../templates/m_combat_schema.toml.txt");
-const M_WORLD_TICK_JS: &str     = include_str!("../templates/m_world_tick.js.txt");
-const M_WORLD_NPC_SPAWN_JS: &str = include_str!("../templates/m_world_npc_spawn.js.txt");
-const M_WORLD_CLEANUP_JS: &str  = include_str!("../templates/m_world_cleanup.js.txt");
-const M_WORLD_SCHEMA: &str      = include_str!("../templates/m_world_schema.toml.txt");
+// ── module reducers (neon add <name>) ────────────────────────────────────────
+const RM_CHAT_MOD_RS: &str       = include_str!("../templates/rm_chat_mod.rs.txt");
+const RM_CHAT_SEND_RS: &str      = include_str!("../templates/rm_chat_send.rs.txt");
+const RM_CHAT_JOIN_RS: &str      = include_str!("../templates/rm_chat_join.rs.txt");
+const RM_CHAT_LEAVE_RS: &str     = include_str!("../templates/rm_chat_leave.rs.txt");
+const RM_CHAT_SCHEMA: &str       = include_str!("../templates/rm_chat_schema.toml.txt");
+const RM_INV_MOD_RS: &str        = include_str!("../templates/rm_inventory_mod.rs.txt");
+const RM_INV_ADD_RS: &str        = include_str!("../templates/rm_inventory_add.rs.txt");
+const RM_INV_REMOVE_RS: &str     = include_str!("../templates/rm_inventory_remove.rs.txt");
+const RM_INV_EQUIP_RS: &str      = include_str!("../templates/rm_inventory_equip.rs.txt");
+const RM_INV_SCHEMA: &str        = include_str!("../templates/rm_inventory_schema.toml.txt");
+const RM_LB_MOD_RS: &str         = include_str!("../templates/rm_leaderboard_mod.rs.txt");
+const RM_LB_SUBMIT_RS: &str      = include_str!("../templates/rm_leaderboard_submit.rs.txt");
+const RM_LB_RESET_RS: &str       = include_str!("../templates/rm_leaderboard_reset.rs.txt");
+const RM_LB_SCHEMA: &str         = include_str!("../templates/rm_leaderboard_schema.toml.txt");
+const RM_MM_MOD_RS: &str         = include_str!("../templates/rm_matchmaking_mod.rs.txt");
+const RM_MM_QUEUE_RS: &str       = include_str!("../templates/rm_matchmaking_queue.rs.txt");
+const RM_MM_DEQUEUE_RS: &str     = include_str!("../templates/rm_matchmaking_dequeue.rs.txt");
+const RM_MM_MATCH_RS: &str       = include_str!("../templates/rm_matchmaking_match.rs.txt");
+const RM_MM_SCHEMA: &str         = include_str!("../templates/rm_matchmaking_schema.toml.txt");
+const RM_GUILD_MOD_RS: &str      = include_str!("../templates/rm_guilds_mod.rs.txt");
+const RM_GUILD_CREATE_RS: &str   = include_str!("../templates/rm_guilds_create.rs.txt");
+const RM_GUILD_INVITE_RS: &str   = include_str!("../templates/rm_guilds_invite.rs.txt");
+const RM_GUILD_ACCEPT_RS: &str   = include_str!("../templates/rm_guilds_accept.rs.txt");
+const RM_GUILD_KICK_RS: &str     = include_str!("../templates/rm_guilds_kick.rs.txt");
+const RM_GUILD_SCHEMA: &str      = include_str!("../templates/rm_guilds_schema.toml.txt");
+const RM_QUEST_MOD_RS: &str      = include_str!("../templates/rm_quests_mod.rs.txt");
+const RM_QUEST_ACCEPT_RS: &str   = include_str!("../templates/rm_quests_accept.rs.txt");
+const RM_QUEST_PROGRESS_RS: &str = include_str!("../templates/rm_quests_progress.rs.txt");
+const RM_QUEST_COMPLETE_RS: &str = include_str!("../templates/rm_quests_complete.rs.txt");
+const RM_QUEST_SCHEMA: &str      = include_str!("../templates/rm_quests_schema.toml.txt");
+const RM_ECON_MOD_RS: &str       = include_str!("../templates/rm_economy_mod.rs.txt");
+const RM_ECON_BUY_RS: &str       = include_str!("../templates/rm_economy_buy.rs.txt");
+const RM_ECON_SELL_RS: &str      = include_str!("../templates/rm_economy_sell.rs.txt");
+const RM_ECON_TRANSFER_RS: &str  = include_str!("../templates/rm_economy_transfer.rs.txt");
+const RM_ECON_LOOT_RS: &str      = include_str!("../templates/rm_economy_loot.rs.txt");
+const RM_ECON_SCHEMA: &str       = include_str!("../templates/rm_economy_schema.toml.txt");
+const RM_COMBAT_MOD_RS: &str     = include_str!("../templates/rm_combat_mod.rs.txt");
+const RM_COMBAT_ATTACK_RS: &str  = include_str!("../templates/rm_combat_attack.rs.txt");
+const RM_COMBAT_RESPAWN_RS: &str = include_str!("../templates/rm_combat_respawn.rs.txt");
+const RM_COMBAT_ABILITY_RS: &str = include_str!("../templates/rm_combat_ability.rs.txt");
+const RM_COMBAT_SCHEMA: &str     = include_str!("../templates/rm_combat_schema.toml.txt");
+const RM_WORLD_MOD_RS: &str      = include_str!("../templates/rm_world_mod.rs.txt");
+const RM_WORLD_TICK_RS: &str     = include_str!("../templates/rm_world_tick.rs.txt");
+const RM_WORLD_NPC_RS: &str      = include_str!("../templates/rm_world_npc_spawn.rs.txt");
+const RM_WORLD_CLEANUP_RS: &str  = include_str!("../templates/rm_world_cleanup.rs.txt");
+const RM_WORLD_SCHEMA: &str      = include_str!("../templates/rm_world_schema.toml.txt");
 
 // ── Unity + Godot SDKs ────────────────────────────────────────────────────────
 const UNITY_CLIENT_CS: &str    = include_str!("engine_templates/unity_NeonDBClient.cs");
@@ -1236,11 +1185,6 @@ const UNITY_GAME_README: &str  = include_str!("../templates/g_unity_readme.md.tx
 const GODOT_CLIENT_GD: &str    = include_str!("engine_templates/godot_neondb_client.gd");
 const GODOT_MANAGER_GD: &str   = include_str!("../templates/g_godot_Manager.gd.txt");
 const GODOT_GAME_README: &str  = include_str!("../templates/g_godot_readme.md.txt");
-
-// ── Embedded Rust server (kept for advanced users) ────────────────────────────
-const EMBEDDED_CARGO_TOML: &str = include_str!("../templates/embedded_cargo.toml.txt");
-const EMBEDDED_MAIN_RS: &str    = include_str!("../templates/embedded_main.rs.txt");
-const GAME_REDUCERS_RS: &str    = include_str!("../templates/game_reducers.rs.txt");
 
 
 // ═══════════════════════════════════════════════════════════════════════════════

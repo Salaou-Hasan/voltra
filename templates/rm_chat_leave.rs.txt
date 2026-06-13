@@ -1,0 +1,22 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn leave_room(ctx: Ctx, room: String, player_id: String) {
+    // Decrement member_count (min 0) on the rooms row
+    if let Some(room_row) = ctx.get("rooms", &room)? {
+        let member_count = room_row["member_count"].as_i64().unwrap_or(0);
+        let new_count = (member_count - 1).max(0);
+        ctx.set("rooms", &room, json!({
+            "room": room,
+            "member_count": new_count,
+            "created_at": room_row["created_at"]
+        }))?;
+    }
+
+    // Delete the room_members row
+    let member_key = format!("{}:{}", room, player_id);
+    ctx.delete("room_members", &member_key)?;
+
+    ret!({ "ok": true })
+}

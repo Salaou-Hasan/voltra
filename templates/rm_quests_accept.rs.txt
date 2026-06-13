@@ -1,0 +1,24 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn accept_quest(ctx: Ctx, player_id: String, quest_id: String) {
+    let key = format!("{}:{}", player_id, quest_id);
+
+    // Check not already active
+    if let Some(existing) = ctx.get("player_quests", &key)? {
+        if existing["status"].as_str().unwrap_or("") == "active" {
+            ret!({ "ok": false, "error": "Quest already active" })
+        }
+    }
+
+    ctx.set("player_quests", &key, json!({
+        "key": key,
+        "player_id": player_id,
+        "quest_id": quest_id,
+        "progress": 0,
+        "status": "active"
+    }))?;
+
+    ret!({ "ok": true })
+}

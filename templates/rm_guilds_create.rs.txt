@@ -1,0 +1,31 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn create_guild(ctx: Ctx, guild_id: String, name: String) {
+    let caller = ctx.caller_id.clone();
+
+    // Check guild doesn't already exist
+    if ctx.get("guilds", &guild_id)?.is_some() {
+        ret!({ "ok": false, "error": "Guild already exists" })
+    }
+
+    // Create the guild
+    ctx.set("guilds", &guild_id, json!({
+        "guild_id": guild_id,
+        "name": name,
+        "owner": caller,
+        "member_count": 1
+    }))?;
+
+    // Add the creator as owner member
+    let member_key = format!("{}:{}", guild_id, caller);
+    ctx.set("guild_members", &member_key, json!({
+        "key": member_key,
+        "guild_id": guild_id,
+        "player_id": caller,
+        "role": "owner"
+    }))?;
+
+    ret!({ "ok": true })
+}

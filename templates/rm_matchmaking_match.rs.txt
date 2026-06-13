@@ -1,0 +1,46 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn match_players(ctx: Ctx) {
+    // Get all queued players
+    let mut players: Vec<(String, i64)> = ctx
+        .tables
+        .list_rows_with_keys("matchmaking")
+        .into_iter()
+        .filter_map(|(key, row)| {
+            let rating = row["rating"].as_i64()?;
+            Some((key, rating))
+        })
+        .collect();
+
+    // Sort by rating ascending
+    players.sort_by_key(|(_, rating)| *rating);
+
+    let mut matched = 0i64;
+    let mut i = 0;
+
+    while i + 1 < players.len() {
+        let (ref p1_id, p1_rating) = players[i];
+        let (ref p2_id, p2_rating) = players[i + 1];
+
+        // Only match players within 100 rating of each other
+        if (p2_rating - p1_rating).abs() <= 100 {
+            let match_key = format!("{}:{}", p1_id, p2_id);
+            ctx.set("matches", &match_key, json!({
+                "key": match_key,
+                "player1": p1_id,
+                "player2": p2_id,
+                "status": "pending"
+            }))?;
+            ctx.delete("matchmaking", p1_id)?;
+            ctx.delete("matchmaking", p2_id)?;
+            matched += 1;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    ret!({ "matched": matched })
+}

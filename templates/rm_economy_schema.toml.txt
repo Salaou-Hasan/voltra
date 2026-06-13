@@ -1,0 +1,14 @@
+# Economy module uses the players table (requires gold field) and inventory table.
+# Ensure your base schema includes:
+#
+#   [[table]]
+#   name = "players"
+#
+#   [[table.columns]]
+#   name = "gold"
+#   type = "Int"
+#   required = false
+#   default = 0
+#
+# And that the inventory module schema is also applied (rm_inventory_schema.toml).
+# No additional tables are needed for the economy module.

@@ -1,0 +1,40 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn open_loot_box(ctx: Ctx, player_id: String, box_type: String) {
+    let ts = ctx.timestamp();
+    let roll = (ts % 3) as i64;
+
+    let (rarity, gold, item): (&str, i64, Option<&str>) = match roll {
+        0 => ("common", 10, None),
+        1 => ("rare", 50, Some("sword")),
+        _ => ("epic", 200, Some("shield")),
+    };
+
+    // Add gold to player
+    let player = ctx.get("players", &player_id)?
+        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Player not found"))?;
+    let current_gold = player["gold"].as_i64().unwrap_or(0);
+    let mut updated_player = player.clone();
+    updated_player["gold"] = json!(current_gold + gold);
+    ctx.set("players", &player_id, updated_player)?;
+
+    // Add item to inventory if any
+    if let Some(item_id) = item {
+        let inv_key = format!("{}:{}", player_id, item_id);
+        let existing = ctx.get("inventory", &inv_key)?;
+        let current_qty = existing.as_ref().and_then(|r| r["qty"].as_i64()).unwrap_or(0);
+        ctx.set("inventory", &inv_key, json!({
+            "key": inv_key,
+            "player_id": player_id,
+            "item_id": item_id,
+            "qty": current_qty + 1,
+            "equipped": false,
+            "slot": ""
+        }))?;
+    }
+
+    let _ = box_type; // consumed for future use
+    ret!({ "rarity": rarity, "gold": gold, "item": item })
+}

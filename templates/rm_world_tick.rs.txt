@@ -1,0 +1,27 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn world_tick(ctx: Ctx) {
+    // Remove dead NPCs
+    let npcs = ctx.tables.list_rows_with_keys("npcs");
+    let mut npcs_removed = 0i64;
+    for (key, npc) in npcs {
+        let hp = npc["hp"].as_i64().unwrap_or(1);
+        if hp <= 0 {
+            ctx.delete("npcs", &key)?;
+            npcs_removed += 1;
+        }
+    }
+
+    // Increment the world tick counter
+    let tick_row = ctx.get("world_state", "tick")?;
+    let current_tick = tick_row.as_ref().and_then(|r| r["value"].as_i64()).unwrap_or(0);
+    let new_tick = current_tick + 1;
+    ctx.set("world_state", "tick", json!({
+        "key": "tick",
+        "value": new_tick
+    }))?;
+
+    ret!({ "tick": new_tick, "npcs_removed": npcs_removed })
+}

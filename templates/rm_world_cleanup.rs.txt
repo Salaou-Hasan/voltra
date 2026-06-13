@@ -1,0 +1,28 @@
+use neondb::{reducer, ret};
+
+const SESSION_TIMEOUT_MS: i64 = 60_000;
+
+#[reducer]
+fn cleanup_sessions(ctx: Ctx) {
+    let now = ctx.timestamp() as i64;
+    let sessions = ctx.tables.list_rows_with_keys("sessions");
+    let mut cleaned = 0i64;
+
+    for (key, session) in sessions {
+        let last_seen = session["last_seen"].as_i64().unwrap_or(0);
+        if now - last_seen > SESSION_TIMEOUT_MS {
+            // Delete the session
+            ctx.delete("sessions", &key)?;
+
+            // Delete the matching player row
+            let player_id = session["player_id"].as_str().unwrap_or("").to_string();
+            if !player_id.is_empty() {
+                ctx.delete("players", &player_id)?;
+            }
+
+            cleaned += 1;
+        }
+    }
+
+    ret!({ "cleaned": cleaned })
+}

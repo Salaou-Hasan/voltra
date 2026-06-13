@@ -1,0 +1,12 @@
+[[table]]
+name = "world_state"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "value"
+type = "i64"
+required = true

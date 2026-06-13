@@ -1,0 +1,35 @@
+use neondb::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn buy_item(ctx: Ctx, player_id: String, item_id: String, price: i64) {
+    // Read player and check gold
+    let player = ctx.get("players", &player_id)?
+        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Player not found"))?;
+    let gold = player["gold"].as_i64().unwrap_or(0);
+
+    if gold < price {
+        ret!({ "ok": false, "error": "Not enough gold" })
+    }
+
+    // Deduct gold
+    let new_gold = gold - price;
+    let mut updated_player = player.clone();
+    updated_player["gold"] = json!(new_gold);
+    ctx.set("players", &player_id, updated_player)?;
+
+    // Add 1 qty to inventory
+    let inv_key = format!("{}:{}", player_id, item_id);
+    let existing = ctx.get("inventory", &inv_key)?;
+    let current_qty = existing.as_ref().and_then(|r| r["qty"].as_i64()).unwrap_or(0);
+    ctx.set("inventory", &inv_key, json!({
+        "key": inv_key,
+        "player_id": player_id,
+        "item_id": item_id,
+        "qty": current_qty + 1,
+        "equipped": existing.as_ref().and_then(|r| r["equipped"].as_bool()).unwrap_or(false),
+        "slot": existing.as_ref().and_then(|r| r["slot"].as_str()).unwrap_or("")
+    }))?;
+
+    ret!({ "new_gold": new_gold })
+}
