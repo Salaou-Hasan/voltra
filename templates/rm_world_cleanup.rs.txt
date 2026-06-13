@@ -5,7 +5,7 @@ const SESSION_TIMEOUT_MS: i64 = 60_000;
 #[reducer]
 fn cleanup_sessions(ctx: Ctx) {
     let now = ctx.timestamp() as i64;
-    let sessions = ctx.tables.list_rows_with_keys("sessions");
+    let sessions = ctx.tables.list_rows_with_keys("sessions").unwrap_or_default();
     let mut cleaned = 0i64;
 
     for (key, session) in sessions {

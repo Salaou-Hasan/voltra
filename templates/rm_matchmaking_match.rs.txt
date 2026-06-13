@@ -7,6 +7,7 @@ fn match_players(ctx: Ctx) {
     let mut players: Vec<(String, i64)> = ctx
         .tables
         .list_rows_with_keys("matchmaking")
+        .unwrap_or_default()
         .into_iter()
         .filter_map(|(key, row)| {
             let rating = row["rating"].as_i64()?;

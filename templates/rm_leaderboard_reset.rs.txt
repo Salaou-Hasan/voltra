@@ -3,7 +3,7 @@ use neondb::{reducer, ret};
 #[reducer]
 fn reset_leaderboard(ctx: Ctx, board: String) {
     let prefix = format!("{}:", board);
-    let rows = ctx.tables.list_rows_with_keys("leaderboard");
+    let rows = ctx.tables.list_rows_with_keys("leaderboard").unwrap_or_default();
     let mut count = 0i64;
 
     for (key, _) in rows {

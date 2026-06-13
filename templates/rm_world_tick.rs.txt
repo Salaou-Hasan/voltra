@@ -4,7 +4,7 @@ use serde_json::json;
 #[reducer]
 fn world_tick(ctx: Ctx) {
     // Remove dead NPCs
-    let npcs = ctx.tables.list_rows_with_keys("npcs");
+    let npcs = ctx.tables.list_rows_with_keys("npcs").unwrap_or_default();
     let mut npcs_removed = 0i64;
     for (key, npc) in npcs {
         let hp = npc["hp"].as_i64().unwrap_or(1);

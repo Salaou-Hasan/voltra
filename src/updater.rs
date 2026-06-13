@@ -104,7 +104,7 @@ pub fn cmd_update(check_only: bool) -> crate::error::Result<()> {
     println!("v{CURRENT_VERSION} → v{tag} available!");
 
     if check_only {
-        println!("  Run `neon update` to install.");
+        println!("  Run `neondb update` to install.");
         return Ok(());
     }
 
@@ -138,7 +138,7 @@ pub fn check_and_hint() {
     // Lightweight background version hint — only prints one line, never blocks startup.
     if let Some(tag) = latest_tag() {
         if version_newer(&tag) {
-            eprintln!("[neondb] Update available: v{CURRENT_VERSION} → v{tag}  (run `neon update`)");
+            eprintln!("[neondb] Update available: v{CURRENT_VERSION} → v{tag}  (run `neondb update`)");
         }
     }
 }

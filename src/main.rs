@@ -71,13 +71,13 @@ struct Template {
 }
 
 const TEMPLATES: &[Template] = &[
-    Template { name: "game/basic", category: "Game server", description: "Spawn, move, despawn, health — the minimal multiplayer foundation. Add modules with `neon add`." },
+    Template { name: "game/basic", category: "Game server", description: "Spawn, move, despawn, health — the minimal multiplayer foundation. Add modules with `neondb add`." },
     Template { name: "game/full",  category: "Game server", description: "All modules pre-configured: combat, inventory, economy, matchmaking, guilds, quests, leaderboard, chat, world." },
     Template { name: "game/unity", category: "Unity",       description: "Unity C# SDK + full game server. Copy unity/ into Assets/Scripts/NeonDB/, configure URL, play." },
     Template { name: "game/godot", category: "Godot 4",     description: "Godot GDScript SDK + full game server. Add godot/ as an autoload, configure URL, play." },
 ];
 
-/// Available add-on modules (`neon add <name>`).
+/// Available add-on modules (`neondb add <name>`).
 const MODULES: &[(&str, &str)] = &[
     ("chat",        "Rooms, messages, per-room presence"),
     ("inventory",   "Items, qty stacking, equip slots"),
@@ -124,7 +124,7 @@ enum Commands {
     },
     /// List available project templates
     Templates,
-    /// List available add-on modules (`neon add <module>`)
+    /// List available add-on modules (`neondb add <module>`)
     Modules,
     /// Compile JS reducers in modules/ to WASM (requires `javy`)
     Build {
@@ -275,6 +275,11 @@ async fn main() -> Result<()> {
             build_wasm_modules(modules_dir.as_deref().unwrap_or(Path::new("modules")))
         }
         Commands::Start { host, port, data_dir, wal_path, fsync_interval_ms } => {
+            // If run from inside a scaffolded game project, build + exec that binary
+            let cwd = std::env::current_dir()?;
+            if let Some(pkg_name) = is_game_project(&cwd) {
+                return cmd_start_project(&cwd, &pkg_name).map_err(Into::into);
+            }
             // Non-blocking background version hint — prints one line if behind
             std::thread::spawn(neondb::updater::check_and_hint);
             let mut config = Config::from_env();
@@ -655,6 +660,63 @@ async fn cmd_cluster_status(metrics_url: &str) -> Result<()> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// neondb start — project-aware: if CWD is a scaffolded game project, build + run it
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn is_game_project(cwd: &Path) -> Option<String> {
+    let cargo_path = cwd.join("Cargo.toml");
+    if !cargo_path.exists() { return None; }
+    let content = std::fs::read_to_string(&cargo_path).ok()?;
+    // Must have neondb as a dep but not BE neondb itself
+    if !content.contains("neondb") { return None; }
+    if content.contains("name = \"neondb\"") { return None; }
+    // Extract package name
+    content.lines()
+        .find(|l| l.trim_start().starts_with("name") && l.contains('"'))
+        .and_then(|l| l.split('"').nth(1))
+        .map(|s| s.to_string())
+}
+
+fn cmd_start_project(cwd: &Path, pkg_name: &str) -> Result<()> {
+    println!("[neondb] Building {} (release)…", pkg_name);
+    let build = std::process::Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .current_dir(cwd)
+        .status()
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("cargo build: {e}")))?;
+
+    if !build.success() {
+        return Err(neondb::error::NeonDBError::internal("cargo build --release failed"));
+    }
+
+    let bin_name = if cfg!(windows) {
+        format!("{pkg_name}.exe")
+    } else {
+        pkg_name.to_string()
+    };
+    let bin = cwd.join("target").join("release").join(&bin_name);
+    if !bin.exists() {
+        return Err(neondb::error::NeonDBError::internal(
+            format!("Binary not found at {}", bin.display()),
+        ));
+    }
+
+    println!("[neondb] Starting {}…", pkg_name);
+    let status = std::process::Command::new(&bin)
+        .arg("start")
+        .current_dir(cwd)
+        .status()
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("exec {pkg_name}: {e}")))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(neondb::error::NeonDBError::internal(format!("{pkg_name} exited with non-zero status")))
+    }
+}
+
 // neondb templates
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -667,20 +729,20 @@ fn cmd_list_templates() {
     }
     println!();
     println!("  Usage:");
-    println!("    neon init my-game --template game/basic");
-    println!("    neon init my-game --template game/full");
-    println!("    neon init my-game --template game/unity");
-    println!("    neon init my-game --template game/godot");
+    println!("    neondb init my-game --template game/basic");
+    println!("    neondb init my-game --template game/full");
+    println!("    neondb init my-game --template game/unity");
+    println!("    neondb init my-game --template game/godot");
     println!();
     println!("  Add modules later:");
-    println!("    cd my-game && neon add combat");
-    println!("    cd my-game && neon add leaderboard");
+    println!("    cd my-game && neondb add combat");
+    println!("    cd my-game && neondb add leaderboard");
     println!();
 }
 
 fn cmd_list_modules() {
     println!();
-    println!("  NeonDB Add-on Modules  (run inside your project: neon add <module>)");
+    println!("  NeonDB Add-on Modules  (run inside your project: neondb add <module>)");
     println!();
     for (name, desc) in MODULES {
         println!("  {:14} — {}", name, desc);
@@ -688,8 +750,8 @@ fn cmd_list_modules() {
     println!();
     println!("  Example:");
     println!("    cd my-game");
-    println!("    neon add combat       # adds attack, respawn, ability reducers + schema");
-    println!("    neon add leaderboard  # adds lb_submit, lb_reset reducers + schema");
+    println!("    neondb add combat       # adds attack, respawn, ability reducers + schema");
+    println!("    neondb add leaderboard  # adds lb_submit, lb_reset reducers + schema");
     println!();
 }
 
@@ -792,7 +854,7 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
         "game/unity"  => scaffold_game_unity(&project_path, &project_name)?,
         "game/godot"  => scaffold_game_godot(&project_path, &project_name)?,
         _ => {
-            eprintln!("Unknown template '{}'. Run `neon templates` to see options.", template_name);
+            eprintln!("Unknown template '{}'. Run `neondb templates` to see options.", template_name);
             return Err(neondb::error::NeonDBError::invalid_argument(format!("unknown template '{}'", template_name)));
         }
     }
@@ -808,7 +870,7 @@ fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -
     let scheduler_note = match template {
         "game/full" =>
             "\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"session_cleanup\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"mm_match\"\ninterval_ms = 5000\n",
-        _ => "\n# Add scheduled reducers here after running `neon add world` or `neon add matchmaking`\n# [[scheduler]]\n# reducer = \"world_tick\"\n# interval_ms = 1000\n",
+        _ => "\n# Add scheduled reducers here after running `neondb add world` or `neondb add matchmaking`\n# [[scheduler]]\n# reducer = \"world_tick\"\n# interval_ms = 1000\n",
     };
 
     let permissions_example =
@@ -904,13 +966,13 @@ fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
     ]);
     println!("  Next steps:");
     println!("    cd {name}");
-    println!("    cargo run --release -- start");
-    println!("    neon call spawn '[\"alice\", \"lobby_1\", \"warrior\"]'");
+    println!("    neondb start");
+    println!("    neondb call spawn '[\"alice\", \"lobby_1\", \"warrior\"]'");
     println!();
     println!("  Add systems:");
-    println!("    neon add combat    # attack, respawn, abilities");
-    println!("    neon add inventory # items, equip slots");
-    println!("    neon add chat      # rooms, messages");
+    println!("    neondb add combat    # attack, respawn, abilities");
+    println!("    neondb add inventory # items, equip slots");
+    println!("    neondb add chat      # rooms, messages");
     println!();
     Ok(())
 }
@@ -961,7 +1023,7 @@ fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// neon add <module>
+// neondb add <module>
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Write Rust files for a module into src/reducers/<module>/ and register in mod.rs.
@@ -1038,7 +1100,7 @@ fn add_module_files(p: &Path, module: &str) -> Result<()> {
 
 fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
     if !project_path.join("schema.toml").exists() {
-        eprintln!("No schema.toml found. Run `neon add` from inside your project directory.");
+        eprintln!("No schema.toml found. Run `neondb add` from inside your project directory.");
         return Err(neondb::error::NeonDBError::invalid_argument("not a NeonDB project directory"));
     }
     // Also add `pub mod <module>;` to src/reducers/mod.rs if it exists
@@ -1137,7 +1199,7 @@ const R_DAMAGE_RS: &str          = include_str!("../templates/r_damage.rs.txt");
 const R_HEAL_RS: &str            = include_str!("../templates/r_heal.rs.txt");
 const R_BASIC_SCHEMA: &str       = include_str!("../templates/r_basic_schema.toml.txt");
 
-// ── module reducers (neon add <name>) ────────────────────────────────────────
+// ── module reducers (neondb add <name>) ──────────────────────────────────────
 const RM_CHAT_MOD_RS: &str       = include_str!("../templates/rm_chat_mod.rs.txt");
 const RM_CHAT_SEND_RS: &str      = include_str!("../templates/rm_chat_send.rs.txt");
 const RM_CHAT_JOIN_RS: &str      = include_str!("../templates/rm_chat_join.rs.txt");
