@@ -19,6 +19,7 @@ pub mod presence;
 pub mod reducer;
 pub mod replication;
 pub mod runtime;
+pub mod stat_sync;
 pub mod schema;
 pub mod sql;
 pub mod subscriptions;
@@ -26,6 +27,7 @@ pub mod table;
 pub mod ttl;
 pub mod wal;
 pub mod server;
+pub mod worker_pool;
 
 pub use error::{NeonDBError, Result};
 pub use tenant::{TenantRegistry, TenantInfo, physical_table, logical_table};

@@ -1,7 +1,11 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
+use tokio::sync::watch;
 
 /// A single leaderboard entry.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -751,5 +755,153 @@ mod tests {
 
         let top = engine.top("meta", 1).unwrap();
         assert_eq!(top[0].1.metadata, Some(meta));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-region global leaderboard aggregation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Response shape returned by GET /leaderboard/top on peer regions.
+#[derive(Deserialize)]
+struct TopResponse {
+    entries: Vec<serde_json::Value>,
+}
+
+/// Pulls the top-N from every region, merges by score, writes to
+/// "global_leaderboard" table.  Runs on a configurable interval.
+pub struct LeaderboardAggregator {
+    engine:        Arc<LeaderboardEngine>,
+    regions:       Arc<crate::cluster::regions::RegionRegistry>,
+    /// Name of the regional leaderboard board to aggregate.
+    board_name:    String,
+    interval_secs: u64,
+    top_n:         usize,
+}
+
+impl LeaderboardAggregator {
+    pub fn new(
+        engine:        Arc<LeaderboardEngine>,
+        regions:       Arc<crate::cluster::regions::RegionRegistry>,
+        board_name:    String,
+        interval_secs: u64,
+        top_n:         usize,
+    ) -> Arc<Self> {
+        Arc::new(Self { engine, regions, board_name, interval_secs, top_n })
+    }
+
+    /// Spawn the background aggregation task.
+    /// No-op when only one region is configured or interval is 0.
+    pub fn start(self: Arc<Self>, mut shutdown: watch::Receiver<()>) {
+        if self.interval_secs == 0 || !self.regions.is_multi_region() {
+            return;
+        }
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(self.interval_secs));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if let Err(e) = self.aggregate().await {
+                            log::warn!("[leaderboard-agg] {}", e);
+                        }
+                    }
+                    _ = shutdown.changed() => break,
+                }
+            }
+        });
+    }
+
+    async fn aggregate(&self) -> Result<(), String> {
+        // Collect local top-N.
+        let mut all: Vec<(String, f64, String)> = self
+            .engine
+            .top(&self.board_name, self.top_n)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, e)| (e.player_id, e.score, self.regions.my_region.clone()))
+            .collect();
+
+        // Fetch from peer regions.
+        for region in self.regions.peer_regions() {
+            if region.metrics_url.is_empty() { continue; }
+            match self.fetch_from_region(&region).await {
+                Ok(entries) => all.extend(entries),
+                Err(e) => log::warn!("[leaderboard-agg] region '{}': {}", region.id, e),
+            }
+        }
+
+        // Sort descending by score.
+        all.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        all.truncate(self.top_n);
+
+        // Register a "global" board if not already present.
+        let global_name = format!("{}_global", self.board_name);
+        if !self.engine.list_boards().contains(&global_name) {
+            self.engine.create_board(LeaderboardConfig {
+                name: global_name.clone(),
+                sort_order: SortOrder::HighestFirst,
+                time_window: TimeWindow::AllTime,
+                max_entries: self.top_n,
+            });
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        for (player_id, score, region) in &all {
+            let meta = serde_json::json!({ "region": region });
+            let _ = self.engine.submit_score(&global_name, player_id, *score, Some(meta), now);
+        }
+
+        log::debug!("[leaderboard-agg] global '{}' updated: {} entries", global_name, all.len());
+        Ok(())
+    }
+
+    async fn fetch_from_region(
+        &self,
+        region: &crate::cluster::regions::ClusterRegion,
+    ) -> Result<Vec<(String, f64, String)>, String> {
+        let url = format!(
+            "{}/leaderboard/top?board={}&n={}",
+            region.metrics_url, self.board_name, self.top_n
+        );
+        let region_id = region.id.clone();
+
+        let resp = tokio::task::spawn_blocking(move || {
+            reqwest::blocking::get(&url)
+                .and_then(|r| r.json::<TopResponse>())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+        Ok(resp.entries.into_iter().filter_map(|row| {
+            let player_id = row["player_id"].as_str()?.to_string();
+            let score     = row["score"].as_f64()?;
+            Some((player_id, score, region_id.clone()))
+        }).collect())
+    }
+}
+
+/// HTTP handler: return top-N from a named board as JSON.
+/// Used by peer regions to fetch regional standings.
+pub fn http_top_entries(engine: &LeaderboardEngine, board: &str, n: usize) -> serde_json::Value {
+    match engine.top(board, n) {
+        Ok(entries) => {
+            let rows: Vec<serde_json::Value> = entries
+                .into_iter()
+                .map(|(rank, e)| serde_json::json!({
+                    "rank":      rank,
+                    "player_id": e.player_id,
+                    "score":     e.score,
+                    "metadata":  e.metadata,
+                }))
+                .collect();
+            serde_json::json!({ "entries": rows })
+        }
+        Err(e) => serde_json::json!({ "error": e, "entries": [] }),
     }
 }

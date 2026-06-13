@@ -40,18 +40,154 @@ use crate::table::TableStore;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch::Receiver};
 use tokio_rustls::TlsAcceptor;
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::Message;
 
 /// Maximum queued outbound frames per client before the connection is forcibly closed.
 /// 4096 frames × ~512 bytes average ≈ 2 MB per slow client (bounded).
 pub const CLIENT_SEND_BUFFER_CAPACITY: usize = 4096;
+
+/// Create N TCP listeners all bound to the same address.
+///
+/// On Linux, each socket gets `SO_REUSEPORT` so the kernel load-balances
+/// incoming connections across all N accept queues — one per NIC RX queue.
+/// On other platforms (Windows, macOS) we fall back to a single listener;
+/// `SO_REUSEPORT` either doesn't exist or doesn't provide the same guarantee.
+fn create_listeners(bind_addr: &str, _count: usize) -> std::io::Result<Vec<TcpListener>> {
+    let addr: std::net::SocketAddr = bind_addr.parse()
+        .map_err(|e: std::net::AddrParseError| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+
+    #[cfg(target_os = "linux")]
+    let n = _count;
+    #[cfg(not(target_os = "linux"))]
+    let n = 1usize;
+
+    let mut listeners = Vec::with_capacity(n);
+    for _ in 0..n {
+        let domain  = if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+        let socket  = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+        socket.set_reuse_address(true)?;
+        #[cfg(target_os = "linux")]
+        socket.set_reuse_port(true)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(&addr.into())?;
+        socket.listen(4096)?;
+        listeners.push(TcpListener::from_std(socket.into())?);
+    }
+    Ok(listeners)
+}
+
+/// All shared state passed to each accept-loop task.
+/// Using a struct + Arc lets us spawn N accept tasks without cloning 20 params.
+struct AcceptState {
+    reducer_tx:           kanal::AsyncSender<PendingCall>,
+    subscription_manager: Arc<crate::subscriptions::SubscriptionManager>,
+    tables:               Arc<crate::table::TableStore>,
+    api_key:              Option<String>,
+    active_connections:   Arc<AtomicUsize>,
+    permissions:          Arc<crate::config::PermissionsConfig>,
+    sql_timeout_ms:       u64,
+    auth_validator:       Arc<crate::auth::AuthValidator>,
+    rate_limiter:         Arc<super::RateLimiterRegistry>,
+    presence:             Arc<crate::presence::PresenceManager>,
+    ttl_manager:          Arc<crate::ttl::TtlManager>,
+    identity_issuer:      Arc<crate::auth::IdentityIssuer>,
+    metrics:              Arc<crate::metrics::Metrics>,
+    tenant_registry:      Arc<crate::tenant::TenantRegistry>,
+    inline_registry:      Arc<super::InlineRegistry>,
+    lobby_router:         Option<Arc<crate::worker_pool::LobbyRouter>>,
+    drain_flag:           Arc<AtomicBool>,
+    max_connections:      usize,
+}
+
+async fn run_accept_loop(
+    listener:     TcpListener,
+    tls_acceptor: Option<TlsAcceptor>,
+    s:            Arc<AcceptState>,
+    mut shutdown: Receiver<()>,
+) {
+    loop {
+        tokio::select! {
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((stream, peer_addr)) => {
+                        let _ = stream.set_nodelay(true);
+                        log::debug!("New connection from {}", peer_addr);
+
+                        if s.active_connections.load(Ordering::SeqCst) >= s.max_connections {
+                            log::warn!("Connection limit reached: {}", s.max_connections);
+                            drop(stream);
+                            continue;
+                        }
+
+                        if s.drain_flag.load(Ordering::Relaxed) {
+                            log::debug!("Drain active — rejecting new connection from {}", peer_addr);
+                            let _ = tokio::io::AsyncWriteExt::write_all(
+                                &mut tokio::io::BufWriter::new(stream),
+                                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 30\r\nX-NeonDB-Draining: true\r\n\r\n",
+                            ).await;
+                            continue;
+                        }
+
+                        let tx      = s.reducer_tx.clone();
+                        let subs    = s.subscription_manager.clone();
+                        let tbl     = s.tables.clone();
+                        let api_key = s.api_key.clone();
+                        let conns   = s.active_connections.clone();
+                        let perms   = s.permissions.clone();
+                        let sql_to  = s.sql_timeout_ms;
+                        let auth_v  = s.auth_validator.clone();
+                        let rl      = s.rate_limiter.clone();
+                        let pres    = s.presence.clone();
+                        let ttl     = s.ttl_manager.clone();
+                        let sd      = shutdown.clone();
+                        let met     = s.metrics.clone();
+                        let iss     = s.identity_issuer.clone();
+                        let peer    = peer_addr.to_string();
+                        let tls_acc = tls_acceptor.clone();
+                        let ten     = s.tenant_registry.clone();
+                        let inl     = s.inline_registry.clone();
+                        let lr      = s.lobby_router.clone();
+
+                        s.metrics.websocket_connects_total.inc();
+                        s.metrics.websocket_connections_active.inc();
+
+                        tokio::spawn(async move {
+                            if let Some(acceptor) = tls_acc {
+                                match acceptor.accept(stream).await {
+                                    Ok(tls_stream) => {
+                                        if let Err(e) = handle_client(
+                                            tls_stream, tx, subs, tbl, api_key, conns, perms,
+                                            sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten, inl, lr,
+                                        ).await { log::warn!("TLS client error: {}", e); }
+                                    }
+                                    Err(e) => log::warn!("TLS accept error from {}: {}", peer, e),
+                                }
+                            } else {
+                                if let Err(e) = handle_client(
+                                    stream, tx, subs, tbl, api_key, conns, perms,
+                                    sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten, inl, lr,
+                                ).await { log::warn!("Client error: {}", e); }
+                            }
+                        });
+                    }
+                    Err(e) => log::error!("Accept error: {}", e),
+                }
+            }
+            _ = shutdown.changed() => {
+                log::info!("WebSocket accept loop shutdown");
+                break;
+            }
+        }
+    }
+}
 
 /// A pending reducer call with response channel.
 pub struct PendingCall {
@@ -66,6 +202,10 @@ pub struct PendingCall {
     /// Tenant ID if the connection authenticated with a tenant API key (`ndbt_…`).
     /// None for non-tenant connections (global or scheduler calls).
     pub tenant_id: Option<String>,
+    /// Lobby hint for per-lobby worker routing. When set, the call is dispatched
+    /// to a dedicated worker thread for this lobby instead of the global pool.
+    /// Parsed from the first argument's key prefix (e.g. `"l42_p123"` → `"42"`).
+    pub lobby_hint: Option<String>,
     pub response_tx: mpsc::UnboundedSender<ReducerResponse>,
 }
 
@@ -148,86 +288,57 @@ pub async fn start_listener(
     tls: Option<Arc<rustls::ServerConfig>>,
     tenant_registry: Arc<TenantRegistry>,
     inline_registry: Arc<InlineRegistry>,
+    lobby_router: Option<Arc<crate::worker_pool::LobbyRouter>>,
+    drain_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     let bind_addr = format!("{}:{}", addr, port);
-    let listener = TcpListener::bind(&bind_addr).await?;
-
     let tls_acceptor: Option<TlsAcceptor> = tls.map(TlsAcceptor::from);
 
+    // Spawn N accept tasks: one per logical core (capped at 8) on Linux with
+    // SO_REUSEPORT, exactly 1 everywhere else (create_listeners handles this).
+    let accept_count = num_cpus::get().min(8).max(1);
+    let listeners = create_listeners(&bind_addr, accept_count)
+        .map_err(|e| crate::error::NeonDBError::network_error(format!("bind {}: {}", bind_addr, e)))?;
+
     if tls_acceptor.is_some() {
-        log::info!("WebSocket listener started (WSS/TLS) on {}", bind_addr);
+        log::info!("WebSocket listener (WSS/TLS) on {} ({} accept queue(s))", bind_addr, listeners.len());
     } else {
-        log::info!("WebSocket listener started on {}", bind_addr);
+        log::info!("WebSocket listener on {} ({} accept queue(s))", bind_addr, listeners.len());
     }
 
-    loop {
-        tokio::select! {
-            accept_result = listener.accept() => {
-                match accept_result {
-                    Ok((stream, peer_addr)) => {
-                        // Disable Nagle's algorithm — send frames immediately
-                        // instead of buffering up to 40ms.  Critical for reducer
-                        // response latency at high CCU.
-                        let _ = stream.set_nodelay(true);
-                        log::debug!("New connection from {}", peer_addr);
+    let state = Arc::new(AcceptState {
+        reducer_tx:           reducer_tx,
+        subscription_manager: subscription_manager,
+        tables:               tables,
+        api_key:              api_key,
+        active_connections:   active_connections,
+        permissions:          permissions,
+        sql_timeout_ms:       sql_timeout_ms,
+        auth_validator:       auth_validator,
+        rate_limiter:         rate_limiter,
+        presence:             presence,
+        ttl_manager:          ttl_manager,
+        identity_issuer:      identity_issuer,
+        metrics:              metrics,
+        tenant_registry:      tenant_registry,
+        inline_registry:      inline_registry,
+        lobby_router:         lobby_router,
+        drain_flag:           drain_flag,
+        max_connections:      max_connections,
+    });
 
-                        if active_connections.load(Ordering::SeqCst) >= max_connections {
-                            log::warn!("Connection limit reached: {}", max_connections);
-                            drop(stream);
-                            continue;
-                        }
-
-                        let tx      = reducer_tx.clone();
-                        let subs    = subscription_manager.clone();
-                        let tbl     = tables.clone();
-                        let api_key = api_key.clone();
-                        let conns   = active_connections.clone();
-                        let perms   = permissions.clone();
-                        let sql_to  = sql_timeout_ms;
-                        let auth_v  = auth_validator.clone();
-                        let rl      = rate_limiter.clone();
-                        let pres    = presence.clone();
-                        let ttl     = ttl_manager.clone();
-                        let sd      = shutdown.clone();
-                        let met     = metrics.clone();
-                        let iss     = identity_issuer.clone();
-                        let peer    = peer_addr.to_string();
-                        let tls_acc = tls_acceptor.clone();
-                        let ten     = tenant_registry.clone();
-                        let inl     = inline_registry.clone();
-
-                        // Record connection metrics immediately on accept.
-                        metrics.websocket_connects_total.inc();
-                        metrics.websocket_connections_active.inc();
-
-                        tokio::spawn(async move {
-                            if let Some(acceptor) = tls_acc {
-                                match acceptor.accept(stream).await {
-                                    Ok(tls_stream) => {
-                                        if let Err(e) = handle_client(
-                                            tls_stream, tx, subs, tbl, api_key, conns, perms,
-                                            sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten, inl,
-                                        ).await { log::warn!("TLS client error: {}", e); }
-                                    }
-                                    Err(e) => log::warn!("TLS accept error from {}: {}", peer, e),
-                                }
-                            } else {
-                                if let Err(e) = handle_client(
-                                    stream, tx, subs, tbl, api_key, conns, perms,
-                                    sql_to, auth_v, rl, pres, ttl, iss, peer, sd, met, ten, inl,
-                                ).await { log::warn!("Client error: {}", e); }
-                            }
-                        });
-                    }
-                    Err(e) => log::error!("Accept error: {}", e),
-                }
-            }
-            _ = shutdown.changed() => {
-                log::info!("WebSocket listener shutdown requested");
-                break;
-            }
-        }
+    let mut handles = Vec::with_capacity(listeners.len());
+    for listener in listeners {
+        let s   = state.clone();
+        let tls = tls_acceptor.clone();
+        let sd  = shutdown.clone();
+        handles.push(tokio::spawn(run_accept_loop(listener, tls, s, sd)));
     }
+
+    // Wait for the shutdown signal, then abort all accept tasks.
+    let _ = shutdown.changed().await;
+    log::info!("WebSocket listener shutdown requested");
+    for h in &handles { h.abort(); }
     Ok(())
 }
 
@@ -250,6 +361,7 @@ async fn handle_client<S>(
     metrics: Arc<Metrics>,
     tenant_registry: Arc<TenantRegistry>,
     inline_registry: Arc<InlineRegistry>,
+    lobby_router: Option<Arc<crate::worker_pool::LobbyRouter>>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -559,6 +671,8 @@ where
                             continue;
                         }
 
+                        // Extract lobby hint from first arg (e.g. "l42_p123" → "42").
+                        let lobby_hint = extract_lobby_hint(&call.args);
                         let pending = PendingCall {
                             call_id,
                             reducer_name: call.reducer_name,
@@ -566,10 +680,14 @@ where
                             caller_id: caller_id.clone(),
                             caller_role: caller_role.clone(),
                             tenant_id: tenant_id.clone(),
+                            lobby_hint,
                             response_tx: response_tx.clone(),
                         };
-                        if let Err(_) = reducer_tx.try_send(pending) {
-                            // Queue is full — fail fast instead of blocking the WebSocket loop.
+                        let dispatched = match &lobby_router {
+                            Some(lr) => lr.try_dispatch(pending),
+                            None => reducer_tx.try_send(pending).is_ok(),
+                        };
+                        if !dispatched {
                             log::warn!("Reducer queue full, rejecting call_id={}", call_id);
                             let overloaded = ReducerResponse::error(
                                 call_id,
@@ -769,6 +887,7 @@ where
                                 }
 
                                 let call_id = call.call_id;
+                                let lobby_hint = extract_lobby_hint(&call.args);
                                 let pending = PendingCall {
                                     call_id,
                                     reducer_name: call.reducer_name,
@@ -776,9 +895,14 @@ where
                                     caller_id: caller_id.clone(),
                                     caller_role: caller_role.clone(),
                                     tenant_id: tenant_id.clone(),
+                                    lobby_hint,
                                     response_tx: response_tx.clone(),
                                 };
-                                if let Err(_) = reducer_tx.try_send(pending) {
+                                let dispatched = match &lobby_router {
+                                    Some(lr) => lr.try_dispatch(pending),
+                                    None => reducer_tx.try_send(pending).is_ok(),
+                                };
+                                if !dispatched {
                                     log::warn!("Reducer queue full, rejecting call_id={}", call_id);
                                     let overloaded = ReducerResponse::error(
                                         call_id,
@@ -928,6 +1052,18 @@ fn execute_sql_query(
     }
 }
 
+/// Extract a lobby hint from reducer args (MsgPack-encoded array).
+///
+/// Looks at the first element of the args array. If it's a string matching
+/// `l{digits}_...` (e.g. `"l42_p123"`), returns `Some("42")`.
+/// Returns `None` on decode failure or when no lobby prefix is present.
+fn extract_lobby_hint(args: &[u8]) -> Option<String> {
+    let arr: Vec<serde_json::Value> = rmp_serde::from_slice(args).ok()?;
+    let first = arr.first()?.as_str()?;
+    // Reuse parse_lobby_key logic: "l42_p123" has the shape of a lobby key.
+    crate::table::parse_lobby_key(first).map(|(lid, _)| lid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -942,6 +1078,7 @@ mod tests {
             caller_id: String::new(),
             caller_role: String::new(),
             tenant_id: None,
+            lobby_hint: None,
             response_tx: _tx,
         };
         assert_eq!(call.call_id, 1);

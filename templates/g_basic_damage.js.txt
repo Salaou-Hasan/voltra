@@ -1,0 +1,12 @@
+const [player_id, amount] = args;
+
+const player = db.get("players", player_id);
+if (!player) { result = { error: "Player not found" }; return; }
+
+// Clamp hp to 0, mark dead if needed
+const hp = Math.max(0, (player.hp || 0) - amount);
+const alive = hp > 0;
+
+db.set("players", player_id, { ...player, hp, alive });
+
+result = { ok: true, hp, alive };

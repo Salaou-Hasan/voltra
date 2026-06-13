@@ -32,6 +32,11 @@
 pub mod fanout;
 pub mod gossip;
 pub mod proxy;
+pub mod regions;
+pub mod lobby_route;
+
+pub use regions::{RegionRegistry, ClusterRegion};
+pub use lobby_route::{LobbyRouteRegistry, LobbyRoute};
 
 use std::env;
 use std::sync::{Arc, OnceLock};

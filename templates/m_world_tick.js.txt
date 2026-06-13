@@ -1,0 +1,24 @@
+// Scheduled reducer — runs every 1 second
+// Increments the world clock and clears NPCs from empty zones
+
+const clock_row = db.get("world_state", "clock");
+const tick = clock_row ? (parseInt(clock_row.value, 10) + 1) : 1;
+db.set("world_state", "clock", { key: "clock", value: String(tick) });
+
+const zones = db.all("zones");
+const npcs  = db.all("npcs");
+
+for (const zone of zones) {
+  if (zone.player_count > 0) continue;
+
+  // Remove all NPCs belonging to this empty zone
+  for (const npc of npcs) {
+    if (npc.lobby === zone.zone_id) {
+      db.delete("npcs", npc.npc_id);
+    }
+  }
+
+  db.set("zones", zone.zone_id, { ...zone, npc_count: 0 });
+}
+
+result = { ok: true, tick };

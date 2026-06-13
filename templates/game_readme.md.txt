@@ -25,10 +25,28 @@ client/               TypeScript client example
 neondb start
 neondb seed seed.json
 neondb call spawn '["player1", 0, 0, "warrior"]'
-neondb watch "players WHERE zone = 'zone_0_0'"
+neondb watch "players WHERE lobby = 'lobby_1'"
 ```
 
 See `GENRE_GUIDE.md` for adapting the template to your genre.
+
+---
+
+## Scaling
+
+This template is designed to scale in three tiers without rewriting any reducer.
+
+| Players      | Setup                                         |
+|-------------|-----------------------------------------------|
+| < 10K CCU   | `neondb start`  — single node, zero config    |
+| 10K–400K    | Set `NEONDB_SHARD_ID/COUNT/PEERS` — cluster   |
+| 400K+       | Set `NEONDB_REGION/REGIONS` — multi-region    |
+
+Every player row stores `lobby` and `region` fields. Subscriptions are
+lobby-scoped (`players WHERE lobby = 'X'`) so each client only receives
+updates for its own instance — the foundation that makes sharding work.
+
+See **SCALING.md** for the full setup, env var reference, and capacity numbers.
 
 ---
 

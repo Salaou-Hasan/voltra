@@ -1,0 +1,20 @@
+[tables.npcs]
+columns = [
+  { name = "npc_id",  type = "String", required = true  },
+  { name = "lobby",   type = "String", required = true  },
+  { name = "hp",      type = "Int",    required = true  },
+  { name = "max_hp",  type = "Int",    required = true  },
+  { name = "type",    type = "String", required = true  },
+  { name = "x",       type = "Float",  required = true  },
+  { name = "y",       type = "Float",  required = true  },
+  { name = "alive",   type = "Bool",   required = false, default = true },
+]
+
+[tables.combat_log]
+columns = [
+  { name = "log_id",   type = "String", required = true },
+  { name = "attacker", type = "String", required = true },
+  { name = "target",   type = "String", required = true },
+  { name = "damage",   type = "Int",    required = true },
+  { name = "ts",       type = "Int",    required = true },
+]

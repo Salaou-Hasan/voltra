@@ -33,12 +33,32 @@
 // ============================================================================
 
 pub mod eviction;
-pub mod dispatcher;
 pub mod columnar;
 
 pub use eviction::{EvictionPolicy, LruTracker};
-pub use dispatcher::{LobbyDispatcher, parse_lobby_key};
 pub use columnar::{ColumnIndex, intersect_results};
+
+/// Parse a physical table name into `(lobby_id, logical_table_name)`.
+///
+/// Returns `None` for global tables (no `l{digits}_` prefix).
+///
+/// Examples:
+///   `"l0_players"`  → `Some(("0", "players"))`
+///   `"l42_npc"`     → `Some(("42", "npc"))`
+///   `"accounts"`    → `None`
+///   `"__tenants"`   → `None`
+pub fn parse_lobby_key(physical_table: &str) -> Option<(String, String)> {
+    if !physical_table.starts_with('l') || physical_table.starts_with("__") {
+        return None;
+    }
+    if let Some(pos) = physical_table.find('_') {
+        let prefix = &physical_table[1..pos];
+        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
+            return Some((prefix.to_string(), physical_table[pos + 1..].to_string()));
+        }
+    }
+    None
+}
 
 use crate::error::{NeonDBError, Result};
 use bytes::Bytes;
@@ -95,15 +115,6 @@ pub struct Counter {
     pub name: String,
     pub value: i32,
     pub last_modified: i64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Player {
-    pub id: RowId,
-    pub name: String,
-    pub level: i32,
-    pub last_modified: i64,
-    pub blob_offset: Option<u64>,
 }
 
 /// Lightweight delta carrying a shared reference to the serialised payload.
@@ -380,12 +391,11 @@ pub struct TableStore {
     next_row_id: AtomicU32,
     pub shard_id: u32,
     pub shard_count: u32,
-    /// Active eviction policy. Checked after every insert/update inside
-    /// `apply_delta_batch`. Defaults to `None` (no eviction).
     eviction_policy: EvictionPolicy,
-    /// LRU access tracker. `Some` when policy != `None`; `None` when policy
-    /// is `None` so there is zero overhead in the common case.
     lru: Option<Arc<LruTracker>>,
+    /// Per-lobby sub-stores for isolated `l{id}_*` table routing.
+    /// `None` when this store IS a lobby sub-store (prevents infinite recursion).
+    lobby_stores: Option<Arc<DashMap<String, Arc<TableStore>>>>,
 }
 
 impl TableStore {
@@ -420,7 +430,49 @@ impl TableStore {
             shard_count: 1,
             eviction_policy: policy,
             lru,
+            lobby_stores: Some(Arc::new(DashMap::new())),
         }
+    }
+
+    /// Create a lobby sub-store (no further lobby routing — prevents recursion).
+    fn for_lobby() -> Self {
+        let data_dir = std::env::var("NEONDB_BLOB_PATH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("neondb_blobs"));
+        let blob_path = data_dir.join("blobs.bin");
+        let blob_store = BlobStore::open(blob_path).expect("Failed to open blob store");
+        TableStore {
+            tables: DashMap::with_capacity_and_shard_amount(64, 32),
+            blob_store: RwLock::new(blob_store),
+            next_row_id: AtomicU32::new(1),
+            shard_id: 0,
+            shard_count: 1,
+            eviction_policy: EvictionPolicy::None,
+            lru: None,
+            lobby_stores: None,  // sub-stores never route further
+        }
+    }
+
+    /// Get or lazily create the sub-store for a given lobby ID.
+    fn get_lobby_store(&self, lobby_id: &str) -> Option<Arc<TableStore>> {
+        self.lobby_stores.as_ref().map(|map| {
+            map.entry(lobby_id.to_string())
+                .or_insert_with(|| Arc::new(TableStore::for_lobby()))
+                .clone()
+        })
+    }
+
+    /// Number of active lobby sub-stores (for monitoring).
+    pub fn lobby_count(&self) -> usize {
+        self.lobby_stores.as_ref().map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// IDs of all active lobbies.
+    pub fn active_lobby_ids(&self) -> Vec<String> {
+        self.lobby_stores
+            .as_ref()
+            .map(|m| m.iter().map(|e| e.key().clone()).collect())
+            .unwrap_or_default()
     }
 
     pub fn set_shard(&mut self, shard_id: u32, shard_count: u32) {
@@ -466,6 +518,9 @@ impl TableStore {
     // ── Public read API ──────────────────────────────────────────────────────
 
     pub fn get_row(&self, table_name: &str, key: &str) -> Result<Option<Value>> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self.get_lobby_store(&lid).map_or(Ok(None), |s| s.get_row(&logical, key));
+        }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
             None => return Ok(None),
@@ -488,6 +543,9 @@ impl TableStore {
     /// value and version are guaranteed consistent). Missing rows read as
     /// version 0, so "read nothing, then someone inserted" also conflicts.
     pub fn get_row_with_version(&self, table_name: &str, key: &str) -> Result<Option<(Value, u64)>> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self.get_lobby_store(&lid).map_or(Ok(None), |s| s.get_row_with_version(&logical, key));
+        }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
             None => return Ok(None),
@@ -508,6 +566,9 @@ impl TableStore {
 
     /// Current OCC version of a row (0 = absent).
     pub fn row_version(&self, table_name: &str, key: &str) -> u64 {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self.get_lobby_store(&lid).map_or(0, |s| s.row_version(&logical, key));
+        }
         self.tables
             .get(table_name)
             .and_then(|t| t.rows.get(key).map(|r| r.version))
@@ -554,6 +615,9 @@ impl TableStore {
     }
 
     pub fn list_rows(&self, table_name: &str) -> Result<Vec<Value>> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self.get_lobby_store(&lid).map_or(Ok(vec![]), |s| s.list_rows(&logical));
+        }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
             None => return Ok(vec![]),
@@ -671,10 +735,20 @@ impl TableStore {
     // ── Public write API (single-writer / convenience / tests) ───────────────
 
     pub fn set_row(&self, table_name: String, key: String, value: Value) -> Result<RowDelta> {
+        if let Some((lid, logical)) = parse_lobby_key(&table_name) {
+            return self.get_lobby_store(&lid)
+                .ok_or_else(|| NeonDBError::table_error("lobby store unavailable"))?
+                .set_row(logical, key, value);
+        }
         self.write_row_unlocked(&table_name, &key, value)
     }
 
     pub fn delete_row(&self, table_name: &str, key: &str) -> Result<RowDelta> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self.get_lobby_store(&lid)
+                .ok_or_else(|| NeonDBError::table_error("lobby store unavailable"))?
+                .delete_row(&logical, key);
+        }
         self.delete_row_unlocked(table_name, key)
     }
 
@@ -697,13 +771,58 @@ impl TableStore {
         self.apply_delta_batch_versioned(deltas, &[])
     }
 
-    /// Like `apply_delta_batch`, but with optimistic-concurrency validation:
-    /// `read_versions` lists `(table, key, version_seen)` for every row the
-    /// transaction read. Inside the row locks, any read row that this batch
-    /// ALSO WRITES must still be at its seen version — otherwise the whole
-    /// batch aborts with `NeonDBError::TxnConflict` (first-committer-wins;
-    /// the caller re-executes the reducer against fresh state).
+    /// Like `apply_delta_batch`, but with OCC validation.
+    /// Routes lobby-prefixed deltas to per-lobby sub-stores for zero cross-lobby contention.
     pub fn apply_delta_batch_versioned(
+        &self,
+        deltas: &[RowDelta],
+        read_versions: &[(String, String, u64)],
+    ) -> Result<Vec<RowDelta>> {
+        if deltas.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Route lobby-prefixed tables to isolated sub-stores.
+        if self.lobby_stores.is_some() {
+            let mut global_deltas: Vec<RowDelta> = Vec::new();
+            let mut lobby_deltas: std::collections::HashMap<String, Vec<RowDelta>> = std::collections::HashMap::new();
+            let mut global_rv: Vec<(String, String, u64)> = Vec::new();
+            let mut lobby_rv: std::collections::HashMap<String, Vec<(String, String, u64)>> = std::collections::HashMap::new();
+
+            for delta in deltas {
+                match parse_lobby_key(&delta.table_name) {
+                    Some((lid, logical)) => {
+                        let mut d = delta.clone();
+                        d.table_name = logical;
+                        lobby_deltas.entry(lid).or_default().push(d);
+                    }
+                    None => global_deltas.push(delta.clone()),
+                }
+            }
+            for (table, key, ver) in read_versions {
+                match parse_lobby_key(table) {
+                    Some((lid, logical)) => {
+                        lobby_rv.entry(lid).or_default().push((logical, key.clone(), *ver));
+                    }
+                    None => global_rv.push((table.clone(), key.clone(), *ver)),
+                }
+            }
+
+            let mut results = self.apply_delta_batch_inner(&global_deltas, &global_rv)?;
+            for (lid, ld) in lobby_deltas {
+                let store = self.get_lobby_store(&lid)
+                    .ok_or_else(|| NeonDBError::table_error("lobby store unavailable"))?;
+                let rv = lobby_rv.remove(&lid).unwrap_or_default();
+                results.extend(store.apply_delta_batch_inner(&ld, &rv)?);
+            }
+            return Ok(results);
+        }
+
+        self.apply_delta_batch_inner(deltas, read_versions)
+    }
+
+    /// Inner batch-apply with locking and OCC — never routes lobby tables.
+    fn apply_delta_batch_inner(
         &self,
         deltas: &[RowDelta],
         read_versions: &[(String, String, u64)],
@@ -1103,9 +1222,18 @@ impl TableStore {
 
     // ── Snapshot helpers ─────────────────────────────────────────────────────────
 
-    /// Return all table names currently in the store.
+    /// Return all table names currently in the store (including lobby-scoped tables).
     pub fn list_tables(&self) -> Vec<String> {
-        self.tables.iter().map(|e| e.key().clone()).collect()
+        let mut names: Vec<String> = self.tables.iter().map(|e| e.key().clone()).collect();
+        if let Some(lobby_map) = &self.lobby_stores {
+            for entry in lobby_map.iter() {
+                let lid = entry.key();
+                for logical in entry.value().list_tables() {
+                    names.push(format!("l{}_{}", lid, logical));
+                }
+            }
+        }
+        names
     }
 
     // ── Migration tracking helpers ───────────────────────────────────────────────
@@ -1145,6 +1273,9 @@ impl TableStore {
     /// Return all rows in `table_name` as (row_key, decoded_value) pairs.
     /// Includes blob data if present. Respects shard filter.
     pub fn list_rows_with_keys(&self, table_name: &str) -> Result<Vec<(String, Value)>> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self.get_lobby_store(&lid).map_or(Ok(vec![]), |s| s.list_rows_with_keys(&logical));
+        }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
             None => return Ok(vec![]),
@@ -1192,6 +1323,9 @@ impl TableStore {
     /// Much cheaper than `list_rows()` when you only need one field per row —
     /// the JSON decode is limited to a single key extraction.
     pub fn scan_column(&self, table_name: &str, field: &str) -> Vec<(String, Value)> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self.get_lobby_store(&lid).map_or(vec![], |s| s.scan_column(&logical, field));
+        }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
             None => return vec![],
@@ -1223,6 +1357,9 @@ impl TableStore {
         table_name: &str,
         field: &str,
     ) -> std::collections::HashMap<String, usize> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self.get_lobby_store(&lid).map_or(std::collections::HashMap::new(), |s| s.count_by_field(&logical, field));
+        }
         use std::collections::HashMap;
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
@@ -1249,6 +1386,9 @@ impl TableStore {
     /// Return all distinct values of `field` across all rows in `table_name`,
     /// sorted by their string representation.
     pub fn distinct_field_values(&self, table_name: &str, field: &str) -> Vec<Value> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self.get_lobby_store(&lid).map_or(vec![], |s| s.distinct_field_values(&logical, field));
+        }
         use std::collections::BTreeSet;
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
@@ -1291,9 +1431,13 @@ impl TableStore {
             .count()
     }
 
-    /// Return the total number of rows across all tables in this store.
+    /// Return the total number of rows across all tables, including all lobby sub-stores.
     pub fn total_row_count(&self) -> usize {
-        self.tables.iter().map(|t| t.value().rows.len()).sum()
+        let global: usize = self.tables.iter().map(|t| t.value().rows.len()).sum();
+        let lobby: usize = self.lobby_stores.as_ref().map(|m| {
+            m.iter().map(|e| e.value().total_row_count()).sum()
+        }).unwrap_or(0);
+        global + lobby
     }
 
     // ── Snapshot helpers ──────────────────────────────────────────────────────
@@ -1319,10 +1463,12 @@ impl TableStore {
         }
     }
 
-    /// Remove all rows from all tables.
-    /// Called when installing a Raft snapshot to reset state before reload.
+    /// Remove all rows from all tables, including all lobby sub-stores.
     pub fn clear_all(&self) {
         self.tables.clear();
+        if let Some(lobby_map) = &self.lobby_stores {
+            lobby_map.clear();
+        }
     }
 }
 
@@ -1347,6 +1493,126 @@ mod tests {
     fn store() -> Arc<TableStore> {
         Arc::new(TableStore::new())
     }
+
+    // ── Lobby routing tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_lobby_key_valid() {
+        assert_eq!(parse_lobby_key("l0_players"), Some(("0".to_string(), "players".to_string())));
+        assert_eq!(parse_lobby_key("l42_inventory"), Some(("42".to_string(), "inventory".to_string())));
+        assert_eq!(parse_lobby_key("l999_npc_spawns"), Some(("999".to_string(), "npc_spawns".to_string())));
+    }
+
+    #[test]
+    fn test_parse_lobby_key_invalid() {
+        assert_eq!(parse_lobby_key("players"), None);
+        assert_eq!(parse_lobby_key("__tenants"), None);
+        assert_eq!(parse_lobby_key("lab_players"), None); // non-numeric prefix
+        assert_eq!(parse_lobby_key("l_players"), None);   // empty numeric part
+        assert_eq!(parse_lobby_key("l0"), None);           // no underscore
+    }
+
+    #[test]
+    fn test_lobby_isolation() {
+        let s = store();
+        s.set_row("l0_players".to_string(), "alice".to_string(), serde_json::json!({"hp": 100})).unwrap();
+        s.set_row("l1_players".to_string(), "alice".to_string(), serde_json::json!({"hp": 50})).unwrap();
+
+        let l0 = s.get_row("l0_players", "alice").unwrap().unwrap();
+        let l1 = s.get_row("l1_players", "alice").unwrap().unwrap();
+        assert_eq!(l0["hp"], 100);
+        assert_eq!(l1["hp"], 50);
+        assert_eq!(s.lobby_count(), 2);
+    }
+
+    #[test]
+    fn test_lobby_global_separation() {
+        let s = store();
+        s.set_row("l0_players".to_string(), "alice".to_string(), serde_json::json!({"lobby": true})).unwrap();
+        s.set_row("accounts".to_string(), "alice".to_string(), serde_json::json!({"global": true})).unwrap();
+
+        let lobby_row = s.get_row("l0_players", "alice").unwrap().unwrap();
+        let global_row = s.get_row("accounts", "alice").unwrap().unwrap();
+        assert_eq!(lobby_row["lobby"], true);
+        assert_eq!(global_row["global"], true);
+        assert_eq!(s.lobby_count(), 1);
+    }
+
+    #[test]
+    fn test_lobby_total_row_count() {
+        let s = store();
+        s.set_row("l0_players".to_string(), "p1".to_string(), serde_json::json!({})).unwrap();
+        s.set_row("l0_players".to_string(), "p2".to_string(), serde_json::json!({})).unwrap();
+        s.set_row("l1_players".to_string(), "p3".to_string(), serde_json::json!({})).unwrap();
+        s.set_row("accounts".to_string(), "a1".to_string(), serde_json::json!({})).unwrap();
+
+        assert_eq!(s.total_row_count(), 4);
+    }
+
+    #[test]
+    fn test_lobby_list_tables_includes_lobby_tables() {
+        let s = store();
+        s.set_row("l0_players".to_string(), "p1".to_string(), serde_json::json!({})).unwrap();
+        s.set_row("accounts".to_string(), "a1".to_string(), serde_json::json!({})).unwrap();
+
+        let tables = s.list_tables();
+        assert!(tables.contains(&"accounts".to_string()));
+        assert!(tables.contains(&"l0_players".to_string()));
+    }
+
+    #[test]
+    fn test_lobby_clear_all() {
+        let s = store();
+        s.set_row("l0_players".to_string(), "p1".to_string(), serde_json::json!({})).unwrap();
+        s.set_row("accounts".to_string(), "a1".to_string(), serde_json::json!({})).unwrap();
+        assert_eq!(s.total_row_count(), 2);
+
+        s.clear_all();
+        assert_eq!(s.total_row_count(), 0);
+        assert_eq!(s.lobby_count(), 0);
+    }
+
+    #[test]
+    fn test_lobby_delta_batch_routing() {
+        let s = store();
+        let deltas = vec![
+            RowDelta {
+                table_name: "l0_players".to_string(),
+                operation: "insert".to_string(),
+                row_key: "alice".to_string(),
+                row_id: 1, shard_id: 0,
+                payload_arc: None,
+                row_data: Some(serde_json::json!({"hp": 100})),
+                counter_add_amount: 0, counter_add_timestamp: 0,
+            },
+            RowDelta {
+                table_name: "l1_players".to_string(),
+                operation: "insert".to_string(),
+                row_key: "bob".to_string(),
+                row_id: 2, shard_id: 0,
+                payload_arc: None,
+                row_data: Some(serde_json::json!({"hp": 80})),
+                counter_add_amount: 0, counter_add_timestamp: 0,
+            },
+            RowDelta {
+                table_name: "accounts".to_string(),
+                operation: "insert".to_string(),
+                row_key: "sys".to_string(),
+                row_id: 3, shard_id: 0,
+                payload_arc: None,
+                row_data: Some(serde_json::json!({"kind": "global"})),
+                counter_add_amount: 0, counter_add_timestamp: 0,
+            },
+        ];
+        s.apply_delta_batch(&deltas).unwrap();
+
+        assert_eq!(s.get_row("l0_players", "alice").unwrap().unwrap()["hp"], 100);
+        assert_eq!(s.get_row("l1_players", "bob").unwrap().unwrap()["hp"], 80);
+        assert_eq!(s.get_row("accounts", "sys").unwrap().unwrap()["kind"], "global");
+        assert_eq!(s.lobby_count(), 2);
+    }
+
+    // ── End lobby routing tests ───────────────────────────────────────────────
 
     #[test]
     fn test_insert_and_get() {

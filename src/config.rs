@@ -206,6 +206,32 @@ pub struct Config {
     /// coalesce into one fan-out frame (game-engine state sync, 20Hz default).
     /// 0 = deliver every write immediately.  Env: `NEONDB_SUB_TICK_MS`.
     pub sub_tick_ms: u64,
+
+    // ── Multi-region ───────────────────────────────────────────────────────
+
+    /// This node's region ID (e.g. "europe", "asia").
+    /// Env: `NEONDB_REGION`.  Default "default".
+    pub region: String,
+    /// Peer regions: comma-separated `id=ws_url|metrics_url` pairs.
+    /// Env: `NEONDB_REGIONS`.  Default "" (single-region mode).
+    pub regions: String,
+
+    // ── Leaderboard aggregation ────────────────────────────────────────────
+
+    /// Board name to aggregate globally.  Env: `NEONDB_LEADERBOARD_BOARD`.
+    pub leaderboard_board: String,
+    /// Seconds between global aggregation runs.  0 = disabled.
+    /// Env: `NEONDB_LEADERBOARD_INTERVAL_SECS`.  Default 60.
+    pub leaderboard_interval_secs: u64,
+    /// How many entries to pull from each region.
+    /// Env: `NEONDB_LEADERBOARD_TOP_N`.  Default 1000.
+    pub leaderboard_top_n: usize,
+
+    // ── Post-match stat sync ───────────────────────────────────────────────
+
+    /// How often (ms) the stat-sync queue is flushed to home regions.
+    /// Env: `NEONDB_STAT_SYNC_FLUSH_MS`.  Default 500.
+    pub stat_sync_flush_ms: u64,
 }
 
 // These structs mirror the TOML schema.
@@ -351,6 +377,12 @@ impl Config {
             pg_port: 5432,
             pg_password: None,
             sub_tick_ms: 50,
+            region: "default".to_string(),
+            regions: String::new(),
+            leaderboard_board: "leaderboard".to_string(),
+            leaderboard_interval_secs: 60,
+            leaderboard_top_n: 1000,
+            stat_sync_flush_ms: 500,
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -797,6 +829,30 @@ fn apply_env_overrides(cfg: &mut Config) {
         .and_then(|v| v.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
     {
         cfg.sub_tick_ms = t;
+    }
+    if let Ok(r) = env::var("NEONDB_REGION") {
+        cfg.region = r;
+    }
+    if let Ok(r) = env::var("NEONDB_REGIONS") {
+        cfg.regions = r;
+    }
+    if let Ok(b) = env::var("NEONDB_LEADERBOARD_BOARD") {
+        cfg.leaderboard_board = b;
+    }
+    if let Ok(s) = env::var("NEONDB_LEADERBOARD_INTERVAL_SECS")
+        .and_then(|v| v.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.leaderboard_interval_secs = s;
+    }
+    if let Ok(n) = env::var("NEONDB_LEADERBOARD_TOP_N")
+        .and_then(|v| v.parse::<usize>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.leaderboard_top_n = n;
+    }
+    if let Ok(ms) = env::var("NEONDB_STAT_SYNC_FLUSH_MS")
+        .and_then(|v| v.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.stat_sync_flush_ms = ms;
     }
 }
 

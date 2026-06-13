@@ -1,0 +1,21 @@
+const [target_id, weapon, damage] = args;
+
+// Target may be a player or an NPC — check both tables
+let target = db.get("players", target_id) || db.get("npcs", target_id);
+if (!target) { result = { error: "Target not found" }; return; }
+
+const table = target.npc_id ? "npcs" : "players";
+const key   = target.npc_id ? target.npc_id : target_id;
+
+const hp    = Math.max(0, (target.hp || 0) - damage);
+const alive = hp > 0;
+
+db.set(table, key, { ...target, hp, alive });
+
+const now = Date.now();
+db.set("combat_log", caller.id + "_" + now, {
+  log_id: caller.id + "_" + now,
+  attacker: caller.id, target: target_id, damage, ts: now,
+});
+
+result = { ok: true, target_hp: hp, target_alive: alive };

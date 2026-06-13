@@ -1,0 +1,16 @@
+const [rating] = args;
+
+const existing = db.get("mm_queue", caller.id);
+if (existing) {
+  // Already in queue — report current position
+  const all = db.all("mm_queue");
+  const position = all.filter(p => p.queued_at <= existing.queued_at).length;
+  result = { ok: true, position }; return;
+}
+
+db.set("mm_queue", caller.id, {
+  player_id: caller.id, rating, queued_at: Date.now(), lobby_id: "",
+});
+
+const all = db.all("mm_queue");
+result = { ok: true, position: all.length };

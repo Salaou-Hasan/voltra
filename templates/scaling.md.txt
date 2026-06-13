@@ -1,0 +1,207 @@
+# Scaling Guide
+
+NeonDB scales in three tiers. You start at Tier 1 and only move up when you
+need to. Each tier is additive — you do not rewrite your game logic.
+
+---
+
+## Tier 1 — Single Node (indie default)
+
+Everything runs on one machine. Zero config beyond `neondb start`.
+
+```
+Players ──► [ NeonDB node ] ──► in-memory tables
+                                WAL on disk
+```
+
+**Capacity on common hardware:**
+
+| Machine          | Approx. CCU | Approx. TPS |
+|-----------------|-------------|-------------|
+| 4-core VPS       | 5 K         | 20 K        |
+| 8-core dedicated | 12 K        | 50 K        |
+| 16-core server   | 25 K        | 100 K       |
+| 32-core server   | 45 K        | 180 K       |
+
+_"CCU" = concurrent players. "TPS" = total reducer calls/s across all players._
+
+**env vars (all optional at Tier 1):**
+
+```bash
+NEONDB_PORT=3000           # WebSocket port (default 3000)
+NEONDB_METRICS_PORT=3001   # Admin/metrics port (default 3001)
+NEONDB_API_KEY=secret      # Auth key (leave blank for open dev)
+NEONDB_WAL_DIR=/var/neondb # Where WAL + snapshots live
+```
+
+---
+
+## Tier 2 — Cluster of N Nodes (8–12 node cluster)
+
+When one machine is not enough, you add nodes. NeonDB shards lobbies across
+nodes using a consistent hash. Each lobby still runs entirely on one node —
+no cross-node coordination during gameplay.
+
+```
+Players ──► load balancer (nginx / HAProxy / Cloudflare)
+                │
+         ┌──────┴──────┐
+      node-0         node-1  …  node-7
+     shard 0         shard 1     shard 7
+    (lobbies         (lobbies   (lobbies
+     0,8,16…)        1,9,17…)   7,15,23…)
+         │
+    fan-out: writes replicated to peers (fire-and-forget)
+```
+
+**Setup — 8-node cluster (all nodes same region):**
+
+```bash
+# NODE 0
+NEONDB_SHARD_ID=0
+NEONDB_SHARD_COUNT=8
+NEONDB_REGION=europe
+NEONDB_PEERS=shard1=http://10.0.0.2:3001,shard2=http://10.0.0.3:3001,...
+NEONDB_CLUSTER_SECRET=change-me
+
+# NODE 1
+NEONDB_SHARD_ID=1
+NEONDB_SHARD_COUNT=8
+NEONDB_REGION=europe
+NEONDB_PEERS=shard0=http://10.0.0.1:3001,shard2=http://10.0.0.3:3001,...
+NEONDB_CLUSTER_SECRET=change-me
+
+# … repeat for nodes 2–7 with matching SHARD_ID
+```
+
+**Client-side lobby routing:**
+
+When a player wants to join lobby `42`, your game server asks:
+
+```
+GET http://any-node:3001/cluster/lobby-route?lobby_id=42
+→ { "ws_url": "ws://10.0.0.3:3000", "region_id": "europe" }
+```
+
+The client reconnects directly to that node. From then on all traffic for
+that lobby hits exactly one node — no relay, no proxy.
+
+**Register a new lobby when creating it:**
+
+```
+POST http://any-node:3001/cluster/register-lobby
+{ "lobby_id": "42", "region_id": "europe", "ws_url": "ws://10.0.0.3:3000" }
+```
+
+**Capacity at Tier 2 (8 nodes × 32-core each):**
+
+~360 K CCU   ~1.4 M TPS   (≈ 8× single-node)
+
+---
+
+## Tier 3 — Cluster-of-Clusters (multi-region, near-infinite)
+
+Once you have more than one geographic region, each region runs its own
+Tier-2 cluster. A "region" is just a URL — NeonDB does not care whether it
+is one node or fifty.
+
+```
+           ┌─────────────────┐
+           │  Global view    │
+           │  (leaderboard   │
+           │   aggregator)   │
+           └────────┬────────┘
+            60s poll│
+     ┌──────────────┼──────────────┐
+     ▼              ▼              ▼
+europe-cluster  asia-cluster  africa-cluster
+(8 nodes)       (8 nodes)     (8 nodes)
+```
+
+**Config on every node in the europe cluster:**
+
+```bash
+NEONDB_REGION=europe
+NEONDB_REGIONS=europe=ws://eu-lb:3000|http://eu-lb:3001,\
+               asia=ws://as-lb:3000|http://as-lb:3001,\
+               africa=ws://af-lb:3000|http://af-lb:3001
+NEONDB_LEADERBOARD_BOARD=leaderboard
+NEONDB_LEADERBOARD_INTERVAL_SECS=60   # how often to merge from all regions
+NEONDB_LEADERBOARD_TOP_N=1000
+NEONDB_STAT_SYNC_FLUSH_MS=500         # post-match stat write-back delay
+```
+
+_`eu-lb`, `as-lb`, `af-lb` are your load balancer addresses.
+ Each load balancer sits in front of that region's 8-node cluster._
+
+**Cross-region player join:**
+
+A player in Africa wants to play with a friend whose lobby is on the Europe
+cluster. Your game server:
+
+1. Calls `GET /cluster/lobby-route?lobby_id=X` on the Africa cluster.
+2. Gets back `{ "ws_url": "ws://eu-lb:3000", "region_id": "europe" }`.
+3. Tells the client to connect to `ws://eu-lb:3000`.
+4. Player plays on the Europe cluster with higher ping — same as joining a
+   European server in any AAA game.
+
+**Post-match stat write-back:**
+
+When the match ends on the Europe cluster, stats need to go back to the
+Africa cluster (the player's home region). This is handled automatically if
+you enqueue a stat-sync job from your match-end reducer:
+
+```js
+// modules/matchmaking/create_match.js  (after match ends)
+const result = { kills: 12, xp: 350, rank_change: +2 };
+__neondb_stat_sync("africa", "players", player_id, result);
+// Fire-and-forget: queued, batched, retried — your reducer returns immediately
+```
+
+**Global leaderboard:**
+
+Each region's node with `NEONDB_LEADERBOARD_INTERVAL_SECS > 0` runs a
+background job every N seconds:
+
+1. Fetches top-1000 from every peer region via `GET /leaderboard/top`.
+2. Merges by score, keeps top-1000 globally.
+3. Writes result to the `leaderboard_global` table locally.
+
+Clients subscribe to `leaderboard_global` for the merged global board.
+Staleness = up to `NEONDB_LEADERBOARD_INTERVAL_SECS` (default 60s).
+That is the industry standard — no real game has a real-time global leaderboard.
+
+**Capacity at Tier 3 (3 regions × 8 nodes × 32-core):**
+
+~1.1 M CCU    near-linear with region count
+
+---
+
+## Summary — Which tier do you need?
+
+| Players          | Tier         | What to do                          |
+|-----------------|-------------|-------------------------------------|
+| < 10 K CCU       | 1 — Single   | `neondb start`, done                |
+| 10 K – 400 K CCU | 2 — Cluster  | Set `NEONDB_SHARD_*` + `NEONDB_PEERS` |
+| 400 K+ CCU       | 3 — Regions  | Set `NEONDB_REGION` + `NEONDB_REGIONS` |
+
+You do not rewrite any reducer. The scaling is entirely in environment variables
+and your lobby-creation / match-routing logic.
+
+---
+
+## Why this scales near-linearly
+
+NeonDB's key architectural property is **share-nothing per lobby**:
+
+- All row keys for lobby 42 are prefixed `l42_*`.
+- No two lobbies ever touch the same rows.
+- No global locks. No distributed transactions during gameplay.
+- Adding a node adds capacity in direct proportion.
+
+The only "global" operations are:
+- Leaderboard aggregation — a read-only HTTP fan-out, not on the hot path.
+- Stat sync — fire-and-forget after match end, not during gameplay.
+- Lobby routing registration — one HTTP call at lobby creation, not per-frame.
+
+Everything that happens 60 times per second per player is local to one node.

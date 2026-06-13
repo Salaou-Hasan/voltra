@@ -1,0 +1,19 @@
+const [player_id, item_id, qty] = args;
+
+const inv_key = player_id + ":" + item_id;
+const existing = db.get("inventory", inv_key);
+if (!existing) { result = { error: "Item not in inventory" }; return; }
+
+if (existing.qty < qty) {
+  result = { error: "Not enough items (have " + existing.qty + ")" }; return;
+}
+
+const qty_remaining = existing.qty - qty;
+
+if (qty_remaining === 0) {
+  db.delete("inventory", inv_key);
+} else {
+  db.set("inventory", inv_key, { ...existing, qty: qty_remaining });
+}
+
+result = { ok: true, qty_remaining };

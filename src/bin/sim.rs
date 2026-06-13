@@ -29,6 +29,9 @@
 
 #![allow(clippy::needless_range_loop)]
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -467,16 +470,6 @@ fn sim_presence(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<
     Ok(ok_bytes())
 }
 inventory::submit! { NativeReducerItem { name: "sim_presence", make: || Box::new(NativeReducerBackend::new(sim_presence)) } }
-
-// ── Chat: thread reply ──────────────────────────────────────────────────────
-fn sim_thread_reply(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
-    let a = args_to_vec(args);
-    let tid = a.first().and_then(|v| v.as_str()).unwrap_or("");
-    let uid = a.get(2).and_then(|v| v.as_str()).unwrap_or("");
-    let text = a.get(3).and_then(|v| v.as_str()).unwrap_or("");
-    ctx.set_row("sim_thread_replies".into(), tid.into(), json!({"tid": tid, "uid": uid, "text": text}))?;
-    Ok(ok_bytes())
-}
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
@@ -1843,11 +1836,9 @@ async fn run_stress(
 
 #[derive(Clone)]
 struct SimConfig {
-    url:         String,
-    metrics_url: String,
-    api_key:     Option<String>,
-    max_err_pct: f64,
-    id_offset:   usize,
+    url:       String,
+    api_key:   Option<String>,
+    id_offset: usize,
 }
 
 async fn run_game_sim(
@@ -2145,11 +2136,9 @@ async fn main() {
     };
 
     let cfg = SimConfig {
-        url:         args.url.clone(),
-        metrics_url: args.metrics_url.clone(),
-        api_key:     args.api_key.clone(),
-        max_err_pct: args.max_error_pct,
-        id_offset:   args.id_offset,
+        url:       args.url.clone(),
+        api_key:   args.api_key.clone(),
+        id_offset: args.id_offset,
     };
 
     let all_ops: Vec<&'static str> = SIM_REDUCERS.iter().map(|(n, _)| *n).collect();

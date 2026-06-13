@@ -1,0 +1,10 @@
+[tables.inventory]
+columns = [
+  { name = "inv_key",   type = "String", required = true  },
+  { name = "player_id", type = "String", required = true  },
+  { name = "item_id",   type = "String", required = true  },
+  { name = "item_name", type = "String", required = true  },
+  { name = "qty",       type = "Int",    required = true  },
+  { name = "slot",      type = "String", required = false, default = "" },
+  { name = "equipped",  type = "Bool",   required = false, default = false },
+]

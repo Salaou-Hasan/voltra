@@ -64,6 +64,17 @@ var __neondb_ai_generate = function(p) {
     if (r == null || r === undefined) return null;
     try { return JSON.parse(r); } catch(e) { return r; }
 };
+// Ergonomic aliases for template reducers
+var db = {
+    get:    function(t, k) { return __neondb_get(t, k); },
+    set:    function(t, k, v) { __neondb_set(t, k, v); },
+    delete: function(t, k) { __neondb_delete(t, k); },
+    all:    function(t) { return __neondb_get_all(t); }
+};
+var caller = {
+    get id()   { return __neondb_caller_id; },
+    get role() { return __neondb_caller_role; }
+};
 "#;
 
 // ── Thread-local state ────────────────────────────────────────────────────────

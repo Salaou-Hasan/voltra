@@ -1,0 +1,12 @@
+// Scheduled reducer — runs on interval (e.g. weekly reset)
+// No args; clears all leaderboard entries
+
+const rows = db.all("leaderboard");
+let cleared = 0;
+
+for (const row of rows) {
+  db.delete("leaderboard", row.player_id);
+  cleared++;
+}
+
+result = { ok: true, cleared };

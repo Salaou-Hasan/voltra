@@ -1,0 +1,16 @@
+const [player_id, item_id, item_name, qty] = args;
+
+// One row per player+item combination
+const inv_key = player_id + ":" + item_id;
+const existing = db.get("inventory", inv_key);
+
+if (existing) {
+  // Stack onto existing item
+  db.set("inventory", inv_key, { ...existing, qty: existing.qty + qty });
+  result = { ok: true, qty: existing.qty + qty };
+} else {
+  db.set("inventory", inv_key, {
+    inv_key, player_id, item_id, item_name, qty, slot: "", equipped: false,
+  });
+  result = { ok: true, qty };
+}

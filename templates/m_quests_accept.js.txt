@@ -1,0 +1,16 @@
+const [quest_id, goal] = args;
+
+// One active instance of each quest per player
+const quest_key = caller.id + ":" + quest_id;
+const existing = db.get("player_quests", quest_key);
+if (existing && existing.status === "active") {
+  result = { error: "Quest already active" }; return;
+}
+
+db.set("player_quests", quest_key, {
+  quest_key, player_id: caller.id, quest_id,
+  status: "active", progress: 0, goal,
+  started_at: Date.now(), completed_at: 0,
+});
+
+result = { ok: true, quest_id };

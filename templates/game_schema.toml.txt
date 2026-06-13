@@ -7,6 +7,14 @@ name = "player_id"
 type = "string"
 required = true
 [[tables.columns]]
+name = "lobby"
+type = "string"
+required = true
+[[tables.columns]]
+name = "region"
+type = "string"
+required = true
+[[tables.columns]]
 name = "x"
 type = "f64"
 required = true

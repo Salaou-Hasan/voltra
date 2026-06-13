@@ -1,0 +1,17 @@
+const [guild_id, name] = args;
+
+const existing = db.get("guilds", guild_id);
+if (existing) { result = { error: "Guild already exists" }; return; }
+
+const now = Date.now();
+
+db.set("guilds", guild_id, {
+  guild_id, name, owner_id: caller.id, created_at: now,
+});
+
+// Owner is automatically a member with "owner" rank
+db.set("guild_members", caller.id, {
+  player_id: caller.id, guild_id, rank: "owner", joined_at: now,
+});
+
+result = { ok: true, guild_id };

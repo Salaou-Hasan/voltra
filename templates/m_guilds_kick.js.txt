@@ -1,0 +1,22 @@
+const [guild_id, target_id] = args;
+
+const guild = db.get("guilds", guild_id);
+if (!guild) { result = { error: "Guild not found" }; return; }
+
+// Only the guild owner may kick members
+if (guild.owner_id !== caller.id) {
+  result = { error: "Only the guild owner can kick members" }; return;
+}
+
+if (target_id === caller.id) {
+  result = { error: "Owner cannot kick themselves" }; return;
+}
+
+const membership = db.get("guild_members", target_id);
+if (!membership || membership.guild_id !== guild_id) {
+  result = { error: "Player is not a member of this guild" }; return;
+}
+
+db.delete("guild_members", target_id);
+
+result = { ok: true };

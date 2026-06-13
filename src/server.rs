@@ -502,6 +502,8 @@ async fn run_server_inner(
         tls_config,
         tenant_registry,
         inline_registry,
+        None,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )
     .await
 }

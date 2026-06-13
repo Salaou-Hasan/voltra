@@ -1,0 +1,29 @@
+// Scheduled reducer — runs every few seconds to pair queued players
+
+const queued = db.all("mm_queue");
+
+// Sort by rating for proximity-based pairing
+queued.sort((a, b) => a.rating - b.rating);
+
+let matches_created = 0;
+
+for (let i = 0; i + 1 < queued.length; i += 2) {
+  const a = queued[i];
+  const b = queued[i + 1];
+  const match_id = a.player_id + "_vs_" + b.player_id + "_" + Date.now();
+  const lobby_id = "match_" + match_id;
+
+  db.set("matches", match_id, {
+    match_id, player_a: a.player_id, player_b: b.player_id,
+    status: "active", created_at: Date.now(),
+  });
+
+  // Assign lobby and remove from queue
+  db.set("mm_queue", a.player_id, { ...a, lobby_id });
+  db.set("mm_queue", b.player_id, { ...b, lobby_id });
+  db.delete("mm_queue", a.player_id);
+  db.delete("mm_queue", b.player_id);
+  matches_created++;
+}
+
+result = { ok: true, matches_created };

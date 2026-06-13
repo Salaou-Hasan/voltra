@@ -1,0 +1,73 @@
+## NeonDBManager — Godot 4 autoload
+## Add via Project → Project Settings → Autoloads as "NeonDB"
+## Usage: await NeonDB.spawn_player(...)  |  NeonDB.player_updated.connect(cb)
+
+extends Node
+
+@export var server_url: String = "ws://localhost:3000"
+@export var api_key: String    = ""
+@export var lobby_id: String   = "lobby_1"
+
+## Emitted on the main thread whenever a subscribed player row changes.
+signal player_updated(player_data: Dictionary)
+
+var _client  # NeonDBClient instance (neondb_client.gd)
+
+# ---------------------------------------------------------------------------
+
+func _ready() -> void:
+	_client = preload("res://addons/neondb/neondb_client.gd").new()
+	add_child(_client)
+
+	# Forward row_update signal from the low-level client
+	_client.row_update.connect(_on_row_update)
+
+	# Connect and subscribe to this lobby's players
+	await _client.connect_client(server_url, api_key)
+	_client.subscribe("players WHERE lobby = '" + lobby_id + "'")
+
+func _on_row_update(table: String, row: Dictionary) -> void:
+	if table == "players":
+		player_updated.emit(row)
+
+# ---------------------------------------------------------------------------
+# Public game API
+# ---------------------------------------------------------------------------
+
+## Spawn a player into the current lobby. Returns the full player row.
+func spawn_player(player_id: String, p_lobby_id: String, class_name: String) -> Dictionary:
+	return await _client.call_reducer("spawn", [player_id, p_lobby_id, class_name])
+
+## Update a player's world position.
+func move_player(player_id: String, x: float, y: float) -> Dictionary:
+	return await _client.call_reducer("move", [player_id, x, y])
+
+## Remove a player from the world.
+func despawn_player(player_id: String) -> Dictionary:
+	return await _client.call_reducer("despawn", [player_id])
+
+## Apply damage to a player.
+func damage_player(player_id: String, amount: int) -> Dictionary:
+	return await _client.call_reducer("damage", [player_id, amount])
+
+## Heal a player.
+func heal_player(player_id: String, amount: int) -> Dictionary:
+	return await _client.call_reducer("heal", [player_id, amount])
+
+# ---------------------------------------------------------------------------
+# Example: wire in a Node2D/3D scene
+# ---------------------------------------------------------------------------
+#
+# func _ready():
+#     NeonDB.player_updated.connect(_on_player_updated)
+#     await NeonDB.spawn_player(my_player_id, NeonDB.lobby_id, "warrior")
+#
+# func _on_player_updated(data: Dictionary) -> void:
+#     if data["player_id"] == my_player_id:
+#         position = Vector2(data["x"], data["y"])
+#
+# func _input(event):
+#     if event is InputEventKey and event.pressed:
+#         var new_x = position.x + Input.get_axis("ui_left", "ui_right") * 10.0
+#         var new_y = position.y + Input.get_axis("ui_up",   "ui_down")  * 10.0
+#         await NeonDB.move_player(my_player_id, new_x, new_y)

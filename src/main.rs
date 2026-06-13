@@ -21,6 +21,14 @@
 //           in advance.
 // ============================================================================
 
+// ── Hardware-level allocator ──────────────────────────────────────────────────
+// mimalloc replaces the system allocator with a high-throughput allocator
+// tuned for many small short-lived allocations (DashMap ops, channel messages).
+// Huge pages: set MIMALLOC_LARGE_OS_PAGES=1 in the environment for 2MB pages.
+// NUMA-aware: set MIMALLOC_NUMA_AWARE=1 for multi-socket servers.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -63,15 +71,23 @@ struct Template {
 }
 
 const TEMPLATES: &[Template] = &[
-    Template { name: "rust/basic",      category: "Rust server", description: "Foundation — users, sessions, inventory, role-based auth  (JS reducers → WASM-upgradable)" },
-    Template { name: "rust/game-ready", category: "Rust server", description: "Game-ready engine — players, combat, economy, quests, guilds, world  (JS reducers → WASM-upgradable)" },
-    Template { name: "rust/chat",       category: "Rust server", description: "Production chat — rooms, threads, reactions, presence, moderation  (JS reducers → WASM-upgradable)" },
-    Template { name: "typescript",      category: "TypeScript",  description: "TypeScript-first — React hooks, full client SDK, package.json scaffolding" },
-    Template { name: "native/game-ready", category: "Native Rust", description: "Rust reducers compiled to WASM — near-native throughput, no NeonDB source needed" },
-    Template { name: "csharp-reducers", category: "Multi-language", description: "C# reducers compiled to WASM via .NET 8 WASI workload" },
-    Template { name: "go-reducers",     category: "Multi-language", description: "Go reducers compiled to WASM via TinyGo (wasm32-wasi)" },
-    Template { name: "unity",           category: "Game engine",  description: "Unity C# client — single file, calls + live subscriptions, main-thread dispatch" },
-    Template { name: "godot",           category: "Game engine",  description: "Godot 4 GDScript client — autoload singleton, signals for live row updates" },
+    Template { name: "game/basic", category: "Game server", description: "Spawn, move, despawn, health — the minimal multiplayer foundation. Add modules with `neon add`." },
+    Template { name: "game/full",  category: "Game server", description: "All modules pre-configured: combat, inventory, economy, matchmaking, guilds, quests, leaderboard, chat, world." },
+    Template { name: "game/unity", category: "Unity",       description: "Unity C# SDK + full game server. Copy unity/ into Assets/Scripts/NeonDB/, configure URL, play." },
+    Template { name: "game/godot", category: "Godot 4",     description: "Godot GDScript SDK + full game server. Add godot/ as an autoload, configure URL, play." },
+];
+
+/// Available add-on modules (`neon add <name>`).
+const MODULES: &[(&str, &str)] = &[
+    ("chat",        "Rooms, messages, per-room presence"),
+    ("inventory",   "Items, qty stacking, equip slots"),
+    ("leaderboard", "Score submit, global top-N, weekly reset"),
+    ("matchmaking", "Queue, ELO-pair, match creation (scheduled)"),
+    ("guilds",      "Create, invite, accept, kick"),
+    ("quests",      "Accept, progress tracking, claim reward"),
+    ("economy",     "Gold/gem wallets, shop buy/sell, transfers, loot boxes"),
+    ("combat",      "Attack, ability system, NPC damage, respawn"),
+    ("world",       "World tick, NPC spawn, session cleanup (scheduled)"),
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,16 +105,21 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Scaffold a new NeonDB project (interactive when run with no args)
+    /// Scaffold a new NeonDB multiplayer game project
     Init {
         #[arg(value_name = "NAME")]
         path: Option<PathBuf>,
-        #[arg(long, help = "Template: rust/basic | rust/game-ready | rust/chat | typescript")]
+        #[arg(long, help = "Template: game/basic | game/full | game/unity | game/godot")]
         template: Option<String>,
+    },
+    /// Add a feature module to an existing project (run inside project dir)
+    Add {
+        #[arg(value_name = "MODULE", help = "chat | inventory | leaderboard | matchmaking | guilds | quests | economy | combat | world")]
+        module: String,
     },
     /// List available project templates
     Templates,
-    /// List Neon V1 modular runtime modules and genre recipes
+    /// List available add-on modules (`neon add <module>`)
     Modules,
     /// Compile JS reducers in modules/ to WASM (requires `javy`)
     Build {
@@ -152,6 +173,17 @@ enum Commands {
         metrics_url: String,
         #[arg(long, help = "Parse and preview what would be seeded without writing")]
         dry_run: bool,
+    },
+    /// Put the server into drain mode — stop accepting new connections while
+    /// existing connections finish. Safe to hot-fix then undrain or restart.
+    Drain {
+        #[arg(long, default_value = "http://127.0.0.1:3001", help = "Admin/metrics server URL")]
+        metrics_url: String,
+    },
+    /// Take the server out of drain mode — resume accepting new connections.
+    Undrain {
+        #[arg(long, default_value = "http://127.0.0.1:3001", help = "Admin/metrics server URL")]
+        metrics_url: String,
     },
     /// Apply pending schema migrations from the migrations/ directory
     Migrate {
@@ -230,8 +262,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init { path, template } => { init_project(path, template)?; Ok(()) }
+        Commands::Add { module } => { cmd_add_module(&module, &std::env::current_dir()?)?; Ok(()) }
         Commands::Templates => { cmd_list_templates(); Ok(()) }
-        Commands::Modules => { cmd_list_runtime_modules(); Ok(()) }
+        Commands::Modules => { cmd_list_modules(); Ok(()) }
         Commands::Build { modules_dir } => {
             build_wasm_modules(modules_dir.as_deref().unwrap_or(Path::new("modules")))
         }
@@ -251,6 +284,8 @@ async fn main() -> Result<()> {
         Commands::Watch { query, url, api_key } => neondb::cli::cmd_watch(&url, &query, api_key.as_deref()).await,
         Commands::ClusterStatus { metrics_url } => cmd_cluster_status(&metrics_url).await,
         Commands::Seed { file, metrics_url, dry_run } => neondb::cli::cmd_seed(&metrics_url, &file, dry_run).await,
+        Commands::Drain { metrics_url } => cmd_drain(&metrics_url, true).await,
+        Commands::Undrain { metrics_url } => cmd_drain(&metrics_url, false).await,
         Commands::Migrate { dir, metrics_url, dry_run } => neondb::cli::cmd_migrate(&metrics_url, &dir, dry_run).await,
         Commands::GenerateNpc { npc_type, context, url, api_key } => neondb::cli::cmd_generate_npc(&url, &npc_type, context.as_deref(), api_key.as_deref()).await,
         Commands::Bench { url, clients, calls, warmup, api_key } => run_cli_bench(&url, clients, calls, warmup, api_key.as_deref()).await,
@@ -270,6 +305,32 @@ async fn main() -> Result<()> {
 // ─────────────────────────────────────────────────────────────────────────────
 // neondb cluster-status
 // ─────────────────────────────────────────────────────────────────────────────
+
+async fn cmd_drain(metrics_url: &str, enable: bool) -> Result<()> {
+    let url = format!("{}/admin/api/drain", metrics_url);
+    let client = reqwest::Client::new();
+    let resp = if enable {
+        client.post(&url).send().await
+    } else {
+        client.delete(&url).send().await
+    }.map_err(|e| neondb::error::NeonDBError::network_error(format!("Cannot reach {}: {}", url, e)))?;
+
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
+    let draining = body["draining"].as_bool().unwrap_or(enable);
+    let conns = body["active_connections"].as_u64().unwrap_or(0);
+    let msg = body["message"].as_str().unwrap_or("");
+
+    if draining {
+        println!("⚠  Server is DRAINING — {} active connection(s) still live", conns);
+        println!("   {}", msg);
+        println!("   Poll GET {}/admin/api/drain until active_connections=0,", metrics_url);
+        println!("   then restart / apply fix, then: neondb undrain");
+    } else {
+        println!("✓  Drain disabled — server accepting connections normally ({} active)", conns);
+        println!("   {}", msg);
+    }
+    Ok(())
+}
 
 async fn cmd_backup(metrics_url: &str) -> Result<()> {
     let url = format!("{}/backup", metrics_url);
@@ -591,59 +652,36 @@ async fn cmd_cluster_status(metrics_url: &str) -> Result<()> {
 
 fn cmd_list_templates() {
     println!();
-    println!("  NeonDB Project Templates");
+    println!("  NeonDB Game Templates");
     println!();
-    let mut categories: Vec<&'static str> = Vec::new();
     for t in TEMPLATES {
-        if !categories.contains(&t.category) {
-            categories.push(t.category);
-        }
-    }
-    for cat in &categories {
-        println!("  {cat}");
-        let members: Vec<&Template> = TEMPLATES.iter().filter(|t| t.category == *cat).collect();
-        for (i, t) in members.iter().enumerate() {
-            let branch = if i + 1 == members.len() { "└──" } else { "├──" };
-            println!("  {branch} {:20} — {}", t.name, t.description);
-        }
-        println!();
+        println!("  {:14} — {}", t.name, t.description);
     }
     println!();
     println!("  Usage:");
-    println!("    neondb init my-project --template rust/basic");
-    println!("    neondb init my-game    --template rust/game-ready");
-    println!("    neondb init my-chat    --template rust/chat");
-    println!("    neondb init my-ts-app  --template typescript");
+    println!("    neon init my-game --template game/basic");
+    println!("    neon init my-game --template game/full");
+    println!("    neon init my-game --template game/unity");
+    println!("    neon init my-game --template game/godot");
+    println!();
+    println!("  Add modules later:");
+    println!("    cd my-game && neon add combat");
+    println!("    cd my-game && neon add leaderboard");
     println!();
 }
 
-fn cmd_list_runtime_modules() {
+fn cmd_list_modules() {
     println!();
-    println!("  Neon V1 Runtime Modules");
+    println!("  NeonDB Add-on Modules  (run inside your project: neon add <module>)");
     println!();
-    for module in neondb::runtime::builtin_modules() {
-        let deps = if module.dependencies.is_empty() {
-            "none".to_string()
-        } else {
-            module.dependencies.join(", ")
-        };
-        println!(
-            "  {:18} [{:?}] - {}",
-            module.id, module.domain, module.description
-        );
-        println!("    deps: {deps}");
-    }
-
-    println!();
-    println!("  Genre Recipes");
-    println!();
-    for recipe in neondb::runtime::builtin_genres() {
-        println!("  {:18} - {}", recipe.id, recipe.description);
-        println!("    modules: {}", recipe.modules.join(", "));
+    for (name, desc) in MODULES {
+        println!("  {:14} — {}", name, desc);
     }
     println!();
-    println!("  These are the Neon V1 composition primitives. Upcoming init work will");
-    println!("  scaffold projects from recipes, e.g. fps + chat or mmo + trading.");
+    println!("  Example:");
+    println!("    cd my-game");
+    println!("    neon add combat       # adds attack, respawn, ability reducers + schema");
+    println!("    neon add leaderboard  # adds lb_submit, lb_reset reducers + schema");
     println!();
 }
 
@@ -741,88 +779,18 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
     write_shared_files(&project_path, &project_name, &template_name)?;
 
     match template_name.as_str() {
-        "rust/basic"        => scaffold_rust_basic(&project_path, &project_name)?,
-        "rust/game-ready"   => scaffold_rust_game_ready(&project_path, &project_name)?,
-        "rust/chat"         => scaffold_rust_chat(&project_path, &project_name)?,
-        "typescript"        => scaffold_typescript(&project_path, &project_name)?,
-        "native/game-ready" => scaffold_native_game_ready(&project_path, &project_name)?,
-        "csharp-reducers"   => scaffold_csharp_reducers(&project_path, &project_name)?,
-        "go-reducers"       => scaffold_go_reducers(&project_path, &project_name)?,
-        "unity"             => scaffold_unity(&project_path, &project_name)?,
-        "godot"             => scaffold_godot(&project_path, &project_name)?,
-        _                   => unreachable!(),
+        "game/basic"  => scaffold_game_basic(&project_path, &project_name)?,
+        "game/full"   => scaffold_game_full(&project_path, &project_name)?,
+        "game/unity"  => scaffold_game_unity(&project_path, &project_name)?,
+        "game/godot"  => scaffold_game_godot(&project_path, &project_name)?,
+        _ => {
+            eprintln!("Unknown template '{}'. Run `neon templates` to see options.", template_name);
+            return Err(neondb::error::NeonDBError::invalid_argument(format!("unknown template '{}'", template_name)));
+        }
     }
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Game engine client templates
-// ─────────────────────────────────────────────────────────────────────────────
-
-const UNITY_CLIENT_CS: &str = include_str!("engine_templates/unity_NeonDBClient.cs");
-const UNITY_BEHAVIOUR_CS: &str = include_str!("engine_templates/unity_NeonDBBehaviour.cs");
-const UNITY_README: &str = include_str!("engine_templates/unity_README.md");
-const GODOT_CLIENT_GD: &str = include_str!("engine_templates/godot_neondb_client.gd");
-const GODOT_README: &str = include_str!("engine_templates/godot_README.md");
-
-/// Write the embedded native game server (28 `#[reducer]` functions compiled
-/// to machine code) into a template directory. Game-engine templates ship
-/// this so client + full-speed server come out of one `neondb init`.
-fn write_native_game_server(p: &Path, name: &str) -> Result<()> {
-    let w = |rel: &str, content: &str| -> Result<()> {
-        let path = p.join(rel);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| neondb::error::NeonDBError::internal(format!("mkdir failed: {e}")))?;
-        }
-        fs::write(path, content)
-            .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))
-    };
-    w(
-        "server/Cargo.toml",
-        &EMBEDDED_CARGO_TOML
-            .replace("__NAME__", &format!("{}-server", name))
-            .replace("__NEONDB_PATH__", &env!("CARGO_MANIFEST_DIR").replace('\\', "/")),
-    )?;
-    w("server/src/main.rs", EMBEDDED_MAIN_RS)?;
-    w("server/src/reducers.rs", GAME_REDUCERS_RS)?;
-    Ok(())
-}
-
-fn scaffold_unity(p: &Path, name: &str) -> Result<()> {
-    let dir = p.join("unity");
-    fs::create_dir_all(&dir)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("mkdir failed: {e}")))?;
-    fs::write(dir.join("NeonDBClient.cs"), UNITY_CLIENT_CS)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
-    fs::write(dir.join("NeonDBBehaviour.cs"), UNITY_BEHAVIOUR_CS)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
-    fs::write(dir.join("README.md"), UNITY_README)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
-    write_native_game_server(p, name)?;
-    println!("  unity/NeonDBClient.cs      — protocol + client (copy into Assets/Scripts/)");
-    println!("  unity/NeonDBBehaviour.cs   — MonoBehaviour wrapper (main-thread dispatch)");
-    println!("  unity/README.md            — setup + examples");
-    println!("  server/                    — native Rust game server (28 #[reducer] fns)");
-    println!("                                cd server && cargo run --release");
-    Ok(())
-}
-
-fn scaffold_godot(p: &Path, name: &str) -> Result<()> {
-    let dir = p.join("godot");
-    fs::create_dir_all(&dir)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("mkdir failed: {e}")))?;
-    fs::write(dir.join("neondb_client.gd"), GODOT_CLIENT_GD)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
-    fs::write(dir.join("README.md"), GODOT_README)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("write failed: {e}")))?;
-    write_native_game_server(p, name)?;
-    println!("  godot/neondb_client.gd     — autoload client (Project Settings → Autoload)");
-    println!("  godot/README.md            — setup + examples");
-    println!("  server/                    — native Rust game server (28 #[reducer] fns)");
-    println!("                                cd server && cargo run --release");
-    Ok(())
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared files (every template)
@@ -830,20 +798,13 @@ fn scaffold_godot(p: &Path, name: &str) -> Result<()> {
 
 fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -> Result<()> {
     let scheduler_note = match template {
-        "rust/game-ready" =>
-            "\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"cleanup_sessions\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"refresh\"\ninterval_ms = 5000\n",
-        "rust/chat" =>
-            "\n[[scheduler]]\nreducer = \"cleanup_presence\"\ninterval_ms = 30000\n",
-        _ => "\n# [[scheduler]]\n# reducer = \"cleanup_expired\"\n# interval_ms = 60000\n",
+        "game/full" =>
+            "\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"session_cleanup\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"mm_match\"\ninterval_ms = 5000\n",
+        _ => "\n# Add scheduled reducers here after running `neon add world` or `neon add matchmaking`\n# [[scheduler]]\n# reducer = \"world_tick\"\n# interval_ms = 1000\n",
     };
 
-    let permissions_example = match template {
-        "rust/basic" | "rust/game-ready" =>
-            "\n[permissions]\n# admin-only reducers\ndelete_user       = [\"admin\"]\nban_user          = [\"admin\", \"moderator\"]\ngrant_role        = [\"admin\"]\n",
-        "rust/chat" =>
-            "\n[permissions]\ndelete_message    = [\"admin\", \"moderator\"]\nban_user          = [\"admin\"]\ndelete_room       = [\"admin\"]\n",
-        _ => "\n# [permissions]\n# delete_user = [\"admin\"]\n",
-    };
+    let permissions_example =
+        "\n# [permissions]\n# Restrict reducers to specific roles:\n# guild_kick = [\"admin\", \"guild_owner\"]\n# ban_player = [\"admin\", \"moderator\"]\n";
 
     let toml = format!(
         "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\n\
@@ -889,158 +850,315 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
 // Per-template scaffolders
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn scaffold_rust_basic(p: &Path, name: &str) -> Result<()> {
-    wf(p, "modules/auth/register.js",          BASIC_REGISTER_JS)?;
-    wf(p, "modules/auth/login.js",             BASIC_LOGIN_JS)?;
-    wf(p, "modules/auth/logout.js",            BASIC_LOGOUT_JS)?;
-    wf(p, "modules/auth/grant_role.js",        BASIC_GRANT_ROLE_JS)?;
-    wf(p, "modules/users/update_profile.js",   BASIC_UPDATE_PROFILE_JS)?;
-    wf(p, "modules/users/delete_user.js",      BASIC_DELETE_USER_JS)?;
-    wf(p, "modules/inventory/add_item.js",     BASIC_ADD_ITEM_JS)?;
-    wf(p, "modules/inventory/remove_item.js",  BASIC_REMOVE_ITEM_JS)?;
-    wf(p, "modules/subscribers/subscribe_to_player.js", BASIC_SUB_PLAYER_JS)?;
-    wf(p, "client/example.ts",                BASIC_CLIENT_TS)?;
-    wf(p, "schema.toml",                       BASIC_SCHEMA_TOML)?;
-    wf(p, "PERFORMANCE.md",                    PERF_MD)?;
-    wf(p, "README.md", &format!("# {} — Basic Template\n\n{}", name, BASIC_README))?;
-    // ── Embedded #[reducer] Rust path (single binary, native performance) ────
-    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML
-        .replace("__NAME__", &format!("{}-server", name))
-        .replace("__NEONDB_PATH__", &env!("CARGO_MANIFEST_DIR").replace('\\', "/")))?;
-    wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
-    wf(p, "embedded/src/reducers.rs", BASIC_REDUCERS_RS)?;
-    print_success(name, "rust/basic", &[
-        ("modules/auth/",       "register, login, logout, grant_role  (JS — instant start)"),
-        ("modules/users/",      "update_profile, delete_user"),
-        ("modules/inventory/",  "add_item, remove_item"),
-        ("modules/subscribers/","subscribe_to_player"),
-        ("client/example.ts",   "TypeScript client example"),
-        ("schema.toml",         "typed column definitions"),
-        ("neondb.toml",         "server config + [permissions]"),
-        ("embedded/",           "#[reducer] Rust path — native speed, single binary"),
+// ── New game-focused scaffold functions ───────────────────────────────────────
+
+fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
+    // Core: spawn, move, despawn, damage, heal
+    wf(p, "reducers/spawn.js",    BASIC_SPAWN_JS)?;
+    wf(p, "reducers/move.js",     BASIC_MOVE_JS)?;
+    wf(p, "reducers/despawn.js",  BASIC_DESPAWN_JS)?;
+    wf(p, "reducers/damage.js",   BASIC_DAMAGE_JS)?;
+    wf(p, "reducers/heal.js",     BASIC_HEAL_JS)?;
+    wf(p, "schema.toml",          BASIC_GAME_SCHEMA)?;
+    wf(p, "PERFORMANCE.md",       PERF_MD)?;
+    wf(p, "SCALING.md",           SCALING_MD)?;
+    wf(p, "README.md",            &format!("# {}\n\n{}", name, BASIC_GAME_README))?;
+    write_shared_files(p, name, "game/basic")?;
+    print_success(name, "game/basic", &[
+        ("reducers/spawn.js",   "Player joins lobby — writes player row"),
+        ("reducers/move.js",    "Player moves — updates x, y"),
+        ("reducers/despawn.js", "Player leaves — removes player + session"),
+        ("reducers/damage.js",  "Apply damage — reduces hp, sets alive=false at 0"),
+        ("reducers/heal.js",    "Heal player — increases hp up to max_hp"),
+        ("schema.toml",         "players + sessions tables"),
+        ("SCALING.md",          "1-node → 12-node cluster → multi-region"),
     ]);
-    println!("  Next steps:\n    cd {name}\n    neondb start\n\n  Native Rust path (highest performance):\n    cd embedded && cargo run --release\n\n  Upgrade JS to WASM:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full benchmark.");
+    println!("  Next steps:");
+    println!("    cd {name} && neon start");
+    println!("    neon call spawn '[\"alice\", \"lobby_1\", \"warrior\"]'");
+    println!("    neon watch 'players WHERE lobby = \"lobby_1\"'");
+    println!();
+    println!("  Add systems:");
+    println!("    neon add combat       # attack, respawn, abilities");
+    println!("    neon add inventory    # items, equip slots");
+    println!("    neon add matchmaking  # queue, ELO pairing");
+    println!("    neon add leaderboard  # score submit, top-N");
+    println!("    neon add chat         # rooms, messages");
     println!();
     Ok(())
 }
 
-fn scaffold_rust_game_ready(p: &Path, name: &str) -> Result<()> {
-    wf(p, "modules/players/spawn.js",           GAME_SPAWN_JS)?;
-    wf(p, "modules/players/despawn.js",         GAME_DESPAWN_JS)?;
-    wf(p, "modules/players/move.js",            GAME_MOVE_JS)?;
-    wf(p, "modules/players/update_stats.js",    GAME_UPDATE_STATS_JS)?;
-    wf(p, "modules/combat/spawn_npc.js",        GAME_SPAWN_NPC_JS)?;
-    wf(p, "modules/combat/attack.js",           GAME_ATTACK_JS)?;
-    wf(p, "modules/combat/use_ability.js",      GAME_USE_ABILITY_JS)?;
-    wf(p, "modules/combat/apply_damage.js",     GAME_APPLY_DAMAGE_JS)?;
-    wf(p, "modules/combat/respawn.js",          GAME_RESPAWN_JS)?;
-    wf(p, "modules/economy/buy_item.js",        GAME_BUY_ITEM_JS)?;
-    wf(p, "modules/economy/sell_item.js",       GAME_SELL_ITEM_JS)?;
-    wf(p, "modules/economy/transfer_currency.js", GAME_TRANSFER_CURRENCY_JS)?;
-    wf(p, "modules/economy/open_loot_box.js",   GAME_OPEN_LOOT_BOX_JS)?;
-    wf(p, "modules/quests/accept_quest.js",     GAME_ACCEPT_QUEST_JS)?;
-    wf(p, "modules/quests/complete_quest.js",   GAME_COMPLETE_QUEST_JS)?;
-    wf(p, "modules/quests/update_progress.js",  GAME_UPDATE_PROGRESS_JS)?;
-    wf(p, "modules/matchmaking/queue.js",       GAME_QUEUE_JS)?;
-    wf(p, "modules/matchmaking/dequeue.js",     GAME_DEQUEUE_JS)?;
-    wf(p, "modules/matchmaking/create_match.js",GAME_CREATE_MATCH_JS)?;
-    wf(p, "modules/matchmaking/refresh.js",     GAME_MATCHMAKING_REFRESH_JS)?;
-    wf(p, "modules/guilds/create.js",           GAME_GUILD_CREATE_JS)?;
-    wf(p, "modules/guilds/invite.js",           GAME_GUILD_INVITE_JS)?;
-    wf(p, "modules/guilds/accept_invite.js",    GAME_GUILD_ACCEPT_JS)?;
-    wf(p, "modules/guilds/kick.js",             GAME_GUILD_KICK_JS)?;
-    wf(p, "modules/world/world_tick.js",        GAME_WORLD_TICK_JS)?;
-    wf(p, "modules/world/cleanup_sessions.js",  GAME_CLEANUP_SESSIONS_JS)?;
-    wf(p, "modules/leaderboard/submit_score.js",GAME_SUBMIT_SCORE_JS)?;
-    wf(p, "modules/leaderboard/reset_weekly.js",GAME_RESET_WEEKLY_JS)?;
-    wf(p, "client/game-client.ts",              GAME_CLIENT_TS)?;
-    wf(p, "schema.toml",                        GAME_SCHEMA_TOML)?;
-    wf(p, "GENRE_GUIDE.md",                     GAME_GENRE_GUIDE_MD)?;
-    wf(p, "PERFORMANCE.md",                    PERF_MD)?;
-    wf(p, "seed.json",                          GAME_SEED_JSON)?;
-    wf(p, "README.md", &format!("# {} — Game-Ready Template\n\n{}", name, GAME_README))?;
-    // ── Embedded #[reducer] Rust path (single binary, native performance) ────
-    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML
-        .replace("__NAME__", &format!("{}-server", name))
-        .replace("__NEONDB_PATH__", &env!("CARGO_MANIFEST_DIR").replace('\\', "/")))?;
-    wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
-    wf(p, "embedded/src/reducers.rs", GAME_REDUCERS_RS)?;
-    print_success(name, "rust/game-ready", &[
-        ("modules/players/",    "spawn, despawn, move, update_stats  (JS — instant start)"),
-        ("modules/combat/",     "spawn_npc, attack, use_ability, apply_damage, respawn"),
-        ("modules/economy/",    "buy_item, sell_item, transfer_currency, loot_box"),
-        ("modules/quests/",     "accept, complete, update_progress"),
-        ("modules/matchmaking/","queue, dequeue, create_match, refresh (scheduled)"),
-        ("modules/guilds/",     "create, invite, accept_invite, kick"),
-        ("modules/world/",      "world_tick (1s), cleanup_sessions (60s)"),
-        ("modules/leaderboard/","submit_score, reset_weekly (scheduled)"),
-        ("seed.json",           "neondb seed seed.json  — load sample data instantly"),
-        ("GENRE_GUIDE.md",      "how to adapt this to any game genre"),
-        ("embedded/",           "#[reducer] Rust path — native speed, single binary"),
+fn scaffold_game_full(p: &Path, name: &str) -> Result<()> {
+    // Core
+    wf(p, "reducers/spawn.js",              BASIC_SPAWN_JS)?;
+    wf(p, "reducers/move.js",               BASIC_MOVE_JS)?;
+    wf(p, "reducers/despawn.js",            BASIC_DESPAWN_JS)?;
+    wf(p, "reducers/damage.js",             BASIC_DAMAGE_JS)?;
+    wf(p, "reducers/heal.js",               BASIC_HEAL_JS)?;
+    // Combat
+    wf(p, "reducers/combat/attack.js",      M_COMBAT_ATTACK_JS)?;
+    wf(p, "reducers/combat/respawn.js",     M_COMBAT_RESPAWN_JS)?;
+    wf(p, "reducers/combat/ability.js",     M_COMBAT_ABILITY_JS)?;
+    wf(p, "reducers/combat/npc_spawn.js",   M_WORLD_NPC_SPAWN_JS)?;
+    // Inventory
+    wf(p, "reducers/inventory/add.js",      M_INV_ADD_JS)?;
+    wf(p, "reducers/inventory/remove.js",   M_INV_REMOVE_JS)?;
+    wf(p, "reducers/inventory/equip.js",    M_INV_EQUIP_JS)?;
+    // Economy
+    wf(p, "reducers/economy/buy.js",        M_ECON_BUY_JS)?;
+    wf(p, "reducers/economy/sell.js",       M_ECON_SELL_JS)?;
+    wf(p, "reducers/economy/transfer.js",   M_ECON_TRANSFER_JS)?;
+    wf(p, "reducers/economy/loot.js",       M_ECON_LOOT_JS)?;
+    // Matchmaking
+    wf(p, "reducers/matchmaking/queue.js",  M_MM_QUEUE_JS)?;
+    wf(p, "reducers/matchmaking/dequeue.js",M_MM_DEQUEUE_JS)?;
+    wf(p, "reducers/matchmaking/match.js",  M_MM_MATCH_JS)?;
+    // Guilds
+    wf(p, "reducers/guilds/create.js",      M_GUILD_CREATE_JS)?;
+    wf(p, "reducers/guilds/invite.js",      M_GUILD_INVITE_JS)?;
+    wf(p, "reducers/guilds/accept.js",      M_GUILD_ACCEPT_JS)?;
+    wf(p, "reducers/guilds/kick.js",        M_GUILD_KICK_JS)?;
+    // Quests
+    wf(p, "reducers/quests/accept.js",      M_QUEST_ACCEPT_JS)?;
+    wf(p, "reducers/quests/progress.js",    M_QUEST_PROGRESS_JS)?;
+    wf(p, "reducers/quests/complete.js",    M_QUEST_COMPLETE_JS)?;
+    // Leaderboard
+    wf(p, "reducers/leaderboard/submit.js", M_LB_SUBMIT_JS)?;
+    wf(p, "reducers/leaderboard/reset.js",  M_LB_RESET_JS)?;
+    // Chat
+    wf(p, "reducers/chat/send.js",          M_CHAT_SEND_JS)?;
+    wf(p, "reducers/chat/join.js",          M_CHAT_JOIN_JS)?;
+    wf(p, "reducers/chat/leave.js",         M_CHAT_LEAVE_JS)?;
+    // World
+    wf(p, "reducers/world/tick.js",         M_WORLD_TICK_JS)?;
+    wf(p, "reducers/world/cleanup.js",      M_WORLD_CLEANUP_JS)?;
+    // Schema (merged)
+    wf(p, "schema.toml", &[
+        BASIC_GAME_SCHEMA, M_COMBAT_SCHEMA, M_INV_SCHEMA, M_LB_SCHEMA,
+        M_MM_SCHEMA, M_GUILD_SCHEMA, M_QUEST_SCHEMA, M_ECON_SCHEMA,
+        M_WORLD_SCHEMA, M_CHAT_SCHEMA,
+    ].join("\n"))?;
+    wf(p, "PERFORMANCE.md", PERF_MD)?;
+    wf(p, "SCALING.md",     SCALING_MD)?;
+    wf(p, "README.md",      &format!("# {}\n\n{}", name, BASIC_GAME_README))?;
+    write_shared_files(p, name, "game/full")?;
+    print_success(name, "game/full", &[
+        ("reducers/",          "spawn, move, despawn, damage, heal"),
+        ("reducers/combat/",   "attack, respawn, ability, npc_spawn"),
+        ("reducers/inventory/","add, remove, equip"),
+        ("reducers/economy/",  "buy, sell, transfer, loot box"),
+        ("reducers/matchmaking/","queue, dequeue, match (scheduled)"),
+        ("reducers/guilds/",   "create, invite, accept, kick"),
+        ("reducers/quests/",   "accept, progress, complete"),
+        ("reducers/leaderboard/","submit, reset (scheduled)"),
+        ("reducers/chat/",     "send, join, leave"),
+        ("reducers/world/",    "tick (1s), cleanup (60s)"),
     ]);
-    println!("  Next steps:\n    cd {name}\n    neondb start\n    neondb seed seed.json\n\n  Native Rust path (highest performance):\n    cd embedded && cargo run --release\n\n  Upgrade JS to WASM:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full benchmark.");
+    println!("  Next steps:");
+    println!("    cd {name} && neon start");
+    println!("    neon call spawn '[\"alice\", \"lobby_1\", \"warrior\"]'");
     println!();
     Ok(())
 }
 
-fn scaffold_rust_chat(p: &Path, name: &str) -> Result<()> {
-    wf(p, "modules/rooms/create_room.js",       CHAT_CREATE_ROOM_JS)?;
-    wf(p, "modules/rooms/join_room.js",         CHAT_JOIN_ROOM_JS)?;
-    wf(p, "modules/rooms/leave_room.js",        CHAT_LEAVE_ROOM_JS)?;
-    wf(p, "modules/rooms/delete_room.js",       CHAT_DELETE_ROOM_JS)?;
-    wf(p, "modules/messages/send_message.js",   CHAT_SEND_MESSAGE_JS)?;
-    wf(p, "modules/messages/edit_message.js",   CHAT_EDIT_MESSAGE_JS)?;
-    wf(p, "modules/messages/delete_message.js", CHAT_DELETE_MESSAGE_JS)?;
-    wf(p, "modules/messages/react.js",          CHAT_REACT_JS)?;
-    wf(p, "modules/threads/create_thread.js",   CHAT_CREATE_THREAD_JS)?;
-    wf(p, "modules/threads/reply.js",           CHAT_REPLY_JS)?;
-    wf(p, "modules/presence/set_online.js",     CHAT_SET_ONLINE_JS)?;
-    wf(p, "modules/presence/set_typing.js",     CHAT_SET_TYPING_JS)?;
-    wf(p, "modules/presence/cleanup_presence.js", CHAT_CLEANUP_PRESENCE_JS)?;
-    wf(p, "modules/moderation/ban_user.js",     CHAT_BAN_USER_JS)?;
-    wf(p, "modules/moderation/unban_user.js",   CHAT_UNBAN_USER_JS)?;
-    wf(p, "client/chat-client.ts",              CHAT_CLIENT_TS)?;
-    wf(p, "schema.toml",                        CHAT_SCHEMA_TOML)?;
-    wf(p, "PERFORMANCE.md",                     PERF_MD)?;
-    wf(p, "README.md", &format!("# {} — Chat Template\n\n{}", name, CHAT_README))?;
-    // ── Embedded #[reducer] Rust path (single binary, native performance) ────
-    wf(p, "embedded/Cargo.toml", &EMBEDDED_CARGO_TOML
-        .replace("__NAME__", &format!("{}-server", name))
-        .replace("__NEONDB_PATH__", &env!("CARGO_MANIFEST_DIR").replace('\\', "/")))?;
-    wf(p, "embedded/src/main.rs",  EMBEDDED_MAIN_RS)?;
-    wf(p, "embedded/src/reducers.rs", CHAT_REDUCERS_RS)?;
-    print_success(name, "rust/chat", &[
-        ("modules/rooms/",      "create, join, leave, delete  (JS — instant start)"),
-        ("modules/messages/",   "send, edit, delete, react"),
-        ("modules/threads/",    "create_thread, reply"),
-        ("modules/presence/",   "set_online, set_typing, cleanup (scheduled 30s)"),
-        ("modules/moderation/", "ban_user, unban_user"),
-        ("embedded/",           "#[reducer] Rust path — native speed, single binary"),
-    ]);
-    println!("  Next steps:\n    cd {name}\n    neondb start\n\n  Native Rust path (highest performance):\n    cd embedded && cargo run --release\n\n  Upgrade JS to WASM:\n    neondb build          # compiles JS → WASM via Javy (10–50× faster)\n\n  See PERFORMANCE.md for the full benchmark.");
+fn scaffold_game_unity(p: &Path, name: &str) -> Result<()> {
+    // Unity SDK
+    wf(p, "unity/NeonDBClient.cs",    UNITY_CLIENT_CS)?;
+    wf(p, "unity/NeonDBBehaviour.cs", UNITY_BEHAVIOUR_CS)?;
+    wf(p, "unity/NeonDBManager.cs",   UNITY_MANAGER_CS)?;
+    wf(p, "unity/README.md",          UNITY_GAME_README)?;
+    // Server (same as game/full)
+    scaffold_game_full(p, name)?;
+    println!("  Unity SDK:");
+    println!("    Copy unity/ into Assets/Scripts/NeonDB/");
+    println!("    Add NeonDBManager to your scene → set Server URL → press Play");
+    Ok(())
+}
+
+fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
+    // Godot SDK
+    wf(p, "godot/neondb_client.gd",   GODOT_CLIENT_GD)?;
+    wf(p, "godot/NeonDBManager.gd",   GODOT_MANAGER_GD)?;
+    wf(p, "godot/README.md",          GODOT_GAME_README)?;
+    // Server (same as game/full)
+    scaffold_game_full(p, name)?;
+    println!("  Godot SDK:");
+    println!("    Copy godot/ into your Godot project");
+    println!("    Add NeonDBManager as an autoload (Project Settings → Autoload)");
+    println!("    Set server_url → run the game");
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// neon add <module>
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
+    // Verify we're in a NeonDB project
+    if !project_path.join("schema.toml").exists() {
+        eprintln!("No schema.toml found. Run `neon add` from inside your project directory.");
+        return Err(neondb::error::NeonDBError::invalid_argument("not a NeonDB project directory"));
+    }
+
+    match module {
+        "chat" => {
+            wf(project_path, "reducers/chat/send.js",  M_CHAT_SEND_JS)?;
+            wf(project_path, "reducers/chat/join.js",  M_CHAT_JOIN_JS)?;
+            wf(project_path, "reducers/chat/leave.js", M_CHAT_LEAVE_JS)?;
+            append_schema(project_path, M_CHAT_SCHEMA)?;
+            println!("  Added chat module:");
+            println!("    reducers/chat/send.js   — chat_send(room_id, text)");
+            println!("    reducers/chat/join.js   — chat_join(room_id)");
+            println!("    reducers/chat/leave.js  — chat_leave(room_id)");
+        }
+        "inventory" => {
+            wf(project_path, "reducers/inventory/add.js",    M_INV_ADD_JS)?;
+            wf(project_path, "reducers/inventory/remove.js", M_INV_REMOVE_JS)?;
+            wf(project_path, "reducers/inventory/equip.js",  M_INV_EQUIP_JS)?;
+            append_schema(project_path, M_INV_SCHEMA)?;
+            println!("  Added inventory module:");
+            println!("    reducers/inventory/add.js    — inv_add(player_id, item_id, name, qty)");
+            println!("    reducers/inventory/remove.js — inv_remove(player_id, item_id, qty)");
+            println!("    reducers/inventory/equip.js  — inv_equip(player_id, item_id, slot)");
+        }
+        "leaderboard" => {
+            wf(project_path, "reducers/leaderboard/submit.js", M_LB_SUBMIT_JS)?;
+            wf(project_path, "reducers/leaderboard/reset.js",  M_LB_RESET_JS)?;
+            append_schema(project_path, M_LB_SCHEMA)?;
+            println!("  Added leaderboard module:");
+            println!("    reducers/leaderboard/submit.js — lb_submit(score, display_name)");
+            println!("    reducers/leaderboard/reset.js  — lb_reset() [scheduled weekly]");
+            println!();
+            println!("  Add to neondb.toml to enable weekly reset:");
+            println!("    [[scheduler]]");
+            println!("    reducer = \"lb_reset\"");
+            println!("    interval_ms = 604800000");
+        }
+        "matchmaking" => {
+            wf(project_path, "reducers/matchmaking/queue.js",   M_MM_QUEUE_JS)?;
+            wf(project_path, "reducers/matchmaking/dequeue.js", M_MM_DEQUEUE_JS)?;
+            wf(project_path, "reducers/matchmaking/match.js",   M_MM_MATCH_JS)?;
+            append_schema(project_path, M_MM_SCHEMA)?;
+            println!("  Added matchmaking module:");
+            println!("    reducers/matchmaking/queue.js   — mm_queue(rating)");
+            println!("    reducers/matchmaking/dequeue.js — mm_dequeue()");
+            println!("    reducers/matchmaking/match.js   — mm_match() [scheduled]");
+            println!();
+            println!("  Add to neondb.toml to enable auto-matching:");
+            println!("    [[scheduler]]");
+            println!("    reducer = \"mm_match\"");
+            println!("    interval_ms = 5000");
+        }
+        "guilds" => {
+            wf(project_path, "reducers/guilds/create.js", M_GUILD_CREATE_JS)?;
+            wf(project_path, "reducers/guilds/invite.js", M_GUILD_INVITE_JS)?;
+            wf(project_path, "reducers/guilds/accept.js", M_GUILD_ACCEPT_JS)?;
+            wf(project_path, "reducers/guilds/kick.js",   M_GUILD_KICK_JS)?;
+            append_schema(project_path, M_GUILD_SCHEMA)?;
+            println!("  Added guilds module:");
+            println!("    reducers/guilds/create.js — guild_create(guild_id, name)");
+            println!("    reducers/guilds/invite.js — guild_invite(guild_id, invitee_id)");
+            println!("    reducers/guilds/accept.js — guild_accept(invite_id)");
+            println!("    reducers/guilds/kick.js   — guild_kick(guild_id, target_id)");
+        }
+        "quests" => {
+            wf(project_path, "reducers/quests/accept.js",   M_QUEST_ACCEPT_JS)?;
+            wf(project_path, "reducers/quests/progress.js", M_QUEST_PROGRESS_JS)?;
+            wf(project_path, "reducers/quests/complete.js", M_QUEST_COMPLETE_JS)?;
+            append_schema(project_path, M_QUEST_SCHEMA)?;
+            println!("  Added quests module:");
+            println!("    reducers/quests/accept.js   — quest_accept(quest_id, goal)");
+            println!("    reducers/quests/progress.js — quest_progress(quest_id, amount)");
+            println!("    reducers/quests/complete.js — quest_complete(quest_id)");
+        }
+        "economy" => {
+            wf(project_path, "reducers/economy/buy.js",      M_ECON_BUY_JS)?;
+            wf(project_path, "reducers/economy/sell.js",     M_ECON_SELL_JS)?;
+            wf(project_path, "reducers/economy/transfer.js", M_ECON_TRANSFER_JS)?;
+            wf(project_path, "reducers/economy/loot.js",     M_ECON_LOOT_JS)?;
+            append_schema(project_path, M_ECON_SCHEMA)?;
+            println!("  Added economy module:");
+            println!("    reducers/economy/buy.js      — shop_buy(item_id)");
+            println!("    reducers/economy/sell.js     — shop_sell(item_id, qty, gold_per_unit)");
+            println!("    reducers/economy/transfer.js — gold_transfer(to_player_id, amount)");
+            println!("    reducers/economy/loot.js     — open_loot(box_type)");
+        }
+        "combat" => {
+            wf(project_path, "reducers/combat/attack.js",    M_COMBAT_ATTACK_JS)?;
+            wf(project_path, "reducers/combat/respawn.js",   M_COMBAT_RESPAWN_JS)?;
+            wf(project_path, "reducers/combat/ability.js",   M_COMBAT_ABILITY_JS)?;
+            wf(project_path, "reducers/combat/npc_spawn.js", M_WORLD_NPC_SPAWN_JS)?;
+            append_schema(project_path, M_COMBAT_SCHEMA)?;
+            println!("  Added combat module:");
+            println!("    reducers/combat/attack.js    — attack(target_id, weapon, damage)");
+            println!("    reducers/combat/respawn.js   — respawn(player_id)");
+            println!("    reducers/combat/ability.js   — use_ability(ability_name, target_id)");
+            println!("    reducers/combat/npc_spawn.js — npc_spawn(lobby_id, type, x, y)");
+        }
+        "world" => {
+            wf(project_path, "reducers/world/tick.js",     M_WORLD_TICK_JS)?;
+            wf(project_path, "reducers/world/npc.js",      M_WORLD_NPC_SPAWN_JS)?;
+            wf(project_path, "reducers/world/cleanup.js",  M_WORLD_CLEANUP_JS)?;
+            append_schema(project_path, M_WORLD_SCHEMA)?;
+            println!("  Added world module:");
+            println!("    reducers/world/tick.js    — world_tick() [scheduled 1s]");
+            println!("    reducers/world/npc.js     — npc_spawn(lobby_id, type, x, y)");
+            println!("    reducers/world/cleanup.js — session_cleanup() [scheduled 60s]");
+            println!();
+            println!("  Add to neondb.toml:");
+            println!("    [[scheduler]]");
+            println!("    reducer = \"world_tick\"");
+            println!("    interval_ms = 1000");
+            println!();
+            println!("    [[scheduler]]");
+            println!("    reducer = \"session_cleanup\"");
+            println!("    interval_ms = 60000");
+        }
+        other => {
+            let names: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
+            eprintln!("Unknown module '{}'. Available: {}", other, names.join(", "));
+            return Err(neondb::error::NeonDBError::invalid_argument(format!("unknown module '{}'", other)));
+        }
+    }
+    println!();
+    println!("  Schema appended to schema.toml.");
+    println!("  Restart the server to pick up the new tables:");
+    println!("    neon start");
     println!();
     Ok(())
 }
 
-fn scaffold_typescript(p: &Path, name: &str) -> Result<()> {
-    wf(p, "modules/hello.js",              TS_HELLO_JS)?;
-    wf(p, "modules/set_value.js",          TS_SET_VALUE_JS)?;
-    wf(p, "modules/delete_value.js",       TS_DELETE_VALUE_JS)?;
-    wf(p, "client/src/client.ts",          TS_CLIENT_TS)?;
-    wf(p, "client/src/hooks.tsx",          TS_HOOKS_TSX)?;
-    wf(p, "client/src/example/App.tsx",    TS_APP_TSX)?;
-    wf(p, "client/package.json",           &TS_PACKAGE_JSON.replace("__NAME__", name))?;
-    wf(p, "client/tsconfig.json",          TS_TSCONFIG_JSON)?;
-    wf(p, "README.md", &format!("# {} — TypeScript Template\n\n{}", name, TS_README))?;
-    print_success(name, "typescript", &[
-        ("modules/hello.js",      "basic counter reducer"),
-        ("client/src/client.ts",  "NeonDBClient — connect, call, subscribe"),
-        ("client/src/hooks.tsx",  "useNeonDBQuery, useNeonDBReducer, NeonDBProvider"),
-        ("client/package.json",   "npm package config"),
-    ]);
-    println!("  Next steps:\n    cd {}\n    neondb start\n    cd client && npm install && npm run dev", name);
-    println!();
-    Ok(())
+/// Append new schema tables to the existing schema.toml without duplicating.
+fn append_schema(project_path: &Path, extra: &str) -> Result<()> {
+    let schema_path = project_path.join("schema.toml");
+    let existing = fs::read_to_string(&schema_path).unwrap_or_default();
+    // Extract table names from extra to skip already-present tables
+    let new_content: String = extra.lines()
+        .collect::<Vec<_>>()
+        .split(|l: &&str| l.trim().starts_with("[[tables]]"))
+        .filter(|block| {
+            // Find the `name = "..."` line in this block
+            let block_name = block.iter()
+                .find_map(|l| l.trim().strip_prefix("name = \"").and_then(|s| s.strip_suffix('"')));
+            // Skip blocks whose table name is already in the schema
+            block_name.map(|n| !existing.contains(&format!("name = \"{n}\"")))
+                .unwrap_or(true)
+        })
+        .flat_map(|block| {
+            std::iter::once("[[tables]]").chain(block.iter().copied())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if new_content.trim().is_empty() {
+        println!("  (all tables already present in schema.toml — skipped)");
+        return Ok(());
+    }
+    let mut file = fs::OpenOptions::new().append(true).open(&schema_path)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("open schema.toml: {e}")))?;
+    use std::io::Write as _;
+    writeln!(file, "\n{}", new_content.trim())
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("append schema.toml: {e}")))
 }
 
 fn print_success(project_name: &str, template: &str, files: &[(&str, &str)]) {
@@ -1059,798 +1177,71 @@ fn print_success(project_name: &str, template: &str, files: &[(&str, &str)]) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const MIGRATIONS_README: &str = "# Migrations\nPlace `.toml` files here.\n";
+const PERF_MD: &str           = include_str!("../templates/performance.md.txt");
+const SCALING_MD: &str        = include_str!("../templates/scaling.md.txt");
+
+// ── game/basic core ───────────────────────────────────────────────────────────
+const BASIC_SPAWN_JS: &str    = include_str!("../templates/g_basic_spawn.js.txt");
+const BASIC_MOVE_JS: &str     = include_str!("../templates/g_basic_move.js.txt");
+const BASIC_DESPAWN_JS: &str  = include_str!("../templates/g_basic_despawn.js.txt");
+const BASIC_DAMAGE_JS: &str   = include_str!("../templates/g_basic_damage.js.txt");
+const BASIC_HEAL_JS: &str     = include_str!("../templates/g_basic_heal.js.txt");
+const BASIC_GAME_SCHEMA: &str = include_str!("../templates/g_basic_schema.toml.txt");
+const BASIC_GAME_README: &str = include_str!("../templates/g_basic_readme.md.txt");
+
+// ── modules (neon add <name>) ─────────────────────────────────────────────────
+const M_CHAT_SEND_JS: &str      = include_str!("../templates/m_chat_send.js.txt");
+const M_CHAT_JOIN_JS: &str      = include_str!("../templates/m_chat_join.js.txt");
+const M_CHAT_LEAVE_JS: &str     = include_str!("../templates/m_chat_leave.js.txt");
+const M_CHAT_SCHEMA: &str       = include_str!("../templates/m_chat_schema.toml.txt");
+const M_INV_ADD_JS: &str        = include_str!("../templates/m_inventory_add.js.txt");
+const M_INV_REMOVE_JS: &str     = include_str!("../templates/m_inventory_remove.js.txt");
+const M_INV_EQUIP_JS: &str      = include_str!("../templates/m_inventory_equip.js.txt");
+const M_INV_SCHEMA: &str        = include_str!("../templates/m_inventory_schema.toml.txt");
+const M_LB_SUBMIT_JS: &str      = include_str!("../templates/m_leaderboard_submit.js.txt");
+const M_LB_RESET_JS: &str       = include_str!("../templates/m_leaderboard_reset.js.txt");
+const M_LB_SCHEMA: &str         = include_str!("../templates/m_leaderboard_schema.toml.txt");
+const M_MM_QUEUE_JS: &str       = include_str!("../templates/m_matchmaking_queue.js.txt");
+const M_MM_DEQUEUE_JS: &str     = include_str!("../templates/m_matchmaking_dequeue.js.txt");
+const M_MM_MATCH_JS: &str       = include_str!("../templates/m_matchmaking_match.js.txt");
+const M_MM_SCHEMA: &str         = include_str!("../templates/m_matchmaking_schema.toml.txt");
+const M_GUILD_CREATE_JS: &str   = include_str!("../templates/m_guilds_create.js.txt");
+const M_GUILD_INVITE_JS: &str   = include_str!("../templates/m_guilds_invite.js.txt");
+const M_GUILD_ACCEPT_JS: &str   = include_str!("../templates/m_guilds_accept.js.txt");
+const M_GUILD_KICK_JS: &str     = include_str!("../templates/m_guilds_kick.js.txt");
+const M_GUILD_SCHEMA: &str      = include_str!("../templates/m_guilds_schema.toml.txt");
+const M_QUEST_ACCEPT_JS: &str   = include_str!("../templates/m_quests_accept.js.txt");
+const M_QUEST_PROGRESS_JS: &str = include_str!("../templates/m_quests_progress.js.txt");
+const M_QUEST_COMPLETE_JS: &str = include_str!("../templates/m_quests_complete.js.txt");
+const M_QUEST_SCHEMA: &str      = include_str!("../templates/m_quests_schema.toml.txt");
+const M_ECON_BUY_JS: &str       = include_str!("../templates/m_economy_buy.js.txt");
+const M_ECON_SELL_JS: &str      = include_str!("../templates/m_economy_sell.js.txt");
+const M_ECON_TRANSFER_JS: &str  = include_str!("../templates/m_economy_transfer.js.txt");
+const M_ECON_LOOT_JS: &str      = include_str!("../templates/m_economy_loot.js.txt");
+const M_ECON_SCHEMA: &str       = include_str!("../templates/m_economy_schema.toml.txt");
+const M_COMBAT_ATTACK_JS: &str  = include_str!("../templates/m_combat_attack.js.txt");
+const M_COMBAT_RESPAWN_JS: &str = include_str!("../templates/m_combat_respawn.js.txt");
+const M_COMBAT_ABILITY_JS: &str = include_str!("../templates/m_combat_ability.js.txt");
+const M_COMBAT_SCHEMA: &str     = include_str!("../templates/m_combat_schema.toml.txt");
+const M_WORLD_TICK_JS: &str     = include_str!("../templates/m_world_tick.js.txt");
+const M_WORLD_NPC_SPAWN_JS: &str = include_str!("../templates/m_world_npc_spawn.js.txt");
+const M_WORLD_CLEANUP_JS: &str  = include_str!("../templates/m_world_cleanup.js.txt");
+const M_WORLD_SCHEMA: &str      = include_str!("../templates/m_world_schema.toml.txt");
+
+// ── Unity + Godot SDKs ────────────────────────────────────────────────────────
+const UNITY_CLIENT_CS: &str    = include_str!("engine_templates/unity_NeonDBClient.cs");
+const UNITY_BEHAVIOUR_CS: &str = include_str!("engine_templates/unity_NeonDBBehaviour.cs");
+const UNITY_MANAGER_CS: &str   = include_str!("../templates/g_unity_Manager.cs.txt");
+const UNITY_GAME_README: &str  = include_str!("../templates/g_unity_readme.md.txt");
+const GODOT_CLIENT_GD: &str    = include_str!("engine_templates/godot_neondb_client.gd");
+const GODOT_MANAGER_GD: &str   = include_str!("../templates/g_godot_Manager.gd.txt");
+const GODOT_GAME_README: &str  = include_str!("../templates/g_godot_readme.md.txt");
+
+// ── Embedded Rust server (kept for advanced users) ────────────────────────────
+const EMBEDDED_CARGO_TOML: &str = include_str!("../templates/embedded_cargo.toml.txt");
+const EMBEDDED_MAIN_RS: &str    = include_str!("../templates/embedded_main.rs.txt");
+const GAME_REDUCERS_RS: &str    = include_str!("../templates/game_reducers.rs.txt");
 
-const BASIC_REGISTER_JS: &str       = include_str!("../templates/basic_register.js.txt");
-const BASIC_LOGIN_JS: &str          = include_str!("../templates/basic_login.js.txt");
-const BASIC_LOGOUT_JS: &str         = include_str!("../templates/basic_logout.js.txt");
-const BASIC_GRANT_ROLE_JS: &str     = include_str!("../templates/basic_grant_role.js.txt");
-const BASIC_UPDATE_PROFILE_JS: &str = include_str!("../templates/basic_update_profile.js.txt");
-const BASIC_DELETE_USER_JS: &str    = include_str!("../templates/basic_delete_user.js.txt");
-const BASIC_ADD_ITEM_JS: &str       = include_str!("../templates/basic_add_item.js.txt");
-const BASIC_REMOVE_ITEM_JS: &str    = include_str!("../templates/basic_remove_item.js.txt");
-const BASIC_SUB_PLAYER_JS: &str     = include_str!("../templates/basic_sub_player.js.txt");
-const BASIC_CLIENT_TS: &str         = include_str!("../templates/basic_client.ts.txt");
-const BASIC_SCHEMA_TOML: &str       = include_str!("../templates/basic_schema.toml.txt");
-const BASIC_README: &str            = include_str!("../templates/basic_readme.md.txt");
-const GAME_SPAWN_JS: &str           = include_str!("../templates/game_spawn.js.txt");
-const GAME_DESPAWN_JS: &str         = include_str!("../templates/game_despawn.js.txt");
-const GAME_MOVE_JS: &str            = include_str!("../templates/game_move.js.txt");
-const GAME_UPDATE_STATS_JS: &str    = include_str!("../templates/game_update_stats.js.txt");
-const GAME_SPAWN_NPC_JS: &str       = include_str!("../templates/game_spawn_npc.js.txt");
-const GAME_ATTACK_JS: &str          = include_str!("../templates/game_attack.js.txt");
-const GAME_USE_ABILITY_JS: &str     = include_str!("../templates/game_use_ability.js.txt");
-const GAME_APPLY_DAMAGE_JS: &str    = include_str!("../templates/game_apply_damage.js.txt");
-const GAME_RESPAWN_JS: &str         = include_str!("../templates/game_respawn.js.txt");
-const GAME_BUY_ITEM_JS: &str        = include_str!("../templates/game_buy_item.js.txt");
-const GAME_SELL_ITEM_JS: &str       = include_str!("../templates/game_sell_item.js.txt");
-const GAME_TRANSFER_CURRENCY_JS: &str = include_str!("../templates/game_transfer_currency.js.txt");
-const GAME_OPEN_LOOT_BOX_JS: &str   = include_str!("../templates/game_open_loot_box.js.txt");
-const GAME_ACCEPT_QUEST_JS: &str    = include_str!("../templates/game_accept_quest.js.txt");
-const GAME_COMPLETE_QUEST_JS: &str  = include_str!("../templates/game_complete_quest.js.txt");
-const GAME_UPDATE_PROGRESS_JS: &str = include_str!("../templates/game_update_progress.js.txt");
-const GAME_QUEUE_JS: &str           = include_str!("../templates/game_queue.js.txt");
-const GAME_DEQUEUE_JS: &str         = include_str!("../templates/game_dequeue.js.txt");
-const GAME_CREATE_MATCH_JS: &str    = include_str!("../templates/game_create_match.js.txt");
-const GAME_MATCHMAKING_REFRESH_JS: &str = include_str!("../templates/game_matchmaking_refresh.js.txt");
-const GAME_GUILD_CREATE_JS: &str    = include_str!("../templates/game_guild_create.js.txt");
-const GAME_GUILD_INVITE_JS: &str    = include_str!("../templates/game_guild_invite.js.txt");
-const GAME_GUILD_ACCEPT_JS: &str    = include_str!("../templates/game_guild_accept.js.txt");
-const GAME_GUILD_KICK_JS: &str      = include_str!("../templates/game_guild_kick.js.txt");
-const GAME_WORLD_TICK_JS: &str      = include_str!("../templates/game_world_tick.js.txt");
-const GAME_CLEANUP_SESSIONS_JS: &str = include_str!("../templates/game_cleanup_sessions.js.txt");
-const GAME_SUBMIT_SCORE_JS: &str    = include_str!("../templates/game_submit_score.js.txt");
-const GAME_RESET_WEEKLY_JS: &str    = include_str!("../templates/game_reset_weekly.js.txt");
-const GAME_CLIENT_TS: &str          = include_str!("../templates/game_client.ts.txt");
-const GAME_SCHEMA_TOML: &str        = include_str!("../templates/game_schema.toml.txt");
-const GAME_GENRE_GUIDE_MD: &str     = include_str!("../templates/game_genre_guide.md.txt");
-const GAME_SEED_JSON: &str          = include_str!("../templates/game_seed.json.txt");
-const GAME_README: &str             = include_str!("../templates/game_readme.md.txt");
-const CHAT_CREATE_ROOM_JS: &str     = include_str!("../templates/chat_create_room.js.txt");
-const CHAT_JOIN_ROOM_JS: &str       = include_str!("../templates/chat_join_room.js.txt");
-const CHAT_LEAVE_ROOM_JS: &str      = include_str!("../templates/chat_leave_room.js.txt");
-const CHAT_DELETE_ROOM_JS: &str     = include_str!("../templates/chat_delete_room.js.txt");
-const CHAT_SEND_MESSAGE_JS: &str    = include_str!("../templates/chat_send_message.js.txt");
-const CHAT_EDIT_MESSAGE_JS: &str    = include_str!("../templates/chat_edit_message.js.txt");
-const CHAT_DELETE_MESSAGE_JS: &str  = include_str!("../templates/chat_delete_message.js.txt");
-const CHAT_REACT_JS: &str           = include_str!("../templates/chat_react.js.txt");
-const CHAT_CREATE_THREAD_JS: &str   = include_str!("../templates/chat_create_thread.js.txt");
-const CHAT_REPLY_JS: &str           = include_str!("../templates/chat_reply.js.txt");
-const CHAT_SET_ONLINE_JS: &str      = include_str!("../templates/chat_set_online.js.txt");
-const CHAT_SET_TYPING_JS: &str      = include_str!("../templates/chat_set_typing.js.txt");
-const CHAT_CLEANUP_PRESENCE_JS: &str = include_str!("../templates/chat_cleanup_presence.js.txt");
-const CHAT_BAN_USER_JS: &str        = include_str!("../templates/chat_ban_user.js.txt");
-const CHAT_UNBAN_USER_JS: &str      = include_str!("../templates/chat_unban_user.js.txt");
-const CHAT_CLIENT_TS: &str          = include_str!("../templates/chat_client.ts.txt");
-const CHAT_SCHEMA_TOML: &str        = include_str!("../templates/chat_schema.toml.txt");
-const CHAT_README: &str             = include_str!("../templates/chat_readme.md.txt");
-const TS_HELLO_JS: &str             = include_str!("../templates/ts_hello.js.txt");
-const TS_SET_VALUE_JS: &str         = include_str!("../templates/ts_set_value.js.txt");
-const TS_DELETE_VALUE_JS: &str      = include_str!("../templates/ts_delete_value.js.txt");
-const TS_CLIENT_TS: &str            = include_str!("../templates/ts_client.ts.txt");
-const TS_HOOKS_TSX: &str            = include_str!("../templates/ts_hooks.tsx.txt");
-const TS_APP_TSX: &str              = include_str!("../templates/ts_app.tsx.txt");
-const TS_PACKAGE_JSON: &str         = include_str!("../templates/ts_package.json.txt");
-const TS_TSCONFIG_JSON: &str        = include_str!("../templates/ts_tsconfig.json.txt");
-const TS_README: &str               = include_str!("../templates/ts_readme.md.txt");
-const PERF_MD: &str                 = include_str!("../templates/performance.md.txt");
-
-// Embedded #[reducer] Rust templates — single-binary path
-const EMBEDDED_CARGO_TOML: &str     = include_str!("../templates/embedded_cargo.toml.txt");
-const EMBEDDED_MAIN_RS: &str        = include_str!("../templates/embedded_main.rs.txt");
-const BASIC_REDUCERS_RS: &str       = include_str!("../templates/basic_reducers.rs.txt");
-const GAME_REDUCERS_RS: &str        = include_str!("../templates/game_reducers.rs.txt");
-const CHAT_REDUCERS_RS: &str        = include_str!("../templates/chat_reducers.rs.txt");
-
-// native/game-ready template
-const NATIVE_WORKSPACE_TOML: &str         = include_str!("../templates/native_workspace_cargo.toml.txt");
-const NATIVE_HELPER_TOML: &str            = include_str!("../templates/native_neondb_reducer_cargo.toml.txt");
-const NATIVE_HELPER_LIB: &str             = include_str!("../templates/native_neondb_reducer_lib.txt");
-const NATIVE_SPAWN_TOML: &str             = include_str!("../templates/native_spawn_cargo.toml.txt");
-const NATIVE_SPAWN_LIB: &str              = include_str!("../templates/native_spawn_lib.rs.txt");
-const NATIVE_DESPAWN_TOML: &str           = include_str!("../templates/native_despawn_cargo.toml.txt");
-const NATIVE_DESPAWN_LIB: &str            = include_str!("../templates/native_despawn_lib.rs.txt");
-const NATIVE_MOVE_TOML: &str              = include_str!("../templates/native_move_player_cargo.toml.txt");
-const NATIVE_MOVE_LIB: &str               = include_str!("../templates/native_move_player_lib.rs.txt");
-const NATIVE_UPDATE_STATS_TOML: &str      = include_str!("../templates/native_update_stats_cargo.toml.txt");
-const NATIVE_UPDATE_STATS_LIB: &str       = include_str!("../templates/native_update_stats_lib.rs.txt");
-const NATIVE_ATTACK_TOML: &str            = include_str!("../templates/native_attack_cargo.toml.txt");
-const NATIVE_ATTACK_LIB: &str             = include_str!("../templates/native_attack_lib.rs.txt");
-const NATIVE_SPAWN_NPC_TOML: &str         = include_str!("../templates/native_spawn_npc_cargo.toml.txt");
-const NATIVE_SPAWN_NPC_LIB: &str          = include_str!("../templates/native_spawn_npc_lib.rs.txt");
-const NATIVE_BUY_ITEM_TOML: &str          = include_str!("../templates/native_buy_item_cargo.toml.txt");
-const NATIVE_BUY_ITEM_LIB: &str           = include_str!("../templates/native_buy_item_lib.rs.txt");
-const NATIVE_SELL_ITEM_TOML: &str         = include_str!("../templates/native_sell_item_cargo.toml.txt");
-const NATIVE_SELL_ITEM_LIB: &str          = include_str!("../templates/native_sell_item_lib.rs.txt");
-const NATIVE_WORLD_TICK_TOML: &str        = include_str!("../templates/native_world_tick_cargo.toml.txt");
-const NATIVE_WORLD_TICK_LIB: &str         = include_str!("../templates/native_world_tick_lib.rs.txt");
-const NATIVE_CLEANUP_TOML: &str           = include_str!("../templates/native_cleanup_sessions_cargo.toml.txt");
-const NATIVE_CLEANUP_LIB: &str            = include_str!("../templates/native_cleanup_sessions_lib.rs.txt");
-const NATIVE_SUBMIT_SCORE_TOML: &str      = include_str!("../templates/native_submit_score_cargo.toml.txt");
-const NATIVE_SUBMIT_SCORE_LIB: &str       = include_str!("../templates/native_submit_score_lib.rs.txt");
-const NATIVE_BUILD_PS1: &str              = include_str!("../templates/native_build_ps1.txt");
-const NATIVE_BUILD_SH: &str              = include_str!("../templates/native_build_sh.txt");
-const NATIVE_README: &str                 = include_str!("../templates/native_readme.md.txt");
-
-fn scaffold_native_game_ready(p: &Path, name: &str) -> Result<()> {
-    // Workspace root
-    wf(p, "Cargo.toml",                              NATIVE_WORKSPACE_TOML)?;
-
-    // Bundled helper crate (no crates.io needed — fully self-contained)
-    wf(p, "neondb-reducer/Cargo.toml",               NATIVE_HELPER_TOML)?;
-    wf(p, "neondb-reducer/src/lib.rs",               NATIVE_HELPER_LIB)?;
-
-    // Reducer crates — each compiles to one .wasm file
-    wf(p, "spawn/Cargo.toml",                        NATIVE_SPAWN_TOML)?;
-    wf(p, "spawn/src/lib.rs",                        NATIVE_SPAWN_LIB)?;
-    wf(p, "despawn/Cargo.toml",                      NATIVE_DESPAWN_TOML)?;
-    wf(p, "despawn/src/lib.rs",                      NATIVE_DESPAWN_LIB)?;
-    wf(p, "move_player/Cargo.toml",                  NATIVE_MOVE_TOML)?;
-    wf(p, "move_player/src/lib.rs",                  NATIVE_MOVE_LIB)?;
-    wf(p, "update_stats/Cargo.toml",                 NATIVE_UPDATE_STATS_TOML)?;
-    wf(p, "update_stats/src/lib.rs",                 NATIVE_UPDATE_STATS_LIB)?;
-    wf(p, "attack/Cargo.toml",                       NATIVE_ATTACK_TOML)?;
-    wf(p, "attack/src/lib.rs",                       NATIVE_ATTACK_LIB)?;
-    wf(p, "spawn_npc/Cargo.toml",                    NATIVE_SPAWN_NPC_TOML)?;
-    wf(p, "spawn_npc/src/lib.rs",                    NATIVE_SPAWN_NPC_LIB)?;
-    wf(p, "buy_item/Cargo.toml",                     NATIVE_BUY_ITEM_TOML)?;
-    wf(p, "buy_item/src/lib.rs",                     NATIVE_BUY_ITEM_LIB)?;
-    wf(p, "sell_item/Cargo.toml",                    NATIVE_SELL_ITEM_TOML)?;
-    wf(p, "sell_item/src/lib.rs",                    NATIVE_SELL_ITEM_LIB)?;
-    wf(p, "world_tick/Cargo.toml",                   NATIVE_WORLD_TICK_TOML)?;
-    wf(p, "world_tick/src/lib.rs",                   NATIVE_WORLD_TICK_LIB)?;
-    wf(p, "cleanup_sessions/Cargo.toml",             NATIVE_CLEANUP_TOML)?;
-    wf(p, "cleanup_sessions/src/lib.rs",             NATIVE_CLEANUP_LIB)?;
-    wf(p, "submit_score/Cargo.toml",                 NATIVE_SUBMIT_SCORE_TOML)?;
-    wf(p, "submit_score/src/lib.rs",                 NATIVE_SUBMIT_SCORE_LIB)?;
-
-    // Build scripts + docs
-    wf(p, "build.ps1",                               NATIVE_BUILD_PS1)?;
-    wf(p, "build.sh",                                NATIVE_BUILD_SH)?;
-    wf(p, "PERFORMANCE.md",                          PERF_MD)?;
-    wf(p, "README.md", &format!("# {} — Native Rust Template\n\n{}", name, NATIVE_README))?;
-
-    // Shared server config (reuse game schema)
-    wf(p, "schema.toml",                             GAME_SCHEMA_TOML)?;
-    wf(p, "seed.json",                               GAME_SEED_JSON)?;
-
-    print_success(name, "native/game-ready", &[
-        ("neondb-reducer/",     "bundled Context API (no crates.io needed)"),
-        ("spawn/ … submit_score/", "11 reducer crates, each → one .wasm"),
-        ("build.ps1 / build.sh","cargo build --target wasm32-unknown-unknown"),
-        ("modules/",            "auto-populated by build script"),
-        ("PERFORMANCE.md",      "JS → WASM → native performance guide"),
-    ]);
-    println!("  Prerequisites:\n    rustup target add wasm32-unknown-unknown\n");
-    println!("  Next steps:\n    cd {name}\n    .\\build.ps1          # Windows\n    ./build.sh           # Linux / macOS\n    neondb start");
-    println!();
-    Ok(())
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// C# reducer template (TODO-032)
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn scaffold_csharp_reducers(p: &Path, name: &str) -> Result<()> {
-    wf(p, "reducers/Reducers.csproj", CSHARP_CSPROJ)?;
-    wf(p, "reducers/NeonDB.cs", CSHARP_NEONDB_BINDINGS)?;
-    wf(p, "reducers/Combat.cs", CSHARP_COMBAT_CS)?;
-    wf(p, "modules/.gitkeep", "")?;
-
-    let readme = format!(
-        "# {} — C# Reducers Template\n\n\
-        Write your game logic in C# and compile it to WebAssembly via .NET 8 WASI.\n\n\
-        ## Prerequisites\n\n\
-        ```sh\n\
-        # Install .NET 8 SDK\n\
-        # https://dotnet.microsoft.com/download\n\n\
-        # Install the WASI experimental workload\n\
-        dotnet workload install wasi-experimental\n\
-        ```\n\n\
-        ## Build & Run\n\n\
-        ```sh\n\
-        neondb build      # detects reducers/*.csproj and runs dotnet publish\n\
-        neondb start\n\
-        neondb call attack '[\"player1\", \"enemy1\", 25]'\n\
-        ```\n\n\
-        ## Host ABI\n\n\
-        `NeonDB.cs` wraps the host imports declared in `env`:\n\n\
-        | Host function       | Signature |\n\
-        |---------------------|-----------|\n\
-        | `neondb_get_row`    | `(table*, tlen, key*, klen, out*, outmax) -> i32` |\n\
-        | `neondb_set_row`    | `(table*, tlen, key*, klen, val*, vlen) -> i32` |\n\
-        | `neondb_delete_row` | `(table*, tlen, key*, klen) -> i32` |\n\
-        | `neondb_caller_id`  | `(out*, outmax) -> i32` |\n\
-        | `neondb_caller_role`| `(out*, outmax) -> i32` |\n\n\
-        Return convention: `[UnmanagedCallersOnly]` exports return `long` (i64) where\n\
-        high 32 bits = result_ptr, low 32 bits = result_len. NeonDB's Wasmtime backend\n\
-        handles both the classic multi-value WASM ABI and this fat-pointer i64 ABI.\n",
-        name
-    );
-    wf(p, "README.md", &readme)?;
-
-    print_success(name, "csharp-reducers", &[
-        ("reducers/Reducers.csproj", ".NET 8 WASI project file"),
-        ("reducers/NeonDB.cs",       "host-function bindings (ReducerContext API)"),
-        ("reducers/Combat.cs",       "sample Attack reducer"),
-        ("modules/",                 "compiled .wasm written here by neondb build"),
-    ]);
-    println!("  Prerequisites:");
-    println!("    dotnet workload install wasi-experimental");
-    println!();
-    println!("  Next steps:");
-    println!("    cd {name}");
-    println!("    neondb build");
-    println!("    neondb start");
-    println!();
-    Ok(())
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Go reducer template (TODO-033)
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn scaffold_go_reducers(p: &Path, name: &str) -> Result<()> {
-    wf(p, "reducers/go.mod", &format!("module {}\n\ngo 1.21\n", name))?;
-    wf(p, "reducers/neondb/neondb.go", GO_NEONDB_BINDINGS)?;
-    wf(p, "reducers/combat.go", GO_COMBAT_GO)?;
-    wf(p, "modules/.gitkeep", "")?;
-
-    let readme = format!(
-        "# {} — Go Reducers Template\n\n\
-        Write your game logic in Go and compile it to WebAssembly via TinyGo.\n\n\
-        ## Prerequisites\n\n\
-        ```sh\n\
-        # Install TinyGo\n\
-        # https://tinygo.org/getting-started/install/\n\
-        tinygo version   # verify installation\n\
-        ```\n\n\
-        ## Build & Run\n\n\
-        ```sh\n\
-        neondb build      # detects reducers/go.mod and runs tinygo build\n\
-        neondb start\n\
-        neondb call attack '[\"player1\", \"enemy1\", 25]'\n\
-        ```\n\n\
-        ## Notes\n\n\
-        - Use `//export funcname` to declare a reducer export (TinyGo WASM convention).\n\
-        - TinyGo partial stdlib: `fmt`, `math`, `strings`, `strconv` work; `net/http`, `database/sql` do not.\n\
-        - The `neondb` package wraps the host imports and exposes `Get`, `Set`, `Delete`, `CallerID`, `CallerRole`.\n\
-        - Every reducer file must be in `package main` and include `func main() {{}}`.\n\
-        - Standard `go build` will NOT produce a correct WASM module — always use TinyGo.\n",
-        name
-    );
-    wf(p, "README.md", &readme)?;
-
-    print_success(name, "go-reducers", &[
-        ("reducers/go.mod",          "Go module definition"),
-        ("reducers/neondb/neondb.go","host-function bindings (Get/Set/Delete API)"),
-        ("reducers/combat.go",       "sample Attack reducer"),
-        ("modules/",                 "compiled .wasm written here by neondb build"),
-    ]);
-    println!("  Prerequisites:");
-    println!("    Install TinyGo: https://tinygo.org/getting-started/install/");
-    println!();
-    println!("  Next steps:");
-    println!("    cd {name}");
-    println!("    neondb build");
-    println!("    neondb start");
-    println!();
-    Ok(())
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// C# template strings
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Minimal .csproj that produces a WASM module with .NET 8 WASI workload.
-const CSHARP_CSPROJ: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <!-- .NET 8 WASI target -->
-    <TargetFramework>net8.0</TargetFramework>
-    <RuntimeIdentifier>wasi-wasm</RuntimeIdentifier>
-    <OutputType>Exe</OutputType>
-    <!-- Keep the .wasm small -->
-    <InvariantGlobalization>true</InvariantGlobalization>
-    <PublishTrimmed>true</PublishTrimmed>
-    <TrimmerRootAssembly Include="Reducers" />
-    <!-- Export reducer symbols to WebAssembly -->
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-  </PropertyGroup>
-</Project>
-"#;
-
-/// C# host-function bindings.
-///
-/// Maps the NeonDB WASM host ABI to a safe, ergonomic `ReducerContext` class.
-/// Exported reducers should be `static unsafe` methods decorated with
-/// `[UnmanagedCallersOnly(EntryPoint = "reducer_name")]`.
-///
-/// Return convention: pack (result_ptr, result_len) into a single `long`:
-///   `return ((long)resultPtr << 32) | (uint)resultLen;`
-/// The NeonDB Wasmtime backend (wasm.rs) accepts this i64 fat-pointer ABI.
-const CSHARP_NEONDB_BINDINGS: &str = r#"// NeonDB host-function bindings for .NET 8 WASI
-// ─────────────────────────────────────────────────────────────────────────────
-// This file wraps the NeonDB WASM host imports into an ergonomic C# API.
-// Every reducer file should `using NeonDB;` and work through ReducerContext.
-// ─────────────────────────────────────────────────────────────────────────────
-
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
-
-namespace NeonDB;
-
-/// <summary>
-/// Ergonomic wrapper around the NeonDB WASM host imports.
-/// Passed to every reducer and provides Get / Set / Delete / CallerID / CallerRole.
-/// </summary>
-public static unsafe class ReducerContext
-{
-    private const int BufSize = 65536; // 64 KB scratch buffer per call
-    private static byte* _buf;
-
-    static ReducerContext()
-    {
-        // Allocate a scratch buffer in the first 4 MB — always reachable.
-        _buf = (byte*)NativeMemory.Alloc((nuint)BufSize);
-    }
-
-    // ── Host imports ──────────────────────────────────────────────────────────
-
-    [DllImport("env", EntryPoint = "neondb_get_row")]
-    private static extern int NativeGetRow(
-        byte* tablePtr, int tableLen,
-        byte* keyPtr, int keyLen,
-        byte* outPtr, int outMax);
-
-    [DllImport("env", EntryPoint = "neondb_set_row")]
-    private static extern int NativeSetRow(
-        byte* tablePtr, int tableLen,
-        byte* keyPtr, int keyLen,
-        byte* valPtr, int valLen);
-
-    [DllImport("env", EntryPoint = "neondb_delete_row")]
-    private static extern int NativeDeleteRow(
-        byte* tablePtr, int tableLen,
-        byte* keyPtr, int keyLen);
-
-    [DllImport("env", EntryPoint = "neondb_caller_id")]
-    private static extern int NativeCallerID(byte* outPtr, int outMax);
-
-    [DllImport("env", EntryPoint = "neondb_caller_role")]
-    private static extern int NativeCallerRole(byte* outPtr, int outMax);
-
-    // ── Public API ────────────────────────────────────────────────────────────
-
-    /// <summary>Get a row from a table as a <see cref="JsonObject"/>.</summary>
-    /// <returns>The row data, or null if the row does not exist.</returns>
-    public static JsonObject? Get(string table, string key)
-    {
-        fixed (byte* tablePtr = Encoding.UTF8.GetBytes(table))
-        fixed (byte* keyPtr   = Encoding.UTF8.GetBytes(key))
-        {
-            int n = NativeGetRow(
-                tablePtr, Encoding.UTF8.GetByteCount(table),
-                keyPtr,   Encoding.UTF8.GetByteCount(key),
-                _buf, BufSize);
-            if (n < 0) return null;
-            var span = new ReadOnlySpan<byte>(_buf, n);
-            return JsonNode.Parse(span)?.AsObject();
-        }
-    }
-
-    /// <summary>Write a row to a table.</summary>
-    public static void Set(string table, string key, JsonObject row)
-    {
-        var json = Encoding.UTF8.GetBytes(row.ToJsonString());
-        fixed (byte* tablePtr = Encoding.UTF8.GetBytes(table))
-        fixed (byte* keyPtr   = Encoding.UTF8.GetBytes(key))
-        fixed (byte* valPtr   = json)
-        {
-            NativeSetRow(
-                tablePtr, Encoding.UTF8.GetByteCount(table),
-                keyPtr,   Encoding.UTF8.GetByteCount(key),
-                valPtr,   json.Length);
-        }
-    }
-
-    /// <summary>Delete a row from a table.</summary>
-    public static void Delete(string table, string key)
-    {
-        fixed (byte* tablePtr = Encoding.UTF8.GetBytes(table))
-        fixed (byte* keyPtr   = Encoding.UTF8.GetBytes(key))
-        {
-            NativeDeleteRow(
-                tablePtr, Encoding.UTF8.GetByteCount(table),
-                keyPtr,   Encoding.UTF8.GetByteCount(key));
-        }
-    }
-
-    /// <summary>The ID of the client that triggered this reducer call.</summary>
-    public static string CallerID()
-    {
-        int n = NativeCallerID(_buf, BufSize);
-        if (n < 0) return "";
-        return Encoding.UTF8.GetString(new ReadOnlySpan<byte>(_buf, n));
-    }
-
-    /// <summary>The role of the client that triggered this reducer call.</summary>
-    public static string CallerRole()
-    {
-        int n = NativeCallerRole(_buf, BufSize);
-        if (n < 0) return "";
-        return Encoding.UTF8.GetString(new ReadOnlySpan<byte>(_buf, n));
-    }
-
-    // ── Result helpers ────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Write <paramref name="result"/> into WASM linear memory and return a
-    /// fat-pointer i64: <c>((long)ptr &lt;&lt; 32) | (uint)len</c>.
-    ///
-    /// Use at the end of every exported reducer:
-    /// <code>return ReducerContext.Return(JsonSerializer.SerializeToUtf8Bytes(new { ok = true }));</code>
-    /// </summary>
-    public static long Return(byte[] result)
-    {
-        // Write into the scratch buffer (starting after the 64-byte header area).
-        int offset = 64;
-        int len = Math.Min(result.Length, BufSize - offset);
-        fixed (byte* src = result)
-        {
-            Buffer.MemoryCopy(src, _buf + offset, BufSize - offset, len);
-        }
-        long ptr = (long)((nuint)(_buf + offset));
-        return (ptr << 32) | (uint)len;
-    }
-
-    /// <summary>Return an empty OK result.</summary>
-    public static long ReturnOk() =>
-        Return(Encoding.UTF8.GetBytes("{\"ok\":true}"));
-}
-"#;
-
-/// Sample C# Combat reducer demonstrating the NeonDB API.
-const CSHARP_COMBAT_CS: &str = r#"// Combat.cs — sample NeonDB reducer in C#
-// Build:  neondb build   (runs dotnet publish -r wasi-wasm)
-// Call:   neondb call attack '["player1", "enemy1", 25]'
-
-using System;
-using System.Runtime.InteropServices;
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using NeonDB;
-
-/// <summary>Combat reducers — attach, heal, and revive.</summary>
-public static class Combat
-{
-    /// <summary>
-    /// Apply <paramref name="damage"/> to <paramref name="targetId"/>.
-    /// Only the owner of a player or an admin may call this reducer.
-    ///
-    /// Exported as WASM function "attack" — the NeonDB WASM backend discovers
-    /// it by name.  Return convention: i64 fat-pointer
-    ///   high 32 bits = ptr to result JSON in linear memory
-    ///   low  32 bits = byte length
-    /// </summary>
-    [UnmanagedCallersOnly(EntryPoint = "attack")]
-    public static unsafe long Attack(int argsPtr, int argsLen)
-    {
-        try
-        {
-            // --- Parse args [attackerId, targetId, damage] ---
-            var argsSpan = new ReadOnlySpan<byte>((void*)argsPtr, argsLen);
-            using var doc = JsonDocument.Parse(argsSpan);
-            var root = doc.RootElement;
-            string attackerId = root[0].GetString() ?? "";
-            string targetId   = root[1].GetString() ?? "";
-            int    damage     = root[2].GetInt32();
-
-            // --- Read the target player ---
-            var target = ReducerContext.Get("players", targetId);
-            if (target is null)
-                return ReducerContext.Return(
-                    JsonSerializer.SerializeToUtf8Bytes(new { error = "Target not found" }));
-
-            // --- Apply damage ---
-            int currentHp = target["hp"]?.GetValue<int>() ?? 0;
-            int newHp = Math.Max(0, currentHp - damage);
-            target["hp"]    = JsonValue.Create(newHp);
-            target["alive"] = JsonValue.Create(newHp > 0);
-
-            ReducerContext.Set("players", targetId, target);
-
-            return ReducerContext.Return(
-                JsonSerializer.SerializeToUtf8Bytes(new { ok = true, new_hp = newHp }));
-        }
-        catch (Exception ex)
-        {
-            return ReducerContext.Return(
-                JsonSerializer.SerializeToUtf8Bytes(new { error = ex.Message }));
-        }
-    }
-
-    /// <summary>Heal <paramref name="targetId"/> by <paramref name="amount"/> HP (capped at 200).</summary>
-    [UnmanagedCallersOnly(EntryPoint = "heal")]
-    public static unsafe long Heal(int argsPtr, int argsLen)
-    {
-        try
-        {
-            var argsSpan = new ReadOnlySpan<byte>((void*)argsPtr, argsLen);
-            using var doc = JsonDocument.Parse(argsSpan);
-            var root = doc.RootElement;
-            string targetId = root[0].GetString() ?? "";
-            int    amount   = root[1].GetInt32();
-
-            var target = ReducerContext.Get("players", targetId);
-            if (target is null)
-                return ReducerContext.Return(
-                    JsonSerializer.SerializeToUtf8Bytes(new { error = "Target not found" }));
-
-            int currentHp = target["hp"]?.GetValue<int>() ?? 0;
-            int newHp = Math.Min(200, currentHp + amount);
-            target["hp"]    = JsonValue.Create(newHp);
-            target["alive"] = JsonValue.Create(true);
-            ReducerContext.Set("players", targetId, target);
-
-            return ReducerContext.Return(
-                JsonSerializer.SerializeToUtf8Bytes(new { ok = true, new_hp = newHp }));
-        }
-        catch (Exception ex)
-        {
-            return ReducerContext.Return(
-                JsonSerializer.SerializeToUtf8Bytes(new { error = ex.Message }));
-        }
-    }
-
-    /// Required by .NET WASI — the entry point for the WASM module.
-    public static void Main() { }
-}
-"#;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Go template strings
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Go host-function bindings package.
-///
-/// Provides `Get`, `Set`, `Delete`, `CallerID`, `CallerRole` backed by the
-/// NeonDB WASM host imports.  Imported in reducer files as `import "neondb"`.
-const GO_NEONDB_BINDINGS: &str = r#"// Package neondb provides the NeonDB host-function bindings for TinyGo WASM reducers.
-// Build: tinygo build -target wasi -o ../modules/reducers.wasm ..
-//
-// Host imports are declared with //go:wasmimport (TinyGo 0.28+).
-// All data passes as JSON over linear memory.
-package neondb
-
-import "unsafe"
-
-// ── Host imports (env module) ─────────────────────────────────────────────────
-
-//go:wasmimport env neondb_get_row
-//go:noescape
-func neondbGetRow(tablePtr unsafe.Pointer, tableLen int32,
-	keyPtr unsafe.Pointer, keyLen int32,
-	outPtr unsafe.Pointer, outMax int32) int32
-
-//go:wasmimport env neondb_set_row
-//go:noescape
-func neondbSetRow(tablePtr unsafe.Pointer, tableLen int32,
-	keyPtr unsafe.Pointer, keyLen int32,
-	valPtr unsafe.Pointer, valLen int32) int32
-
-//go:wasmimport env neondb_delete_row
-//go:noescape
-func neondbDeleteRow(tablePtr unsafe.Pointer, tableLen int32,
-	keyPtr unsafe.Pointer, keyLen int32) int32
-
-//go:wasmimport env neondb_caller_id
-//go:noescape
-func neondbCallerID(outPtr unsafe.Pointer, outMax int32) int32
-
-//go:wasmimport env neondb_caller_role
-//go:noescape
-func neondbCallerRole(outPtr unsafe.Pointer, outMax int32) int32
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
-// Get returns the JSON bytes of the row at (table, key), or nil if not found.
-func Get(table, key string) []byte {
-	tb, kb := []byte(table), []byte(key)
-	buf := make([]byte, 65536)
-	n := neondbGetRow(
-		unsafe.Pointer(&tb[0]), int32(len(tb)),
-		unsafe.Pointer(&kb[0]), int32(len(kb)),
-		unsafe.Pointer(&buf[0]), int32(len(buf)),
-	)
-	if n < 0 {
-		return nil
-	}
-	return buf[:n]
-}
-
-// Set writes row data (JSON bytes) at (table, key).
-func Set(table, key string, val []byte) {
-	tb, kb := []byte(table), []byte(key)
-	neondbSetRow(
-		unsafe.Pointer(&tb[0]), int32(len(tb)),
-		unsafe.Pointer(&kb[0]), int32(len(kb)),
-		unsafe.Pointer(&val[0]), int32(len(val)),
-	)
-}
-
-// Delete removes the row at (table, key).
-func Delete(table, key string) {
-	tb, kb := []byte(table), []byte(key)
-	neondbDeleteRow(
-		unsafe.Pointer(&tb[0]), int32(len(tb)),
-		unsafe.Pointer(&kb[0]), int32(len(kb)),
-	)
-}
-
-// CallerID returns the ID of the client that triggered this reducer call.
-func CallerID() string {
-	buf := make([]byte, 256)
-	n := neondbCallerID(unsafe.Pointer(&buf[0]), int32(len(buf)))
-	if n < 0 {
-		return ""
-	}
-	return string(buf[:n])
-}
-
-// CallerRole returns the role of the client that triggered this reducer call.
-func CallerRole() string {
-	buf := make([]byte, 256)
-	n := neondbCallerRole(unsafe.Pointer(&buf[0]), int32(len(buf)))
-	if n < 0 {
-		return ""
-	}
-	return string(buf[:n])
-}
-
-// ── Result buffer ─────────────────────────────────────────────────────────────
-
-// resultBuf is the linear-memory buffer used by all reducers for their return value.
-// Each call overwrites it; reducers are not re-entrant in NeonDB's single-call model.
-var resultBuf [65536]byte
-
-// WriteResult copies result into resultBuf and returns (ptr, len) as separate values.
-// Use the MultiReturn function to pack them for the WASM export ABI.
-func WriteResult(result []byte) (int32, int32) {
-	n := copy(resultBuf[:], result)
-	return int32(uintptr(unsafe.Pointer(&resultBuf[0]))), int32(n)
-}
-"#;
-
-/// Sample Go combat reducer.
-const GO_COMBAT_GO: &str = r#"// combat.go — sample NeonDB reducer in Go (compiled via TinyGo)
-// Build:  neondb build   (runs tinygo build -target wasi)
-// Call:   neondb call attack '["player1", "enemy1", 25]'
-
-package main
-
-import (
-	"encoding/json"
-	"math"
-	"unsafe"
-
-	"neondb" // the local host-binding package in neondb/
-)
-
-// attack reduces the HP of the target player by the given damage amount.
-//
-// Args (JSON array): [attackerID string, targetID string, damage int]
-//
-// The //export directive tells TinyGo to export this function as the WASM
-// "attack" symbol.  NeonDB's Wasmtime backend calls it by name.
-//
-// Multi-value return: TinyGo correctly exports (ptr i32, len i32) as a WASM
-// multi-value function — matched by call_reducer_typed in wasm.rs.
-
-//export attack
-func attack(argsPtr int32, argsLen int32) (int32, int32) {
-	// Read the JSON args from linear memory.
-	argsMem := make([]byte, argsLen)
-	copy(argsMem, ptrToSlice(argsPtr, argsLen))
-
-	var args []json.RawMessage
-	if err := json.Unmarshal(argsMem, &args); err != nil || len(args) < 3 {
-		return writeResult(map[string]interface{}{"error": "invalid args"})
-	}
-
-	var attackerID, targetID string
-	var damage int
-	json.Unmarshal(args[0], &attackerID)
-	json.Unmarshal(args[1], &targetID)
-	json.Unmarshal(args[2], &damage)
-
-	// Read the target row.
-	rowBytes := neondb.Get("players", targetID)
-	if rowBytes == nil {
-		return writeResult(map[string]interface{}{"error": "target not found"})
-	}
-
-	var row map[string]interface{}
-	if err := json.Unmarshal(rowBytes, &row); err != nil {
-		return writeResult(map[string]interface{}{"error": "row parse error"})
-	}
-
-	// Apply damage.
-	currentHP := intField(row, "hp")
-	newHP := int(math.Max(0, float64(currentHP-damage)))
-	row["hp"] = newHP
-	row["alive"] = newHP > 0
-
-	updated, _ := json.Marshal(row)
-	neondb.Set("players", targetID, updated)
-
-	return writeResult(map[string]interface{}{"ok": true, "new_hp": newHP})
-}
-
-//export heal
-func heal(argsPtr int32, argsLen int32) (int32, int32) {
-	argsMem := make([]byte, argsLen)
-	copy(argsMem, ptrToSlice(argsPtr, argsLen))
-
-	var args []json.RawMessage
-	if err := json.Unmarshal(argsMem, &args); err != nil || len(args) < 2 {
-		return writeResult(map[string]interface{}{"error": "invalid args"})
-	}
-
-	var targetID string
-	var amount int
-	json.Unmarshal(args[0], &targetID)
-	json.Unmarshal(args[1], &amount)
-
-	rowBytes := neondb.Get("players", targetID)
-	if rowBytes == nil {
-		return writeResult(map[string]interface{}{"error": "target not found"})
-	}
-
-	var row map[string]interface{}
-	json.Unmarshal(rowBytes, &row)
-
-	currentHP := intField(row, "hp")
-	newHP := currentHP + amount
-	if newHP > 200 {
-		newHP = 200
-	}
-	row["hp"] = newHP
-	row["alive"] = true
-
-	updated, _ := json.Marshal(row)
-	neondb.Set("players", targetID, updated)
-
-	return writeResult(map[string]interface{}{"ok": true, "new_hp": newHP})
-}
-
-// main is required by TinyGo for the wasi target.
-func main() {}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-func writeResult(v interface{}) (int32, int32) {
-	b, _ := json.Marshal(v)
-	return neondb.WriteResult(b)
-}
-
-func intField(m map[string]interface{}, key string) int {
-	switch v := m[key].(type) {
-	case float64:
-		return int(v)
-	case int:
-		return v
-	}
-	return 0
-}
-
-// ptrToSlice reinterprets a WASM linear-memory pointer+length as a Go slice.
-// Safe because WASM linear memory is a flat []byte contiguous array in Go/TinyGo.
-func ptrToSlice(ptr int32, length int32) []byte {
-	return (*[1 << 30]byte)(unsafe.Pointer(uintptr(ptr)))[:length:length]
-}
-"#;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // neondb build
@@ -2255,6 +1646,40 @@ async fn run_server(config: Config) -> Result<()> {
     };
 
     let inline_registry = neondb::network::build_inline_registry();
+    let drain_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let wal_writer = Arc::new(BatchedWalWriter::open(
+        &config.wal_path, config.wal_batch_interval_ms, config.wal_batch_size, config.unsafe_no_fsync,
+    )?);
+    let worker_count = if config.workers > 0 { config.workers } else { num_cpus::get().max(1) };
+    log::info!("Starting {} reducer workers", worker_count);
+    let global_seq = Arc::new(std::sync::atomic::AtomicU64::new(initial_seq));
+
+    let lobby_router = {
+        let worker_deps = std::sync::Arc::new(neondb::worker_pool::WorkerDeps {
+            tables: tables.clone(),
+            registry: registry.clone(),
+            subscription_manager: subscription_manager.clone(),
+            wal_writer: wal_writer.clone(),
+            global_seq: global_seq.clone(),
+            schema_registry: schema_registry.clone(),
+            ttl_manager: ttl_manager.clone(),
+            tenant_registry: tenant_registry.clone(),
+            cluster_bus: cluster_bus.clone(),
+            metrics: metrics.clone(),
+            timeout_ms: config.reducer_timeout_ms,
+            snapshot_interval: config.snapshot_interval,
+            snapshot_dir: config.snapshot_dir.clone(),
+        });
+        let max_lobbies = config.max_connections / 2;
+        Arc::new(neondb::worker_pool::LobbyRouter::new(
+            reducer_tx.clone(),
+            config.reducer_queue_cap.max(256),
+            max_lobbies.max(64),
+            worker_deps,
+            shutdown_rx.clone(),
+        ))
+    };
 
     let listener_handle = {
         let config_c = config.clone(); let tx_c = reducer_tx.clone();
@@ -2270,27 +1695,22 @@ async fn run_server(config: Config) -> Result<()> {
         let iss_c = identity_issuer.clone();
         let tenant_registry_ws = tenant_registry.clone();
         let inl_c = inline_registry.clone();
+        let lr_c = lobby_router.clone();
+        let df_c = drain_flag.clone();
         tokio::spawn(async move {
             if let Err(e) = start_listener(
                 config_c.host, config_c.port, tx_c, subs_c, tables_c,
                 config_c.max_connections, config_c.api_key.clone(),
                 conns_c, perms_c, config_c.sql_timeout_ms,
                 auth_c, rl_c, pres_c, ttl_c, iss_c, rx_shutdown, metrics_c, tls_cfg,
-                tenant_registry_ws, inl_c,
+                tenant_registry_ws, inl_c, Some(lr_c), df_c,
             ).await { log::error!("Listener error: {}", e); }
         })
     };
 
-    let wal_writer = Arc::new(BatchedWalWriter::open(
-        &config.wal_path, config.wal_batch_interval_ms, config.wal_batch_size, config.unsafe_no_fsync,
-    )?);
-    let worker_count = if config.workers > 0 { config.workers } else { num_cpus::get().max(1) };
-    log::info!("Starting {} reducer workers", worker_count);
-
     let timeout_ms        = config.reducer_timeout_ms;
     let snapshot_interval = config.snapshot_interval;
     let snapshot_dir_w    = config.snapshot_dir.clone();
-    let global_seq        = Arc::new(std::sync::atomic::AtomicU64::new(initial_seq));
 
     let startup_instant = std::time::Instant::now();
 
@@ -2306,12 +1726,61 @@ async fn run_server(config: Config) -> Result<()> {
         let prom_c = metrics.clone();
         let issuer_c = identity_issuer.clone();
         let qprobe_c = queue_probe.clone();
+
+        // ── Multi-region infrastructure ──────────────────────────────────────
+        // Override NEONDB_REGION / NEONDB_REGIONS via config fields so the
+        // same env-var-based construction works whether started from binary
+        // or from run_server().
+        if !config.region.is_empty() && config.region != "default" {
+            std::env::set_var("NEONDB_REGION", &config.region);
+        }
+        if !config.regions.is_empty() {
+            std::env::set_var("NEONDB_REGIONS", &config.regions);
+        }
+        let region_registry = Arc::new(neondb::cluster::RegionRegistry::from_env());
+        if region_registry.is_multi_region() {
+            log::info!("[regions] Multi-region mode: region='{}', peers={}",
+                region_registry.my_region, region_registry.peer_regions().len());
+        }
+
+        let lobby_routes = neondb::cluster::LobbyRouteRegistry::new(tables.clone());
+
+        let leaderboard = Arc::new(neondb::leaderboard::LeaderboardEngine::new());
+        // Register the default leaderboard board.
+        leaderboard.create_board(neondb::leaderboard::LeaderboardConfig {
+            name: config.leaderboard_board.clone(),
+            sort_order: neondb::leaderboard::SortOrder::HighestFirst,
+            time_window: neondb::leaderboard::TimeWindow::AllTime,
+            max_entries: config.leaderboard_top_n,
+        });
+        // Start cross-region aggregation if multi-region.
+        neondb::leaderboard::LeaderboardAggregator::new(
+            leaderboard.clone(),
+            region_registry.clone(),
+            config.leaderboard_board.clone(),
+            config.leaderboard_interval_secs,
+            config.leaderboard_top_n,
+        ).start(shutdown_rx.clone());
+
+        let stat_sync = neondb::stat_sync::StatSyncQueue::new(
+            tables.clone(),
+            region_registry.clone(),
+            config.stat_sync_flush_ms,
+            shutdown_rx.clone(),
+        );
+
         let admin_c = Arc::new(AdminState {
             wal_path: config.wal_path.clone(),
             backup_dir: config.backup_dir.clone(),
             backup_keep: config.backup_keep,
             tenant_registry: tenant_registry.clone(),
             cluster_bus: cluster_bus.clone(),
+            drain_flag: drain_flag.clone(),
+            active_connections: active_connections.clone(),
+            region_registry: region_registry.clone(),
+            lobby_routes: lobby_routes.clone(),
+            leaderboard: leaderboard.clone(),
+            stat_sync: stat_sync.clone(),
         });
         let schema_c = schema_registry.clone();
         tokio::spawn(async move {
@@ -2663,6 +2132,7 @@ async fn run_server(config: Config) -> Result<()> {
                             caller_id: "scheduler".to_string(),
                             caller_role: "scheduler".to_string(),
                             tenant_id: None,
+                            lobby_hint: None,
                             response_tx: resp_tx,
                         };
                         if tx_sched.send(call).await.is_ok() {
@@ -2821,6 +2291,12 @@ struct AdminState {
     backup_keep: usize,
     tenant_registry: Arc<neondb::tenant::TenantRegistry>,
     cluster_bus: Arc<neondb::cluster::ClusterBus>,
+    drain_flag: Arc<std::sync::atomic::AtomicBool>,
+    active_connections: Arc<std::sync::atomic::AtomicUsize>,
+    region_registry: Arc<neondb::cluster::RegionRegistry>,
+    lobby_routes: Arc<neondb::cluster::LobbyRouteRegistry>,
+    leaderboard: Arc<neondb::leaderboard::LeaderboardEngine>,
+    stat_sync: Arc<neondb::stat_sync::StatSyncQueue>,
 }
 
 async fn start_metrics_server(
@@ -2973,6 +2449,48 @@ async fn handle_metrics_request(
             Ok(r)
         }
 
+        // ── Drain mode ───────────────────────────────────────────────────────
+        // GET    /admin/api/drain — drain status + active connection count
+        // POST   /admin/api/drain — enable drain (stop new connections)
+        // DELETE /admin/api/drain — disable drain (resume accepting connections)
+        (&Method::GET, "/admin/api/drain") => {
+            let draining = admin.drain_flag.load(std::sync::atomic::Ordering::Relaxed);
+            let conns = admin.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+            Ok(json_response(serde_json::json!({
+                "draining": draining,
+                "active_connections": conns,
+                "message": if draining {
+                    format!("{} connections still active — new connections refused", conns)
+                } else {
+                    "Server accepting connections normally".to_string()
+                }
+            })))
+        }
+
+        (&Method::POST, "/admin/api/drain") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            admin.drain_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            let conns = admin.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+            log::warn!("[drain] Drain mode ENABLED — {} active connections finishing", conns);
+            Ok(json_response(serde_json::json!({
+                "draining": true,
+                "active_connections": conns,
+                "message": "Drain enabled. New connections refused with HTTP 503. Existing connections unaffected."
+            })))
+        }
+
+        (&Method::DELETE, "/admin/api/drain") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            admin.drain_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+            let conns = admin.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+            log::info!("[drain] Drain mode DISABLED — resuming normal operation");
+            Ok(json_response(serde_json::json!({
+                "draining": false,
+                "active_connections": conns,
+                "message": "Drain disabled. Server accepting new connections normally."
+            })))
+        }
+
         (&Method::POST, "/admin/api/call") => {
             if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
@@ -3000,6 +2518,7 @@ async fn handle_metrics_request(
                 caller_id: "admin-console".to_string(),
                 caller_role: "admin".to_string(),
                 tenant_id: None,
+                lobby_hint: None,
                 response_tx: resp_tx,
             };
             if queue_probe.send(call).await.is_err() {
@@ -3328,6 +2847,7 @@ async fn handle_metrics_request(
                 caller_id: pr.caller_id,
                 caller_role: pr.caller_role,
                 tenant_id: None,
+                lobby_hint: None,
                 response_tx: resp_tx,
             };
             if queue_probe.send(call).await.is_err() {
@@ -3372,6 +2892,110 @@ async fn handle_metrics_request(
                 "ok": true,
                 "peers": admin.cluster_bus.peers_snapshot(),
             })))
+        }
+
+        // ── Region + lobby-route endpoints ────────────────────────────────────
+
+        // GET /cluster/regions — list all known regions
+        (&Method::GET, "/cluster/regions") => {
+            let regions = admin.region_registry.all();
+            Ok(json_response(serde_json::json!({
+                "my_region": admin.region_registry.my_region,
+                "regions":   regions,
+                "multi_region": admin.region_registry.is_multi_region(),
+            })))
+        }
+
+        // GET /cluster/lobby-route?lobby_id=42
+        // Returns { region_id, ws_url } for the lobby or 404 if unknown.
+        (&Method::GET, p) if p.starts_with("/cluster/lobby-route") => {
+            let lobby_id = req.uri().query()
+                .and_then(|q| q.split('&').find(|s| s.starts_with("lobby_id=")))
+                .and_then(|s| s.strip_prefix("lobby_id="))
+                .unwrap_or("");
+            if lobby_id.is_empty() {
+                return Ok(bad_request("Missing lobby_id query param".into()));
+            }
+            match admin.lobby_routes.lookup(lobby_id) {
+                Some(route) => Ok(json_response(serde_json::json!({
+                    "lobby_id":  route.lobby_id,
+                    "region_id": route.region_id,
+                    "ws_url":    route.ws_url,
+                }))),
+                None => {
+                    // Unknown lobby — assume it lives here (single-region fallback).
+                    let ws_url = admin.region_registry
+                        .ws_url_for(&admin.region_registry.my_region)
+                        .unwrap_or_default();
+                    Ok(json_response(serde_json::json!({
+                        "lobby_id":  lobby_id,
+                        "region_id": admin.region_registry.my_region,
+                        "ws_url":    ws_url,
+                        "fallback":  true,
+                    })))
+                }
+            }
+        }
+
+        // POST /cluster/register-lobby — { lobby_id, region_id?, ws_url? }
+        // Called by game code after a lobby is created.
+        (&Method::POST, "/cluster/register-lobby") => {
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let v: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let lobby_id  = v["lobby_id"].as_str().unwrap_or("").to_string();
+            if lobby_id.is_empty() {
+                return Ok(bad_request("Missing lobby_id".into()));
+            }
+            let region_id = v["region_id"].as_str()
+                .unwrap_or(&admin.region_registry.my_region)
+                .to_string();
+            let ws_url = v["ws_url"].as_str().map(|s| s.to_string())
+                .or_else(|| admin.region_registry.get(&region_id).map(|r| r.ws_url.clone()))
+                .unwrap_or_default();
+            admin.lobby_routes.register(&lobby_id, &region_id, &ws_url);
+            Ok(json_response(serde_json::json!({ "ok": true, "lobby_id": lobby_id, "region_id": region_id })))
+        }
+
+        // DELETE /cluster/lobby-route?lobby_id=42 — remove a lobby route
+        (&Method::DELETE, p) if p.starts_with("/cluster/lobby-route") => {
+            let lobby_id = req.uri().query()
+                .and_then(|q| q.split('&').find(|s| s.starts_with("lobby_id=")))
+                .and_then(|s| s.strip_prefix("lobby_id="))
+                .unwrap_or("");
+            admin.lobby_routes.unregister(lobby_id);
+            Ok(json_response(serde_json::json!({ "ok": true })))
+        }
+
+        // ── Leaderboard endpoints ─────────────────────────────────────────────
+
+        // GET /leaderboard/top?board=leaderboard&n=100
+        (&Method::GET, p) if p.starts_with("/leaderboard/top") => {
+            let query = req.uri().query().unwrap_or("");
+            let board = query.split('&')
+                .find(|s| s.starts_with("board="))
+                .and_then(|s| s.strip_prefix("board="))
+                .unwrap_or("leaderboard");
+            let n: usize = query.split('&')
+                .find(|s| s.starts_with("n="))
+                .and_then(|s| s.strip_prefix("n="))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(100);
+            let result = neondb::leaderboard::http_top_entries(&admin.leaderboard, board, n);
+            Ok(json_response(result))
+        }
+
+        // ── Post-match stat-sync endpoint ─────────────────────────────────────
+
+        // POST /cluster/stat-sync — receive stat write-back jobs from other regions
+        (&Method::POST, "/cluster/stat-sync") => {
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let result = neondb::stat_sync::handle_stat_sync(&tables, &body_bytes);
+            Ok(json_response(result))
         }
 
         // ── Backup endpoint ───────────────────────────────────────────────────

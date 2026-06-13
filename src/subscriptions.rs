@@ -353,11 +353,36 @@ impl SubscriptionManager {
 
         // TODO-003 + LIMIT + ORDER BY: initial state sync.
         if let Some(tables) = tables {
-            if let Ok(rows) = tables.list_rows_with_keys(&table_name) {
+            // Phase 2b: auto-create secondary indexes for equality predicates so
+            // subsequent subscriptions (and this one) can use O(matching) lookup
+            // instead of O(all_rows) full scan.
+            if let Some(pred) = &filter.predicate {
+                for (field, _) in collect_eq_fields(pred) {
+                    let _ = tables.create_index(&table_name, field);
+                }
+            }
+
+            // Build candidate row set: use index when available, else full scan.
+            let candidate_rows: Vec<(String, Value)> = if let Some(pred) = &filter.predicate {
+                if let Some(keys) = index_candidates(pred, &table_name, tables) {
+                    // Index hit — fetch only matching keys.
+                    keys.into_iter()
+                        .filter_map(|k| {
+                            tables.get_row(&table_name, &k).ok().flatten().map(|v| (k, v))
+                        })
+                        .collect()
+                } else {
+                    tables.list_rows_with_keys(&table_name).unwrap_or_default()
+                }
+            } else {
+                tables.list_rows_with_keys(&table_name).unwrap_or_default()
+            };
+
+            {
                 let tx = client.tx.clone();
 
                 // Collect matching rows first, so we can sort before delivery.
-                let mut matching_rows: Vec<(String, Value)> = rows
+                let mut matching_rows: Vec<(String, Value)> = candidate_rows
                     .into_iter()
                     .filter(|(row_key, row_value)| {
                         let synthetic = RowDelta {
@@ -647,6 +672,75 @@ impl Predicate {
             Some(Value::String(delta.row_key.clone()))
         } else {
             delta.row_data_value()?.get(field).cloned()
+        }
+    }
+}
+
+/// Collect every (field, value) pair from `Eq` comparison leaves in a predicate tree.
+/// Used to auto-create secondary indexes when a subscription is first registered.
+fn collect_eq_fields<'a>(pred: &'a Predicate) -> Vec<(&'a str, &'a Value)> {
+    match pred {
+        Predicate::Comparison { field, op: ComparisonOp::Eq, value } => {
+            vec![(field.as_str(), value)]
+        }
+        Predicate::Comparison { .. } => vec![],
+        Predicate::In { .. } => vec![],
+        Predicate::And(l, r) | Predicate::Or(l, r) => {
+            let mut out = collect_eq_fields(l);
+            out.extend(collect_eq_fields(r));
+            out
+        }
+    }
+}
+
+/// Try to build a candidate row-key set from secondary indexes.
+///
+/// Returns `Some(keys)` when at least one index was used — the caller still
+/// runs `filter.matches()` on each candidate so correctness is maintained even
+/// if the index covers only part of the predicate.
+/// Returns `None` to signal "fall back to full table scan".
+fn index_candidates(pred: &Predicate, table_name: &str, tables: &TableStore) -> Option<Vec<String>> {
+    match pred {
+        Predicate::Comparison { field, op: ComparisonOp::Eq, value } => {
+            tables.index_lookup(table_name, field, value)
+        }
+        Predicate::Comparison { .. } => None,
+        Predicate::In { field, values } => {
+            // Union of index lookups for each IN value — only if all succeed.
+            let mut result = Vec::new();
+            for val in values {
+                match tables.index_lookup(table_name, field, val) {
+                    Some(keys) => result.extend(keys),
+                    None => return None, // No index for this field; full scan.
+                }
+            }
+            result.sort_unstable();
+            result.dedup();
+            Some(result)
+        }
+        Predicate::And(l, r) => {
+            match (index_candidates(l, table_name, tables), index_candidates(r, table_name, tables)) {
+                (Some(lk), Some(rk)) => {
+                    // Intersect: keep only keys present in both sides.
+                    let r_set: std::collections::HashSet<_> = rk.into_iter().collect();
+                    Some(lk.into_iter().filter(|k| r_set.contains(k)).collect())
+                }
+                (Some(lk), None) => Some(lk),
+                (None, Some(rk)) => Some(rk),
+                (None, None) => None,
+            }
+        }
+        Predicate::Or(l, r) => {
+            // Both sides must have indexes for an OR to be index-accelerated.
+            match (index_candidates(l, table_name, tables), index_candidates(r, table_name, tables)) {
+                (Some(mut lk), Some(rk)) => {
+                    lk.extend(rk);
+                    lk.sort_unstable();
+                    lk.dedup();
+                    Some(lk)
+                }
+                _ => None,
+            }
         }
     }
 }
@@ -1624,5 +1718,99 @@ mod tests {
             }
             other => panic!("Expected And predicate, got {:?}", other),
         }
+    }
+
+    // ── Phase 2b: index-accelerated snapshot tests ─────────────────────────────
+
+    fn make_mgr_and_tables() -> (SubscriptionManager, Arc<TableStore>) {
+        let tables = Arc::new(TableStore::new());
+        let mgr = SubscriptionManager::new();
+        (mgr, tables)
+    }
+
+    #[tokio::test]
+    async fn index_auto_created_on_eq_subscribe() {
+        let (mgr, tables) = make_mgr_and_tables();
+        for i in 0..10u32 {
+            tables.set_row("players".into(), format!("p{i}"), serde_json::json!({"zone": "a"})).unwrap();
+        }
+        let (tx, _rx) = tokio::sync::mpsc::channel(1024);
+        let cid = mgr.register_client(tx);
+        mgr.subscribe_with_snapshot(cid, "s1".into(), "players WHERE zone = 'a'".into(), Some(&tables)).unwrap();
+        // Index should have been auto-created
+        assert!(!tables.list_indexes("players").is_empty(), "index must be auto-created on subscribe");
+        assert!(tables.list_indexes("players").contains(&"zone".to_string()));
+    }
+
+    #[tokio::test]
+    async fn index_snapshot_returns_only_matching_rows() {
+        let (mgr, tables) = make_mgr_and_tables();
+        for i in 0..20u32 {
+            let zone = if i < 10 { "lobby_0" } else { "lobby_1" };
+            tables.set_row("players".into(), format!("p{i}"), serde_json::json!({"zone": zone})).unwrap();
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let cid = mgr.register_client(tx);
+        mgr.subscribe_with_snapshot(cid, "s1".into(), "players WHERE zone = 'lobby_0'".into(), Some(&tables)).unwrap();
+        let keys = drain_snapshot_keys(&mut rx);
+        // Should deliver exactly the 10 lobby_0 players
+        assert_eq!(keys.len(), 10, "index snapshot must return exactly matching rows");
+        for k in &keys {
+            let val = tables.get_row("players", k).unwrap().unwrap();
+            assert_eq!(val["zone"], "lobby_0");
+        }
+    }
+
+    #[tokio::test]
+    async fn index_snapshot_and_predicate_intersection() {
+        let (mgr, tables) = make_mgr_and_tables();
+        // 4 players: zone+status combos
+        tables.set_row("players".into(), "p1".into(), serde_json::json!({"zone": "z1", "status": "alive"})).unwrap();
+        tables.set_row("players".into(), "p2".into(), serde_json::json!({"zone": "z1", "status": "dead"})).unwrap();
+        tables.set_row("players".into(), "p3".into(), serde_json::json!({"zone": "z2", "status": "alive"})).unwrap();
+        tables.set_row("players".into(), "p4".into(), serde_json::json!({"zone": "z2", "status": "dead"})).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let cid = mgr.register_client(tx);
+        mgr.subscribe_with_snapshot(cid, "s1".into(), "players WHERE zone = 'z1' AND status = 'alive'".into(), Some(&tables)).unwrap();
+        let keys = drain_snapshot_keys(&mut rx);
+        // Only p1 matches both conditions
+        assert_eq!(keys.len(), 1, "AND index intersection must return exactly 1 row");
+        assert_eq!(keys[0], "p1");
+    }
+
+    #[tokio::test]
+    async fn index_snapshot_no_index_falls_back_to_full_scan() {
+        let (mgr, tables) = make_mgr_and_tables();
+        for i in 0..5u32 {
+            tables.set_row("items".into(), format!("i{i}"), serde_json::json!({"rarity": "common"})).unwrap();
+        }
+        tables.set_row("items".into(), "i5".into(), serde_json::json!({"rarity": "rare"})).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let cid = mgr.register_client(tx);
+        // Gt predicate — no index for range queries, must fall back to full scan
+        mgr.subscribe_with_snapshot(cid, "s1".into(), "items WHERE rarity = 'rare'".into(), Some(&tables)).unwrap();
+        let keys = drain_snapshot_keys(&mut rx);
+        assert_eq!(keys.len(), 1, "fallback full-scan must return 1 rare item");
+        assert_eq!(keys[0], "i5");
+    }
+
+    #[test]
+    fn collect_eq_fields_extracts_all_eq_comparisons() {
+        let pred = Predicate::And(
+            Box::new(Predicate::Comparison { field: "zone".into(), op: ComparisonOp::Eq, value: serde_json::json!("a") }),
+            Box::new(Predicate::Comparison { field: "status".into(), op: ComparisonOp::Gt, value: serde_json::json!(0) }),
+        );
+        let fields = collect_eq_fields(&pred);
+        assert_eq!(fields.len(), 1, "only Eq comparison should be collected");
+        assert_eq!(fields[0].0, "zone");
+    }
+
+    #[test]
+    fn index_candidates_returns_none_when_no_index() {
+        let tables = TableStore::new();
+        let pred = Predicate::Comparison { field: "zone".into(), op: ComparisonOp::Eq, value: serde_json::json!("a") };
+        // No index created — should return None
+        let result = index_candidates(&pred, "players", &tables);
+        assert!(result.is_none(), "must return None when no index exists");
     }
 }

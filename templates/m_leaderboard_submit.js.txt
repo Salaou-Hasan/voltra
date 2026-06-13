@@ -1,0 +1,14 @@
+const [score, display_name] = args;
+
+const existing = db.get("leaderboard", caller.id);
+
+// Only update if new score beats the current record
+if (existing && existing.score >= score) {
+  result = { ok: true, rank_updated: false, score: existing.score }; return;
+}
+
+db.set("leaderboard", caller.id, {
+  player_id: caller.id, score, display_name, updated_at: Date.now(),
+});
+
+result = { ok: true, rank_updated: true, score };

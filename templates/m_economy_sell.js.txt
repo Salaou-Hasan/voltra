@@ -1,0 +1,15 @@
+const [item_id, qty, gold_per_unit] = args;
+
+const wallet = db.get("wallets", caller.id) || { player_id: caller.id, gold: 0, gems: 0, updated_at: 0 };
+const now = Date.now();
+const earned = qty * gold_per_unit;
+const gold = wallet.gold + earned;
+
+db.set("wallets", caller.id, { ...wallet, gold, updated_at: now });
+
+db.set("transactions", caller.id + "_sell_" + now, {
+  tx_id: caller.id + "_sell_" + now, player_id: caller.id,
+  type: "sell", amount: earned, currency: "gold", item_id, ts: now,
+});
+
+result = { ok: true, gold };

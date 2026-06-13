@@ -1,0 +1,15 @@
+const [player_id, x, y] = args;
+
+const player = db.get("players", player_id);
+if (!player) { result = { error: "Player not found" }; return; }
+
+// Only the owning client may move this player
+if (caller.id !== player_id) { result = { error: "Not your player" }; return; }
+
+db.set("players", player_id, { ...player, x, y });
+
+// Refresh last_seen on move
+const session = db.get("sessions", player_id);
+if (session) db.set("sessions", player_id, { ...session, last_seen: Date.now() });
+
+result = { ok: true, x, y };

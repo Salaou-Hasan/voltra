@@ -1,0 +1,15 @@
+const [quest_id] = args;
+
+const quest_key = caller.id + ":" + quest_id;
+const quest = db.get("player_quests", quest_key);
+if (!quest) { result = { error: "Quest not found" }; return; }
+
+if (quest.status !== "ready_to_claim") {
+  result = { error: "Quest is not ready to claim (status: " + quest.status + ")" }; return;
+}
+
+db.set("player_quests", quest_key, {
+  ...quest, status: "completed", completed_at: Date.now(),
+});
+
+result = { ok: true, quest_id };

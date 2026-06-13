@@ -8,10 +8,11 @@ version = "1.0.0"
 edition = "2021"
 
 [dependencies]
-socket2 = "0.4"
+socket2 = { version = "0.5", features = ["all"] }
+core_affinity = "0.8"
 zstd = "0.12"
 libc = "0.2"
-mimalloc = { version = "0.1.52", optional = true }
+mimalloc = { version = "0.1.52", default-features = false, optional = true }
 tokio = { version = "1.35", features = ["full"] }
 tungstenite = "0.21"
 tokio-tungstenite = "0.21"

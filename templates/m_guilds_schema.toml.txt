@@ -1,0 +1,23 @@
+[tables.guilds]
+columns = [
+  { name = "guild_id",   type = "String", required = true },
+  { name = "name",       type = "String", required = true },
+  { name = "owner_id",   type = "String", required = true },
+  { name = "created_at", type = "Int",    required = true },
+]
+
+[tables.guild_members]
+columns = [
+  { name = "player_id",  type = "String", required = true },
+  { name = "guild_id",   type = "String", required = true },
+  { name = "rank",       type = "String", required = true },
+  { name = "joined_at",  type = "Int",    required = true },
+]
+
+[tables.guild_invites]
+columns = [
+  { name = "invite_id",  type = "String", required = true },
+  { name = "guild_id",   type = "String", required = true },
+  { name = "invitee_id", type = "String", required = true },
+  { name = "inviter_id", type = "String", required = true },
+]
