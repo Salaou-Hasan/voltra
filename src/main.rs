@@ -925,8 +925,15 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
 /// Generate a Cargo.toml that embeds the NeonDB server as a library.
 fn game_cargo_toml(name: &str) -> String {
     format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.3\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.4\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
     )
+}
+
+/// Write the Rust client SDK example into client/ inside a scaffolded project.
+fn scaffold_rust_client(p: &Path, name: &str) -> Result<()> {
+    wf(p, "client/Cargo.toml",   &client_cargo_toml(name))?;
+    wf(p, "client/src/main.rs",  CLIENT_MAIN_RS)?;
+    Ok(())
 }
 
 fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
@@ -942,6 +949,7 @@ fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
     wf(p, "README.md", &format!("# {name}\n\nNeonDB embedded game server.\n\nSee SCALING.md for the scaling guide.\n"))?;
+    scaffold_rust_client(p, name)?;
     print_success(name, "game/basic", &[
         ("Cargo.toml",                  "neondb game server (run `neondb start` from this folder)"),
         ("src/reducers/spawn.rs",       "spawn(player_id, lobby, class)"),
@@ -950,11 +958,13 @@ fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
         ("src/reducers/damage.rs",      "damage(target_id, amount)"),
         ("src/reducers/heal.rs",        "heal(target_id, amount)"),
         ("schema.toml",                 "players + sessions tables"),
+        ("client/src/main.rs",          "Rust client — connect, subscribe, call reducers"),
     ]);
     println!("  Next steps:");
     println!("    cd {name}");
     println!("    neondb start");
-    println!("    neondb call spawn '[\"alice\", \"lobby_1\", \"warrior\"]'");
+    println!("    # in another terminal:");
+    println!("    cd client && cargo run --release");
     println!();
     println!("  Add systems:");
     println!("    neondb add combat    # attack, respawn, abilities");
@@ -996,6 +1006,8 @@ fn scaffold_game_unity(p: &Path, name: &str) -> Result<()> {
     println!("  Unity C# SDK → unity/");
     println!("    Copy unity/ into Assets/Scripts/NeonDB/");
     println!("    Add NeonDBManager to your scene, set Server URL, press Play.");
+    println!("  Rust client SDK → client/");
+    println!("    cd client && cargo run --release");
     Ok(())
 }
 
@@ -1006,6 +1018,8 @@ fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
     wf(p, "godot/README.md",          GODOT_GAME_README)?;
     println!("  Godot 4 GDScript SDK → godot/");
     println!("    Add godot/ to your project, add NeonDBManager as an Autoload.");
+    println!("  Rust client SDK → client/");
+    println!("    cd client && cargo run --release");
     Ok(())
 }
 
@@ -1233,6 +1247,72 @@ const RM_WORLD_TICK_RS: &str     = include_str!("../templates/rm_world_tick.rs.t
 const RM_WORLD_NPC_RS: &str      = include_str!("../templates/rm_world_npc_spawn.rs.txt");
 const RM_WORLD_CLEANUP_RS: &str  = include_str!("../templates/rm_world_cleanup.rs.txt");
 const RM_WORLD_SCHEMA: &str      = include_str!("../templates/rm_world_schema.toml.txt");
+
+// ── Rust client SDK scaffold ──────────────────────────────────────────────────
+
+fn client_cargo_toml(name: &str) -> String {
+    format!(
+        "[package]\nname = \"{name}-client\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+[dependencies]\nneondb-client = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.4\", package = \"neondb-client\" }}\n\
+tokio         = {{ version = \"1\", features = [\"full\"] }}\n\
+serde_json    = \"1\"\n"
+    )
+}
+
+const CLIENT_MAIN_RS: &str = r#"//! Example Rust client for a NeonDB game server.
+//!
+//! Run the server first:  neondb start
+//! Then in another terminal: cargo run --release
+use neondb_client::{NeonDBClient, ClientOptions};
+
+#[tokio::main]
+async fn main() {
+    let opts = ClientOptions {
+        url: "ws://127.0.0.1:3000".to_string(),
+        api_key: None,
+        call_timeout_ms: 5_000,
+        reconnect: None,
+    };
+
+    let client = NeonDBClient::connect(opts).await
+        .expect("Failed to connect — is the server running? (neondb start)");
+
+    println!("[client] Connected to server");
+
+    // Subscribe to live player updates
+    let (mut rx, _sub_id) = client
+        .subscribe("players")
+        .await
+        .expect("Subscribe failed");
+
+    tokio::spawn(async move {
+        while let Some(diff) = rx.recv().await {
+            println!(
+                "[update] {} {} {} = {:?}",
+                diff.operation, diff.table_name, diff.row_key, diff.row_data
+            );
+        }
+    });
+
+    // Spawn a player
+    let result = client
+        .call("spawn", &serde_json::json!(["rust_player", "lobby_1", "warrior"]))
+        .await
+        .expect("Reducer call failed");
+    println!("[spawn] {:?}", result);
+
+    // Move the player
+    let result = client
+        .call("move_player", &serde_json::json!(["rust_player", 10.0, 20.0]))
+        .await
+        .expect("Reducer call failed");
+    println!("[move]  {:?}", result);
+
+    // Keep running to receive live updates
+    println!("[client] Listening for updates (Ctrl+C to stop)…");
+    tokio::signal::ctrl_c().await.ok();
+}
+"#;
 
 // ── Unity + Godot SDKs ────────────────────────────────────────────────────────
 const UNITY_CLIENT_CS: &str    = include_str!("engine_templates/unity_NeonDBClient.cs");

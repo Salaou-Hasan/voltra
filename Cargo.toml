@@ -1,10 +1,10 @@
 [workspace]
-members  = ["neondb-macros"]
+members  = ["neondb-macros", "neondb-client-rust"]
 resolver = "2"
 
 [package]
 name = "neondb"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 
 [dependencies]

@@ -1908,6 +1908,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "neondb-client"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "env_logger",
+ "flate2",
+ "futures",
+ "log",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tokio-tungstenite",
+ "tungstenite",
+]
+
+[[package]]
 name = "neondb-macros"
 version = "0.1.0"
 dependencies = [
