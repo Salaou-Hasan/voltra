@@ -939,8 +939,9 @@ fn game_cargo_toml(name: &str) -> String {
         String::new()
     };
     format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.5\" }}\n\
+        "[workspace]\n\n\
+[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.6\" }}\n\
 serde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{patch}"
     )
 }
@@ -1297,8 +1298,9 @@ fn client_cargo_toml(name: &str) -> String {
         String::new()
     };
     format!(
-        "[package]\nname = \"{name}-client\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-[dependencies]\nneondb-client = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.5\", package = \"neondb-client\" }}\n\
+        "[workspace]\n\n\
+[package]\nname = \"{name}-client\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+[dependencies]\nneondb-client = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.6\", package = \"neondb-client\" }}\n\
 tokio         = {{ version = \"1\", features = [\"full\"] }}\n\
 serde_json    = \"1\"\n{patch}"
     )
