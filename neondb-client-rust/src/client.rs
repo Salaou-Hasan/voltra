@@ -890,6 +890,20 @@ fn apply_to_base(
         .or_insert_with(HashMap::new);
     if operation == "delete" {
         table.remove(row_key);
+    } else if operation == "patch" {
+        // merge patch fields into existing row
+        if let Some(patch) = row_data {
+            if let Some(patch_obj) = patch.as_object() {
+                let existing = table
+                    .entry(row_key.to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(existing_obj) = existing.as_object_mut() {
+                    for (k, v) in patch_obj {
+                        existing_obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
     } else if let Some(data) = row_data {
         table.insert(row_key.to_string(), data);
     }

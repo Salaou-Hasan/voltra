@@ -160,6 +160,8 @@ pub enum OutboundFrames {
 struct ClientInfo {
     tx: Sender<OutboundFrames>,
     subscriptions: DashMap<String, Subscription>,
+    missed_ticks: std::sync::atomic::AtomicU32,
+    row_cache: DashMap<(String, String), serde_json::Value>,
 }
 
 // ── Encoding helpers ──────────────────────────────────────────────────────────
@@ -226,6 +228,21 @@ fn encode_snapshot_body(
     encode_server(&ServerMessage::SubscriptionBody(body))
 }
 
+/// Compute which fields in `new_val` differ from `old_val`.
+/// Returns None if nothing changed or if either value is not an object.
+fn compute_patch(old_val: &serde_json::Value, new_val: &serde_json::Value) -> Option<serde_json::Value> {
+    let old_obj = old_val.as_object()?;
+    let new_obj = new_val.as_object()?;
+    let mut patch = serde_json::Map::new();
+    for (k, v) in new_obj {
+        if old_obj.get(k) != Some(v) {
+            patch.insert(k.clone(), v.clone());
+        }
+    }
+    if patch.is_empty() { return None; }
+    Some(serde_json::Value::Object(patch))
+}
+
 // ── Manager ───────────────────────────────────────────────────────────────────
 
 pub struct SubscriptionManager {
@@ -259,22 +276,26 @@ impl SubscriptionManager {
 
     /// Enable tick-coalesced delivery and spawn the flush task.
     /// Call once at server startup; `tick_ms` of 0 keeps immediate delivery.
+    /// Uses adaptive rate: fast_ms (default 20Hz) when active, slow_ms (5Hz) after 3 idle ticks.
     pub fn start_tick_flusher(self: &std::sync::Arc<Self>, tick_ms: u64) {
         if tick_ms == 0 {
             return;
         }
         self.tick_enabled.store(true, Ordering::Release);
         let weak = std::sync::Arc::downgrade(self);
+        let fast_ms = tick_ms;
+        let slow_ms = tick_ms * 4; // 5Hz when idle (4× the default 50ms = 200ms)
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_millis(tick_ms.max(5)));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut idle_ticks: u32 = 0;
             loop {
-                interval.tick().await;
+                let sleep_ms = if idle_ticks >= 3 { slow_ms } else { fast_ms };
+                tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
                 let Some(mgr) = weak.upgrade() else { break };
                 if mgr.pending.is_empty() {
+                    idle_ticks = idle_ticks.saturating_add(1);
                     continue;
                 }
+                idle_ticks = 0;
                 let keys: Vec<(String, String)> =
                     mgr.pending.iter().map(|e| e.key().clone()).collect();
                 let mut batch = Vec::with_capacity(keys.len());
@@ -288,6 +309,8 @@ impl SubscriptionManager {
         });
     }
 
+    const SLOW_CONSUMER_EVICT_AFTER: u32 = 3;
+
     pub fn register_client(&self, tx: Sender<OutboundFrames>) -> ClientId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.clients.insert(
@@ -295,6 +318,8 @@ impl SubscriptionManager {
             Arc::new(ClientInfo {
                 tx,
                 subscriptions: DashMap::new(),
+                missed_ticks: std::sync::atomic::AtomicU32::new(0),
+                row_cache: DashMap::new(),
             }),
         );
         id
@@ -683,12 +708,46 @@ fn publish_now(&self, deltas: &[RowDelta]) {
                         let entry = per_client
                             .entry(client_id)
                             .or_insert_with(|| (client.tx.clone(), Vec::new()));
+
+                        // Compute patch for updates when we have a cached row.
+                        let cache_key = (delta.table_name.clone(), delta.row_key.clone());
+                        let (op, row_data) = if delta.operation == "update" {
+                            if let Some(new_data) = &delta.row_data {
+                                if let Some(old_val) = client.row_cache.get(&cache_key) {
+                                    if let Some(patch) = compute_patch(&old_val, new_data) {
+                                        let patch_bytes = rmp_serde::to_vec(&patch).unwrap_or_default();
+                                        let full_bytes = rmp_serde::to_vec(new_data).unwrap_or_default();
+                                        if patch_bytes.len() < full_bytes.len() {
+                                            ("patch".to_string(), Some(patch))
+                                        } else {
+                                            (delta.operation.clone(), delta.row_data.clone())
+                                        }
+                                    } else {
+                                        (delta.operation.clone(), delta.row_data.clone())
+                                    }
+                                } else {
+                                    (delta.operation.clone(), delta.row_data.clone())
+                                }
+                            } else {
+                                (delta.operation.clone(), delta.row_data.clone())
+                            }
+                        } else {
+                            (delta.operation.clone(), delta.row_data.clone())
+                        };
+
+                        // Update row cache.
+                        if op == "delete" {
+                            client.row_cache.remove(&cache_key);
+                        } else if let Some(new_full) = &delta.row_data {
+                            client.row_cache.insert(cache_key, new_full.clone());
+                        }
+
                         entry.1.push(SubscriptionDiff {
                             subscription_id: sub_id.clone(),
                             table_name: delta.table_name.clone(),
                             row_key: delta.row_key.clone(),
-                            operation: delta.operation.clone(),
-                            row_data: delta.row_data.clone(),
+                            operation: op,
+                            row_data,
                         });
                         break; // one subscription match per client per delta
                     }
@@ -699,14 +758,29 @@ fn publish_now(&self, deltas: &[RowDelta]) {
         let mut clients_to_remove: Vec<ClientId> = Vec::new();
         for (client_id, (tx, diffs)) in per_client {
             if let Some(frame) = Self::encode_batch_for_client(&diffs) {
-                if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) =
-                    tx.try_send(OutboundFrames::One(frame))
-                {
-                    log::warn!(
-                        "Subscription send buffer full for client {}, removing",
-                        client_id
-                    );
-                    clients_to_remove.push(client_id);
+                match tx.try_send(OutboundFrames::One(frame)) {
+                    Ok(_) => {
+                        if let Some(c) = self.clients.get(&client_id) {
+                            c.missed_ticks.store(0, Ordering::Relaxed);
+                        }
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        clients_to_remove.push(client_id);
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        let missed = if let Some(c) = self.clients.get(&client_id) {
+                            c.missed_ticks.fetch_add(1, Ordering::Relaxed) + 1
+                        } else {
+                            Self::SLOW_CONSUMER_EVICT_AFTER
+                        };
+                        log::warn!(
+                            "[neondb] slow consumer client {}: {} missed tick(s)",
+                            client_id, missed
+                        );
+                        if missed >= Self::SLOW_CONSUMER_EVICT_AFTER {
+                            clients_to_remove.push(client_id);
+                        }
+                    }
                 }
             }
         }

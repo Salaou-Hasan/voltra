@@ -28,6 +28,8 @@ extends Node
 
 signal connected
 signal disconnected
+## op can be "insert" | "update" | "delete" | "initial_snapshot" | "patch"
+## When op == "patch", data contains only changed fields — merge into your row cache.
 signal row_update(table: String, row_key: String, op: String, data)
 
 var _ws := WebSocketPeer.new()

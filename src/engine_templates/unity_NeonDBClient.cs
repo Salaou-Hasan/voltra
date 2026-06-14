@@ -51,7 +51,10 @@ namespace NeonDB
         public string SubscriptionId;
         public string Table;
         public string RowKey;
-        public string Op;       // "set" | "delete" | "initial_snapshot"
+        // Op values: "insert" | "update" | "delete" | "initial_snapshot" | "patch"
+        // When Op == "patch", Data contains only the changed fields — merge into your
+        // existing row dict instead of replacing it.
+        public string Op;
         public object Data;     // Dictionary<string, object> or null
     }
 
