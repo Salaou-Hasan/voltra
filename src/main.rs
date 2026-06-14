@@ -849,8 +849,8 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
     write_shared_files(&project_path, &project_name, &template_name)?;
 
     match template_name.as_str() {
-        "game/basic"  => scaffold_game_basic(&project_path, &project_name)?,
-        "game/full"   => scaffold_game_full(&project_path, &project_name)?,
+        "game/basic"  => scaffold_game_basic(&project_path, &project_name, "game/basic")?,
+        "game/full"   => scaffold_game_full(&project_path, &project_name, "game/full")?,
         "game/unity"  => scaffold_game_unity(&project_path, &project_name)?,
         "game/godot"  => scaffold_game_godot(&project_path, &project_name)?,
         _ => {
@@ -991,7 +991,7 @@ fn copy_lockfile_if_available(p: &Path) -> Result<()> {
     Ok(())
 }
 
-fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
+fn scaffold_game_basic(p: &Path, name: &str, template: &str) -> Result<()> {
     wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
     wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
@@ -1008,7 +1008,7 @@ fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
     scaffold_all_clients(p, name)?;
     // Chat (lobby + proximity) is built-in to every template
     add_module_files(p, "chat")?;
-    print_success(name, "game/basic", &[
+    print_success(name, template, &[
         ("Cargo.toml",                              "neondb game server (run `neondb start` from this folder)"),
         ("src/reducers/spawn.rs",                   "spawn(player_id, lobby, class)"),
         ("src/reducers/move_player.rs",             "move_player(player_id, x, y)"),
@@ -1040,11 +1040,10 @@ fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn scaffold_game_full(p: &Path, name: &str) -> Result<()> {
-    // Core reducers
-    scaffold_game_basic(p, name)?;
-    // All 9 modules pre-installed
-    add_module_files(p, "chat")?;
+fn scaffold_game_full(p: &Path, name: &str, template: &str) -> Result<()> {
+    // Core reducers (chat is added inside scaffold_game_basic)
+    scaffold_game_basic(p, name, template)?;
+    // All 9 additional modules pre-installed
     add_module_files(p, "inventory")?;
     add_module_files(p, "leaderboard")?;
     add_module_files(p, "matchmaking")?;
@@ -1064,7 +1063,7 @@ fn scaffold_game_full(p: &Path, name: &str) -> Result<()> {
 
 
 fn scaffold_game_unity(p: &Path, name: &str) -> Result<()> {
-    scaffold_game_full(p, name)?;
+    scaffold_game_full(p, name, "game/unity")?;
     wf(p, "unity/NeonDBClient.cs",    UNITY_CLIENT_CS)?;
     wf(p, "unity/NeonDBBehaviour.cs", UNITY_BEHAVIOUR_CS)?;
     wf(p, "unity/NeonDBManager.cs",   UNITY_MANAGER_CS)?;
@@ -1078,7 +1077,7 @@ fn scaffold_game_unity(p: &Path, name: &str) -> Result<()> {
 }
 
 fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
-    scaffold_game_full(p, name)?;
+    scaffold_game_full(p, name, "game/godot")?;
     wf(p, "godot/neondb_client.gd",   GODOT_CLIENT_GD)?;
     wf(p, "godot/NeonDBManager.gd",   GODOT_MANAGER_GD)?;
     wf(p, "godot/README.md",          GODOT_GAME_README)?;
