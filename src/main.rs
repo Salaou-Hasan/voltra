@@ -96,7 +96,7 @@ const MODULES: &[(&str, &str)] = &[
 
 #[derive(Parser, Debug)]
 #[command(name = "neondb")]
-#[command(author, version = "1", about = "NeonDB — self-hosted real-time game backend")]
+#[command(author, version = concat!("v", env!("CARGO_PKG_VERSION")), about = "NeonDB — self-hosted real-time game backend")]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
