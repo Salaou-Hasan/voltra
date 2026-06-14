@@ -152,6 +152,13 @@ pub enum ServerMessage {
     /// Response to a `ClientMessage::SqlQuery`.
     SqlResult(SqlResult),
     Error { message: String },
+    /// One frame per tick carrying all matching row diffs for this client.
+    /// `payload` is a MsgPack-encoded `Vec<SubscriptionDiff>`.
+    /// When `compressed = true`, `payload` is zstd-compressed before MsgPack encoding.
+    BatchUpdate {
+        compressed: bool,
+        payload: Vec<u8>,
+    },
 }
 
 #[cfg(test)]

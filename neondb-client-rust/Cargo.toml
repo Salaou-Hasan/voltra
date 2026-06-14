@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "neondb-client"
 version = "0.1.0"
@@ -17,6 +19,7 @@ bytes = "1.5"
 thiserror = "1.0"
 log = "0.4"
 dashmap = "5.5"
+zstd = "0.12"
 
 [dev-dependencies]
 tokio-test = "0.4"

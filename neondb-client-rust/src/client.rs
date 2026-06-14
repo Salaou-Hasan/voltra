@@ -825,6 +825,50 @@ fn dispatch_message(
         ServerMessage::Error { message } => {
             log::warn!("[neondb-client] Server error: {}", message);
         }
+
+        ServerMessage::BatchUpdate { compressed, payload } => {
+            let raw = if compressed {
+                match zstd::decode_all(payload.as_slice()) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        log::warn!("[neondb-client] BatchUpdate zstd decompress failed: {}", e);
+                        return;
+                    }
+                }
+            } else {
+                payload
+            };
+
+            let diffs: Vec<crate::types::SubscriptionDiffWire> =
+                match rmp_serde::from_slice(&raw) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        log::warn!("[neondb-client] BatchUpdate decode failed: {}", e);
+                        return;
+                    }
+                };
+
+            for diff in diffs {
+                let row_diff = RowDiff {
+                    subscription_id: diff.subscription_id.clone(),
+                    table_name: diff.table_name.clone(),
+                    row_key: diff.row_key.clone(),
+                    operation: diff.operation.clone(),
+                    row_data: diff.row_data.clone(),
+                };
+                apply_to_base(
+                    server_base_cache,
+                    &diff.table_name,
+                    &diff.row_key,
+                    &diff.operation,
+                    diff.row_data,
+                );
+                recompute_and_apply(server_base_cache, optimistic_layers, cache);
+                if let Some((_, tx)) = subscriptions.get(&diff.subscription_id) {
+                    let _ = tx.send(row_diff);
+                }
+            }
+        }
     }
 }
 

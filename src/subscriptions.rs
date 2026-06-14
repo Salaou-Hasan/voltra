@@ -283,7 +283,7 @@ impl SubscriptionManager {
                         batch.push(d);
                     }
                 }
-                mgr.publish_now(&batch);
+                mgr.publish_batch(&batch);
             }
         });
     }
@@ -508,7 +508,24 @@ impl SubscriptionManager {
         self.publish_now(deltas);
     }
 
-    fn publish_now(&self, deltas: &[RowDelta]) {
+    // ── Batch fan-out (tick path) ─────────────────────────────────────────────────
+// Threshold above which the batch payload is zstd-compressed.
+// Below this (small ticks, few rows) compression overhead isn't worth it.
+const BATCH_COMPRESS_THRESHOLD: usize = 512;
+
+fn encode_batch_for_client(diffs: &[SubscriptionDiff]) -> Option<Arc<Bytes>> {
+    let raw = rmp_serde::to_vec(diffs).ok()?;
+    let (compressed, payload) = if raw.len() >= Self::BATCH_COMPRESS_THRESHOLD {
+        let c = zstd::encode_all(raw.as_slice(), 1).ok()?;
+        (true, c)
+    } else {
+        (false, raw)
+    };
+    let msg = ServerMessage::BatchUpdate { compressed, payload };
+    encode_server(&msg)
+}
+
+fn publish_now(&self, deltas: &[RowDelta]) {
         if self.clients.is_empty() || deltas.is_empty() {
             return;
         }
@@ -622,6 +639,74 @@ impl SubscriptionManager {
                     self.unregister_client(cid);
                 }
             }
+        }
+    }
+
+    /// Tick-path fan-out: collect ALL matching diffs for the whole batch,
+    /// group by client, encode ONE compressed frame per client, send it.
+    /// This replaces calling `publish_now` from the tick flusher.
+    fn publish_batch(&self, deltas: &[RowDelta]) {
+        if self.clients.is_empty() || deltas.is_empty() {
+            return;
+        }
+
+        // Accumulate per-client diffs in one pass over all deltas.
+        let mut per_client: HashMap<ClientId, (Sender<OutboundFrames>, Vec<SubscriptionDiff>)> =
+            HashMap::new();
+
+        for delta in deltas {
+            let table_entry = match self.table_index.get(&delta.table_name) {
+                Some(e) => e,
+                None => continue,
+            };
+
+            for client_entry in table_entry.iter() {
+                let client_id = *client_entry.key();
+                let sub_ids = client_entry.value();
+
+                let client = match self.clients.get(&client_id) {
+                    Some(c) => c,
+                    None => continue,
+                };
+
+                for sub_id in sub_ids.iter() {
+                    let sub = match client.subscriptions.get(sub_id) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    if sub.filter.matches(delta) {
+                        let entry = per_client
+                            .entry(client_id)
+                            .or_insert_with(|| (client.tx.clone(), Vec::new()));
+                        entry.1.push(SubscriptionDiff {
+                            subscription_id: sub_id.clone(),
+                            table_name: delta.table_name.clone(),
+                            row_key: delta.row_key.clone(),
+                            operation: delta.operation.clone(),
+                            row_data: delta.row_data.clone(),
+                        });
+                        break; // one subscription match per client per delta
+                    }
+                }
+            }
+        }
+
+        let mut clients_to_remove: Vec<ClientId> = Vec::new();
+        for (client_id, (tx, diffs)) in per_client {
+            if let Some(frame) = Self::encode_batch_for_client(&diffs) {
+                if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) =
+                    tx.try_send(OutboundFrames::One(frame))
+                {
+                    log::warn!(
+                        "Subscription send buffer full for client {}, removing",
+                        client_id
+                    );
+                    clients_to_remove.push(client_id);
+                }
+            }
+        }
+        for cid in clients_to_remove {
+            self.unregister_client(cid);
         }
     }
 
