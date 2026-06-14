@@ -2,18 +2,26 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-const RELEASES_REPO: &str = "Salaou-Hasan/neondb-releases";
+const RAW_BASE: &str = "https://raw.githubusercontent.com/Salaou-Hasan/neondb-releases/main";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// All managed binaries — updated together when a new release is available.
-const MANAGED_BINS: &[&str] = &["neondb", "neondb-sim", "neondb-bench", "neondb-soak"];
+fn platform_dir() -> &'static str {
+    if cfg!(target_os = "windows") { "windows" }
+    else if cfg!(target_os = "macos") { "macos" }
+    else { "linux" }
+}
 
 fn asset_name(bin: &str) -> String {
-    let target = std::env::consts::OS;
-    let arch   = std::env::consts::ARCH;
-    let ext    = if cfg!(windows) { ".exe" } else { "" };
-    // e.g. neondb-x86_64-windows.exe
-    format!("{bin}-{arch}-{target}{ext}")
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        format!("{bin}-macos-arm64{ext}")
+    } else if cfg!(target_os = "macos") {
+        format!("{bin}-macos-x86_64{ext}")
+    } else if cfg!(target_os = "linux") {
+        format!("{bin}-linux-x86_64{ext}")
+    } else {
+        format!("{bin}-windows-x86_64{ext}")
+    }
 }
 
 fn install_dir() -> PathBuf {
@@ -23,15 +31,16 @@ fn install_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Returns the latest release tag from the releases repo, or None on error.
-fn latest_tag() -> Option<String> {
-    let url = format!("https://api.github.com/repos/{RELEASES_REPO}/releases/latest");
+/// Reads version.txt from the releases repo — single line like "1.0.12"
+fn latest_version() -> Option<String> {
+    let url = format!("{RAW_BASE}/version.txt");
     let resp = ureq::get(&url)
-        .set("User-Agent", &format!("neondb/{CURRENT_VERSION}"))
+        .set("User-Agent", &format!("neondb/v{CURRENT_VERSION}"))
         .call()
         .ok()?;
-    let json: serde_json::Value = resp.into_json().ok()?;
-    json["tag_name"].as_str().map(|s| s.trim_start_matches('v').to_string())
+    let text = resp.into_string().ok()?;
+    let v = text.trim().trim_start_matches('v').to_string();
+    if v.is_empty() { None } else { Some(v) }
 }
 
 fn version_newer(latest: &str) -> bool {
@@ -44,17 +53,17 @@ fn version_newer(latest: &str) -> bool {
     parse(latest) > parse(CURRENT_VERSION)
 }
 
-/// Download a single binary from the release and atomically replace it.
-fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
-    let asset  = asset_name(bin);
-    let url    = format!("https://github.com/{RELEASES_REPO}/releases/download/v{tag}/{asset}");
-    let dest   = install_dir().join(if cfg!(windows) { format!("{bin}.exe") } else { bin.to_string() });
-    let tmp    = dest.with_extension("tmp");
+fn download_and_replace(bin: &str) -> crate::error::Result<()> {
+    let asset = asset_name(bin);
+    let dir   = platform_dir();
+    let url   = format!("{RAW_BASE}/{dir}/{asset}");
+    let dest  = install_dir().join(if cfg!(windows) { format!("{bin}.exe") } else { bin.to_string() });
+    let tmp   = dest.with_extension("tmp");
 
     println!("  Downloading {asset} …");
 
     let resp = ureq::get(&url)
-        .set("User-Agent", &format!("neondb/{CURRENT_VERSION}"))
+        .set("User-Agent", &format!("neondb/v{CURRENT_VERSION}"))
         .call()
         .map_err(|e| crate::error::NeonDBError::internal(format!("download {asset}: {e}")))?;
 
@@ -68,7 +77,6 @@ fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
     f.write_all(&bytes)
         .map_err(|e| crate::error::NeonDBError::internal(format!("write tmp: {e}")))?;
 
-    // Make executable on Unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -76,7 +84,6 @@ fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
             .map_err(|e| crate::error::NeonDBError::internal(format!("chmod: {e}")))?;
     }
 
-    // Atomic replace: on Windows rename over existing file works
     fs::rename(&tmp, &dest)
         .map_err(|e| crate::error::NeonDBError::internal(format!("replace {}: {e}", dest.display())))?;
 
@@ -88,57 +95,40 @@ pub fn cmd_update(check_only: bool) -> crate::error::Result<()> {
     print!("Checking for updates … ");
     let _ = std::io::stdout().flush();
 
-    let tag = match latest_tag() {
-        Some(t) => t,
+    let latest = match latest_version() {
+        Some(v) => v,
         None => {
             println!("could not reach GitHub — check your connection.");
             return Ok(());
         }
     };
 
-    if !version_newer(&tag) {
+    if !version_newer(&latest) {
         println!("already up to date (v{CURRENT_VERSION}).");
         return Ok(());
     }
 
-    println!("v{CURRENT_VERSION} → v{tag} available!");
+    println!("v{CURRENT_VERSION} → v{latest} available!");
 
     if check_only {
         println!("  Run `neondb update` to install.");
         return Ok(());
     }
 
-    println!("Installing v{tag} …");
-    let dir = install_dir();
-    let mut ok = 0usize;
-    let mut skipped = 0usize;
+    println!("Installing v{latest} …");
 
-    for &bin in MANAGED_BINS {
-        let bin_path = dir.join(if cfg!(windows) { format!("{bin}.exe") } else { bin.to_string() });
-        if !bin_path.exists() {
-            println!("  Skipping {bin} (not found in {})", dir.display());
-            skipped += 1;
-            continue;
-        }
-        match download_and_replace(bin, &tag) {
-            Ok(()) => ok += 1,
-            Err(e) => eprintln!("  ✗ {bin}: {e}"),
-        }
+    match download_and_replace("neondb") {
+        Ok(()) => println!("\n  Done. Restart any running servers to pick up the new version."),
+        Err(e) => eprintln!("  ✗ neondb: {e}"),
     }
 
-    println!();
-    println!("  Updated {ok}/{} binaries.", ok + skipped);
-    if ok > 0 {
-        println!("  Restart any running servers to pick up the new version.");
-    }
     Ok(())
 }
 
 pub fn check_and_hint() {
-    // Lightweight background version hint — only prints one line, never blocks startup.
-    if let Some(tag) = latest_tag() {
-        if version_newer(&tag) {
-            eprintln!("[neondb] Update available: v{CURRENT_VERSION} → v{tag}  (run `neondb update`)");
+    if let Some(v) = latest_version() {
+        if version_newer(&v) {
+            eprintln!("[neondb] Update available: v{CURRENT_VERSION} → v{v}  (run `neondb update`)");
         }
     }
 }
