@@ -53,8 +53,28 @@ type = "String"
 required = true
 
 [[table.columns]]
+name = "sender_name"
+type = "String"
+required = true
+
+[[table.columns]]
 name = "text"
 type = "String"
+required = true
+
+[[table.columns]]
+name = "chat_type"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "x"
+type = "f64"
+required = true
+
+[[table.columns]]
+name = "z"
+type = "f64"
 required = true
 
 [[table.columns]]

@@ -869,8 +869,8 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
 fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -> Result<()> {
     let scheduler_note = match template {
         "game/full" =>
-            "\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"session_cleanup\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"mm_match\"\ninterval_ms = 5000\n",
-        _ => "\n# Add scheduled reducers here after running `neondb add world` or `neondb add matchmaking`\n# [[scheduler]]\n# reducer = \"world_tick\"\n# interval_ms = 1000\n",
+            "\n[[scheduler]]\nreducer = \"cleanup_chat\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"session_cleanup\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"mm_match\"\ninterval_ms = 5000\n",
+        _ => "\n[[scheduler]]\nreducer = \"cleanup_chat\"\ninterval_ms = 60000\n\n# Add more scheduled reducers here after running `neondb add world` or `neondb add matchmaking`\n# [[scheduler]]\n# reducer = \"world_tick\"\n# interval_ms = 1000\n",
     };
 
     let permissions_example =
@@ -1006,18 +1006,23 @@ fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "SCALING.md",                  SCALING_MD)?;
     wf(p, "README.md", &format!("# {name}\n\nNeonDB embedded game server.\n\nSee SCALING.md for the scaling guide.\n"))?;
     scaffold_all_clients(p, name)?;
+    // Chat (lobby + proximity) is built-in to every template
+    add_module_files(p, "chat")?;
     print_success(name, "game/basic", &[
-        ("Cargo.toml",                        "neondb game server (run `neondb start` from this folder)"),
-        ("src/reducers/spawn.rs",             "spawn(player_id, lobby, class)"),
-        ("src/reducers/move_player.rs",       "move_player(player_id, x, y)"),
-        ("src/reducers/despawn.rs",           "despawn(player_id)"),
-        ("src/reducers/damage.rs",            "damage(target_id, amount)"),
-        ("src/reducers/heal.rs",              "heal(target_id, amount)"),
-        ("schema.toml",                       "players + sessions tables"),
-        ("clients/rust/src/main.rs",          "Rust client (Bevy / CLI)"),
-        ("clients/unity/NeonDBClient.cs",     "Unity C# client"),
-        ("clients/godot/neondb_client.gd",   "Godot 4 GDScript client"),
-        ("clients/PROTOCOL.md",              "wire protocol — implement your own client"),
+        ("Cargo.toml",                              "neondb game server (run `neondb start` from this folder)"),
+        ("src/reducers/spawn.rs",                   "spawn(player_id, lobby, class)"),
+        ("src/reducers/move_player.rs",             "move_player(player_id, x, y)"),
+        ("src/reducers/despawn.rs",                 "despawn(player_id)"),
+        ("src/reducers/damage.rs",                  "damage(target_id, amount)"),
+        ("src/reducers/heal.rs",                    "heal(target_id, amount)"),
+        ("src/reducers/chat/send.rs",               "send_message(room, player_id, name, text, type, x, z)"),
+        ("src/reducers/chat/join.rs",               "join_room(room, player_id)"),
+        ("src/reducers/chat/leave.rs",              "leave_room(room, player_id)"),
+        ("schema.toml",                             "players + sessions + chat tables"),
+        ("clients/rust/src/main.rs",                "Rust client (Bevy / CLI)"),
+        ("clients/unity/NeonDBClient.cs",           "Unity C# client"),
+        ("clients/godot/neondb_client.gd",         "Godot 4 GDScript client"),
+        ("clients/PROTOCOL.md",                    "wire protocol — implement your own client"),
     ]);
     println!("  Next steps:");
     println!("    cd {name}");
@@ -1027,10 +1032,10 @@ fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
     println!("    # Unity: copy clients/unity/ into Assets/Scripts/NeonDB/");
     println!("    # Godot: add clients/godot/ files, set neondb_client.gd as Autoload");
     println!();
-    println!("  Add systems:");
+    println!("  Chat is built-in — call send_message(room, player_id, name, text, \"lobby\"|\"proximity\", x, z)");
+    println!("  Add more systems:");
     println!("    neondb add combat    # attack, respawn, abilities");
     println!("    neondb add inventory # items, equip slots");
-    println!("    neondb add chat      # rooms, messages");
     println!();
     Ok(())
 }
@@ -1114,10 +1119,11 @@ fn add_module_files(p: &Path, module: &str) -> Result<()> {
     register_module_in_mod_rs(p, module)?;
     match module {
         "chat" => {
-            wf(p, "src/reducers/chat/mod.rs",   RM_CHAT_MOD_RS)?;
-            wf(p, "src/reducers/chat/send.rs",   RM_CHAT_SEND_RS)?;
-            wf(p, "src/reducers/chat/join.rs",   RM_CHAT_JOIN_RS)?;
-            wf(p, "src/reducers/chat/leave.rs",  RM_CHAT_LEAVE_RS)?;
+            wf(p, "src/reducers/chat/mod.rs",     RM_CHAT_MOD_RS)?;
+            wf(p, "src/reducers/chat/send.rs",    RM_CHAT_SEND_RS)?;
+            wf(p, "src/reducers/chat/join.rs",    RM_CHAT_JOIN_RS)?;
+            wf(p, "src/reducers/chat/leave.rs",   RM_CHAT_LEAVE_RS)?;
+            wf(p, "src/reducers/chat/cleanup.rs", RM_CHAT_CLEANUP_RS)?;
             append_schema(p, RM_CHAT_SCHEMA)?;
         }
         "inventory" => {
@@ -1276,6 +1282,7 @@ const RM_CHAT_MOD_RS: &str       = include_str!("../templates/rm_chat_mod.rs.txt
 const RM_CHAT_SEND_RS: &str      = include_str!("../templates/rm_chat_send.rs.txt");
 const RM_CHAT_JOIN_RS: &str      = include_str!("../templates/rm_chat_join.rs.txt");
 const RM_CHAT_LEAVE_RS: &str     = include_str!("../templates/rm_chat_leave.rs.txt");
+const RM_CHAT_CLEANUP_RS: &str   = include_str!("../templates/rm_chat_cleanup.rs.txt");
 const RM_CHAT_SCHEMA: &str       = include_str!("../templates/rm_chat_schema.toml.txt");
 const RM_INV_MOD_RS: &str        = include_str!("../templates/rm_inventory_mod.rs.txt");
 const RM_INV_ADD_RS: &str        = include_str!("../templates/rm_inventory_add.rs.txt");

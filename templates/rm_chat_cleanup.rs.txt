@@ -1,0 +1,24 @@
+use neondb::{reducer, ret};
+
+/// Scheduled: deletes chat messages older than 5 minutes.
+/// Wire up in neondb.toml:
+///   [[scheduler]]
+///   reducer = "cleanup_chat"
+///   interval_ms = 60000
+#[reducer]
+fn cleanup_chat(ctx: Ctx) {
+    let five_min_ns: i64 = 5 * 60 * 1_000_000_000;
+    let cutoff = ctx.timestamp() as i64 - five_min_ns;
+
+    let messages = ctx.tables.list_rows_with_keys("messages").unwrap_or_default();
+    let mut deleted = 0u32;
+    for (key, row) in messages {
+        let sent_at = row["sent_at"].as_i64().unwrap_or(i64::MAX);
+        if sent_at < cutoff {
+            let _ = ctx.delete("messages", &key);
+            deleted += 1;
+        }
+    }
+
+    ret!({ "ok": true, "deleted": deleted })
+}

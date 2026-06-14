@@ -1,28 +1,49 @@
 use neondb::{reducer, ret};
 use serde_json::json;
 
+/// Send a chat message.
+/// chat_type: "lobby" (everyone in the room) or "proximity" (client filters by x/z distance).
+/// x, z: world position of the sender — used for proximity filtering on the client side.
 #[reducer]
-fn send_message(ctx: Ctx, room: String, player_id: String, text: String) {
-    // Read or create the room row
-    let room_row = ctx.get("rooms", &room)?;
-    if room_row.is_none() {
+fn send_message(
+    ctx: Ctx,
+    room: String,
+    player_id: String,
+    sender_name: String,
+    text: String,
+    chat_type: String,
+    x: f64,
+    z: f64,
+) {
+    if text.len() > 256 {
+        ret!({ "ok": false, "error": "Message too long (max 256 chars)" })
+    }
+    if chat_type != "lobby" && chat_type != "proximity" {
+        ret!({ "ok": false, "error": "chat_type must be 'lobby' or 'proximity'" })
+    }
+
+    // Ensure room row exists
+    if ctx.get("rooms", &room)?.is_none() {
         ctx.set("rooms", &room, json!({
             "room": room,
             "member_count": 0,
-            "created_at": ctx.timestamp()
+            "created_at": ctx.timestamp() as i64
         }))?;
     }
 
-    // Write the message keyed by room:player_id:timestamp
-    let ts = ctx.timestamp();
+    let ts = ctx.timestamp() as i64;
     let msg_key = format!("{}:{}:{}", room, player_id, ts);
     ctx.set("messages", &msg_key, json!({
-        "key": msg_key,
-        "room": room,
-        "player_id": player_id,
-        "text": text,
-        "sent_at": ts
+        "key":         msg_key,
+        "room":        room,
+        "player_id":   player_id,
+        "sender_name": sender_name,
+        "text":        text,
+        "chat_type":   chat_type,
+        "x":           x,
+        "z":           z,
+        "sent_at":     ts
     }))?;
 
-    ret!({ "ok": true })
+    ret!({ "ok": true, "key": msg_key })
 }
