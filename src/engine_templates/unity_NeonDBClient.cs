@@ -17,6 +17,9 @@
 //   Response     → [call_id, success, result_bin|nil, error|nil]  (bare array)
 //                  or { "ReducerResponse": [...] }
 //   Diff         → { "SubscriptionDiff": [sub_id, table, key, op, data|nil] }
+//   Batch        → { "BatchUpdate": [compressed_bool, payload_bin] }
+//                  payload is MsgPack Vec<[sub_id, table, key, op, data|nil]>
+//                  gzip-compressed when compressed_bool = true
 //
 // Works in the Editor and standalone players (uses System.Net.WebSockets).
 // For WebGL builds you need a JS WebSocket bridge — see README.
@@ -26,6 +29,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -227,6 +231,51 @@ namespace NeonDB
                                 if (diff.SubscriptionId != null &&
                                     _subs.TryGetValue(diff.SubscriptionId, out var cb))
                                     MainThreadQueue.Enqueue(() => cb(diff));
+                            }
+                            break;
+
+                        case "BatchUpdate":
+                            // fields = [compressed_bool, payload_bin]
+                            if (fields.Count >= 2 && fields[1] is byte[] batchPayload)
+                            {
+                                bool isCompressed = fields[0] is bool bc && bc;
+                                byte[] batchRaw;
+                                if (isCompressed)
+                                {
+                                    using var ms = new MemoryStream(batchPayload);
+                                    using var gz = new GZipStream(ms, CompressionMode.Decompress);
+                                    using var outMs = new MemoryStream();
+                                    gz.CopyTo(outMs);
+                                    batchRaw = outMs.ToArray();
+                                }
+                                else
+                                {
+                                    batchRaw = batchPayload;
+                                }
+                                // payload is MsgPack array of diffs: [[sub_id, table, key, op, data?], ...]
+                                if (MsgPack.Decode(batchRaw) is List<object> diffList)
+                                {
+                                    foreach (var item in diffList)
+                                    {
+                                        if (item is List<object> df && df.Count >= 4)
+                                        {
+                                            var diff = new RowDiff
+                                            {
+                                                SubscriptionId = df[0] as string,
+                                                Table          = df[1] as string,
+                                                RowKey         = df[2] as string,
+                                                Op             = df[3] as string,
+                                                Data           = df.Count > 4 ? df[4] : null,
+                                            };
+                                            if (diff.SubscriptionId != null &&
+                                                _subs.TryGetValue(diff.SubscriptionId, out var cb2))
+                                            {
+                                                var captured = diff;
+                                                MainThreadQueue.Enqueue(() => cb2(captured));
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             break;
                     }

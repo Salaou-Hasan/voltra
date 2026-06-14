@@ -925,7 +925,7 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
 /// Generate a Cargo.toml that embeds the NeonDB server as a library.
 fn game_cargo_toml(name: &str) -> String {
     format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.2\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.3\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
     )
 }
 

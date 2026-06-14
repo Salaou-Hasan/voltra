@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "neondb"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 
 [dependencies]
@@ -53,6 +53,7 @@ sqlparser     = "0.45"                                     # PostgreSQL-dialect 
 inventory    = "0.3"
 neondb-macros = { path = "neondb-macros" }
 
+flate2 = "1.0"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 ureq = { version = "2.9", features = ["json"] }
 tokio-util = { version = "0.7", features = ["rt"] }

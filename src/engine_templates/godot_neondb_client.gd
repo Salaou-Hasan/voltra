@@ -20,6 +20,9 @@
 #   Subscribe    → { "Subscribe":   [sub_id, query] }
 #   Response     → [call_id, success, result_bin|nil, error|nil]
 #   Diff         → { "SubscriptionDiff": [sub_id, table, key, op, data|nil] }
+#   Batch        → { "BatchUpdate": [compressed_bool, payload_bin] }
+#                  payload is MsgPack [[sub_id, table, key, op, data|nil], ...]
+#                  gzip-compressed when compressed_bool = true
 # ==============================================================================
 extends Node
 
@@ -137,6 +140,21 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 						row_update.emit(str(fields[1]), str(fields[2]), str(fields[3]), data)
 				"ReducerResponse":
 					_handle_frame(MsgPack.pack(fields))
+				"BatchUpdate":
+					# fields = [compressed_bool, payload_bytes]
+					if fields.size() >= 2 and fields[1] is PackedByteArray:
+						var batch_raw: PackedByteArray = fields[1]
+						if fields[0] == true:
+							# gzip decompress (FileAccess.COMPRESSION_GZIP = 3)
+							batch_raw = batch_raw.decompress_dynamic(-1, 3)
+						if batch_raw == null or batch_raw.size() == 0:
+							return
+						var diffs = MsgPack.unpack(batch_raw)
+						if diffs is Array:
+							for df in diffs:
+								if df is Array and df.size() >= 4:
+									var d = df[4] if df.size() > 4 else null
+									row_update.emit(str(df[1]), str(df[2]), str(df[3]), d)
 
 # ==============================================================================
 # Minimal MessagePack (the subset NeonDB speaks)

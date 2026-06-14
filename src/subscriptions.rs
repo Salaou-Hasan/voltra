@@ -516,7 +516,12 @@ const BATCH_COMPRESS_THRESHOLD: usize = 512;
 fn encode_batch_for_client(diffs: &[SubscriptionDiff]) -> Option<Arc<Bytes>> {
     let raw = rmp_serde::to_vec(diffs).ok()?;
     let (compressed, payload) = if raw.len() >= Self::BATCH_COMPRESS_THRESHOLD {
-        let c = zstd::encode_all(raw.as_slice(), 1).ok()?;
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
+        enc.write_all(&raw).ok()?;
+        let c = enc.finish().ok()?;
         (true, c)
     } else {
         (false, raw)

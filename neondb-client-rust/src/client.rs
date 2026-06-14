@@ -828,10 +828,14 @@ fn dispatch_message(
 
         ServerMessage::BatchUpdate { compressed, payload } => {
             let raw = if compressed {
-                match zstd::decode_all(payload.as_slice()) {
-                    Ok(d) => d,
+                use flate2::read::GzDecoder;
+                use std::io::Read;
+                let mut dec = GzDecoder::new(payload.as_slice());
+                let mut out = Vec::new();
+                match dec.read_to_end(&mut out) {
+                    Ok(_) => out,
                     Err(e) => {
-                        log::warn!("[neondb-client] BatchUpdate zstd decompress failed: {}", e);
+                        log::warn!("[neondb-client] BatchUpdate gzip decompress failed: {}", e);
                         return;
                     }
                 }
