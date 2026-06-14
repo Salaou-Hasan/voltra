@@ -922,10 +922,26 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
 
 // ── New game-focused scaffold functions ───────────────────────────────────────
 
+/// Path to the NeonDB source on the machine that compiled this binary.
+/// Used to add a [patch] section so scaffolded projects build offline.
+const NEONDB_SOURCE_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
 /// Generate a Cargo.toml that embeds the NeonDB server as a library.
+/// Adds a [patch] section pointing to the local NeonDB source so that
+/// `cargo build` in the scaffolded project never needs a network connection.
 fn game_cargo_toml(name: &str) -> String {
+    let patch = if std::path::Path::new(NEONDB_SOURCE_DIR).exists() {
+        format!(
+            "\n[patch.\"https://github.com/Salaou-Hasan/NeonDB\"]\nneondb = {{ path = \"{}\" }}\n",
+            NEONDB_SOURCE_DIR.replace('\\', "/")
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.5\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.5\" }}\n\
+serde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{patch}"
     )
 }
 
@@ -1272,11 +1288,19 @@ const RM_WORLD_SCHEMA: &str      = include_str!("../templates/rm_world_schema.to
 // ── Rust client SDK scaffold ──────────────────────────────────────────────────
 
 fn client_cargo_toml(name: &str) -> String {
+    let patch = if std::path::Path::new(NEONDB_SOURCE_DIR).exists() {
+        format!(
+            "\n[patch.\"https://github.com/Salaou-Hasan/NeonDB\"]\nneondb-client = {{ path = \"{}/neondb-client-rust\", package = \"neondb-client\" }}\n",
+            NEONDB_SOURCE_DIR.replace('\\', "/")
+        )
+    } else {
+        String::new()
+    };
     format!(
         "[package]\nname = \"{name}-client\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
 [dependencies]\nneondb-client = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.5\", package = \"neondb-client\" }}\n\
 tokio         = {{ version = \"1\", features = [\"full\"] }}\n\
-serde_json    = \"1\"\n"
+serde_json    = \"1\"\n{patch}"
     )
 }
 
