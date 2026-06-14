@@ -257,7 +257,10 @@ pre.result {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
         Operations</button>
     </nav>
-    <div id="conn-status"><span id="conn-dot"></span><span id="conn-text">connecting…</span></div>
+    <div id="conn-status" style="flex-direction:column;align-items:flex-start;gap:7px">
+      <div style="display:flex;align-items:center;gap:8px"><span id="conn-dot"></span><span id="conn-text">connecting…</span></div>
+      <div id="cluster-badge" style="display:flex;align-items:center;gap:7px"><span class="muted">cluster:</span><span id="cluster-mini" class="badge blue">checking…</span></div>
+    </div>
   </aside>
 
   <main>
@@ -299,11 +302,16 @@ pre.result {
           <button class="btn" onclick="openRowEditor(null)">+ Add row</button>
           <span class="muted toolbar-note" id="row-count"></span>
         </div>
+        <div class="row-flex" style="margin-bottom:10px">
+          <span class="muted">View</span>
+          <button class="btn secondary" id="view-grid" onclick="setRowView('grid')" style="padding:5px 12px">⊞ Grid</button>
+          <button class="btn secondary" id="view-json" onclick="setRowView('json')" style="padding:5px 12px">{} JSON</button>
+        </div>
         <div class="tbl-wrap" style="overflow-x:auto">
-        <table id="rows-table">
-          <thead><tr><th style="width:190px">Key</th><th>Data</th><th style="width:96px"></th></tr></thead>
-          <tbody id="rows-body"><tr><td colspan="3" class="empty">Select a table to view rows</td></tr></tbody>
-        </table>
+          <table id="rows-table">
+            <thead id="rows-head"></thead>
+            <tbody id="rows-body"><tr><td class="empty">Select a table to view rows</td></tr></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -382,6 +390,15 @@ pre.result {
     </div>
 
     <div class="panel" style="margin-top:18px">
+      <div class="row-flex" style="justify-content:space-between">
+        <h3 style="margin:0">Cluster topology</h3>
+        <button class="btn secondary" onclick="loadCluster()" style="padding:5px 12px">↻ Refresh</button>
+      </div>
+      <div id="cluster-summary" style="margin:12px 0">—</div>
+      <div id="cluster-peers"></div>
+    </div>
+
+    <div class="panel" style="margin-top:18px">
       <h3 style="margin-top:0">Apply migration</h3>
       <div class="muted" style="margin-bottom:8px">Paste a migration TOML (same format as <code>migrations/*.toml</code>)</div>
       <input type="text" id="mig-name" placeholder="002_add_field.toml" style="width:300px;margin-bottom:8px">
@@ -423,7 +440,7 @@ const C = { accent:"#3ecf8e", blue:"#4493f8", purple:"#b083f0", amber:"#f5a623",
 // ═══════════ State ═══════════
 const S = {
   page: "overview",
-  tables: [], selTable: null, rows: [],
+  tables: [], selTable: null, rows: [], rowView: localStorage.getItem("ndb_row_view") || "grid",
   reducers: [], selReducer: null,
   hist: { tps: [], mem: [], conn: [], queue: [] },
   lastCalls: null, lastErrors: 0, lastT: null,
@@ -466,7 +483,7 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   if (S.page === "tables") loadTables();
   if (S.page === "reducers") loadReducers();
   if (S.page === "schema") loadSchema();
-  if (S.page === "ops") { loadRepl(); loadServerInfo(); }
+  if (S.page === "ops") { loadRepl(); loadServerInfo(); loadCluster(); }
 });
 
 // ═══════════ Overview / polling ═══════════
@@ -587,16 +604,52 @@ async function selectTable(name) {
     renderRows();
   } catch (e) { document.getElementById("rows-body").innerHTML = `<tr><td colspan=3 class="err-text">${esc(e.message)}</td></tr>`; }
 }
+function setRowView(v) { S.rowView = v; localStorage.setItem("ndb_row_view", v); renderRows(); }
+function cellVal(v) {
+  if (v === null || v === undefined) return `<span class="muted">∅</span>`;
+  if (typeof v === "boolean") return `<span class="badge ${v?'green':'red'}">${v}</span>`;
+  if (typeof v === "object") { const s = JSON.stringify(v); return `<span title="${esc(s)}">${esc(s.length>60?s.slice(0,60)+"…":s)}</span>`; }
+  return esc(v);
+}
 function renderRows() {
+  const head = document.getElementById("rows-head");
+  const body = document.getElementById("rows-body");
   const f = document.getElementById("row-filter").value.toLowerCase();
   const rows = S.rows.filter(r => !f || r.row_key.toLowerCase().includes(f) || JSON.stringify(r.data).toLowerCase().includes(f));
   document.getElementById("row-count").textContent = S.selTable ? `${rows.length} / ${S.rows.length} rows` : "";
-  document.getElementById("rows-body").innerHTML = rows.slice(0, 500).map(r => `
-    <tr><td style="color:var(--text)">${esc(r.row_key)}</td>
-        <td class="json-cell" title="${esc(JSON.stringify(r.data))}">${esc(JSON.stringify(r.data))}</td>
-        <td><a class="clickable" onclick='openRowEditor(${JSON.stringify(r.row_key)})'>edit</a> ·
-            <a class="clickable err-text" onclick='deleteRow(${JSON.stringify(r.row_key)})'>del</a></td></tr>`).join("")
-    || `<tr><td colspan=3 class="empty">${S.selTable ? "No rows" : "Select a table"}</td></tr>`;
+  // Toggle button active state
+  document.getElementById("view-grid").classList.toggle("secondary", S.rowView !== "grid");
+  document.getElementById("view-json").classList.toggle("secondary", S.rowView !== "json");
+
+  if (!S.selTable) { head.innerHTML = ""; body.innerHTML = `<tr><td class="empty">Select a table</td></tr>`; return; }
+  if (!rows.length) { head.innerHTML = ""; body.innerHTML = `<tr><td class="empty">No rows</td></tr>`; return; }
+
+  if (S.rowView === "json") {
+    head.innerHTML = `<tr><th style="width:190px">Key</th><th>Data</th><th style="width:96px"></th></tr>`;
+    body.innerHTML = rows.slice(0, 500).map(r => `
+      <tr><td style="color:var(--text)">${esc(r.row_key)}</td>
+          <td class="json-cell" title="${esc(JSON.stringify(r.data))}">${esc(JSON.stringify(r.data))}</td>
+          <td>${rowActions(r.row_key)}</td></tr>`).join("");
+    return;
+  }
+
+  // ── Grid view: one column per field (union of keys, first-seen order) ──
+  const cols = [];
+  const seen = new Set();
+  for (const r of rows) {
+    if (r.data && typeof r.data === "object" && !Array.isArray(r.data)) {
+      for (const k of Object.keys(r.data)) if (!seen.has(k)) { seen.add(k); cols.push(k); }
+    }
+  }
+  head.innerHTML = `<tr><th style="width:170px">Key</th>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}<th style="width:96px"></th></tr>`;
+  body.innerHTML = rows.slice(0, 500).map(r => {
+    const d = (r.data && typeof r.data === "object" && !Array.isArray(r.data)) ? r.data : { value: r.data };
+    const cells = cols.map(c => `<td>${c in d ? cellVal(d[c]) : `<span class="muted">·</span>`}</td>`).join("");
+    return `<tr><td style="color:var(--text)">${esc(r.row_key)}</td>${cells}<td>${rowActions(r.row_key)}</td></tr>`;
+  }).join("");
+}
+function rowActions(k) {
+  return `<a class="clickable" onclick='openRowEditor(${JSON.stringify(k)})'>edit</a> · <a class="clickable err-text" onclick='deleteRow(${JSON.stringify(k)})'>del</a>`;
 }
 function openRowEditor(rowKey) {
   if (!S.selTable) { toast("Select a table first", true); return; }
@@ -771,6 +824,50 @@ async function loadServerInfo() {
     document.getElementById("server-info").textContent = JSON.stringify(d, null, 2);
   } catch (e) { document.getElementById("server-info").textContent = e.message; }
 }
+
+// ═══════════ Cluster ═══════════
+async function loadCluster() {
+  const sum = document.getElementById("cluster-summary");
+  const peersEl = document.getElementById("cluster-peers");
+  try {
+    const d = await api("/cluster/peers");
+    updateClusterBadge(d);
+    const peers = d.peers || [];
+    if (!d.cluster_enabled) {
+      sum.innerHTML = `<span class="badge blue">Standalone</span> <span class="muted">This node is running as a single node (shard ${d.my_shard_id} of ${d.shard_count}). No peers configured.</span>`;
+      peersEl.innerHTML = `<div class="muted" style="margin-top:6px">To form a cluster, set <code>NEONDB_PEERS</code>, <code>NEONDB_SHARD_ID</code> and <code>NEONDB_SHARD_COUNT</code> on each node.</div>`;
+      return;
+    }
+    const healthy = peers.filter(p => p.healthy !== false).length;
+    sum.innerHTML = `<span class="badge green">Clustered</span> <span class="muted">This node is shard <b style="color:var(--text)">${d.my_shard_id}</b> of <b style="color:var(--text)">${d.shard_count}</b> · ${healthy}/${peers.length} peers healthy</span>`;
+    peersEl.innerHTML = peers.length
+      ? `<div class="tbl-wrap" style="overflow-x:auto;margin-top:6px"><table><thead><tr><th>Shard</th><th>Node URL</th><th>Status</th></tr></thead><tbody>` +
+        peers.map(p => {
+          const ok = p.healthy !== false;
+          return `<tr><td style="color:var(--text)">shard ${esc(p.shard_id)}</td><td>${esc(p.metrics_url || p.url || "")}</td><td><span class="badge ${ok?'green':'red'}">${ok?'● healthy':'● unreachable'}</span></td></tr>`;
+        }).join("") + `</tbody></table></div>`
+      : `<div class="muted">No peers registered yet.</div>`;
+  } catch (e) {
+    sum.innerHTML = `<span class="err-text">${esc(e.message)}</span>`;
+    peersEl.innerHTML = "";
+  }
+}
+function updateClusterBadge(d) {
+  const el = document.getElementById("cluster-mini");
+  if (!el) return;
+  if (!d || !d.cluster_enabled) { el.className = "badge blue"; el.textContent = "standalone"; return; }
+  const peers = d.peers || [];
+  const healthy = peers.filter(p => p.healthy !== false).length;
+  const total = peers.length + 1; // include self
+  const allOk = healthy === peers.length;
+  el.className = "badge " + (allOk ? "green" : "red");
+  el.textContent = `${healthy + 1}/${total} nodes`;
+}
+async function pollCluster() {
+  try { updateClusterBadge(await api("/cluster/peers")); }
+  catch { const el = document.getElementById("cluster-mini"); if (el) { el.className = "badge red"; el.textContent = "—"; } }
+}
+setInterval(pollCluster, 5000); pollCluster();
 </script>
 </body>
 </html>

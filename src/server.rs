@@ -270,6 +270,28 @@ async fn run_server_inner(
     let active_connections = Arc::new(AtomicUsize::new(0));
     let metrics            = Arc::new(Metrics::new());
 
+    // ── Cluster bus (horizontal scaling) ──────────────────────────────────────
+    // Reads NEONDB_PEERS / NEONDB_SHARD_ID / NEONDB_SHARD_COUNT from env.
+    // No-op (single-node) when NEONDB_PEERS is unset — fanout_deltas() returns
+    // immediately, so the embedded game server pays nothing in standalone mode.
+    let my_shard_id: u32 = std::env::var("NEONDB_SHARD_ID")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let shard_count: u32 = std::env::var("NEONDB_SHARD_COUNT")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let cluster_bus = crate::cluster::ClusterBus::new(
+        crate::cluster::ClusterConfig::from_env(my_shard_id, shard_count)
+    );
+    if cluster_bus.is_active() {
+        log::info!(
+            "[cluster] Active — shard {}/{}, {} peer(s)",
+            my_shard_id, shard_count, cluster_bus.peers.len()
+        );
+        println!("[neondb] Cluster mode — shard {}/{}, {} peer(s)",
+            my_shard_id, shard_count, cluster_bus.peers.len());
+    }
+    crate::cluster::gossip::start_gossip(cluster_bus.clone(), shutdown_rx.clone());
+    crate::cluster::fanout::start_fanout_retry(cluster_bus.clone(), shutdown_rx.clone());
+
     // Ed25519 identity issuer — load persisted key or generate a fresh one.
     let identity_key_path  = wal_path
         .parent()
@@ -327,6 +349,7 @@ async fn run_server_inner(
         let schema_w    = schema_reg.clone();
         let ttl_w       = ttl_manager.clone();
         let persist_w   = persistence.clone();
+        let cluster_w   = cluster_bus.clone();
         let mut shut_w  = shutdown_rx.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -432,6 +455,8 @@ async fn run_server_inner(
                                 // Fan out live subscription updates — O(1) per subscriber.
                                 if !deltas.is_empty() {
                                     subs_w.publish_deltas(&deltas);
+                                    // Replicate to cluster peers (no-op single-node).
+                                    cluster_w.fanout_deltas(&deltas);
                                 }
 
                                 // Append to WAL for crash recovery.
@@ -531,6 +556,7 @@ async fn run_server_inner(
                 config.backup_dir.clone(),
                 config.backup_keep,
                 wal_file.clone(),
+                cluster_bus.clone(),
                 shutdown_rx.clone(),
             );
         }
@@ -683,6 +709,7 @@ async fn handle_embedded_admin(
     backup_dir: Option<std::path::PathBuf>,
     backup_keep: usize,
     wal_path: std::path::PathBuf,
+    cluster_bus: Arc<crate::cluster::ClusterBus>,
 ) -> std::result::Result<Response<Body>, hyper::Error> {
     // Optional auth check — only if NEONDB_API_KEY is set.
     let check_auth = |req: &Request<Body>| -> Option<Response<Body>> {
@@ -817,6 +844,101 @@ async fn handle_embedded_admin(
                 }
                 Err(e) => admin_server_error(e.to_string()),
             }
+        }
+
+        // ── Cluster status + peer endpoints ───────────────────────────────────
+        (&Method::GET, "/cluster/health") => {
+            admin_json(serde_json::json!({
+                "ok": true,
+                "shard_id": cluster_bus.config.my_shard_id,
+            }))
+        }
+        (&Method::GET, "/cluster/peers") => {
+            admin_json(serde_json::json!({
+                "cluster_enabled": cluster_bus.is_active(),
+                "my_shard_id":     cluster_bus.config.my_shard_id,
+                "shard_count":     cluster_bus.config.shard_count,
+                "peers":           cluster_bus.peers_snapshot(),
+            }))
+        }
+        (&Method::POST, "/cluster/deltas") => {
+            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
+            if !cluster_bus.validate_secret(secret) {
+                let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
+                *r.status_mut() = StatusCode::UNAUTHORIZED; return Ok(r);
+            }
+            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
+                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+            };
+            match crate::cluster::fanout::parse_delta_payload(&body_bytes) {
+                Err(e) => admin_bad_request(e.to_string()),
+                Ok(payload) => {
+                    let row_deltas = crate::cluster::fanout::wire_to_row_deltas(payload.deltas);
+                    let applied = row_deltas.len();
+                    match crate::cluster::ClusterBus::apply_peer_deltas(&row_deltas, &tables, &subs) {
+                        Ok(()) => admin_json(serde_json::json!({ "ok": true, "applied": applied })),
+                        Err(e) => admin_server_error(e.to_string()),
+                    }
+                }
+            }
+        }
+        (&Method::POST, "/cluster/call") => {
+            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
+            if !cluster_bus.validate_secret(secret) {
+                let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
+                *r.status_mut() = StatusCode::UNAUTHORIZED; return Ok(r);
+            }
+            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
+                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+            };
+            let pr: crate::cluster::proxy::ProxyCallRequest = match serde_json::from_slice(&body_bytes) {
+                Ok(r) => r, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+            };
+            use base64::Engine as _;
+            let args = match base64::engine::general_purpose::STANDARD.decode(&pr.args_b64) {
+                Ok(b) => b, Err(e) => return Ok(admin_bad_request(format!("Bad args_b64: {}", e))),
+            };
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
+            let call = PendingCall {
+                call_id: 0, reducer_name: pr.reducer_name, args,
+                caller_id: pr.caller_id, caller_role: pr.caller_role,
+                tenant_id: None, lobby_hint: None, response_tx: resp_tx,
+            };
+            if queue_tx.send(call).await.is_err() {
+                return Ok(admin_server_error("Reducer queue closed".into()));
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await {
+                Ok(Some(resp)) => {
+                    if resp.success {
+                        let result_b64 = resp.result.as_deref()
+                            .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
+                            .unwrap_or_default();
+                        admin_json(serde_json::json!({ "ok": true, "result_b64": result_b64 }))
+                    } else {
+                        admin_json(serde_json::json!({
+                            "ok": false,
+                            "error": resp.error.unwrap_or_else(|| "Reducer error".to_string()),
+                        }))
+                    }
+                }
+                Ok(None) => admin_server_error("Worker dropped response channel".into()),
+                Err(_)   => admin_server_error("Proxied call timed out after 30s".into()),
+            }
+        }
+        (&Method::POST, "/cluster/join") => {
+            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
+            if !cluster_bus.validate_secret(secret) {
+                let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
+                *r.status_mut() = StatusCode::UNAUTHORIZED; return Ok(r);
+            }
+            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
+                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+            };
+            let node: crate::cluster::NodeInfo = match serde_json::from_slice(&body_bytes) {
+                Ok(n) => n, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+            };
+            cluster_bus.add_peer(node);
+            admin_json(serde_json::json!({ "ok": true, "peers": cluster_bus.peers_snapshot() }))
         }
 
         // ── Replication: primary serves WAL entries to replicas ──────────────
@@ -1146,6 +1268,7 @@ fn start_embedded_admin_server(
     backup_dir: Option<std::path::PathBuf>,
     backup_keep: usize,
     wal_path: std::path::PathBuf,
+    cluster_bus: Arc<crate::cluster::ClusterBus>,
     mut shutdown_rx: watch::Receiver<()>,
 ) {
     let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
@@ -1167,6 +1290,7 @@ fn start_embedded_admin_server(
             let bdir  = backup_dir.clone();
             let bkeep = backup_keep;
             let wpath = wal_path.clone();
+            let cbus  = cluster_bus.clone();
             async move {
                 Ok::<_, hyper::Error>(service_fn(move |req| {
                     handle_embedded_admin(
@@ -1174,7 +1298,7 @@ fn start_embedded_admin_server(
                         tbl.clone(), sb.clone(), reg.clone(), sch.clone(),
                         wal.clone(), seq.clone(), met.clone(),
                         startup, qtx.clone(), akey.clone(),
-                        bdir.clone(), bkeep, wpath.clone(),
+                        bdir.clone(), bkeep, wpath.clone(), cbus.clone(),
                     )
                 }))
             }
