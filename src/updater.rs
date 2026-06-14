@@ -2,14 +2,8 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-const RAW_BASE: &str = "https://raw.githubusercontent.com/Salaou-Hasan/neondb-releases/main";
+const RELEASES_REPO: &str = "Salaou-Hasan/neondb-releases";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-fn platform_dir() -> &'static str {
-    if cfg!(target_os = "windows") { "windows" }
-    else if cfg!(target_os = "macos") { "macos" }
-    else { "linux" }
-}
 
 fn asset_name(bin: &str) -> String {
     let ext = if cfg!(windows) { ".exe" } else { "" };
@@ -31,16 +25,15 @@ fn install_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Reads version.txt from the releases repo — single line like "1.0.12"
-fn latest_version() -> Option<String> {
-    let url = format!("{RAW_BASE}/version.txt");
+/// Returns the latest release tag from the releases repo, or None on error.
+fn latest_tag() -> Option<String> {
+    let url = format!("https://api.github.com/repos/{RELEASES_REPO}/releases/latest");
     let resp = ureq::get(&url)
         .set("User-Agent", &format!("neondb/v{CURRENT_VERSION}"))
         .call()
         .ok()?;
-    let text = resp.into_string().ok()?;
-    let v = text.trim().trim_start_matches('v').to_string();
-    if v.is_empty() { None } else { Some(v) }
+    let json: serde_json::Value = resp.into_json().ok()?;
+    json["tag_name"].as_str().map(|s| s.trim_start_matches('v').to_string())
 }
 
 fn version_newer(latest: &str) -> bool {
@@ -53,10 +46,9 @@ fn version_newer(latest: &str) -> bool {
     parse(latest) > parse(CURRENT_VERSION)
 }
 
-fn download_and_replace(bin: &str) -> crate::error::Result<()> {
+fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
     let asset = asset_name(bin);
-    let dir   = platform_dir();
-    let url   = format!("{RAW_BASE}/{dir}/{asset}");
+    let url   = format!("https://github.com/{RELEASES_REPO}/releases/download/v{tag}/{asset}");
     let dest  = install_dir().join(if cfg!(windows) { format!("{bin}.exe") } else { bin.to_string() });
     let tmp   = dest.with_extension("tmp");
 
@@ -95,29 +87,28 @@ pub fn cmd_update(check_only: bool) -> crate::error::Result<()> {
     print!("Checking for updates … ");
     let _ = std::io::stdout().flush();
 
-    let latest = match latest_version() {
-        Some(v) => v,
+    let tag = match latest_tag() {
+        Some(t) => t,
         None => {
             println!("could not reach GitHub — check your connection.");
             return Ok(());
         }
     };
 
-    if !version_newer(&latest) {
+    if !version_newer(&tag) {
         println!("already up to date (v{CURRENT_VERSION}).");
         return Ok(());
     }
 
-    println!("v{CURRENT_VERSION} → v{latest} available!");
+    println!("v{CURRENT_VERSION} → v{tag} available!");
 
     if check_only {
         println!("  Run `neondb update` to install.");
         return Ok(());
     }
 
-    println!("Installing v{latest} …");
-
-    match download_and_replace("neondb") {
+    println!("Installing v{tag} …");
+    match download_and_replace("neondb", &tag) {
         Ok(()) => println!("\n  Done. Restart any running servers to pick up the new version."),
         Err(e) => eprintln!("  ✗ neondb: {e}"),
     }
@@ -126,9 +117,9 @@ pub fn cmd_update(check_only: bool) -> crate::error::Result<()> {
 }
 
 pub fn check_and_hint() {
-    if let Some(v) = latest_version() {
-        if version_newer(&v) {
-            eprintln!("[neondb] Update available: v{CURRENT_VERSION} → v{v}  (run `neondb update`)");
+    if let Some(tag) = latest_tag() {
+        if version_newer(&tag) {
+            eprintln!("[neondb] Update available: v{CURRENT_VERSION} → v{tag}  (run `neondb update`)");
         }
     }
 }
