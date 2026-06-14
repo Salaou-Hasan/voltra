@@ -925,14 +925,30 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
 /// Generate a Cargo.toml that embeds the NeonDB server as a library.
 fn game_cargo_toml(name: &str) -> String {
     format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.4\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.5\" }}\nserde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
     )
 }
 
-/// Write the Rust client SDK example into client/ inside a scaffolded project.
-fn scaffold_rust_client(p: &Path, name: &str) -> Result<()> {
-    wf(p, "client/Cargo.toml",   &client_cargo_toml(name))?;
-    wf(p, "client/src/main.rs",  CLIENT_MAIN_RS)?;
+/// Write all client SDKs + protocol docs into clients/ inside a scaffolded project.
+/// Covers Rust (Bevy / CLI), Unity C#, Godot 4 GDScript, and a PROTOCOL.md
+/// so anyone building a custom engine client knows exactly what to implement.
+fn scaffold_all_clients(p: &Path, name: &str) -> Result<()> {
+    // Rust client (Bevy, CLI tools, bots, custom engines in Rust)
+    wf(p, "clients/rust/Cargo.toml",  &client_cargo_toml(name))?;
+    wf(p, "clients/rust/src/main.rs", CLIENT_MAIN_RS)?;
+
+    // Unity C# client (copy clients/unity/ into Assets/Scripts/NeonDB/)
+    wf(p, "clients/unity/NeonDBClient.cs",    UNITY_CLIENT_CS)?;
+    wf(p, "clients/unity/NeonDBBehaviour.cs", UNITY_BEHAVIOUR_CS)?;
+    wf(p, "clients/unity/NeonDBManager.cs",   UNITY_MANAGER_CS)?;
+
+    // Godot 4 GDScript client (add as Autoload in Project Settings)
+    wf(p, "clients/godot/neondb_client.gd",  GODOT_CLIENT_GD)?;
+    wf(p, "clients/godot/NeonDBManager.gd",  GODOT_MANAGER_GD)?;
+
+    // Wire protocol spec for custom engine implementations (C++, JS, Swift, etc.)
+    wf(p, "clients/PROTOCOL.md", CLIENT_PROTOCOL_MD)?;
+
     Ok(())
 }
 
@@ -949,22 +965,27 @@ fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
     wf(p, "README.md", &format!("# {name}\n\nNeonDB embedded game server.\n\nSee SCALING.md for the scaling guide.\n"))?;
-    scaffold_rust_client(p, name)?;
+    scaffold_all_clients(p, name)?;
     print_success(name, "game/basic", &[
-        ("Cargo.toml",                  "neondb game server (run `neondb start` from this folder)"),
-        ("src/reducers/spawn.rs",       "spawn(player_id, lobby, class)"),
-        ("src/reducers/move_player.rs", "move_player(player_id, x, y)"),
-        ("src/reducers/despawn.rs",     "despawn(player_id)"),
-        ("src/reducers/damage.rs",      "damage(target_id, amount)"),
-        ("src/reducers/heal.rs",        "heal(target_id, amount)"),
-        ("schema.toml",                 "players + sessions tables"),
-        ("client/src/main.rs",          "Rust client — connect, subscribe, call reducers"),
+        ("Cargo.toml",                        "neondb game server (run `neondb start` from this folder)"),
+        ("src/reducers/spawn.rs",             "spawn(player_id, lobby, class)"),
+        ("src/reducers/move_player.rs",       "move_player(player_id, x, y)"),
+        ("src/reducers/despawn.rs",           "despawn(player_id)"),
+        ("src/reducers/damage.rs",            "damage(target_id, amount)"),
+        ("src/reducers/heal.rs",              "heal(target_id, amount)"),
+        ("schema.toml",                       "players + sessions tables"),
+        ("clients/rust/src/main.rs",          "Rust client (Bevy / CLI)"),
+        ("clients/unity/NeonDBClient.cs",     "Unity C# client"),
+        ("clients/godot/neondb_client.gd",   "Godot 4 GDScript client"),
+        ("clients/PROTOCOL.md",              "wire protocol — implement your own client"),
     ]);
     println!("  Next steps:");
     println!("    cd {name}");
     println!("    neondb start");
-    println!("    # in another terminal:");
-    println!("    cd client && cargo run --release");
+    println!("    # Rust client (another terminal):");
+    println!("    cd clients/rust && cargo run --release");
+    println!("    # Unity: copy clients/unity/ into Assets/Scripts/NeonDB/");
+    println!("    # Godot: add clients/godot/ files, set neondb_client.gd as Autoload");
     println!();
     println!("  Add systems:");
     println!("    neondb add combat    # attack, respawn, abilities");
@@ -1003,11 +1024,11 @@ fn scaffold_game_unity(p: &Path, name: &str) -> Result<()> {
     wf(p, "unity/NeonDBBehaviour.cs", UNITY_BEHAVIOUR_CS)?;
     wf(p, "unity/NeonDBManager.cs",   UNITY_MANAGER_CS)?;
     wf(p, "unity/README.md",          UNITY_GAME_README)?;
-    println!("  Unity C# SDK → unity/");
+    println!("  Unity C# SDK → unity/  (also in clients/unity/)");
     println!("    Copy unity/ into Assets/Scripts/NeonDB/");
     println!("    Add NeonDBManager to your scene, set Server URL, press Play.");
-    println!("  Rust client SDK → client/");
-    println!("    cd client && cargo run --release");
+    println!("  Rust / Godot / custom engine clients → clients/");
+    println!("    See clients/PROTOCOL.md to implement your own client.");
     Ok(())
 }
 
@@ -1016,10 +1037,10 @@ fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
     wf(p, "godot/neondb_client.gd",   GODOT_CLIENT_GD)?;
     wf(p, "godot/NeonDBManager.gd",   GODOT_MANAGER_GD)?;
     wf(p, "godot/README.md",          GODOT_GAME_README)?;
-    println!("  Godot 4 GDScript SDK → godot/");
-    println!("    Add godot/ to your project, add NeonDBManager as an Autoload.");
-    println!("  Rust client SDK → client/");
-    println!("    cd client && cargo run --release");
+    println!("  Godot 4 GDScript SDK → godot/  (also in clients/godot/)");
+    println!("    Add godot/ files to your project, set neondb_client.gd as Autoload.");
+    println!("  Rust / Unity / custom engine clients → clients/");
+    println!("    See clients/PROTOCOL.md to implement your own client.");
     Ok(())
 }
 
@@ -1253,7 +1274,7 @@ const RM_WORLD_SCHEMA: &str      = include_str!("../templates/rm_world_schema.to
 fn client_cargo_toml(name: &str) -> String {
     format!(
         "[package]\nname = \"{name}-client\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-[dependencies]\nneondb-client = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.4\", package = \"neondb-client\" }}\n\
+[dependencies]\nneondb-client = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.5\", package = \"neondb-client\" }}\n\
 tokio         = {{ version = \"1\", features = [\"full\"] }}\n\
 serde_json    = \"1\"\n"
     )
@@ -1312,6 +1333,91 @@ async fn main() {
     println!("[client] Listening for updates (Ctrl+C to stop)…");
     tokio::signal::ctrl_c().await.ok();
 }
+"#;
+
+const CLIENT_PROTOCOL_MD: &str = r#"# NeonDB Wire Protocol
+
+Implement this to connect **any** game engine or language to NeonDB.
+
+## Transport
+
+- **WebSocket** binary frames (not text)
+- **MessagePack** encoding — structs are positional arrays (rmp_serde default)
+- Auth header at upgrade: `Authorization: Bearer <api_key>`
+  - Optional role suffix: `Bearer <api_key>:<role>`
+
+## Client → Server messages
+
+All messages are a **MessagePack map with one key** → value is a positional array.
+
+```
+{ "ReducerCall": [call_id: u64, reducer_name: str, args: bin] }
+{ "Subscribe":   [sub_id: str,  query: str] }
+{ "Unsubscribe": [sub_id: str] }
+```
+
+- `call_id` — any u64 you choose; matched back in the response
+- `args` — MessagePack-encoded array of your reducer's positional arguments
+- `query` — e.g. `"players"` or `"players WHERE zone = 'north'"` or `"players WHERE zone = 'north' ORDER BY score DESC LIMIT 10"`
+- `sub_id` — any string you choose; used to route live updates back to the right handler
+
+## Server → Client messages
+
+### ReducerResponse (bare array — no wrapper map)
+```
+[call_id: u64, success: bool, result: bin | nil, error: str | nil]
+```
+`result` is a MessagePack-encoded value returned by the reducer.
+
+### SubscriptionAck
+```
+{ "SubscriptionAck": [sub_id: str, success: bool, message: str | nil] }
+```
+
+### SubscriptionDiff (one frame per row change)
+```
+{ "SubscriptionDiff": [sub_id: str, table: str, row_key: str, op: str, data: map | nil] }
+```
+- `op` — `"insert"` | `"update"` | `"delete"` | `"initial_snapshot"`
+- `data` — full row as a MessagePack map, or nil for deletes
+
+### BatchUpdate (one frame per tick — replaces many SubscriptionDiffs)
+```
+{ "BatchUpdate": [compressed: bool, payload: bin] }
+```
+- `payload` — when `compressed = false`: MessagePack array of SubscriptionDiff arrays
+- `payload` — when `compressed = true`: gzip( above )
+- Each element: `[sub_id, table, row_key, op, data | nil]`
+
+**In tick mode (default 20 Hz) the server sends BatchUpdate, not SubscriptionDiff.**
+Implement BatchUpdate first — it is the primary live-update path.
+
+### Error
+```
+{ "Error": { "message": str } }
+```
+
+## Minimal implementation checklist
+
+1. Open a WebSocket to `ws://<host>:<port>` with the auth header
+2. Send a `ReducerCall` to invoke game logic
+3. Await a bare-array `ReducerResponse` matching your `call_id`
+4. Send a `Subscribe` with a query string
+5. Await `SubscriptionAck` to confirm
+6. On each `BatchUpdate`: gzip-decompress if `compressed`, then MsgPack-decode the
+   payload as `[[sub_id, table, row_key, op, data?], ...]` and dispatch to handlers
+7. Handle `SubscriptionDiff` for servers with tick mode disabled
+
+## MessagePack notes
+
+- Integers: use the most compact fixint/int8/int16/int32/int64 form
+- Strings: fixstr / str8 / str16
+- Binary: bin8 / bin16 (used for nested args and result payloads)
+- Maps: fixmap / map16 (server uses string keys)
+- Arrays: fixarray / array16
+
+Any standard MessagePack library works. The server uses Rust's `rmp-serde` in
+default (array/positional) mode for struct fields.
 "#;
 
 // ── Unity + Godot SDKs ────────────────────────────────────────────────────────

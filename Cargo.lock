@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "neondb"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "arc-swap",
