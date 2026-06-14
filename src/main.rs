@@ -100,7 +100,7 @@ const MODULES: &[(&str, &str)] = &[
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -265,7 +265,22 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            println!("NeonDB {} — self-hosted real-time game backend", concat!("v", env!("CARGO_PKG_VERSION")));
+            println!();
+            println!("  Engine is ready.");
+            println!();
+            println!("  Get started:");
+            println!("    neondb init       scaffold a new game project");
+            println!("    neondb start      start the server");
+            println!("    neondb --help     show all commands");
+            println!();
+            return Ok(());
+        }
+    };
+    match command {
         Commands::Init { path, template } => { init_project(path, template)?; Ok(()) }
         Commands::Add { module } => { cmd_add_module(&module, &std::env::current_dir()?)?; Ok(()) }
         Commands::Update { check } => { neondb::updater::cmd_update(check) }
