@@ -948,7 +948,8 @@ fn game_cargo_toml(name: &str) -> String {
         "[workspace]\n\n\
 [package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
 [dependencies]\n{neondb_dep}\n\
-serde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+serde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n\
+env_logger = \"0.11\"\n"
     )
 }
 

@@ -1,6 +1,22 @@
 mod reducers;
 
 fn main() {
-    neondb::run_server_blocking(neondb::config::Config::from_env())
+    // Default to INFO logging so startup output (listening port, replay status,
+    // reducer registry size) is visible. Override with RUST_LOG=debug or trace.
+    if std::env::var_os("RUST_LOG").is_none() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    env_logger::Builder::from_default_env()
+        .format_timestamp_secs()
+        .init();
+
+    let config = neondb::config::Config::from_env();
+    println!("[neondb] Listening on ws://{}:{} — press Ctrl+C to stop.",
+        config.host, config.port);
+    println!("[neondb] Metrics + admin: http://{}:{}/healthz",
+        config.host, config.metrics_port);
+    println!();
+
+    neondb::run_server_blocking(config)
         .expect("NeonDB server exited with error");
 }
