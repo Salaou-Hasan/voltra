@@ -6,9 +6,9 @@
 #
 #   [[table.columns]]
 #   name = "gold"
-#   type = "Int"
+#   type = "i64"
 #   required = false
-#   default = 0
+#   default = "0"
 #
 # And that the inventory module schema is also applied (rm_inventory_schema.toml).
 # No additional tables are needed for the economy module.

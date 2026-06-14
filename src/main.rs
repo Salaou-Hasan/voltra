@@ -927,22 +927,28 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
 const NEONDB_SOURCE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 /// Generate a Cargo.toml that embeds the NeonDB server as a library.
-/// Adds a [patch] section pointing to the local NeonDB source so that
-/// `cargo build` in the scaffolded project never needs a network connection.
+///
+/// When the local NeonDB source is reachable on disk (the common case — `neondb`
+/// was installed via `cargo install --path .`), the scaffold uses a direct
+/// `path = "..."` dependency. That keeps `cargo build` fully offline:
+/// no git fetch, no crates.io index refresh.
+///
+/// When the source is gone (user installed the prebuilt binary on a different
+/// machine), fall back to the git dependency.
 fn game_cargo_toml(name: &str) -> String {
-    let patch = if std::path::Path::new(NEONDB_SOURCE_DIR).exists() {
+    let neondb_dep = if std::path::Path::new(NEONDB_SOURCE_DIR).exists() {
         format!(
-            "\n[patch.\"https://github.com/Salaou-Hasan/NeonDB\"]\nneondb = {{ path = \"{}\" }}\n",
+            "neondb     = {{ path = \"{}\" }}",
             NEONDB_SOURCE_DIR.replace('\\', "/")
         )
     } else {
-        String::new()
+        "neondb     = { git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.7\" }".to_string()
     };
     format!(
         "[workspace]\n\n\
 [package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-[dependencies]\nneondb     = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.6\" }}\n\
-serde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{patch}"
+[dependencies]\n{neondb_dep}\n\
+serde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
     )
 }
 
@@ -953,6 +959,11 @@ fn scaffold_all_clients(p: &Path, name: &str) -> Result<()> {
     // Rust client (Bevy, CLI tools, bots, custom engines in Rust)
     wf(p, "clients/rust/Cargo.toml",  &client_cargo_toml(name))?;
     wf(p, "clients/rust/src/main.rs", CLIENT_MAIN_RS)?;
+    // Pin transitive deps so `cargo run` in clients/rust/ stays offline too.
+    let src_lock = std::path::Path::new(NEONDB_SOURCE_DIR).join("Cargo.lock");
+    if src_lock.exists() {
+        let _ = fs::copy(&src_lock, p.join("clients/rust/Cargo.lock"));
+    }
 
     // Unity C# client (copy clients/unity/ into Assets/Scripts/NeonDB/)
     wf(p, "clients/unity/NeonDBClient.cs",    UNITY_CLIENT_CS)?;
@@ -969,8 +980,19 @@ fn scaffold_all_clients(p: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Copy NeonDB's Cargo.lock into the scaffolded project when available,
+/// so transitive dep versions are pinned and no crates.io index refresh runs.
+fn copy_lockfile_if_available(p: &Path) -> Result<()> {
+    let src_lock = std::path::Path::new(NEONDB_SOURCE_DIR).join("Cargo.lock");
+    if src_lock.exists() {
+        let _ = fs::copy(&src_lock, p.join("Cargo.lock"));
+    }
+    Ok(())
+}
+
 fn scaffold_game_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
+    copy_lockfile_if_available(p)?;
     wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
     wf(p, "src/reducers/mod.rs",         R_MOD_BASIC)?;
@@ -1066,7 +1088,29 @@ fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Write Rust files for a module into src/reducers/<module>/ and register in mod.rs.
+/// Register the module in `src/reducers/mod.rs` so its sub-modules compile.
+/// Idempotent — no-op if the line is already present.
+fn register_module_in_mod_rs(p: &Path, module: &str) -> Result<()> {
+    let mod_rs = p.join("src/reducers/mod.rs");
+    let line = format!("pub mod {module};\n");
+    let existing = fs::read_to_string(&mod_rs).unwrap_or_default();
+    if existing.contains(&line.trim_end()) {
+        return Ok(());
+    }
+    let new_content = if existing.is_empty() {
+        line
+    } else if existing.ends_with('\n') {
+        format!("{existing}{line}")
+    } else {
+        format!("{existing}\n{line}")
+    };
+    fs::write(&mod_rs, new_content)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("write mod.rs: {e}")))?;
+    Ok(())
+}
+
 fn add_module_files(p: &Path, module: &str) -> Result<()> {
+    register_module_in_mod_rs(p, module)?;
     match module {
         "chat" => {
             wf(p, "src/reducers/chat/mod.rs",   RM_CHAT_MOD_RS)?;
@@ -1142,19 +1186,7 @@ fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
         eprintln!("No schema.toml found. Run `neondb add` from inside your project directory.");
         return Err(neondb::error::NeonDBError::invalid_argument("not a NeonDB project directory"));
     }
-    // Also add `pub mod <module>;` to src/reducers/mod.rs if it exists
-    let mod_rs = project_path.join("src/reducers/mod.rs");
-    let mod_line = format!("pub mod {module};\n");
-    if mod_rs.exists() {
-        let current = fs::read_to_string(&mod_rs).unwrap_or_default();
-        if !current.contains(&mod_line) {
-            let mut f = fs::OpenOptions::new().append(true).open(&mod_rs)
-                .map_err(|e| neondb::error::NeonDBError::internal(format!("open mod.rs: {e}")))?;
-            use std::io::Write as _;
-            write!(f, "{mod_line}")
-                .map_err(|e| neondb::error::NeonDBError::internal(format!("write mod.rs: {e}")))?;
-        }
-    }
+    // `add_module_files` registers the module in src/reducers/mod.rs itself.
     match module {
         "chat" | "inventory" | "leaderboard" | "matchmaking" |
         "guilds" | "quests" | "economy" | "combat" | "world" => {
@@ -1289,20 +1321,20 @@ const RM_WORLD_SCHEMA: &str      = include_str!("../templates/rm_world_schema.to
 // ── Rust client SDK scaffold ──────────────────────────────────────────────────
 
 fn client_cargo_toml(name: &str) -> String {
-    let patch = if std::path::Path::new(NEONDB_SOURCE_DIR).exists() {
+    let client_dep = if std::path::Path::new(NEONDB_SOURCE_DIR).exists() {
         format!(
-            "\n[patch.\"https://github.com/Salaou-Hasan/NeonDB\"]\nneondb-client = {{ path = \"{}/neondb-client-rust\", package = \"neondb-client\" }}\n",
+            "neondb-client = {{ path = \"{}/neondb-client-rust\", package = \"neondb-client\" }}",
             NEONDB_SOURCE_DIR.replace('\\', "/")
         )
     } else {
-        String::new()
+        "neondb-client = { git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.7\", package = \"neondb-client\" }".to_string()
     };
     format!(
         "[workspace]\n\n\
 [package]\nname = \"{name}-client\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-[dependencies]\nneondb-client = {{ git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.6\", package = \"neondb-client\" }}\n\
+[dependencies]\n{client_dep}\n\
 tokio         = {{ version = \"1\", features = [\"full\"] }}\n\
-serde_json    = \"1\"\n{patch}"
+serde_json    = \"1\"\n"
     )
 }
 
