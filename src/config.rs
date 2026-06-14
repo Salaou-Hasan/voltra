@@ -178,6 +178,14 @@ pub struct Config {
     /// How often (ms) a replica polls the primary for new WAL entries.
     /// Env: `NEONDB_REPLICA_POLL_MS`.  Default 500.
     pub replica_poll_ms: u64,
+    /// When true, a replica that cannot reach the primary for
+    /// `failover_miss_count` consecutive polls automatically promotes itself
+    /// to primary and starts accepting writes.  Env: `NEONDB_AUTO_FAILOVER`.
+    /// Default false (manual `neondb promote` / POST /replication/promote).
+    pub auto_failover: bool,
+    /// Consecutive failed polls before an auto-failover promotion fires.
+    /// Env: `NEONDB_FAILOVER_MISS_COUNT`.  Default 3.
+    pub failover_miss_count: u32,
     /// Directory for automated backups.  When set together with
     /// `backup_interval_secs > 0`, the server takes a backup (snapshot + WAL
     /// copy) on that interval and rotates old ones.  Env: `NEONDB_BACKUP_DIR`.
@@ -309,6 +317,8 @@ struct ConfigServer {
     role: Option<String>,
     primary_url: Option<String>,
     replica_poll_ms: Option<u64>,
+    auto_failover: Option<bool>,
+    failover_miss_count: Option<u32>,
     backup_dir: Option<String>,
     backup_interval_secs: Option<u64>,
     backup_keep: Option<usize>,
@@ -368,6 +378,8 @@ impl Config {
             role: "primary".to_string(),
             primary_url: None,
             replica_poll_ms: 500,
+            auto_failover: false,
+            failover_miss_count: 3,
             backup_dir: None,
             backup_interval_secs: 0,
             backup_keep: 5,
@@ -562,6 +574,12 @@ fn apply_server_section(cfg: &mut Config, server: Option<ConfigServer>) {
     }
     if let Some(ms) = s.replica_poll_ms {
         cfg.replica_poll_ms = ms.max(50);
+    }
+    if let Some(af) = s.auto_failover {
+        cfg.auto_failover = af;
+    }
+    if let Some(mc) = s.failover_miss_count {
+        cfg.failover_miss_count = mc.max(1);
     }
     if let Some(d) = s.backup_dir {
         cfg.backup_dir = Some(PathBuf::from(d));
@@ -786,6 +804,15 @@ fn apply_env_overrides(cfg: &mut Config) {
         .and_then(|v| v.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
     {
         cfg.replica_poll_ms = ms.max(50);
+    }
+    if let Ok(v) = env::var("NEONDB_AUTO_FAILOVER") {
+        let v = v.trim().to_ascii_lowercase();
+        cfg.auto_failover = v == "1" || v == "true" || v == "yes";
+    }
+    if let Ok(mc) = env::var("NEONDB_FAILOVER_MISS_COUNT")
+        .and_then(|v| v.parse::<u32>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.failover_miss_count = mc.max(1);
     }
     if let Ok(d) = env::var("NEONDB_BACKUP_DIR") {
         cfg.backup_dir = Some(PathBuf::from(d));

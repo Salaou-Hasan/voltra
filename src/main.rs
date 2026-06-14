@@ -2050,10 +2050,13 @@ async fn run_server(config: Config) -> Result<()> {
                 let wal_r = wal_writer.clone();
                 let seq_r = global_seq.clone();
                 let poll = config.replica_poll_ms;
+                let auto_failover = config.auto_failover;
+                let miss_count = config.failover_miss_count;
                 let shut_r = shutdown_rx.clone();
                 tokio::spawn(async move {
                     neondb::replication::run_replica_loop(
-                        primary, tables_r, subs_r, wal_r, seq_r, poll, shut_r,
+                        primary, tables_r, subs_r, wal_r, seq_r, poll,
+                        auto_failover, miss_count, shut_r,
                     ).await;
                 });
                 log::info!("[replication] Started in REPLICA mode (read-only)");

@@ -482,6 +482,34 @@ async fn run_server_inner(
 
     log::info!("[neondb] Listening on {}:{}", host, port);
 
+    // ── Replication: replica mode + optional auto-failover ────────────────────
+    if config.role.eq_ignore_ascii_case("replica") {
+        match config.primary_url.clone() {
+            Some(primary) => {
+                crate::replication::set_replica(true);
+                crate::replication::init_replica_from_local_wal(initial_seq.saturating_sub(1));
+                let tables_r = tables.clone();
+                let subs_r   = subs.clone();
+                let wal_r    = wal_writer.clone();
+                let seq_r    = global_seq.clone();
+                let poll     = config.replica_poll_ms;
+                let af       = config.auto_failover;
+                let mc       = config.failover_miss_count;
+                let shut_r   = shutdown_rx.clone();
+                tokio::spawn(async move {
+                    crate::replication::run_replica_loop(
+                        primary, tables_r, subs_r, wal_r, seq_r, poll, af, mc, shut_r,
+                    ).await;
+                });
+                log::info!("[replication] Started in REPLICA mode (read-only)");
+                println!("[neondb] Replica mode — pulling from {}", config.primary_url.as_deref().unwrap_or(""));
+            }
+            None => log::error!(
+                "[replication] NEONDB_ROLE=replica but NEONDB_PRIMARY_URL is not set — staying primary"
+            ),
+        }
+    }
+
     // ── Embedded admin/metrics HTTP server ────────────────────────────────────
     {
         let metrics_port = config.metrics_port;
@@ -493,12 +521,16 @@ async fn run_server_inner(
                 tables.clone(),
                 subs.clone(),
                 registry.clone(),
+                schema_reg.clone(),
                 wal_writer.clone(),
                 global_seq.clone(),
                 metrics.clone(),
                 startup,
                 tx.clone(),
                 api_key.clone(),
+                config.backup_dir.clone(),
+                config.backup_keep,
+                wal_file.clone(),
                 shutdown_rx.clone(),
             );
         }
@@ -590,18 +622,67 @@ fn admin_url_decode(s: &str) -> String {
     out
 }
 
+/// Best-effort resident memory of the current process, in bytes.
+/// Windows uses GetProcessMemoryInfo; Linux reads /proc/self/statm; other
+/// platforms return 0 (the dashboard simply shows 0 MB).
+fn embedded_memory_bytes() -> u64 {
+    #[cfg(target_os = "windows")]
+    {
+        #[allow(non_camel_case_types)] type HANDLE = *mut std::ffi::c_void;
+        #[allow(non_camel_case_types)] type DWORD = u32;
+        #[allow(non_camel_case_types)] type SIZE_T = usize;
+        #[repr(C)]
+        struct PROCESS_MEMORY_COUNTERS {
+            cb: DWORD, page_fault_count: DWORD,
+            peak_working_set_size: SIZE_T, working_set_size: SIZE_T,
+            quota_peak_paged_pool_usage: SIZE_T, quota_paged_pool_usage: SIZE_T,
+            quota_peak_non_paged_pool_usage: SIZE_T, quota_non_paged_pool_usage: SIZE_T,
+            pagefile_usage: SIZE_T, peak_pagefile_usage: SIZE_T,
+        }
+        #[link(name = "kernel32")]
+        extern "system" { fn GetCurrentProcess() -> HANDLE; }
+        #[link(name = "psapi")]
+        extern "system" {
+            fn GetProcessMemoryInfo(p: HANDLE, c: *mut PROCESS_MEMORY_COUNTERS, cb: DWORD) -> i32;
+        }
+        unsafe {
+            let mut c: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+            c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
+            if GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) != 0 {
+                return c.working_set_size as u64;
+            }
+        }
+        0
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
+            if let Some(pages) = s.split_whitespace().nth(1).and_then(|p| p.parse::<u64>().ok()) {
+                return pages * 4096;
+            }
+        }
+        0
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    { 0 }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_embedded_admin(
     req: Request<Body>,
     tables: Arc<TableStore>,
     subs: Arc<SubscriptionManager>,
     registry: Arc<ReducerRegistry>,
+    schema_reg: Arc<crate::schema::SchemaRegistry>,
     wal_writer: Arc<BatchedWalWriter>,
     global_seq: Arc<AtomicU64>,
     metrics: Arc<Metrics>,
     startup: std::time::Instant,
     queue_tx: kanal::AsyncSender<PendingCall>,
     api_key: Option<String>,
+    backup_dir: Option<std::path::PathBuf>,
+    backup_keep: usize,
+    wal_path: std::path::PathBuf,
 ) -> std::result::Result<Response<Body>, hyper::Error> {
     // Optional auth check — only if NEONDB_API_KEY is set.
     let check_auth = |req: &Request<Body>| -> Option<Response<Body>> {
@@ -646,7 +727,7 @@ async fn handle_embedded_admin(
                 "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
                 "uptime_seconds": startup.elapsed().as_secs(),
                 "reducer_queue_depth": queue_tx.len(),
-                "memory_usage_bytes": 0u64,
+                "memory_usage_bytes": embedded_memory_bytes(),
                 "presence_tracked": 0u64,
                 "ttl_active": 0u64,
             }))
@@ -679,43 +760,175 @@ async fn handle_embedded_admin(
             }))
         }
 
-        // ── Schema ────────────────────────────────────────────────────────────
-        (&Method::GET, "/admin/api/schema") | (&Method::GET, "/schema") => {
-            let reducer_names: Vec<_> = registry.list_reducers();
-            let table_names = tables.list_tables();
+        // ── Schema (table map: { name: { columns, rows, rls } }) ─────────────
+        (&Method::GET, "/schema") | (&Method::GET, "/admin/api/schema") => {
+            let mut table_map = serde_json::Map::new();
+            for table_name in schema_reg.list_tables() {
+                if let Some(schema) = schema_reg.get(table_name) {
+                    let cols: Vec<_> = schema.columns.iter().map(|c| serde_json::json!({
+                        "name": c.name,
+                        "type": c.type_str,
+                        "required": c.required,
+                        "default": c.default,
+                        "key": schema.primary_key.as_deref() == Some(&c.name),
+                    })).collect();
+                    let rows = tables.list_rows_with_keys(table_name).map(|r| r.len()).unwrap_or(0);
+                    table_map.insert(table_name.to_string(), serde_json::json!({
+                        "columns": cols,
+                        "primary_key": schema.primary_key,
+                        "rls": format!("{:?}", schema.rls),
+                        "rows": rows,
+                    }));
+                }
+            }
+            for table_name in tables.list_tables() {
+                if !table_map.contains_key(&table_name) {
+                    let rows = tables.list_rows_with_keys(&table_name).map(|r| r.len()).unwrap_or(0);
+                    table_map.insert(table_name, serde_json::json!({ "columns": [], "rows": rows }));
+                }
+            }
             admin_json(serde_json::json!({
-                "tables": table_names,
-                "reducers": reducer_names,
+                "tables": serde_json::Value::Object(table_map),
+                "reducers": registry.list_reducers(),
                 "version": env!("CARGO_PKG_VERSION"),
             }))
         }
 
-        // ── Table rows ────────────────────────────────────────────────────────
-        (&Method::GET, path) if path.starts_with("/admin/api/tables") => {
-            if let Some(resp) = check_auth(&req) { return Ok(resp); }
-            let tname = req.uri().query().and_then(|q| {
-                q.split('&').find_map(|p| {
-                    let mut kv = p.splitn(2, '=');
-                    if kv.next() == Some("table") { kv.next().map(|v| admin_url_decode(v)) } else { None }
-                })
-            });
-            match tname {
-                None => {
-                    let names = tables.list_tables();
-                    admin_json(serde_json::json!({ "tables": names }))
+        // ── Table list ────────────────────────────────────────────────────────
+        (&Method::GET, "/tables") => {
+            let list: Vec<_> = tables.list_tables().into_iter().map(|name| {
+                let count = tables.list_rows_with_keys(&name).map(|r| r.len()).unwrap_or(0);
+                serde_json::json!({ "name": name, "rows": count })
+            }).collect();
+            admin_json(serde_json::json!({ "tables": list, "total_rows": tables.total_row_count() }))
+        }
+
+        // ── Rows of one table ({ row_key, data }) ─────────────────────────────
+        (&Method::GET, p) if p.starts_with("/tables/") => {
+            let table_name = admin_url_decode(p.trim_start_matches("/tables/"));
+            match tables.list_rows_with_keys(&table_name) {
+                Ok(rows) => {
+                    let row_objs: Vec<_> = rows.into_iter()
+                        .map(|(key, data)| serde_json::json!({ "row_key": key, "data": data }))
+                        .collect();
+                    admin_json(serde_json::json!({
+                        "table": table_name, "count": row_objs.len(), "rows": row_objs,
+                    }))
                 }
-                Some(tbl) => {
-                    match tables.list_rows_with_keys(&tbl) {
-                        Ok(rows) => {
-                            let items: Vec<_> = rows.into_iter().map(|(k, v)| {
-                                serde_json::json!({ "key": k, "data": v })
-                            }).collect();
-                            admin_json(serde_json::json!({ "table": tbl, "rows": items }))
-                        }
-                        Err(e) => admin_bad_request(e.to_string()),
-                    }
+                Err(e) => admin_server_error(e.to_string()),
+            }
+        }
+
+        // ── Replication: primary serves WAL entries to replicas ──────────────
+        (&Method::GET, "/replication/wal") => {
+            let query = req.uri().query().unwrap_or("");
+            let mut from_seq = 0u64;
+            let mut max = 2048usize;
+            for pair in query.split('&') {
+                let mut kv = pair.splitn(2, '=');
+                match (kv.next(), kv.next()) {
+                    (Some("from_seq"), Some(v)) => from_seq = v.parse().unwrap_or(0),
+                    (Some("max"), Some(v))      => max = v.parse::<usize>().unwrap_or(2048).clamp(1, 8192),
+                    _ => {}
                 }
             }
+            let wal = wal_path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::replication::serve_wal_entries(&wal, from_seq, max)
+            }).await;
+            match result {
+                Ok(Ok((entries, last_seq))) => admin_json(serde_json::json!({
+                    "entries": crate::replication::encode_entries(&entries),
+                    "last_seq": last_seq,
+                })),
+                Ok(Err(e)) => admin_server_error(e.to_string()),
+                Err(e)     => admin_server_error(format!("task: {}", e)),
+            }
+        }
+
+        // ── Replication status / promote ──────────────────────────────────────
+        (&Method::GET, "/replication/status") => {
+            admin_json(crate::replication::status_json())
+        }
+        (&Method::POST, "/replication/promote") => {
+            let was_replica = crate::replication::is_replica();
+            crate::replication::set_replica(false);
+            if was_replica {
+                log::warn!("[replication] PROMOTED to primary via /replication/promote");
+            }
+            admin_json(serde_json::json!({
+                "promoted": was_replica,
+                "role": "primary",
+                "last_applied_seq": crate::replication::last_applied_seq(),
+            }))
+        }
+
+        // ── Backup now ────────────────────────────────────────────────────────
+        (&Method::POST, "/backup") => {
+            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            let Some(dir) = backup_dir.clone() else {
+                return Ok(admin_bad_request(
+                    "No backup directory configured. Set NEONDB_BACKUP_DIR.".into()
+                ));
+            };
+            let tbl = tables.clone();
+            let wal = wal_path.clone();
+            let keep = backup_keep;
+            let last_seq = global_seq.load(Ordering::Relaxed);
+            let result = tokio::task::spawn_blocking(move || {
+                let path = crate::backup::backup_now(&tbl, &wal, &dir, last_seq)?;
+                let _ = crate::backup::rotate_backups(&dir, keep);
+                Ok::<_, crate::error::NeonDBError>(path)
+            }).await;
+            match result {
+                Ok(Ok(path)) => {
+                    let meta = crate::backup::read_meta(&path);
+                    admin_json(serde_json::json!({
+                        "path": path.to_string_lossy(),
+                        "last_seq": last_seq,
+                        "row_count": meta.map(|m| m.row_count).unwrap_or(0),
+                    }))
+                }
+                Ok(Err(e)) => admin_server_error(e.to_string()),
+                Err(e)     => admin_server_error(format!("task: {}", e)),
+            }
+        }
+
+        // ── Apply migration(s) ────────────────────────────────────────────────
+        (&Method::POST, "/migrate") => {
+            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
+                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+            };
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let mig_arr = match payload.get("migrations").and_then(|v| v.as_array()) {
+                Some(a) => a.clone(),
+                None => return Ok(admin_bad_request("Expected {\"migrations\": [...]}".into())),
+            };
+            let mut applied = 0usize; let mut skipped = 0usize; let mut errors: Vec<String> = Vec::new();
+            for entry in &mig_arr {
+                let filename = match entry.get("filename").and_then(|v| v.as_str()) {
+                    Some(f) => f.to_string(),
+                    None => { errors.push("missing filename field".into()); skipped += 1; continue; }
+                };
+                let content = match entry.get("content").and_then(|v| v.as_str()) {
+                    Some(c) => c.to_string(),
+                    None => { errors.push(format!("{}: missing content field", filename)); skipped += 1; continue; }
+                };
+                match crate::migrations::apply_migration_str(&filename, &content, &tables) {
+                    Ok(true)  => applied += 1,
+                    Ok(false) => skipped += 1,
+                    Err(e)    => { errors.push(format!("{}: {}", filename, e)); skipped += 1; }
+                }
+            }
+            let mut body = serde_json::json!({ "applied": applied, "skipped": skipped });
+            if !errors.is_empty() {
+                body["errors"] = serde_json::Value::Array(
+                    errors.into_iter().map(serde_json::Value::String).collect());
+            }
+            admin_json(body)
         }
 
         // ── Invoke reducer ────────────────────────────────────────────────────
@@ -916,47 +1129,64 @@ async fn handle_embedded_admin(
     Ok(resp)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_embedded_admin_server(
     host: String,
     port: u16,
     tables: Arc<TableStore>,
     subs: Arc<SubscriptionManager>,
     registry: Arc<ReducerRegistry>,
+    schema_reg: Arc<crate::schema::SchemaRegistry>,
     wal_writer: Arc<BatchedWalWriter>,
     global_seq: Arc<AtomicU64>,
     metrics: Arc<Metrics>,
     startup: std::time::Instant,
     queue_tx: kanal::AsyncSender<PendingCall>,
     api_key: Option<String>,
+    backup_dir: Option<std::path::PathBuf>,
+    backup_keep: usize,
+    wal_path: std::path::PathBuf,
     mut shutdown_rx: watch::Receiver<()>,
 ) {
-    let addr: SocketAddr = format!("{}:{}", host, port)
-        .parse()
-        .expect("valid metrics address");
+    let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
+        Ok(a) => a,
+        Err(e) => { log::warn!("[admin] invalid metrics address: {}", e); return; }
+    };
 
     tokio::spawn(async move {
         let make_svc = make_service_fn(move |_| {
-            let tbl  = tables.clone();
-            let sb   = subs.clone();
-            let reg  = registry.clone();
-            let wal  = wal_writer.clone();
-            let seq  = global_seq.clone();
-            let met  = metrics.clone();
-            let qtx  = queue_tx.clone();
-            let akey = api_key.clone();
+            let tbl   = tables.clone();
+            let sb    = subs.clone();
+            let reg   = registry.clone();
+            let sch   = schema_reg.clone();
+            let wal   = wal_writer.clone();
+            let seq   = global_seq.clone();
+            let met   = metrics.clone();
+            let qtx   = queue_tx.clone();
+            let akey  = api_key.clone();
+            let bdir  = backup_dir.clone();
+            let bkeep = backup_keep;
+            let wpath = wal_path.clone();
             async move {
                 Ok::<_, hyper::Error>(service_fn(move |req| {
                     handle_embedded_admin(
                         req,
-                        tbl.clone(), sb.clone(), reg.clone(),
+                        tbl.clone(), sb.clone(), reg.clone(), sch.clone(),
                         wal.clone(), seq.clone(), met.clone(),
                         startup, qtx.clone(), akey.clone(),
+                        bdir.clone(), bkeep, wpath.clone(),
                     )
                 }))
             }
         });
 
-        let server = Server::bind(&addr).serve(make_svc);
+        let server = match Server::try_bind(&addr) {
+            Ok(s) => s.serve(make_svc),
+            Err(e) => {
+                log::warn!("[admin] could not bind metrics port {}: {} — admin console disabled", addr, e);
+                return;
+            }
+        };
         log::info!("[admin] Admin console: http://{}/admin", addr);
         println!("[neondb] Admin console: http://{}/admin", addr);
         let graceful = server

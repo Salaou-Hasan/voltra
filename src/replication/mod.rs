@@ -165,6 +165,18 @@ pub fn apply_replicated_entries(
 
 /// Long-running replica pull loop.  Polls the primary until shutdown fires or
 /// the node is promoted (`set_replica(false)`).
+///
+/// When `auto_failover` is true, `failover_miss_count` consecutive unreachable
+/// polls trigger an automatic self-promotion: the node flips to primary and
+/// the loop exits.  A poll that reaches the primary (even with an HTTP error
+/// or a malformed body) resets the miss counter — only genuine connectivity
+/// failures count toward failover, so a transient bad response won't promote.
+///
+/// CAUTION: with a single replica this is last-write-wins on a network
+/// partition — if the primary is alive but unreachable, both nodes accept
+/// writes and diverge.  Acceptable for the single-replica HA case; use the
+/// Raft cluster path if you need partition-safe quorum.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_replica_loop(
     primary_url: String,
     tables: Arc<TableStore>,
@@ -172,11 +184,22 @@ pub async fn run_replica_loop(
     wal_writer: Arc<BatchedWalWriter>,
     global_seq: Arc<AtomicU64>,
     poll_ms: u64,
+    auto_failover: bool,
+    failover_miss_count: u32,
     mut shutdown: tokio::sync::watch::Receiver<()>,
 ) {
     let client = reqwest::Client::new();
     let base = primary_url.trim_end_matches('/').to_string();
+    let miss_limit = failover_miss_count.max(1);
     log::info!("[replication] replica mode: pulling from {} every {}ms", base, poll_ms);
+    if auto_failover {
+        log::info!(
+            "[replication] auto-failover ENABLED: promoting after {} consecutive unreachable polls (~{}ms)",
+            miss_limit, miss_limit as u64 * poll_ms.max(50)
+        );
+    }
+
+    let mut consecutive_misses: u32 = 0;
 
     loop {
         if !is_replica() {
@@ -189,6 +212,7 @@ pub async fn run_replica_loop(
 
         match client.get(&url).timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(resp) if resp.status().is_success() => {
+                consecutive_misses = 0; // reachable
                 match resp.json::<serde_json::Value>().await {
                     Ok(body) => {
                         let encoded: Vec<String> = body
@@ -211,8 +235,30 @@ pub async fn run_replica_loop(
                     Err(e) => log::warn!("[replication] bad response from primary: {}", e),
                 }
             }
-            Ok(resp) => log::warn!("[replication] primary returned HTTP {}", resp.status()),
-            Err(e)   => log::warn!("[replication] cannot reach primary at {}: {}", base, e),
+            // Reachable but returned an error status — not a connectivity failure.
+            Ok(resp) => {
+                consecutive_misses = 0;
+                log::warn!("[replication] primary returned HTTP {}", resp.status());
+            }
+            // Genuine connectivity failure — counts toward auto-failover.
+            Err(e) => {
+                consecutive_misses += 1;
+                log::warn!(
+                    "[replication] cannot reach primary at {} ({}/{}): {}",
+                    base, consecutive_misses, miss_limit, e
+                );
+                if auto_failover && consecutive_misses >= miss_limit {
+                    log::warn!(
+                        "[replication] AUTO-FAILOVER: primary unreachable for {} consecutive polls \
+                         — promoting this node to PRIMARY (now accepting writes)",
+                        consecutive_misses
+                    );
+                    set_replica(false);
+                    // Ensure post-promotion writes never reuse a replicated seq.
+                    global_seq.fetch_max(last_applied_seq() + 1, Ordering::Relaxed);
+                    break;
+                }
+            }
         }
 
         tokio::select! {

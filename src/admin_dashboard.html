@@ -3,111 +3,268 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NeonDB Admin</title>
+<title>NeonDB · Console</title>
 <style>
 :root {
-  --bg: #0b0e14; --panel: #11151f; --panel2: #161b28; --border: #232a3b;
-  --text: #d6deeb; --dim: #7a87a3; --accent: #00e5a0; --accent2: #5ac8fa;
-  --warn: #ffb454; --err: #ff5370; --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  /* ── Surfaces (Supabase-style layered near-black) ── */
+  --bg:          #161616;
+  --surface:     #1c1c1c;
+  --surface-2:   #232323;
+  --surface-3:   #2a2a2a;
+  --border:      #2e2e2e;
+  --border-2:    #3a3a3a;
+
+  /* ── Text ── */
+  --text:        #ededed;
+  --text-2:      #b4b4b4;
+  --dim:         #7d7d7d;
+
+  /* ── Accents ── */
+  --accent:      #3ecf8e;   /* emerald */
+  --accent-2:    #2dbb7c;
+  --accent-soft: rgba(62,207,142,.12);
+  --blue:        #4493f8;
+  --purple:      #b083f0;
+  --amber:       #f5a623;
+  --red:         #f5564e;
+  --red-soft:    rgba(245,86,78,.12);
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, system-ui, sans-serif;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.18);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
-a { color: var(--accent2); text-decoration: none; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.006em;
+}
+::selection { background: var(--accent-soft); }
+a { color: var(--accent); text-decoration: none; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 6px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--border-2); }
 
-/* ── Layout ── */
-#app { display: flex; height: 100vh; }
-#sidebar { width: 210px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
-#logo { padding: 18px 20px; font-size: 17px; font-weight: 700; letter-spacing: .5px; border-bottom: 1px solid var(--border); }
-#logo span { color: var(--accent); }
-#logo small { display:block; color: var(--dim); font-weight: 400; font-size: 11px; margin-top: 2px; }
-nav { flex: 1; padding: 10px 0; }
-nav button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 20px; background: none; border: none; color: var(--dim); font-size: 14px; cursor: pointer; text-align: left; border-left: 3px solid transparent; }
-nav button:hover { color: var(--text); background: var(--panel2); }
-nav button.active { color: var(--accent); border-left-color: var(--accent); background: var(--panel2); }
-#conn-status { padding: 14px 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--dim); }
-#conn-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--err); margin-right: 6px; }
-#conn-dot.ok { background: var(--accent); }
-main { flex: 1; overflow-y: auto; padding: 24px 28px; }
-.page { display: none; } .page.active { display: block; }
-h2 { font-size: 19px; margin-bottom: 16px; font-weight: 600; }
-h3 { font-size: 14px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin: 18px 0 10px; }
+/* ════════ Layout ════════ */
+#app { display: flex; height: 100vh; overflow: hidden; }
 
-/* ── Cards / stats ── */
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
-.card .label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
-.card .value { font-size: 24px; font-weight: 700; margin-top: 4px; font-family: var(--mono); }
+#sidebar {
+  width: 234px; flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+}
+#logo {
+  padding: 18px 20px 16px; display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid var(--border);
+}
+#logo .mark {
+  width: 28px; height: 28px; border-radius: 7px; flex-shrink: 0;
+  background: linear-gradient(145deg, var(--accent), var(--accent-2));
+  display: grid; place-items: center; color: #06281b; font-weight: 800; font-size: 15px;
+  box-shadow: 0 2px 8px rgba(62,207,142,.28);
+}
+#logo .txt b { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+#logo .txt small { display: block; color: var(--dim); font-size: 11px; margin-top: 1px; font-family: var(--mono); }
+
+nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
+nav .group-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em;
+  color: var(--dim); padding: 12px 10px 6px; font-weight: 600;
+}
+nav button {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 8px 10px; margin: 1px 0; background: none; border: none;
+  color: var(--text-2); font-size: 13.5px; font-family: var(--sans);
+  cursor: pointer; text-align: left; border-radius: var(--radius-sm);
+  transition: background .12s, color .12s;
+}
+nav button svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .85; }
+nav button:hover { color: var(--text); background: var(--surface-2); }
+nav button.active { color: var(--accent); background: var(--accent-soft); font-weight: 550; }
+nav button.active svg { opacity: 1; }
+
+#conn-status {
+  padding: 13px 18px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 8px;
+}
+#conn-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex-shrink: 0;
+  box-shadow: 0 0 0 3px var(--red-soft); transition: all .2s;
+}
+#conn-dot.ok { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+#conn-text { font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+main { flex: 1; overflow-y: auto; }
+.page { display: none; max-width: 1180px; margin: 0 auto; padding: 30px 34px 60px; }
+.page.active { display: block; animation: fade .18s ease; }
+@keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+.page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; gap: 16px; flex-wrap: wrap; }
+.page-head h2 { font-size: 21px; font-weight: 650; letter-spacing: -0.02em; }
+.page-head .sub { color: var(--dim); font-size: 13px; margin-top: 3px; }
+h3 { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; font-weight: 600; margin: 26px 0 12px; }
+
+/* ════════ Cards / stats ════════ */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 15px 16px; transition: border-color .15s, transform .15s;
+}
+.card:hover { border-color: var(--border-2); }
+.card .label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; display: flex; align-items: center; gap: 6px; }
+.card .label .ic { width: 13px; height: 13px; opacity: .6; }
+.card .value { font-size: 26px; font-weight: 600; margin-top: 7px; font-family: var(--mono); letter-spacing: -0.02em; line-height: 1.1; }
 .card .value small { font-size: 13px; color: var(--dim); font-weight: 400; }
 .card.accent .value { color: var(--accent); }
-.card.blue .value { color: var(--accent2); }
-.card.warn .value { color: var(--warn); }
+.card.blue   .value { color: var(--blue); }
+.card.purple .value { color: var(--purple); }
+.card.warn   .value { color: var(--amber); }
 
-/* ── Charts ── */
-.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.chart-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px 6px; }
-.chart-box .title { font-size: 12px; color: var(--dim); margin-bottom: 6px; }
-.chart-box canvas { width: 100%; height: 110px; display: block; }
+/* ════════ Charts ════════ */
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.chart-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px 18px 8px; }
+.chart-box .title { font-size: 12px; color: var(--text-2); margin-bottom: 4px; font-weight: 500; display: flex; align-items: center; gap: 7px; }
+.chart-box .title .swatch { width: 9px; height: 9px; border-radius: 3px; }
+.chart-box canvas { width: 100%; height: 116px; display: block; }
 
-/* ── Tables ── */
+/* ════════ Tables ════════ */
+.tbl-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; color: var(--dim); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
-td { padding: 7px 10px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; vertical-align: top; }
-tr:hover td { background: var(--panel2); }
-.clickable { cursor: pointer; }
-.json-cell { max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+th {
+  text-align: left; color: var(--dim); font-weight: 600; padding: 10px 14px;
+  background: var(--surface-2); border-bottom: 1px solid var(--border);
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; position: sticky; top: 0;
+}
+td { padding: 9px 14px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; vertical-align: top; color: var(--text-2); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr { transition: background .1s; }
+tbody tr:hover td { background: var(--surface-2); }
+.clickable { cursor: pointer; color: var(--accent); }
+.clickable:hover { text-decoration: underline; }
+.json-cell { max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 
-/* ── Controls ── */
-button.btn { background: var(--accent); color: #04261b; border: none; border-radius: 6px; padding: 7px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-button.btn:hover { filter: brightness(1.12); }
-button.btn.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
-button.btn.danger { background: var(--err); color: #2b0a12; }
-button.btn:disabled { opacity: .45; cursor: not-allowed; }
+/* ════════ Controls ════════ */
+button.btn {
+  background: var(--accent); color: #06281b; border: none; border-radius: var(--radius-sm);
+  padding: 8px 15px; font-size: 13px; font-weight: 600; font-family: var(--sans);
+  cursor: pointer; transition: filter .12s, background .12s; display: inline-flex; align-items: center; gap: 7px;
+}
+button.btn:hover { background: var(--accent-2); }
+button.btn svg { width: 15px; height: 15px; }
+button.btn.secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--border-2); }
+button.btn.secondary:hover { background: var(--surface-3); border-color: var(--dim); }
+button.btn.danger { background: transparent; color: var(--red); border: 1px solid rgba(245,86,78,.4); }
+button.btn.danger:hover { background: var(--red-soft); }
+button.btn:disabled { opacity: .4; cursor: not-allowed; }
 input[type=text], input[type=password], textarea, select {
-  background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
-  padding: 7px 10px; font-size: 13px; font-family: var(--mono); outline: none; }
-input:focus, textarea:focus { border-color: var(--accent2); }
-textarea { width: 100%; resize: vertical; }
-.row-flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  background: var(--bg); color: var(--text); border: 1px solid var(--border-2); border-radius: var(--radius-sm);
+  padding: 8px 11px; font-size: 13px; font-family: var(--mono); outline: none; transition: border-color .12s, box-shadow .12s;
+}
+input::placeholder, textarea::placeholder { color: var(--dim); }
+input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+textarea { width: 100%; resize: vertical; line-height: 1.5; }
+.row-flex { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .muted { color: var(--dim); font-size: 12px; }
-pre.result { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: var(--mono); font-size: 12.5px; overflow-x: auto; white-space: pre-wrap; max-height: 420px; overflow-y: auto; }
-.ok-text { color: var(--accent); } .err-text { color: var(--err); }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-.badge.green { background: rgba(0,229,160,.12); color: var(--accent); }
-.badge.red { background: rgba(255,83,112,.12); color: var(--err); }
-.badge.blue { background: rgba(90,200,250,.12); color: var(--accent2); }
+code { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12px; color: var(--accent); }
+pre.result {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; font-family: var(--mono); font-size: 12.5px; overflow-x: auto;
+  white-space: pre-wrap; max-height: 440px; overflow-y: auto; color: var(--text-2); line-height: 1.5;
+}
+.ok-text { color: var(--accent); } .err-text { color: var(--red); }
+.badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; font-family: var(--sans); letter-spacing: 0; }
+.badge.green { background: var(--accent-soft); color: var(--accent); }
+.badge.red   { background: var(--red-soft); color: var(--red); }
+.badge.blue  { background: rgba(68,147,248,.12); color: var(--blue); }
+
+/* ── Split layout (list + detail) ── */
+.split { display: grid; grid-template-columns: 290px 1fr; gap: 20px; align-items: start; }
+.list-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; max-height: 72vh; overflow-y: auto; }
+.list-panel .item {
+  padding: 11px 15px; border-bottom: 1px solid var(--border); cursor: pointer;
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; transition: background .1s;
+}
+.list-panel .item:last-child { border-bottom: none; }
+.list-panel .item:hover { background: var(--surface-2); }
+.list-panel .item.sel { background: var(--accent-soft); color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.list-panel .item .nm { display: flex; align-items: center; gap: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-panel .item .nm svg { width: 14px; height: 14px; opacity: .55; flex-shrink: 0; }
+.list-panel .item.sel .nm svg { opacity: 1; }
+.list-panel .item .cnt { color: var(--dim); font-family: var(--mono); font-size: 11.5px; flex-shrink: 0; }
+.list-panel .item.muted { color: var(--dim); cursor: default; justify-content: flex-start; }
+.toolbar-note { margin-left: auto; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+
+@media (max-width: 1080px) { .charts { grid-template-columns: 1fr; } .split { grid-template-columns: 1fr; } }
 
 /* ── Modal ── */
-#modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 10; }
-#modal { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 640px; max-width: 92vw; max-height: 84vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; z-index: 11; }
-#modal h4 { margin-bottom: 12px; font-size: 15px; }
-.split { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
-@media (max-width: 1100px) { .charts { grid-template-columns: 1fr; } .split { grid-template-columns: 1fr; } }
-.list-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; max-height: 70vh; overflow-y: auto; }
-.list-panel .item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; }
-.list-panel .item:hover, .list-panel .item.sel { background: var(--panel2); }
-.list-panel .item .cnt { color: var(--dim); font-family: var(--mono); font-size: 12px; }
-.toolbar-note { margin-left: auto; }
+#modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); backdrop-filter: blur(2px); z-index: 40; }
+#modal {
+  display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: 660px; max-width: 92vw; max-height: 84vh; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border-2); border-radius: 12px;
+  padding: 22px 24px; z-index: 41; box-shadow: var(--shadow);
+}
+#modal h4 { margin-bottom: 16px; font-size: 16px; font-weight: 600; }
+
+/* ── Toasts ── */
+#toasts { position: fixed; bottom: 22px; right: 22px; z-index: 60; display: flex; flex-direction: column; gap: 9px; }
+.toast {
+  background: var(--surface-2); border: 1px solid var(--border-2); border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm); padding: 11px 16px; font-size: 13px; color: var(--text);
+  box-shadow: var(--shadow); min-width: 230px; max-width: 360px; animation: slidein .2s ease;
+}
+.toast.err { border-left-color: var(--red); }
+@keyframes slidein { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
+.spin { animation: spin 1s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
+.empty { padding: 30px; text-align: center; color: var(--dim); font-size: 13px; }
 </style>
 </head>
 <body>
 <div id="app">
-  <div id="sidebar">
-    <div id="logo">Neon<span>DB</span><small id="version">admin console</small></div>
+  <aside id="sidebar">
+    <div id="logo">
+      <div class="mark">N</div>
+      <div class="txt"><b>NeonDB</b><small id="version">console</small></div>
+    </div>
     <nav>
-      <button data-page="overview" class="active">📊 Overview</button>
-      <button data-page="tables">🗄️ Tables</button>
-      <button data-page="sql">⌨️ SQL Console</button>
-      <button data-page="reducers">⚡ Reducers</button>
-      <button data-page="schema">📐 Schema</button>
-      <button data-page="ops">🛠️ Operations</button>
+      <div class="group-label">Monitor</div>
+      <button data-page="overview" class="active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+        Overview</button>
+      <div class="group-label">Data</div>
+      <button data-page="tables">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+        Tables</button>
+      <button data-page="sql">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        SQL Editor</button>
+      <button data-page="schema">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+        Schema</button>
+      <div class="group-label">Logic</div>
+      <button data-page="reducers">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        Reducers</button>
+      <div class="group-label">Admin</div>
+      <button data-page="ops">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        Operations</button>
     </nav>
     <div id="conn-status"><span id="conn-dot"></span><span id="conn-text">connecting…</span></div>
-  </div>
+  </aside>
+
   <main>
 
   <!-- ════════ OVERVIEW ════════ -->
   <section class="page active" id="page-overview">
-    <h2>Overview</h2>
+    <div class="page-head"><div><h2>Overview</h2><div class="sub">Live server health · refreshes every 2s</div></div></div>
     <div class="cards">
       <div class="card accent"><div class="label">Reducer TPS</div><div class="value" id="ov-tps">—</div></div>
       <div class="card blue"><div class="label">p99 latency</div><div class="value" id="ov-p99">—<small> ms</small></div></div>
@@ -117,37 +274,35 @@ pre.result { background: var(--panel); border: 1px solid var(--border); border-r
       <div class="card"><div class="label">WAL size</div><div class="value" id="ov-wal">—<small> MB</small></div></div>
       <div class="card"><div class="label">Queue depth</div><div class="value" id="ov-queue">—</div></div>
       <div class="card"><div class="label">Uptime</div><div class="value" id="ov-uptime">—</div></div>
-      <div class="card"><div class="label">Role</div><div class="value" id="ov-role" style="font-size:16px">—</div></div>
+      <div class="card purple"><div class="label">Role</div><div class="value" id="ov-role" style="font-size:17px">—</div></div>
       <div class="card warn"><div class="label">Reducer errors</div><div class="value" id="ov-errors">—</div></div>
     </div>
     <div class="charts">
-      <div class="chart-box"><div class="title">Reducer calls / sec</div><canvas id="ch-tps"></canvas></div>
-      <div class="chart-box"><div class="title">Memory (MB)</div><canvas id="ch-mem"></canvas></div>
-      <div class="chart-box"><div class="title">Active connections</div><canvas id="ch-conn"></canvas></div>
-      <div class="chart-box"><div class="title">Reducer queue depth</div><canvas id="ch-queue"></canvas></div>
+      <div class="chart-box"><div class="title"><span class="swatch" style="background:#3ecf8e"></span>Reducer calls / sec</div><canvas id="ch-tps"></canvas></div>
+      <div class="chart-box"><div class="title"><span class="swatch" style="background:#4493f8"></span>Memory (MB)</div><canvas id="ch-mem"></canvas></div>
+      <div class="chart-box"><div class="title"><span class="swatch" style="background:#b083f0"></span>Active connections</div><canvas id="ch-conn"></canvas></div>
+      <div class="chart-box"><div class="title"><span class="swatch" style="background:#f5a623"></span>Reducer queue depth</div><canvas id="ch-queue"></canvas></div>
     </div>
   </section>
 
   <!-- ════════ TABLES ════════ -->
   <section class="page" id="page-tables">
-    <h2>Tables</h2>
+    <div class="page-head"><div><h2>Tables</h2><div class="sub">Browse and edit rows in your in-memory store</div></div></div>
     <div class="split">
       <div>
-        <div class="row-flex">
-          <button class="btn secondary" onclick="loadTables()">↻ Refresh</button>
-        </div>
+        <div class="row-flex"><button class="btn secondary" onclick="loadTables()">↻ Refresh</button></div>
         <div class="list-panel" id="table-list"></div>
       </div>
       <div>
         <div class="row-flex">
-          <input type="text" id="row-filter" placeholder="filter rows…" style="flex:1" oninput="renderRows()">
+          <input type="text" id="row-filter" placeholder="Filter rows…" style="flex:1" oninput="renderRows()">
           <button class="btn" onclick="openRowEditor(null)">+ Add row</button>
           <span class="muted toolbar-note" id="row-count"></span>
         </div>
-        <div style="overflow-x:auto">
+        <div class="tbl-wrap" style="overflow-x:auto">
         <table id="rows-table">
-          <thead><tr><th style="width:180px">Key</th><th>Data</th><th style="width:110px"></th></tr></thead>
-          <tbody id="rows-body"><tr><td colspan="3" class="muted">select a table</td></tr></tbody>
+          <thead><tr><th style="width:190px">Key</th><th>Data</th><th style="width:96px"></th></tr></thead>
+          <tbody id="rows-body"><tr><td colspan="3" class="empty">Select a table to view rows</td></tr></tbody>
         </table>
         </div>
       </div>
@@ -156,30 +311,30 @@ pre.result { background: var(--panel); border: 1px solid var(--border); border-r
 
   <!-- ════════ SQL ════════ -->
   <section class="page" id="page-sql">
-    <h2>SQL Console</h2>
-    <textarea id="sql-input" rows="4" placeholder="SELECT * FROM players WHERE hp > 100 LIMIT 20" spellcheck="false"></textarea>
-    <div class="row-flex" style="margin-top:8px">
-      <button class="btn" onclick="runSql()">Run (Ctrl+Enter)</button>
+    <div class="page-head"><div><h2>SQL Editor</h2><div class="sub">Run queries directly against your data · ⌘/Ctrl + Enter</div></div></div>
+    <textarea id="sql-input" rows="5" placeholder="SELECT * FROM players WHERE hp > 100 LIMIT 20" spellcheck="false"></textarea>
+    <div class="row-flex" style="margin-top:10px">
+      <button class="btn" onclick="runSql()">Run query</button>
       <span class="muted" id="sql-meta"></span>
     </div>
     <div id="sql-out"></div>
-    <h3>History</h3>
+    <h3>Recent queries</h3>
     <div id="sql-history" class="muted" style="font-family:var(--mono);font-size:12px"></div>
   </section>
 
   <!-- ════════ REDUCERS ════════ -->
   <section class="page" id="page-reducers">
-    <h2>Reducers</h2>
+    <div class="page-head"><div><h2>Reducers</h2><div class="sub">Invoke server-side logic with JSON arguments</div></div></div>
     <div class="split">
       <div>
         <div class="row-flex"><button class="btn secondary" onclick="loadReducers()">↻ Refresh</button></div>
         <div class="list-panel" id="reducer-list"></div>
       </div>
-      <div>
-        <h3 id="red-name">Invoke</h3>
-        <div class="muted" style="margin-bottom:6px">Args — JSON array, e.g. <code>["alice", 5]</code></div>
+      <div class="panel">
+        <h3 id="red-name" style="margin-top:0">Select a reducer</h3>
+        <div class="muted" style="margin-bottom:7px">Arguments — JSON array, e.g. <code>["alice", 5]</code></div>
         <textarea id="red-args" rows="3" spellcheck="false">[]</textarea>
-        <div class="row-flex" style="margin-top:8px">
+        <div class="row-flex" style="margin-top:10px">
           <button class="btn" id="red-invoke" onclick="invokeReducer()" disabled>⚡ Invoke</button>
           <span class="muted" id="red-meta"></span>
         </div>
@@ -190,45 +345,54 @@ pre.result { background: var(--panel); border: 1px solid var(--border); border-r
 
   <!-- ════════ SCHEMA ════════ -->
   <section class="page" id="page-schema">
-    <h2>Schema</h2>
-    <div class="row-flex"><button class="btn secondary" onclick="loadSchema()">↻ Refresh</button></div>
+    <div class="page-head"><div><h2>Schema</h2><div class="sub">Column definitions, types and row-level security</div></div>
+      <button class="btn secondary" onclick="loadSchema()">↻ Refresh</button></div>
     <div id="schema-out"></div>
   </section>
 
   <!-- ════════ OPERATIONS ════════ -->
   <section class="page" id="page-ops">
-    <h2>Operations</h2>
+    <div class="page-head"><div><h2>Operations</h2><div class="sub">Backups, replication, migrations and server controls</div></div></div>
 
-    <h3>Authentication</h3>
-    <div class="row-flex">
-      <input type="password" id="api-key" placeholder="API key (if configured)" style="width:280px">
-      <button class="btn secondary" onclick="saveKey()">Save</button>
-      <span class="muted">Stored locally; sent as Bearer on admin actions.</span>
+    <div class="panel" style="margin-bottom:18px">
+      <h3 style="margin-top:0">Authentication</h3>
+      <div class="row-flex" style="margin-bottom:0">
+        <input type="password" id="api-key" placeholder="API key (if configured)" style="width:300px">
+        <button class="btn secondary" onclick="saveKey()">Save</button>
+        <span class="muted">Stored locally; sent as Bearer on admin actions.</span>
+      </div>
     </div>
 
-    <h3>Backup</h3>
-    <div class="row-flex">
-      <button class="btn" onclick="runBackup()">📦 Backup now</button>
-      <span id="backup-out" class="muted"></span>
+    <div class="split" style="grid-template-columns:1fr 1fr">
+      <div class="panel">
+        <h3 style="margin-top:0">Backup</h3>
+        <div class="row-flex" style="margin-bottom:0">
+          <button class="btn" onclick="runBackup()">📦 Backup now</button>
+          <span id="backup-out" class="muted"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">Replication</h3>
+        <div class="row-flex">
+          <button class="btn secondary" onclick="loadRepl()">↻ Status</button>
+          <button class="btn danger" onclick="promote()">⬆ Promote to primary</button>
+        </div>
+        <pre class="result" id="repl-out" style="max-height:160px">—</pre>
+      </div>
     </div>
 
-    <h3>Replication</h3>
-    <div class="row-flex">
-      <button class="btn secondary" onclick="loadRepl()">↻ Status</button>
-      <button class="btn danger" onclick="promote()">⬆ Promote to primary</button>
-    </div>
-    <pre class="result" id="repl-out">—</pre>
-
-    <h3>Apply migration</h3>
-    <div class="muted" style="margin-bottom:6px">Paste a migration TOML (same format as <code>migrations/*.toml</code>)</div>
-    <input type="text" id="mig-name" placeholder="002_add_field.toml" style="width:280px;margin-bottom:6px">
-    <textarea id="mig-body" rows="6" spellcheck="false" placeholder="[[op]]&#10;kind = &quot;add_field&quot;&#10;table = &quot;players&quot;&#10;field = &quot;mana&quot;&#10;default = 100"></textarea>
-    <div class="row-flex" style="margin-top:8px">
-      <button class="btn" onclick="applyMigration()">Apply</button>
-      <span class="muted" id="mig-out"></span>
+    <div class="panel" style="margin-top:18px">
+      <h3 style="margin-top:0">Apply migration</h3>
+      <div class="muted" style="margin-bottom:8px">Paste a migration TOML (same format as <code>migrations/*.toml</code>)</div>
+      <input type="text" id="mig-name" placeholder="002_add_field.toml" style="width:300px;margin-bottom:8px">
+      <textarea id="mig-body" rows="6" spellcheck="false" placeholder="[[op]]&#10;kind = &quot;add_field&quot;&#10;table = &quot;players&quot;&#10;field = &quot;mana&quot;&#10;default = 100"></textarea>
+      <div class="row-flex" style="margin-top:10px;margin-bottom:0">
+        <button class="btn" onclick="applyMigration()">Apply</button>
+        <span class="muted" id="mig-out"></span>
+      </div>
     </div>
 
-    <h3>Server</h3>
+    <h3>Server info</h3>
     <pre class="result" id="server-info">—</pre>
   </section>
 
@@ -239,18 +403,23 @@ pre.result { background: var(--panel); border: 1px solid var(--border); border-r
 <div id="modal-bg" onclick="closeModal()"></div>
 <div id="modal">
   <h4 id="modal-title">Edit row</h4>
-  <div class="row-flex"><label class="muted" style="width:50px">Key</label><input type="text" id="modal-key" style="flex:1"></div>
-  <div class="muted" style="margin:8px 0 4px">Data (JSON object)</div>
+  <div class="row-flex"><label class="muted" style="width:42px">Key</label><input type="text" id="modal-key" style="flex:1"></div>
+  <div class="muted" style="margin:10px 0 5px">Data (JSON object)</div>
   <textarea id="modal-data" rows="12" spellcheck="false"></textarea>
-  <div class="row-flex" style="margin-top:12px; justify-content:flex-end">
-    <span class="err-text" id="modal-err"></span>
+  <div class="row-flex" style="margin-top:14px; justify-content:flex-end; margin-bottom:0">
+    <span class="err-text" id="modal-err" style="margin-right:auto"></span>
     <button class="btn secondary" onclick="closeModal()">Cancel</button>
     <button class="btn" onclick="saveRow()">Save</button>
   </div>
 </div>
 
+<div id="toasts"></div>
+
 <script>
 "use strict";
+// ═══════════ Palette (kept in sync with CSS vars) ═══════════
+const C = { accent:"#3ecf8e", blue:"#4493f8", purple:"#b083f0", amber:"#f5a623", grid:"#2a2a2a", dim:"#7d7d7d" };
+
 // ═══════════ State ═══════════
 const S = {
   page: "overview",
@@ -278,6 +447,15 @@ async function api(path, opts = {}) {
 const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
+// ═══════════ Toasts ═══════════
+function toast(msg, isErr) {
+  const el = document.createElement("div");
+  el.className = "toast" + (isErr ? " err" : "");
+  el.textContent = msg;
+  document.getElementById("toasts").appendChild(el);
+  setTimeout(() => { el.style.transition = "opacity .3s"; el.style.opacity = "0"; setTimeout(() => el.remove(), 300); }, 3200);
+}
+
 // ═══════════ Navigation ═══════════
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
@@ -293,7 +471,6 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
 
 // ═══════════ Overview / polling ═══════════
 function parseProm(text, name) {
-  // returns {value, labels:{...}} list for a metric name
   const out = [];
   for (const line of text.split("\n")) {
     if (!line.startsWith(name)) continue;
@@ -304,9 +481,7 @@ function parseProm(text, name) {
   return out;
 }
 function promQuantile(text, name, q) {
-  // crude histogram quantile from cumulative buckets
-  const buckets = [];
-  let total = 0;
+  const buckets = []; let total = 0;
   for (const line of text.split("\n")) {
     if (line.startsWith(name + "_bucket")) {
       const le = /le="([^"]+)"/.exec(line);
@@ -353,10 +528,10 @@ async function poll() {
 
     push(S.hist.tps, tps); push(S.hist.mem, memMB);
     push(S.hist.conn, hz.active_connections); push(S.hist.queue, hz.reducer_queue_depth);
-    drawChart("ch-tps", S.hist.tps, "#00e5a0");
-    drawChart("ch-mem", S.hist.mem, "#5ac8fa");
-    drawChart("ch-conn", S.hist.conn, "#c792ea");
-    drawChart("ch-queue", S.hist.queue, "#ffb454");
+    drawChart("ch-tps", S.hist.tps, C.accent);
+    drawChart("ch-mem", S.hist.mem, C.blue);
+    drawChart("ch-conn", S.hist.conn, C.purple);
+    drawChart("ch-queue", S.hist.queue, C.amber);
   } catch (e) {
     document.getElementById("conn-dot").className = "";
     document.getElementById("conn-text").textContent = "disconnected";
@@ -375,22 +550,23 @@ function drawChart(id, data, color) {
   ctx.clearRect(0,0,w,h);
   if (data.length < 2) return;
   const max = Math.max(...data, 1) * 1.15;
-  ctx.strokeStyle = "#232a3b"; ctx.lineWidth = 1;
+  ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
   for (let i=1; i<4; i++) { ctx.beginPath(); ctx.moveTo(0, h*i/4); ctx.lineTo(w, h*i/4); ctx.stroke(); }
   ctx.beginPath();
-  data.forEach((v,i) => { const x = i/(data.length-1)*w, y = h - (v/max)*h*.92 - 2;
+  data.forEach((v,i) => { const x = i/(data.length-1)*w, y = h - (v/max)*h*.9 - 3;
     i ? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
-  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.stroke();
   ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
   const g = ctx.createLinearGradient(0,0,0,h);
   g.addColorStop(0, color + "33"); g.addColorStop(1, color + "00");
   ctx.fillStyle = g; ctx.fill();
-  ctx.fillStyle = "#7a87a3"; ctx.font = "10px monospace";
-  ctx.fillText(fmt(Math.round(max/1.15)), 4, 10);
+  ctx.fillStyle = C.dim; ctx.font = "10px " + getComputedStyle(document.body).getPropertyValue("--mono");
+  ctx.fillText(fmt(Math.round(max/1.15)), 4, 11);
 }
 setInterval(poll, 2000); poll();
 
 // ═══════════ Tables ═══════════
+const dbIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/></svg>';
 async function loadTables() {
   try {
     const d = await api("/tables");
@@ -398,8 +574,8 @@ async function loadTables() {
     const el = document.getElementById("table-list");
     el.innerHTML = S.tables.map(t =>
       `<div class="item ${t.name===S.selTable?'sel':''}" onclick="selectTable('${esc(t.name)}')">
-        <span>${esc(t.name)}</span><span class="cnt">${fmt(t.rows)}</span></div>`).join("")
-      || `<div class="item muted">no tables yet</div>`;
+        <span class="nm">${dbIcon}${esc(t.name)}</span><span class="cnt">${fmt(t.rows)}</span></div>`).join("")
+      || `<div class="item muted">No tables yet</div>`;
   } catch (e) { console.error(e); }
 }
 async function selectTable(name) {
@@ -414,16 +590,16 @@ async function selectTable(name) {
 function renderRows() {
   const f = document.getElementById("row-filter").value.toLowerCase();
   const rows = S.rows.filter(r => !f || r.row_key.toLowerCase().includes(f) || JSON.stringify(r.data).toLowerCase().includes(f));
-  document.getElementById("row-count").textContent = `${rows.length} / ${S.rows.length} rows`;
+  document.getElementById("row-count").textContent = S.selTable ? `${rows.length} / ${S.rows.length} rows` : "";
   document.getElementById("rows-body").innerHTML = rows.slice(0, 500).map(r => `
-    <tr><td>${esc(r.row_key)}</td>
+    <tr><td style="color:var(--text)">${esc(r.row_key)}</td>
         <td class="json-cell" title="${esc(JSON.stringify(r.data))}">${esc(JSON.stringify(r.data))}</td>
         <td><a class="clickable" onclick='openRowEditor(${JSON.stringify(r.row_key)})'>edit</a> ·
             <a class="clickable err-text" onclick='deleteRow(${JSON.stringify(r.row_key)})'>del</a></td></tr>`).join("")
-    || `<tr><td colspan=3 class="muted">no rows</td></tr>`;
+    || `<tr><td colspan=3 class="empty">${S.selTable ? "No rows" : "Select a table"}</td></tr>`;
 }
 function openRowEditor(rowKey) {
-  if (!S.selTable) { alert("Select a table first"); return; }
+  if (!S.selTable) { toast("Select a table first", true); return; }
   S.editingKey = rowKey;
   document.getElementById("modal-title").textContent = rowKey ? `Edit ${S.selTable} / ${rowKey}` : `New row in ${S.selTable}`;
   document.getElementById("modal-key").value = rowKey || "";
@@ -446,15 +622,15 @@ async function saveRow() {
   catch (e) { document.getElementById("modal-err").textContent = "invalid JSON: " + e.message; return; }
   try {
     await api("/admin/api/row", { method: "POST", body: JSON.stringify({ table: S.selTable, key: k, data }) });
-    closeModal(); selectTable(S.selTable);
+    closeModal(); selectTable(S.selTable); toast("Row saved");
   } catch (e) { document.getElementById("modal-err").textContent = e.message; }
 }
 async function deleteRow(rowKey) {
   if (!confirm(`Delete ${S.selTable} / ${rowKey}?`)) return;
   try {
     await api(`/admin/api/row?table=${encodeURIComponent(S.selTable)}&key=${encodeURIComponent(rowKey)}`, { method: "DELETE" });
-    selectTable(S.selTable);
-  } catch (e) { alert(e.message); }
+    selectTable(S.selTable); toast("Row deleted");
+  } catch (e) { toast(e.message, true); }
 }
 
 // ═══════════ SQL ═══════════
@@ -470,21 +646,22 @@ async function runSql() {
       (d.rows_affected ? ` · ${d.rows_affected} affected` : "");
     if (d.rows.length) {
       const cols = d.columns.length ? d.columns : Object.keys(d.rows[0]);
-      out.innerHTML = `<div style="overflow-x:auto;margin-top:10px"><table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>` +
+      out.innerHTML = `<div class="tbl-wrap" style="overflow-x:auto;margin-top:12px"><table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>` +
         d.rows.slice(0,1000).map(r => `<tr>${cols.map(c=>`<td>${esc(typeof r[c]==="object"?JSON.stringify(r[c]):r[c]??"")}</td>`).join("")}</tr>`).join("") +
         `</tbody></table></div>`;
-    } else out.innerHTML = `<pre class="result" style="margin-top:10px">OK — no rows returned</pre>`;
+    } else out.innerHTML = `<pre class="result" style="margin-top:12px">OK — no rows returned</pre>`;
     S.sqlHistory.unshift(q); S.sqlHistory = [...new Set(S.sqlHistory)].slice(0, 20);
     localStorage.setItem("ndb_sql_hist", JSON.stringify(S.sqlHistory));
     renderSqlHistory();
   } catch (e) {
     document.getElementById("sql-meta").innerHTML = `<span class="err-text">error</span>`;
-    out.innerHTML = `<pre class="result err-text" style="margin-top:10px">${esc(e.message)}</pre>`;
+    out.innerHTML = `<pre class="result err-text" style="margin-top:12px">${esc(e.message)}</pre>`;
   }
 }
 function renderSqlHistory() {
   document.getElementById("sql-history").innerHTML = S.sqlHistory.map(q =>
-    `<div class="clickable" style="padding:3px 0" onclick='document.getElementById("sql-input").value=${JSON.stringify(q)}'>▸ ${esc(q)}</div>`).join("");
+    `<div class="clickable" style="padding:4px 0" onclick='document.getElementById("sql-input").value=${JSON.stringify(q)}'>▸ ${esc(q)}</div>`).join("")
+    || `<div class="muted">No queries yet</div>`;
 }
 document.getElementById("sql-input").addEventListener("keydown", e => {
   if ((e.ctrlKey||e.metaKey) && e.key === "Enter") runSql();
@@ -492,14 +669,15 @@ document.getElementById("sql-input").addEventListener("keydown", e => {
 renderSqlHistory();
 
 // ═══════════ Reducers ═══════════
+const boltIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>';
 async function loadReducers() {
   try {
     const d = await api("/schema");
-    document.getElementById("version").textContent = "v" + (d.version || "?") + " · admin console";
+    document.getElementById("version").textContent = "v" + (d.version || "?");
     S.reducers = (d.reducers || []).sort();
     document.getElementById("reducer-list").innerHTML = S.reducers.map(r =>
-      `<div class="item ${r===S.selReducer?'sel':''}" onclick="selectReducer('${esc(r)}')"><span>⚡ ${esc(r)}</span></div>`).join("")
-      || `<div class="item muted">no reducers</div>`;
+      `<div class="item ${r===S.selReducer?'sel':''}" onclick="selectReducer('${esc(r)}')"><span class="nm">${boltIcon}${esc(r)}</span></div>`).join("")
+      || `<div class="item muted">No reducers</div>`;
   } catch (e) { console.error(e); }
 }
 function selectReducer(name) {
@@ -535,20 +713,20 @@ async function loadSchema() {
     document.getElementById("schema-out").innerHTML = names.map(n => {
       const t = d.tables[n];
       const cols = (t.columns || []);
-      return `<h3>${esc(n)} <span class="badge blue">${fmt(t.rows||0)} rows</span>${t.rls && t.rls!=="Public" ? ` <span class="badge green">RLS: ${esc(t.rls)}</span>`:""}</h3>` +
+      return `<h3 style="text-transform:none;font-size:14px;color:var(--text);margin-top:22px">${esc(n)} <span class="badge blue">${fmt(t.rows||0)} rows</span>${t.rls && t.rls!=="Public" ? ` <span class="badge green">RLS: ${esc(t.rls)}</span>`:""}</h3>` +
         (cols.length
-          ? `<table style="margin-bottom:14px"><thead><tr><th>Column</th><th>Type</th><th>Required</th><th>Default</th><th>Key</th></tr></thead><tbody>` +
-            cols.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.type)}</td><td>${c.required?"✓":""}</td><td>${c.default!=null?esc(JSON.stringify(c.default)):""}</td><td>${c.key?"🔑":""}</td></tr>`).join("") +
-            `</tbody></table>`
-          : `<div class="muted" style="margin-bottom:14px">open schema (no column definitions)</div>`);
-    }).join("") || `<div class="muted">no tables</div>`;
+          ? `<div class="tbl-wrap"><table><thead><tr><th>Column</th><th>Type</th><th>Required</th><th>Default</th><th>Key</th></tr></thead><tbody>` +
+            cols.map(c => `<tr><td style="color:var(--text)">${esc(c.name)}</td><td><span class="badge blue">${esc(c.type)}</span></td><td>${c.required?'<span class="ok-text">✓</span>':""}</td><td>${c.default!=null?esc(JSON.stringify(c.default)):""}</td><td>${c.key?"🔑":""}</td></tr>`).join("") +
+            `</tbody></table></div>`
+          : `<div class="muted" style="margin-bottom:14px">Open schema (no column definitions)</div>`);
+    }).join("") || `<div class="empty">No tables</div>`;
   } catch (e) { document.getElementById("schema-out").innerHTML = `<pre class="result err-text">${esc(e.message)}</pre>`; }
 }
 
 // ═══════════ Operations ═══════════
 function saveKey() {
   localStorage.setItem("ndb_api_key", document.getElementById("api-key").value);
-  alert("Saved.");
+  toast("API key saved");
 }
 document.getElementById("api-key").value = key();
 async function runBackup() {
@@ -557,6 +735,7 @@ async function runBackup() {
   try {
     const d = await api("/backup", { method: "POST" });
     el.innerHTML = `<span class="ok-text">✓ ${esc(d.path)} (${fmt(d.row_count)} rows, seq ${d.last_seq})</span>`;
+    toast("Backup complete");
   } catch (e) { el.innerHTML = `<span class="err-text">${esc(e.message)}</span>`; }
 }
 async function loadRepl() {
@@ -570,7 +749,8 @@ async function promote() {
   try {
     const d = await api("/replication/promote", { method: "POST" });
     document.getElementById("repl-out").textContent = JSON.stringify(d, null, 2);
-  } catch (e) { alert(e.message); }
+    toast("Promoted to primary");
+  } catch (e) { toast(e.message, true); }
 }
 async function applyMigration() {
   const name = document.getElementById("mig-name").value.trim() || "adhoc.toml";
@@ -582,6 +762,7 @@ async function applyMigration() {
     el.innerHTML = d.errors
       ? `<span class="err-text">${esc(d.errors.join("; "))}</span>`
       : `<span class="ok-text">✓ applied=${d.applied} skipped=${d.skipped}</span>`;
+    if (!d.errors) toast("Migration applied");
   } catch (e) { el.innerHTML = `<span class="err-text">${esc(e.message)}</span>`; }
 }
 async function loadServerInfo() {
