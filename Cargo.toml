@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "neondb"
-version = "1.0.9"
+version = "1.0.10"
 edition = "2021"
 
 [dependencies]

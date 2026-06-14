@@ -34,12 +34,19 @@ use crate::wal::{
     snapshot::{find_latest_snapshot, load_snapshot},
     BatchedWalWriter, WalEntry, WalReader,
 };
+use hyper::{
+    service::{make_service_fn, service_fn},
+    Body, Method, Request, Response, Server, StatusCode,
+};
+use std::net::SocketAddr;
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
     Arc,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
+
+const ADMIN_DASHBOARD_HTML: &str = include_str!("admin_dashboard.html");
 
 /// Live handles to a running embedded NeonDB server.
 ///
@@ -475,6 +482,28 @@ async fn run_server_inner(
 
     log::info!("[neondb] Listening on {}:{}", host, port);
 
+    // ── Embedded admin/metrics HTTP server ────────────────────────────────────
+    {
+        let metrics_port = config.metrics_port;
+        if metrics_port > 0 {
+            let startup = std::time::Instant::now();
+            start_embedded_admin_server(
+                host.clone(),
+                metrics_port,
+                tables.clone(),
+                subs.clone(),
+                registry.clone(),
+                wal_writer.clone(),
+                global_seq.clone(),
+                metrics.clone(),
+                startup,
+                tx.clone(),
+                api_key.clone(),
+                shutdown_rx.clone(),
+            );
+        }
+    }
+
     // Send stats handle back to the caller (e.g. neondb-sim) before blocking.
     if let Some(tx) = handle_tx {
         let _ = tx.send(ServerHandle {
@@ -514,6 +543,428 @@ async fn run_server_inner(
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )
     .await
+}
+
+// ── Embedded admin HTTP server ────────────────────────────────────────────────
+//
+// Provides the same /admin dashboard, /healthz, /metrics, and /admin/api/*
+// endpoints that the NeonDB CLI binary exposes, so scaffold projects using
+// run_server_blocking() get a fully-featured admin console at
+// http://127.0.0.1:<metrics_port>/admin — not just a blank connection refusal.
+
+fn admin_json(v: serde_json::Value) -> Response<Body> {
+    let mut r = Response::new(Body::from(v.to_string()));
+    r.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("application/json"),
+    );
+    r
+}
+fn admin_bad_request(msg: String) -> Response<Body> {
+    let mut r = admin_json(serde_json::json!({ "error": msg }));
+    *r.status_mut() = StatusCode::BAD_REQUEST;
+    r
+}
+fn admin_server_error(msg: String) -> Response<Body> {
+    let mut r = admin_json(serde_json::json!({ "error": msg }));
+    *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+    r
+}
+fn admin_url_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i+1..i+3]) {
+                if let Ok(b) = u8::from_str_radix(hex, 16) {
+                    out.push(b as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_embedded_admin(
+    req: Request<Body>,
+    tables: Arc<TableStore>,
+    subs: Arc<SubscriptionManager>,
+    registry: Arc<ReducerRegistry>,
+    wal_writer: Arc<BatchedWalWriter>,
+    global_seq: Arc<AtomicU64>,
+    metrics: Arc<Metrics>,
+    startup: std::time::Instant,
+    queue_tx: kanal::AsyncSender<PendingCall>,
+    api_key: Option<String>,
+) -> std::result::Result<Response<Body>, hyper::Error> {
+    // Optional auth check — only if NEONDB_API_KEY is set.
+    let check_auth = |req: &Request<Body>| -> Option<Response<Body>> {
+        let Some(ref key) = api_key else { return None };
+        let ok = req.headers()
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.trim_start_matches("Bearer ").trim() == key.as_str())
+            .unwrap_or(false);
+        if !ok {
+            let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
+            *r.status_mut() = StatusCode::UNAUTHORIZED;
+            Some(r)
+        } else {
+            None
+        }
+    };
+
+    let path = req.uri().path().to_string();
+    let resp = match (req.method(), path.as_str()) {
+
+        // ── Admin dashboard ───────────────────────────────────────────────────
+        (&Method::GET, "/admin") | (&Method::GET, "/admin/") => {
+            let mut r = Response::new(Body::from(ADMIN_DASHBOARD_HTML));
+            r.headers_mut().insert(
+                hyper::header::CONTENT_TYPE,
+                hyper::header::HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            r
+        }
+
+        // ── Health check ──────────────────────────────────────────────────────
+        (&Method::GET, "/healthz") => {
+            admin_json(serde_json::json!({
+                "status": "ok",
+                "role": if crate::replication::is_replica() { "replica" } else { "primary" },
+                "replication_lag_entries": crate::replication::replication_lag(),
+                "total_rows": tables.total_row_count(),
+                "active_connections": subs.active_connections(),
+                "active_subscriptions": subs.active_subscriptions(),
+                "wal_sequence": global_seq.load(Ordering::Relaxed),
+                "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
+                "uptime_seconds": startup.elapsed().as_secs(),
+                "reducer_queue_depth": queue_tx.len(),
+                "memory_usage_bytes": 0u64,
+                "presence_tracked": 0u64,
+                "ttl_active": 0u64,
+            }))
+        }
+
+        // ── Prometheus metrics ────────────────────────────────────────────────
+        (&Method::GET, "/metrics") => {
+            let text = metrics.render();
+            let mut r = Response::new(Body::from(text));
+            r.headers_mut().insert(
+                hyper::header::CONTENT_TYPE,
+                hyper::header::HeaderValue::from_static(
+                    "text/plain; version=0.0.4; charset=utf-8"
+                ),
+            );
+            r
+        }
+
+        // ── Table stats ───────────────────────────────────────────────────────
+        (&Method::GET, "/stats") => {
+            let table_list: Vec<_> = tables.list_tables().into_iter().map(|name| {
+                let count = tables.list_rows_with_keys(&name).map(|r| r.len()).unwrap_or(0);
+                serde_json::json!({ "name": name, "rows": count })
+            }).collect();
+            admin_json(serde_json::json!({
+                "tables": table_list,
+                "total_rows": tables.total_row_count(),
+                "wal_sequence": global_seq.load(Ordering::Relaxed),
+                "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
+            }))
+        }
+
+        // ── Schema ────────────────────────────────────────────────────────────
+        (&Method::GET, "/admin/api/schema") | (&Method::GET, "/schema") => {
+            let reducer_names: Vec<_> = registry.list_reducers();
+            let table_names = tables.list_tables();
+            admin_json(serde_json::json!({
+                "tables": table_names,
+                "reducers": reducer_names,
+                "version": env!("CARGO_PKG_VERSION"),
+            }))
+        }
+
+        // ── Table rows ────────────────────────────────────────────────────────
+        (&Method::GET, path) if path.starts_with("/admin/api/tables") => {
+            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            let tname = req.uri().query().and_then(|q| {
+                q.split('&').find_map(|p| {
+                    let mut kv = p.splitn(2, '=');
+                    if kv.next() == Some("table") { kv.next().map(|v| admin_url_decode(v)) } else { None }
+                })
+            });
+            match tname {
+                None => {
+                    let names = tables.list_tables();
+                    admin_json(serde_json::json!({ "tables": names }))
+                }
+                Some(tbl) => {
+                    match tables.list_rows_with_keys(&tbl) {
+                        Ok(rows) => {
+                            let items: Vec<_> = rows.into_iter().map(|(k, v)| {
+                                serde_json::json!({ "key": k, "data": v })
+                            }).collect();
+                            admin_json(serde_json::json!({ "table": tbl, "rows": items }))
+                        }
+                        Err(e) => admin_bad_request(e.to_string()),
+                    }
+                }
+            }
+        }
+
+        // ── Invoke reducer ────────────────────────────────────────────────────
+        (&Method::POST, "/admin/api/call") => {
+            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
+                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+            };
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let name = match payload.get("name").and_then(|v| v.as_str()) {
+                Some(n) if !n.is_empty() => n.to_string(),
+                _ => return Ok(admin_bad_request("Missing 'name' field".into())),
+            };
+            let args_val = payload.get("args").cloned().unwrap_or(serde_json::json!([]));
+            let args_bytes = match rmp_serde::to_vec(&args_val) {
+                Ok(b) => b, Err(e) => return Ok(admin_bad_request(format!("Args encode: {}", e))),
+            };
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
+            let call = PendingCall {
+                call_id: 0,
+                reducer_name: name,
+                args: args_bytes,
+                caller_id: "admin-console".to_string(),
+                caller_role: "admin".to_string(),
+                tenant_id: None,
+                lobby_hint: None,
+                response_tx: resp_tx,
+            };
+            if queue_tx.send(call).await.is_err() {
+                return Ok(admin_server_error("Reducer queue closed".into()));
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await {
+                Ok(Some(resp)) => {
+                    let result_json: serde_json::Value = resp.result.as_deref()
+                        .and_then(|b| rmp_serde::from_slice(b).ok())
+                        .unwrap_or(serde_json::Value::Null);
+                    admin_json(serde_json::json!({
+                        "success": resp.success,
+                        "result": result_json,
+                        "error": resp.error,
+                    }))
+                }
+                Ok(None) => admin_server_error("Worker dropped response channel".into()),
+                Err(_)   => admin_server_error("Reducer call timed out after 30s".into()),
+            }
+        }
+
+        // ── SQL query ─────────────────────────────────────────────────────────
+        (&Method::POST, "/admin/api/sql") => {
+            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
+                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+            };
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let query = match payload.get("query").and_then(|v| v.as_str()) {
+                Some(q) if !q.trim().is_empty() => q.to_string(),
+                _ => return Ok(admin_bad_request("Missing 'query' field".into())),
+            };
+            let tbl = tables.clone();
+            let result = tokio::task::spawn_blocking(move || -> std::result::Result<_, String> {
+                let stmt = crate::sql::parser::parse(&query)
+                    .map_err(|e| format!("Parse error: {}", e))?;
+                let exec = crate::SqlExecutor::new(tbl);
+                exec.execute_statement(&stmt).map_err(|e| format!("Execution error: {}", e))
+            }).await;
+            match result {
+                Ok(Ok(res)) => {
+                    let rows: Vec<serde_json::Value> =
+                        res.rows.into_iter().map(serde_json::Value::Object).collect();
+                    admin_json(serde_json::json!({
+                        "columns": res.columns,
+                        "rows": rows,
+                        "rows_affected": res.rows_affected,
+                    }))
+                }
+                Ok(Err(e)) => admin_bad_request(e),
+                Err(e) => admin_server_error(format!("task: {}", e)),
+            }
+        }
+
+        // ── Upsert row (WAL + live fan-out) ──────────────────────────────────
+        (&Method::POST, "/admin/api/row") => {
+            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
+                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+            };
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let (table, rkey, data) = match (
+                payload.get("table").and_then(|v| v.as_str()),
+                payload.get("key").and_then(|v| v.as_str()),
+                payload.get("data"),
+            ) {
+                (Some(t), Some(k), Some(d)) if !t.is_empty() && !k.is_empty() =>
+                    (t.to_string(), k.to_string(), d.clone()),
+                _ => return Ok(admin_bad_request("Expected {table, key, data}".into())),
+            };
+            match tables.set_row(table.clone(), rkey.clone(), data) {
+                Ok(delta) => {
+                    let deltas = vec![delta];
+                    subs.publish_deltas(&deltas);
+                    let seq = global_seq.fetch_add(1, Ordering::Relaxed);
+                    let entry = WalEntry::new(now_nanos(), seq,
+                        "__admin_set_row".to_string(), vec![], deltas);
+                    if let Err(e) = wal_writer.append(&entry, seq) {
+                        log::warn!("[admin] WAL append failed: {}", e);
+                    }
+                    admin_json(serde_json::json!({ "ok": true, "table": table, "key": rkey }))
+                }
+                Err(e) => admin_bad_request(e.to_string()),
+            }
+        }
+
+        // ── Delete row (WAL + live fan-out) ──────────────────────────────────
+        (&Method::DELETE, "/admin/api/row") => {
+            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            let query = req.uri().query().unwrap_or("");
+            let mut table = String::new(); let mut rkey = String::new();
+            for pair in query.split('&') {
+                let mut kv = pair.splitn(2, '=');
+                match (kv.next(), kv.next()) {
+                    (Some("table"), Some(v)) => table = admin_url_decode(v),
+                    (Some("key"),   Some(v)) => rkey  = admin_url_decode(v),
+                    _ => {}
+                }
+            }
+            if table.is_empty() || rkey.is_empty() {
+                return Ok(admin_bad_request("Expected ?table=X&key=Y".into()));
+            }
+            match tables.delete_row(&table, &rkey) {
+                Ok(delta) => {
+                    let deltas = vec![delta];
+                    subs.publish_deltas(&deltas);
+                    let seq = global_seq.fetch_add(1, Ordering::Relaxed);
+                    let entry = WalEntry::new(now_nanos(), seq,
+                        "__admin_delete_row".to_string(), vec![], deltas);
+                    if let Err(e) = wal_writer.append(&entry, seq) {
+                        log::warn!("[admin] WAL append failed: {}", e);
+                    }
+                    admin_json(serde_json::json!({ "ok": true }))
+                }
+                Err(e) => admin_bad_request(e.to_string()),
+            }
+        }
+
+        // ── Seed rows (no WAL, no fan-out — dev/test only) ───────────────────
+        (&Method::POST, "/seed") => {
+            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
+                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+            };
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+            };
+            let row_arr = match payload.get("rows").and_then(|v| v.as_array()) {
+                Some(a) => a.clone(),
+                None => return Ok(admin_bad_request("Expected {\"rows\": [...]}".into())),
+            };
+            let mut written = 0usize; let mut skipped = 0usize;
+            for item in &row_arr {
+                if let Some(triple) = item.as_array() {
+                    if triple.len() == 3 {
+                        if let (Some(t), Some(k), Some(d)) = (
+                            triple[0].as_str(), triple[1].as_str(), Some(&triple[2])
+                        ) {
+                            if tables.set_row(t.to_string(), k.to_string(), d.clone()).is_ok() {
+                                written += 1; continue;
+                            }
+                        }
+                    }
+                }
+                skipped += 1;
+            }
+            admin_json(serde_json::json!({ "rows_written": written, "rows_skipped": skipped }))
+        }
+
+        // ── Redirect / → /admin ───────────────────────────────────────────────
+        (&Method::GET, "/") => {
+            let mut r = Response::new(Body::empty());
+            r.headers_mut().insert(
+                hyper::header::LOCATION,
+                hyper::header::HeaderValue::from_static("/admin"),
+            );
+            *r.status_mut() = StatusCode::FOUND;
+            r
+        }
+
+        _ => {
+            let mut r = admin_json(serde_json::json!({ "error": "not found" }));
+            *r.status_mut() = StatusCode::NOT_FOUND;
+            r
+        }
+    };
+    Ok(resp)
+}
+
+fn start_embedded_admin_server(
+    host: String,
+    port: u16,
+    tables: Arc<TableStore>,
+    subs: Arc<SubscriptionManager>,
+    registry: Arc<ReducerRegistry>,
+    wal_writer: Arc<BatchedWalWriter>,
+    global_seq: Arc<AtomicU64>,
+    metrics: Arc<Metrics>,
+    startup: std::time::Instant,
+    queue_tx: kanal::AsyncSender<PendingCall>,
+    api_key: Option<String>,
+    mut shutdown_rx: watch::Receiver<()>,
+) {
+    let addr: SocketAddr = format!("{}:{}", host, port)
+        .parse()
+        .expect("valid metrics address");
+
+    tokio::spawn(async move {
+        let make_svc = make_service_fn(move |_| {
+            let tbl  = tables.clone();
+            let sb   = subs.clone();
+            let reg  = registry.clone();
+            let wal  = wal_writer.clone();
+            let seq  = global_seq.clone();
+            let met  = metrics.clone();
+            let qtx  = queue_tx.clone();
+            let akey = api_key.clone();
+            async move {
+                Ok::<_, hyper::Error>(service_fn(move |req| {
+                    handle_embedded_admin(
+                        req,
+                        tbl.clone(), sb.clone(), reg.clone(),
+                        wal.clone(), seq.clone(), met.clone(),
+                        startup, qtx.clone(), akey.clone(),
+                    )
+                }))
+            }
+        });
+
+        let server = Server::bind(&addr).serve(make_svc);
+        log::info!("[admin] Admin console: http://{}/admin", addr);
+        println!("[neondb] Admin console: http://{}/admin", addr);
+        let graceful = server
+            .with_graceful_shutdown(async move { let _ = shutdown_rx.changed().await; });
+        if let Err(e) = graceful.await {
+            log::warn!("[admin] Metrics server error: {}", e);
+        }
+    });
 }
 
 /// Start the Redis (RESP) and PostgreSQL (pgwire) listeners over a shared
