@@ -292,11 +292,12 @@ async fn main() -> Result<()> {
         Commands::Templates => { cmd_list_templates(); Ok(()) }
         Commands::Modules => { cmd_list_modules(); Ok(()) }
         Commands::Build { modules_dir } => {
-            // If reducers.neon exists in CWD, compile it → src/reducers.rs → cargo build
             let cwd = std::env::current_dir()?;
-            if cwd.join("reducers.neon").exists() {
-                build_neon_reducers(&cwd)?;
+            // Neon project: reducers/ directory OR reducers.neon → compile to native Rust
+            if cwd.join("reducers").is_dir() || cwd.join("reducers.neon").exists() {
+                return build_neon_reducers(&cwd).map_err(Into::into);
             }
+            // Rust/WASM project: compile .js/.wat files in modules/
             build_wasm_modules(modules_dir.as_deref().unwrap_or(Path::new("modules")))
         }
         Commands::Start { host, port, data_dir, wal_path, fsync_interval_ms } => {
