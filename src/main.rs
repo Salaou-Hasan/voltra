@@ -1640,9 +1640,71 @@ fn build_multi_lang_reducers(project_root: &Path, modules_dir: &Path) -> Result<
     Ok(())
 }
 
+/// Compile every `.neon` file found in `neon_dir` into a `<stem>.rs` file.
+/// On success prints a summary line; on error prints each diagnostic and
+/// returns an error so the caller aborts the build.
+fn build_neon_files(neon_dir: &Path) -> Result<()> {
+    let entries = match std::fs::read_dir(neon_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(()), // directory doesn't exist — nothing to do
+    };
+
+    let mut neon_files: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("neon"))
+        .collect();
+    neon_files.sort();
+
+    if neon_files.is_empty() {
+        return Ok(());
+    }
+
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+
+    println!("  .neon compiler:");
+    for neon_path in &neon_files {
+        let stem = neon_path.file_stem().unwrap_or_default().to_string_lossy();
+        let out_path = neon_path.with_extension("rs");
+        print!("  .neon  {} → {} ... ", neon_path.display(), out_path.display());
+
+        let source = match std::fs::read_to_string(neon_path) {
+            Ok(s) => s,
+            Err(e) => { println!("FAILED (read: {})", e); failed += 1; continue; }
+        };
+        let filename = neon_path.display().to_string();
+        match neondb::dsl::compile(&source, &filename) {
+            Ok(rust_code) => {
+                match std::fs::write(&out_path, &rust_code) {
+                    Ok(_) => { println!("ok"); ok += 1; }
+                    Err(e) => { println!("FAILED (write: {})", e); failed += 1; }
+                }
+            }
+            Err(errors) => {
+                println!("FAILED ({} error{})", errors.len(), if errors.len() == 1 { "" } else { "s" });
+                for e in &errors {
+                    eprintln!("  {}:{}: error: {}", neon_path.display(), e.line, e.message);
+                }
+                failed += 1;
+            }
+        }
+    }
+
+    println!("  .neon: {} compiled, {} failed", ok, failed);
+    if failed > 0 {
+        Err(neondb::error::NeonDBError::internal(format!("{} .neon file(s) failed to compile", failed)))
+    } else {
+        Ok(())
+    }
+}
+
 fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
-    // ── Step 0: compile multi-language reducers (C#, Go) if present ──────────
+    // ── Step 0a: compile .neon files if present ───────────────────────────────
     let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    build_neon_files(&project_root)?;
+
+    // ── Step 0b: compile multi-language reducers (C#, Go) if present ─────────
     build_multi_lang_reducers(&project_root, modules_dir)?;
 
     if !modules_dir.is_dir() {
@@ -1870,6 +1932,38 @@ async fn run_server(config: Config) -> Result<()> {
     };
     println!("[neondb] Identity public key:\n{}", identity_issuer.public_key_pem());
 
+    // ── Persistent relational store (SQLite) ─────────────────────────────────
+    // Stored alongside the WAL directory.  Only accessed at handshake / HTTP
+    // endpoints — never from the game reducer hot path.
+    let persistent_db_path = config.wal_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("neondb_persistent.db");
+    let persistent_store: Arc<neondb::persistent::PersistentStore> =
+        match neondb::persistent::PersistentStore::open(&persistent_db_path) {
+            Ok(s) => {
+                log::info!("[persistent] SQLite store opened at {:?}", persistent_db_path);
+                Arc::new(s)
+            }
+            Err(e) => {
+                log::warn!("[persistent] Could not open SQLite ({}), auth endpoints will be unavailable", e);
+                // Create an in-memory fallback so the server still boots.
+                Arc::new(neondb::persistent::PersistentStore::open(
+                    std::path::Path::new(":memory:"),
+                ).unwrap_or_else(|_| panic!("SQLite in-memory fallback failed")))
+            }
+        };
+    let auth_service: Arc<neondb::auth_service::AuthService> = Arc::new(
+        neondb::auth_service::AuthService::new(
+            persistent_store.clone(),
+            identity_issuer.clone(),
+            std::env::var("NEONDB_TOKEN_TTL_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(86_400),
+        ),
+    );
+
     // ── Rate limiter ─────────────────────────────────────────────────────────
     let rate_limiter = Arc::new(RateLimiterRegistry::new(RateLimiterConfig {
         capacity: config.rate_limit_capacity,
@@ -2050,6 +2144,8 @@ async fn run_server(config: Config) -> Result<()> {
             leaderboard: leaderboard.clone(),
             stat_sync: stat_sync.clone(),
             lobby_router: lobby_router.clone(),
+            persistent: persistent_store.clone(),
+            auth_service: auth_service.clone(),
         });
         let schema_c = schema_registry.clone();
         tokio::spawn(async move {
@@ -2571,6 +2667,10 @@ struct AdminState {
     stat_sync: Arc<neondb::stat_sync::StatSyncQueue>,
     /// Per-lobby worker router — exposes queue depths and call stats.
     lobby_router: Arc<neondb::worker_pool::LobbyRouter>,
+    /// SQLite-backed relational tier (auth users, characters, catalog).
+    persistent: Arc<neondb::persistent::PersistentStore>,
+    /// Authentication service (register / login / verify token).
+    auth_service: Arc<neondb::auth_service::AuthService>,
 }
 
 async fn start_metrics_server(
@@ -3598,6 +3698,211 @@ async fn handle_metrics_request(
         (&Method::GET, "/auth/public-key") => {
             let pem = identity_issuer.public_key_pem();
             Ok(json_response(serde_json::json!({ "public_key_pem": pem })))
+        }
+
+        // ── User registration ─────────────────────────────────────────────────
+        // POST /auth/register   { "email": "...", "password": "...", "role"?: "..." }
+        (&Method::POST, "/auth/register") => {
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
+            };
+            let email = payload.get("email").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let password = payload.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let role = payload.get("role").and_then(|v| v.as_str()).unwrap_or("player").to_string();
+            let svc = admin.auth_service.clone();
+            match tokio::task::spawn_blocking(move || svc.register(&email, &password, &role)).await {
+                Ok(Ok(user)) => Ok(json_response(serde_json::json!({
+                    "id": user.id, "email": user.email, "role": user.role
+                }))),
+                Ok(Err(e)) => Ok(bad_request(e.to_string())),
+                Err(e) => Ok(server_error(e.to_string())),
+            }
+        }
+
+        // ── Login ─────────────────────────────────────────────────────────────
+        // POST /auth/login   { "email": "...", "password": "..." }
+        // Returns JWT token for use in Authorization: Bearer <token>
+        (&Method::POST, "/auth/login") => {
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
+            };
+            let email = payload.get("email").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let password = payload.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let svc = admin.auth_service.clone();
+            match tokio::task::spawn_blocking(move || svc.login(&email, &password)).await {
+                Ok(Ok((user, token))) => Ok(json_response(serde_json::json!({
+                    "id": user.id, "email": user.email, "role": user.role, "token": token
+                }))),
+                Ok(Err(e)) => {
+                    let mut r = bad_request(e.to_string());
+                    *r.status_mut() = StatusCode::UNAUTHORIZED;
+                    Ok(r)
+                }
+                Err(e) => Ok(server_error(e.to_string())),
+            }
+        }
+
+        // ── Current user ──────────────────────────────────────────────────────
+        // GET /auth/me   Authorization: Bearer <jwt>
+        (&Method::GET, "/auth/me") => {
+            let auth_header = req.headers()
+                .get(hyper::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .trim_start_matches("Bearer ")
+                .trim()
+                .to_string();
+            if auth_header.is_empty() {
+                let mut r = bad_request("missing Authorization: Bearer <token>".into());
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
+            }
+            let svc = admin.auth_service.clone();
+            match tokio::task::spawn_blocking(move || svc.verify_token(&auth_header)).await {
+                Ok(Ok(user)) => Ok(json_response(serde_json::json!({
+                    "id": user.id, "email": user.email, "role": user.role
+                }))),
+                Ok(Err(e)) => {
+                    let mut r = bad_request(e.to_string());
+                    *r.status_mut() = StatusCode::UNAUTHORIZED;
+                    Ok(r)
+                }
+                Err(e) => Ok(server_error(e.to_string())),
+            }
+        }
+
+        // ── Change password ───────────────────────────────────────────────────
+        // POST /auth/change-password   { "user_id": "...", "old_password": "...", "new_password": "..." }
+        (&Method::POST, "/auth/change-password") => {
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
+            };
+            let user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let old_pw = payload.get("old_password").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let new_pw = payload.get("new_password").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let svc = admin.auth_service.clone();
+            match tokio::task::spawn_blocking(move || svc.change_password(&user_id, &old_pw, &new_pw)).await {
+                Ok(Ok(())) => Ok(json_response(serde_json::json!({ "ok": true }))),
+                Ok(Err(e)) => Ok(bad_request(e.to_string())),
+                Err(e) => Ok(server_error(e.to_string())),
+            }
+        }
+
+        // ── Character save / load ─────────────────────────────────────────────
+        // POST /player/save   { "character_id": "...", "user_id": "...", "name": "...", "data": {...} }
+        (&Method::POST, "/player/save") => {
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
+            };
+            let char_id = payload.get("character_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let data = payload.get("data").cloned().unwrap_or(serde_json::json!({}));
+            if char_id.is_empty() || user_id.is_empty() {
+                return Ok(bad_request("character_id and user_id required".into()));
+            }
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            let db = admin.persistent.clone();
+            match tokio::task::spawn_blocking(move || db.save_character(&char_id, &user_id, &name, &data, now)).await {
+                Ok(Ok(())) => Ok(json_response(serde_json::json!({ "ok": true }))),
+                Ok(Err(e)) => Ok(bad_request(e.to_string())),
+                Err(e) => Ok(server_error(e.to_string())),
+            }
+        }
+
+        // GET /player/load?character_id=<id>
+        (&Method::GET, path) if path.starts_with("/player/load") => {
+            let char_id = req.uri().query()
+                .and_then(|q| q.split('&').find(|p| p.starts_with("character_id=")))
+                .map(|p| p.trim_start_matches("character_id=").to_string())
+                .unwrap_or_default();
+            if char_id.is_empty() {
+                return Ok(bad_request("?character_id=<id> required".into()));
+            }
+            let db = admin.persistent.clone();
+            match tokio::task::spawn_blocking(move || db.load_character(&char_id)).await {
+                Ok(Ok(Some(data))) => Ok(json_response(serde_json::json!({ "data": data }))),
+                Ok(Ok(None)) => {
+                    let mut r = json_response(serde_json::json!({ "error": "character not found" }));
+                    *r.status_mut() = StatusCode::NOT_FOUND;
+                    Ok(r)
+                }
+                Ok(Err(e)) => Ok(server_error(e.to_string())),
+                Err(e) => Ok(server_error(e.to_string())),
+            }
+        }
+
+        // ── Item catalog ──────────────────────────────────────────────────────
+        // GET /catalog?type=weapon
+        (&Method::GET, path) if path.starts_with("/catalog") && !path.contains('/') || path == "/catalog" => {
+            let itype = req.uri().query()
+                .and_then(|q| q.split('&').find(|p| p.starts_with("type=")))
+                .map(|p| p.trim_start_matches("type=").to_string());
+            let db = admin.persistent.clone();
+            match tokio::task::spawn_blocking(move || db.list_catalog(itype.as_deref())).await {
+                Ok(Ok(items)) => Ok(json_response(serde_json::json!({ "items": items }))),
+                Ok(Err(e)) => Ok(server_error(e.to_string())),
+                Err(e) => Ok(server_error(e.to_string())),
+            }
+        }
+
+        // POST /catalog   { "id": "...", "name": "...", "type": "...", "stats": {...}, "price": 0 }
+        (&Method::POST, "/catalog") => {
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
+            };
+            let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let itype = payload.get("type").and_then(|v| v.as_str()).unwrap_or("generic").to_string();
+            let stats = payload.get("stats").cloned().unwrap_or(serde_json::json!({}));
+            let price = payload.get("price").and_then(|v| v.as_i64()).unwrap_or(0);
+            if id.is_empty() || name.is_empty() {
+                return Ok(bad_request("id and name required".into()));
+            }
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            let db = admin.persistent.clone();
+            match tokio::task::spawn_blocking(move || db.upsert_catalog_item(&id, &name, &itype, &stats, price, now)).await {
+                Ok(Ok(())) => Ok(json_response(serde_json::json!({ "ok": true }))),
+                Ok(Err(e)) => Ok(server_error(e.to_string())),
+                Err(e) => Ok(server_error(e.to_string())),
+            }
+        }
+
+        // ── Admin: raw SQL against the persistent SQLite store ────────────────
+        // POST /persistent/sql   { "sql": "SELECT ..." }  (admin-auth-gated)
+        (&Method::POST, "/persistent/sql") => {
+            if let Some(r) = admin_auth_check(&req) { return Ok(r); }
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await
+                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
+            };
+            let sql = match payload.get("sql").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => return Ok(bad_request("missing 'sql' field".into())),
+            };
+            let db = admin.persistent.clone();
+            match tokio::task::spawn_blocking(move || db.exec_sql(&sql)).await {
+                Ok(Ok(rows)) => Ok(json_response(serde_json::json!({ "rows": rows }))),
+                Ok(Err(e)) => Ok(bad_request(e.to_string())),
+                Err(e) => Ok(server_error(e.to_string())),
+            }
         }
 
         _ => {

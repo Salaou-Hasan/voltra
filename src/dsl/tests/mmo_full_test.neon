@@ -1,0 +1,292 @@
+// ============================================================================
+// MMO full-feature test — exercises every capability added for 100% coverage
+// ============================================================================
+
+table players {
+    hp: int = 100,
+    max_hp: int = 100,
+    level: int = 1,
+    xp: int = 0,
+    alive: bool = true,
+    x: float = 0.0,
+    y: float = 0.0,
+    kills: int = 0,
+    deaths: int = 0,
+    name: str = "",
+    guild: str = "",
+    flags: int = 0,
+}
+
+table guilds {
+    owner: str = "",
+    member_count: int = 0,
+    rank: int = 0,
+    score: float = 0.0,
+    name: str = "",
+}
+
+// ── Spawn / despawn ───────────────────────────────────────────────────────────
+
+reducer spawn(id: str, name: str, x: float, y: float) {
+    players[id] = { hp: 100, max_hp: 100, level: 1, xp: 0, alive: true,
+                    x: x, y: y, kills: 0, deaths: 0, name: name, guild: "", flags: 0 }
+    set_counter("total_players", counter("total_players") + 1)
+    return { ok: true, id: id }
+}
+
+reducer despawn(id: str) {
+    let p = players[id] else { error("Player not found") }
+    delete players[id]
+    set_counter("total_players", counter("total_players") - 1)
+}
+
+// ── Movement ──────────────────────────────────────────────────────────────────
+
+reducer move_player(id: str, dx: float, dy: float) {
+    let p = players[id] else { error("Player not found") }
+    players[id].x = p.x + dx
+    players[id].y = p.y + dy
+    return { x: p.x + dx, y: p.y + dy }
+}
+
+// ── Combat: else if chains ────────────────────────────────────────────────────
+
+reducer take_damage(id: str, amount: int, attacker_id: str) {
+    let p = players[id] else { error("Player not found") }
+    let cur_hp = p.hp
+    let new_hp = max(0, cur_hp - amount)
+    players[id].hp = new_hp
+
+    if new_hp <= 0 {
+        players[id].alive = false
+        players[id].deaths += 1
+        let killer = players[attacker_id] else { return { died: true, killer: "unknown" } }
+        players[attacker_id].kills += 1
+        set_counter("total_kills", counter("total_kills") + 1)
+        return { died: true, killer: attacker_id }
+    } else if new_hp <= 25 {
+        return { died: false, hp: new_hp, status: "critical" }
+    } else if new_hp <= 50 {
+        return { died: false, hp: new_hp, status: "wounded" }
+    } else {
+        return { died: false, hp: new_hp, status: "healthy" }
+    }
+}
+
+reducer heal(id: str, amount: int) {
+    let p = players[id] else { error("Player not found") }
+    let max_hp = p.max_hp
+    let new_hp = min(p.hp + amount, max_hp)
+    players[id].hp = new_hp
+    return { hp: new_hp }
+}
+
+// ── XP and leveling: while loop ───────────────────────────────────────────────
+
+reducer grant_xp(id: str, amount: int) {
+    let p = players[id] else { error("Player not found") }
+    players[id].xp += amount
+    let cur_xp = p.xp + amount
+    let cur_lvl = p.level
+
+    // Level up while xp threshold met
+    while cur_xp >= cur_lvl * 100 {
+        cur_xp = cur_xp - cur_lvl * 100
+        cur_lvl = cur_lvl + 1
+    }
+    players[id].level = cur_lvl
+    players[id].xp = cur_xp
+    return { level: cur_lvl, xp: cur_xp }
+}
+
+// ── Loot: modulo, bitwise, array literals ────────────────────────────────────
+
+reducer roll_loot(id: str) {
+    let roll = rand_int(1, 100)
+    let tier = roll % 10        // modulo
+    let flags = tier & 7        // bitwise AND
+    let shifted = tier << 2     // left shift
+    let tagged = flags | shifted // bitwise OR
+
+    if roll >= 90 {
+        return { rarity: "legendary", roll: roll, tier: tier }
+    } else if roll >= 60 {
+        return { rarity: "rare", roll: roll, tier: tier }
+    } else if roll >= 30 {
+        return { rarity: "uncommon", roll: roll, tier: tier }
+    } else {
+        return { rarity: "common", roll: roll, tier: tier }
+    }
+}
+
+reducer open_loot_box(id: str, box_type: str) {
+    let loot_pool = ["sword", "shield", "potion", "gold", "gem"]
+    let n = array_len(loot_pool)
+    let idx = rand_int(0, n - 1)
+    let item = get_index(loot_pool, idx)
+    return { item: item, box: box_type }
+}
+
+// ── Guild system ──────────────────────────────────────────────────────────────
+
+reducer create_guild(guild_id: str, name: str) {
+    let owner = caller_id
+    guilds[guild_id] = { owner: owner, member_count: 1, rank: 0, score: 0.0, name: name }
+    players[owner].guild = guild_id
+    return { ok: true, guild_id: guild_id }
+}
+
+reducer join_guild(guild_id: str) {
+    let player_id = caller_id
+    let g = guilds[guild_id] else { error("Guild not found") }
+    guilds[guild_id].member_count += 1
+    players[player_id].guild = guild_id
+    return { ok: true }
+}
+
+reducer leave_guild(guild_id: str) {
+    let player_id = caller_id
+    guilds[guild_id].member_count -= 1
+    players[player_id].guild = ""
+    return { ok: true }
+}
+
+// ── Cleanup: for row loop, break ──────────────────────────────────────────────
+
+reducer cleanup_dead() {
+    let removed = 0
+    for id, p in players {
+        if p.alive == false {
+            delete players[id]
+            removed = removed + 1
+        }
+    }
+    return { removed: removed }
+}
+
+reducer reset_inactive_guilds(min_members: int) {
+    for id, g in guilds {
+        if g.member_count < min_members {
+            delete guilds[id]
+        }
+    }
+}
+
+// ── Stats / leaderboard ───────────────────────────────────────────────────────
+
+reducer get_stats() {
+    let total = count_rows("players")
+    let alive = count_rows("players")
+    let kills = counter("total_kills")
+    let ts    = timestamp()
+    let avg_k = avg_field("players", "kills")
+    let top   = top_n("players", "kills", 5)
+    let all_sorted = sort_by("players", "level", "desc")
+    return { total_players: total, total_kills: kills, server_time: ts,
+             avg_kills: avg_k, top_killers: top }
+}
+
+reducer leaderboard(field: str, limit: int) {
+    let rows = sort_by("players", field, "desc")
+    return { rows: rows }
+}
+
+reducer find_player_by_name(name: str) {
+    let row = find_first("players", "name", name)
+    return { player: row }
+}
+
+reducer find_guild_members(guild_id: str) {
+    let members = find_all("players", "guild", guild_id)
+    return { members: members, count: array_len(members) }
+}
+
+// ── String utilities ──────────────────────────────────────────────────────────
+
+reducer update_name(id: str, new_name: str) {
+    let cleaned = trim(new_name)
+    let upper_first = concat(to_upper(substring(cleaned, 0, 1)),
+                             substring(cleaned, 1, len(cleaned)))
+    let valid = len(cleaned) > 0
+    if valid == false {
+        error("Name cannot be empty")
+    }
+    players[id].name = upper_first
+    return { name: upper_first }
+}
+
+reducer search_by_prefix(prefix: str) {
+    let lower = to_lower(prefix)
+    let all = sort_by("players", "name", "asc")
+    return { prefix: lower }
+}
+
+reducer parse_csv_names(csv: str) {
+    let parts = split(csv, ",")
+    let joined = join(parts, "|")
+    let first = array_first(parts)
+    return { parts: parts, joined: joined, first: first }
+}
+
+// Uses ForArray — iterates items in an array field
+reducer count_matching_items(id: str, target: str) {
+    let p = players[id] else { error("not found") }
+    let loot_pool = ["sword", "shield", "potion", "gold", "gem"]
+    let count = 0
+    for item in loot_pool {
+        let s = str(item)
+        count = count + 1
+    }
+    return { count: count }
+}
+
+// ── Number parsing ────────────────────────────────────────────────────────────
+
+reducer set_level_from_str(id: str, level_str: str) {
+    let lvl = parse_int(level_str)
+    let clamped = clamp(lvl, 1, 100)
+    players[id].level = clamped
+    return { level: clamped }
+}
+
+// ── Bitflag permissions ───────────────────────────────────────────────────────
+
+reducer grant_flag(id: str, flag: int) {
+    let p = players[id] else { error("not found") }
+    let new_flags = p.flags | flag
+    players[id].flags = new_flags
+    return { flags: new_flags }
+}
+
+reducer revoke_flag(id: str, flag: int) {
+    let p = players[id] else { error("not found") }
+    let mask = flag ^ -1      // bitwise NOT approximation using XOR with -1
+    let new_flags = p.flags & mask
+    players[id].flags = new_flags
+    return { flags: new_flags }
+}
+
+reducer has_flag(id: str, flag: int) {
+    let p = players[id] else { error("not found") }
+    let result = p.flags & flag
+    return { has_flag: result != 0 }
+}
+
+// ── Aggregate/math mix ────────────────────────────────────────────────────────
+
+reducer server_economy() {
+    let total_kills = counter("total_kills")
+    let player_count = count_rows("players")
+    let avg_level = avg_field("players", "level")
+    let sum_xp = sum_field("players", "xp")
+    let max_kills = max_field("players", "kills")
+    let rnd = rand_float()
+    return {
+        total_kills: total_kills,
+        player_count: player_count,
+        avg_level: avg_level,
+        sum_xp: sum_xp,
+        max_kills: max_kills,
+        rand_sample: rnd
+    }
+}

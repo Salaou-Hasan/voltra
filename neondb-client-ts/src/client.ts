@@ -727,6 +727,10 @@ export class NeonDBClient {
     const baseTable = this.serverBaseCache.get(tableName)!;
     if (operation === "delete") {
       baseTable.delete(rowKey);
+    } else if (operation === "patch" && rowData != null) {
+      // Merge changed fields into existing row — preserve fields not in the patch.
+      const existing = baseTable.get(rowKey) ?? {};
+      baseTable.set(rowKey, { ...existing, ...rowData });
     } else if (rowData != null) {
       baseTable.set(rowKey, rowData);
     }

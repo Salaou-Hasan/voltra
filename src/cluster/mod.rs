@@ -34,9 +34,13 @@ pub mod gossip;
 pub mod proxy;
 pub mod regions;
 pub mod lobby_route;
+pub mod ring;
+pub mod migration;
 
 pub use regions::{RegionRegistry, ClusterRegion};
 pub use lobby_route::{LobbyRouteRegistry, LobbyRoute};
+pub use ring::{ConsistentHashRing, SharedRing};
+pub use migration::{MigrationCoordinator, MigrationState, MigrationStatus};
 
 use std::env;
 use std::sync::{Arc, OnceLock};
@@ -322,11 +326,12 @@ unsafe impl Send for ClusterBus {}
 unsafe impl Sync for ClusterBus {}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shard routing
+// Shard routing — fixed modulo (legacy, single-cluster use)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Determine which shard owns a given row key using FNV-1a hash.
 /// Identical result on every node — deterministic shard assignment.
+/// For multi-cluster setups prefer `ConsistentHashRing` (ring.rs).
 pub fn shard_for_key(key: &str, shard_count: u32) -> u32 {
     if shard_count <= 1 { return 0; }
     let mut hash: u64 = 14_695_981_039_346_656_037;
@@ -335,6 +340,120 @@ pub fn shard_for_key(key: &str, shard_count: u32) -> u32 {
         hash = hash.wrapping_mul(1_099_511_628_211);
     }
     (hash % u64::from(shard_count)) as u32
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Global cluster bus — used by DSL-generated reducers
+// ─────────────────────────────────────────────────────────────────────────────
+
+static GLOBAL_CLUSTER_BUS: OnceLock<Arc<ClusterBus>> = OnceLock::new();
+static GLOBAL_MY_CLUSTER_ID: OnceLock<String> = OnceLock::new();
+static GLOBAL_RING: OnceLock<Arc<SharedRing>> = OnceLock::new();
+
+/// Call once at server startup to register the cluster bus for DSL-generated code.
+pub fn set_global_cluster_bus(bus: Arc<ClusterBus>, my_cluster_id: String, ring: Arc<SharedRing>) {
+    let _ = GLOBAL_CLUSTER_BUS.set(bus);
+    let _ = GLOBAL_MY_CLUSTER_ID.set(my_cluster_id);
+    let _ = GLOBAL_RING.set(ring);
+}
+
+/// DSL builtin: which cluster (or shard) owns this key?
+/// Returns the shard ID as u32, or 0 in single-node mode.
+pub fn cluster_shard_for_key(key: &str) -> u32 {
+    // If ring is configured, use consistent hashing.
+    if let Some(ring) = GLOBAL_RING.get() {
+        if let Some(cluster_id) = ring.get_cluster(key) {
+            // Map cluster ID to a stable u32 by FNV-1a hash (display only — not routing).
+            let mut h: u64 = 14_695_981_039_346_656_037;
+            for byte in cluster_id.bytes() {
+                h ^= u64::from(byte);
+                h = h.wrapping_mul(1_099_511_628_211);
+            }
+            return (h % 10_000) as u32;
+        }
+    }
+    // Fallback to modulo shard routing.
+    let shard_count: u32 = env::var("NEONDB_SHARD_COUNT")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    shard_for_key(key, shard_count)
+}
+
+/// DSL builtin: proxy a reducer call to another shard/cluster.
+/// Returns the raw response bytes, or an empty vec on error.
+pub fn proxy_call_global(
+    target_shard: u32,
+    reducer: &str,
+    args_json: &str,
+    caller_id: &str,
+    caller_role: &str,
+) -> Vec<u8> {
+    let bus = match GLOBAL_CLUSTER_BUS.get() {
+        Some(b) => b,
+        None => return vec![],
+    };
+    let args = args_json.as_bytes();
+    match bus.proxy_call(target_shard, reducer, args, caller_id, caller_role) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            log::warn!("[cluster] proxy_call_global failed: {e}");
+            vec![]
+        }
+    }
+}
+
+/// DSL builtin: count rows in a table across ALL clusters in the ring.
+/// Returns the sum of `count_rows` calls across all healthy peers plus self.
+pub fn region_count_rows_global(table: &str, local_count: i64) -> i64 {
+    let bus = match GLOBAL_CLUSTER_BUS.get() { Some(b) => b, None => return local_count };
+    let client = bus.http_client();
+    let mut total = local_count;
+
+    for peer in bus.healthy_peers() {
+        let url = format!("{}/admin/api/table-count?table={table}", peer.metrics_url);
+        if let Ok(resp) = client.get(&url).send() {
+            if let Ok(json) = resp.json::<serde_json::Value>() {
+                if let Some(n) = json["count"].as_i64() {
+                    total += n;
+                }
+            }
+        }
+    }
+    total
+}
+
+/// DSL builtin: move a single row to a specific cluster.
+/// Reads the row, sends it via `/cluster/receive`, then deletes locally.
+/// Returns true on success.
+pub fn migrate_row_global(
+    table: &str,
+    key: &str,
+    target_shard: u32,
+    local_data: Option<serde_json::Value>,
+) -> bool {
+    let bus = match GLOBAL_CLUSTER_BUS.get() { Some(b) => b, None => return false };
+    let data = match local_data { Some(d) => d, None => return false };
+    let my_cluster = GLOBAL_MY_CLUSTER_ID.get().map(|s| s.as_str()).unwrap_or("local");
+
+    let entry = bus.peers.get(&target_shard);
+    let node = match entry {
+        Some(ref e) => e.value().node.clone(),
+        None => return false,
+    };
+
+    let batch = migration::MigrateBatch {
+        source_cluster: my_cluster.to_owned(),
+        rows: vec![migration::MigrateRow { table: table.to_owned(), key: key.to_owned(), data }],
+    };
+
+    let url = format!("{}/cluster/receive", node.metrics_url);
+    let client = bus.http_client();
+    match client.post(&url).json(&batch).send() {
+        Ok(r) => r.status().is_success(),
+        Err(e) => {
+            log::warn!("[cluster] migrate_row_global failed: {e}");
+            false
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

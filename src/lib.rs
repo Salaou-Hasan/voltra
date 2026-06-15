@@ -1,7 +1,9 @@
 pub mod auth;
+pub mod auth_service;
 pub mod backup;
 pub mod cluster;
 pub mod compression;
+pub mod dsl;
 pub mod metrics;
 pub mod chat;
 pub mod tenant;
@@ -15,6 +17,7 @@ pub mod mvcc;
 pub mod network;
 pub mod redis;
 pub mod persistence;
+pub mod persistent;
 pub mod pg;
 pub mod presence;
 pub mod reducer;
