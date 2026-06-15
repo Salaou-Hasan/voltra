@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "neondb"
-version = "1.0.17"
+version = "1.0.18"
 dependencies = [
  "anyhow",
  "arc-swap",
