@@ -963,7 +963,21 @@ const NEONDB_SOURCE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 ///
 /// When the source is gone (user installed the prebuilt binary on a different
 /// machine), fall back to the git dependency.
+/// Sanitize a directory name into a valid Cargo package name.
+/// Cargo requires: alphanumeric / `-` / `_`, must not start with a digit.
+fn sanitize_package_name(name: &str) -> String {
+    let cleaned: String = name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    if cleaned.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true) {
+        format!("neondb_{}", cleaned)
+    } else {
+        cleaned
+    }
+}
+
 fn game_cargo_toml(name: &str) -> String {
+    let pkg_name = sanitize_package_name(name);
     let neondb_dep = if std::path::Path::new(NEONDB_SOURCE_DIR).exists() {
         format!(
             "neondb     = {{ path = \"{}\" }}",
@@ -974,7 +988,7 @@ fn game_cargo_toml(name: &str) -> String {
     };
     format!(
         "[workspace]\n\n\
-[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+[package]\nname = \"{pkg_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
 [dependencies]\n{neondb_dep}\n\
 serde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n\
 env_logger = \"0.11\"\n"
@@ -1122,32 +1136,56 @@ fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
 
 /// Compile reducers.neon → src/reducers.rs, then run cargo build --release.
 fn build_neon_reducers(project_dir: &std::path::Path) -> Result<()> {
-    let neon_path = project_dir.join("reducers.neon");
-    let src = std::fs::read_to_string(&neon_path)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot read reducers.neon: {}", e)))?;
+    // Prefer reducers/ directory (new per-file layout); fall back to reducers.neon.
+    let reducers_dir  = project_dir.join("reducers");
+    let reducers_neon = project_dir.join("reducers.neon");
 
-    println!("  Compiling reducers.neon...");
-    let rust_code = neondb::dsl::compile(&src, "reducers.neon")
+    let (combined, display) = if reducers_dir.is_dir() {
+        let mut entries: Vec<_> = std::fs::read_dir(&reducers_dir)
+            .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot read reducers/: {e}")))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "neon").unwrap_or(false))
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        if entries.is_empty() {
+            return Err(neondb::error::NeonDBError::internal("reducers/ exists but contains no .neon files").into());
+        }
+        let mut src = String::new();
+        for e in &entries {
+            src.push_str(&std::fs::read_to_string(e.path())
+                .map_err(|err| neondb::error::NeonDBError::internal(format!("Cannot read {}: {err}", e.path().display())))?);
+            src.push('\n');
+        }
+        (src, format!("reducers/ ({} files)", entries.len()))
+    } else if reducers_neon.exists() {
+        let src = std::fs::read_to_string(&reducers_neon)
+            .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot read reducers.neon: {e}")))?;
+        (src, "reducers.neon".to_string())
+    } else {
+        return Err(neondb::error::NeonDBError::internal(
+            "No reducers/ directory or reducers.neon found. Run `neondb init` to create a project."
+        ).into());
+    };
+
+    println!("  Compiling {}...", display);
+    let rust_code = neondb::dsl::compile(&combined, "reducers")
         .map_err(|errors| {
-            for e in &errors {
-                eprintln!("  error: {}", e);
-            }
+            for e in &errors { eprintln!("  error: {}", e); }
             neondb::error::NeonDBError::internal("Neon compilation failed")
         })?;
 
     let out_path = project_dir.join("src").join("reducers.rs");
     std::fs::create_dir_all(out_path.parent().unwrap())
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot create src/: {}", e)))?;
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot create src/: {e}")))?;
     std::fs::write(&out_path, &rust_code)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot write src/reducers.rs: {}", e)))?;
-    println!("  reducers.neon → src/reducers.rs");
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot write src/reducers.rs: {e}")))?;
+    println!("  {} → src/reducers.rs", display);
 
     let status = std::process::Command::new("cargo")
         .args(["build", "--release"])
         .current_dir(project_dir)
         .status()
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("cargo build failed: {}", e)))?;
-
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("cargo build failed: {e}")))?;
     if !status.success() {
         return Err(neondb::error::NeonDBError::internal("cargo build --release failed").into());
     }
@@ -1157,38 +1195,47 @@ fn build_neon_reducers(project_dir: &std::path::Path) -> Result<()> {
 
 /// Compile neon source inline (during scaffold so the project starts without a manual build step).
 fn compile_neon_to_rs(neon_source: &str) -> String {
-    match neondb::dsl::compile(neon_source, "reducers.neon") {
+    match neondb::dsl::compile(neon_source, "reducers") {
         Ok(rs) => rs,
-        Err(_) => {
-            // Fallback: empty module that compiles but registers nothing.
-            "// Auto-generated by neondb build. Run `neondb build` to regenerate.\n".to_owned()
-        }
+        Err(_) => "// Auto-generated by neondb build. Run `neondb build` to regenerate.\n".to_owned()
     }
 }
 
 fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
-    wf(p, "Cargo.toml",          &game_cargo_toml(name))?;
+    let all_neon = concat_strs(&[
+        NEON_BASIC_SCHEMA, NEON_BASIC_SPAWN, NEON_BASIC_MOVEMENT,
+        NEON_BASIC_COMBAT, NEON_BASIC_SYSTEM,
+    ]);
+    wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
-    wf(p, "rust-toolchain.toml", RUST_TOOLCHAIN)?;
-    wf(p, "src/main.rs",         GAME_MAIN_RS)?;
-    wf(p, "reducers.neon",       NEON_BASIC_REDUCERS)?;
-    wf(p, "src/reducers.rs",     &compile_neon_to_rs(NEON_BASIC_REDUCERS))?;
-    wf(p, "schema.toml",         R_BASIC_SCHEMA)?;
-    wf(p, "SCALING.md",          SCALING_MD)?;
-    wf(p, "README.md",           &format!("# {name}\n\nNeonDB Neon-language game server.\n\nEdit `reducers.neon`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/` for the language reference.\n"))?;
+    wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
+    wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
+    // Per-file reducer layout (mirrors the Rust template structure)
+    wf(p, "reducers/schema.neon",        NEON_BASIC_SCHEMA)?;
+    wf(p, "reducers/spawn.neon",         NEON_BASIC_SPAWN)?;
+    wf(p, "reducers/movement.neon",      NEON_BASIC_MOVEMENT)?;
+    wf(p, "reducers/combat.neon",        NEON_BASIC_COMBAT)?;
+    wf(p, "reducers/system.neon",        NEON_BASIC_SYSTEM)?;
+    wf(p, "src/reducers.rs",             &compile_neon_to_rs(&all_neon))?;
+    wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
+    wf(p, "SCALING.md",                  SCALING_MD)?;
+    wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
+    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language game server.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/` for the language reference.\n"))?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/basic", &[
-        ("reducers.neon",                "ALL game logic lives here — edit this file"),
-        ("src/reducers.rs",             "auto-generated from reducers.neon (do not edit)"),
-        ("schema.toml",                 "table definitions"),
-        ("neondb.toml",                 "server config (port, WAL, schedulers)"),
-        ("clients/rust/src/main.rs",    "Rust client"),
-        ("clients/unity/NeonDBClient.cs","Unity C# client"),
-        ("clients/godot/neondb_client.gd","Godot 4 GDScript client"),
+        ("reducers/schema.neon",          "table definitions"),
+        ("reducers/spawn.neon",           "spawn + despawn"),
+        ("reducers/movement.neon",        "move_player"),
+        ("reducers/combat.neon",          "damage + heal"),
+        ("reducers/system.neon",          "get_stats + cleanup_dead (scheduler)"),
+        ("src/reducers.rs",               "auto-generated — do not edit"),
+        ("clients/rust/src/main.rs",      "Rust client"),
+        ("clients/unity/NeonDBClient.cs", "Unity C# client"),
+        ("clients/godot/neondb_client.gd","Godot 4 client"),
     ]);
     println!("  Neon workflow:");
-    println!("    1. Edit reducers.neon (all game logic is there)");
-    println!("    2. neondb build    — compile .neon to native Rust");
+    println!("    1. Edit any file in reducers/");
+    println!("    2. neondb build    — compile .neon → native Rust");
     println!("    3. neondb start    — start the server");
     println!();
     println!("  Language docs: docs/neon/README.md");
@@ -1197,24 +1244,45 @@ fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
 }
 
 fn scaffold_neon_game_ready(p: &Path, name: &str) -> Result<()> {
-    wf(p, "Cargo.toml",          &game_cargo_toml(name))?;
+    let all_neon = concat_strs(&[
+        NEON_GAME_SCHEMA, NEON_GAME_SPAWN, NEON_GAME_MOVEMENT,
+        NEON_GAME_COMBAT, NEON_GAME_PROGRESSION, NEON_GAME_ECONOMY,
+        NEON_GAME_GUILDS, NEON_GAME_LEADERBOARD, NEON_GAME_SYSTEM,
+    ]);
+    wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
-    wf(p, "rust-toolchain.toml", RUST_TOOLCHAIN)?;
-    wf(p, "src/main.rs",         GAME_MAIN_RS)?;
-    wf(p, "reducers.neon",       NEON_GAME_READY_REDUCERS)?;
-    wf(p, "src/reducers.rs",     &compile_neon_to_rs(NEON_GAME_READY_REDUCERS))?;
-    wf(p, "schema.toml",         R_BASIC_SCHEMA)?;
-    wf(p, "SCALING.md",          SCALING_MD)?;
-    wf(p, "README.md",           &format!("# {name}\n\nNeonDB Neon-language game server — full game template.\n\nEdit `reducers.neon`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/` for the language reference.\n"))?;
+    wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
+    wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
+    wf(p, "reducers/schema.neon",        NEON_GAME_SCHEMA)?;
+    wf(p, "reducers/spawn.neon",         NEON_GAME_SPAWN)?;
+    wf(p, "reducers/movement.neon",      NEON_GAME_MOVEMENT)?;
+    wf(p, "reducers/combat.neon",        NEON_GAME_COMBAT)?;
+    wf(p, "reducers/progression.neon",   NEON_GAME_PROGRESSION)?;
+    wf(p, "reducers/economy.neon",       NEON_GAME_ECONOMY)?;
+    wf(p, "reducers/guilds.neon",        NEON_GAME_GUILDS)?;
+    wf(p, "reducers/leaderboard.neon",   NEON_GAME_LEADERBOARD)?;
+    wf(p, "reducers/system.neon",        NEON_GAME_SYSTEM)?;
+    wf(p, "src/reducers.rs",             &compile_neon_to_rs(&all_neon))?;
+    wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
+    wf(p, "SCALING.md",                  SCALING_MD)?;
+    wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
+    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language game server — full game template.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/` for the language reference.\n"))?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/game-ready", &[
-        ("reducers.neon",         "ALL game logic — spawn, combat, economy, guilds, quests"),
-        ("src/reducers.rs",      "auto-generated (do not edit)"),
-        ("schema.toml",          "table definitions"),
-        ("clients/",             "Rust, Unity, Godot client SDKs"),
+        ("reducers/schema.neon",       "table definitions (players + guilds)"),
+        ("reducers/spawn.neon",        "spawn + despawn"),
+        ("reducers/movement.neon",     "move_player"),
+        ("reducers/combat.neon",       "take_damage + heal"),
+        ("reducers/progression.neon",  "grant_xp + roll_loot"),
+        ("reducers/economy.neon",      "transfer_gold"),
+        ("reducers/guilds.neon",       "create_guild + join + leave"),
+        ("reducers/leaderboard.neon",  "leaderboard + top_killers"),
+        ("reducers/system.neon",       "get_stats + cleanup_dead (scheduler)"),
+        ("src/reducers.rs",            "auto-generated — do not edit"),
+        ("clients/",                   "Rust, Unity, Godot client SDKs"),
     ]);
     println!("  Neon workflow:");
-    println!("    1. Edit reducers.neon");
+    println!("    1. Edit any file in reducers/");
     println!("    2. neondb build");
     println!("    3. neondb start");
     println!();
@@ -1222,21 +1290,32 @@ fn scaffold_neon_game_ready(p: &Path, name: &str) -> Result<()> {
 }
 
 fn scaffold_neon_chat(p: &Path, name: &str) -> Result<()> {
-    wf(p, "Cargo.toml",          &game_cargo_toml(name))?;
+    let all_neon = concat_strs(&[
+        NEON_CHAT_SCHEMA_NEON, NEON_CHAT_ROOMS,
+        NEON_CHAT_MESSAGES, NEON_CHAT_SYSTEM,
+    ]);
+    wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
-    wf(p, "rust-toolchain.toml", RUST_TOOLCHAIN)?;
-    wf(p, "src/main.rs",         GAME_MAIN_RS)?;
-    wf(p, "reducers.neon",       NEON_CHAT_REDUCERS)?;
-    wf(p, "src/reducers.rs",     &compile_neon_to_rs(NEON_CHAT_REDUCERS))?;
-    wf(p, "schema.toml",         NEON_CHAT_SCHEMA)?;
-    wf(p, "README.md",           &format!("# {name}\n\nNeonDB Neon-language chat server.\n\nEdit `reducers.neon`, run `neondb build`, then `neondb start`.\n"))?;
+    wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
+    wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
+    wf(p, "reducers/schema.neon",        NEON_CHAT_SCHEMA_NEON)?;
+    wf(p, "reducers/rooms.neon",         NEON_CHAT_ROOMS)?;
+    wf(p, "reducers/messages.neon",      NEON_CHAT_MESSAGES)?;
+    wf(p, "reducers/system.neon",        NEON_CHAT_SYSTEM)?;
+    wf(p, "src/reducers.rs",             &compile_neon_to_rs(&all_neon))?;
+    wf(p, "schema.toml",                 NEON_CHAT_SCHEMA)?;
+    wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
+    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language chat server.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n"))?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/chat", &[
-        ("reducers.neon",         "join_room, send_message, leave_room, list_rooms, online_count"),
-        ("src/reducers.rs",      "auto-generated (do not edit)"),
+        ("reducers/schema.neon",   "table definitions (rooms + messages + members)"),
+        ("reducers/rooms.neon",    "create_room + join_room + leave_room"),
+        ("reducers/messages.neon", "send_message + list_rooms"),
+        ("reducers/system.neon",   "online_count + room_members + kick + cleanup"),
+        ("src/reducers.rs",        "auto-generated — do not edit"),
     ]);
     println!("  Neon workflow:");
-    println!("    1. Edit reducers.neon");
+    println!("    1. Edit any file in reducers/");
     println!("    2. neondb build");
     println!("    3. neondb start");
     println!();
@@ -1348,8 +1427,10 @@ fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
         return Err(neondb::error::NeonDBError::invalid_argument("not a NeonDB project directory"));
     }
 
-    // If this is a Neon-language project, append .neon content instead of Rust files.
-    if project_path.join("reducers.neon").exists() {
+    // If this is a Neon-language project, write a .neon file instead of Rust files.
+    if project_path.join("reducers").is_dir()
+        || project_path.join("reducers.neon").exists()
+    {
         return cmd_add_module_neon(module, project_path);
     }
 
@@ -1374,7 +1455,7 @@ fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Neon project: append module reducer definitions to reducers.neon, then rebuild.
+/// Neon project: write a dedicated reducers/<module>.neon file, then rebuild.
 fn cmd_add_module_neon(module: &str, project_path: &Path) -> Result<()> {
     let neon_snippet = match module {
         "chat"        => NEON_MOD_CHAT,
@@ -1394,30 +1475,49 @@ fn cmd_add_module_neon(module: &str, project_path: &Path) -> Result<()> {
         }
     };
 
-    // Check if module marker is already present (idempotent).
-    let neon_path = project_path.join("reducers.neon");
-    let existing = fs::read_to_string(&neon_path).unwrap_or_default();
-    let marker = format!("// ── {module} module");
-    if existing.contains(&marker) {
-        println!("  {module} module already present in reducers.neon — skipped.");
+    let reducers_dir = project_path.join("reducers");
+    let target_path = if reducers_dir.is_dir() {
+        // New per-file layout: write reducers/<module>.neon
+        let path = reducers_dir.join(format!("{module}.neon"));
+        if path.exists() {
+            println!("  {module} module already exists at reducers/{module}.neon — skipped.");
+            println!();
+            return Ok(());
+        }
+        path
+    } else {
+        // Legacy single-file layout: append to reducers.neon
+        let neon_path = project_path.join("reducers.neon");
+        let existing = fs::read_to_string(&neon_path).unwrap_or_default();
+        let marker = format!("// ── {module} module");
+        if existing.contains(&marker) {
+            println!("  {module} module already present in reducers.neon — skipped.");
+            println!();
+            return Ok(());
+        }
+        use std::io::Write as _;
+        let mut file = fs::OpenOptions::new().append(true).open(&neon_path)
+            .map_err(|e| neondb::error::NeonDBError::internal(format!("open reducers.neon: {e}")))?;
+        writeln!(file, "\n{}", neon_snippet.trim())
+            .map_err(|e| neondb::error::NeonDBError::internal(format!("append reducers.neon: {e}")))?;
         println!();
-        return Ok(());
-    }
+        println!("  Added {module} module → reducers.neon");
+        println!("  Rebuild: neondb build");
+        println!("  Restart: neondb start");
+        println!();
+        println!("  Recompiling...");
+        return build_neon_reducers(project_path);
+    };
 
-    // Append to reducers.neon.
-    use std::io::Write as _;
-    let mut file = fs::OpenOptions::new().append(true).open(&neon_path)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("open reducers.neon: {e}")))?;
-    writeln!(file, "\n{}", neon_snippet.trim())
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("append reducers.neon: {e}")))?;
+    fs::write(&target_path, neon_snippet.trim())
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("write reducers/{module}.neon: {e}")))?;
 
     println!();
-    println!("  Added {module} module → reducers.neon");
+    println!("  Added {module} module → reducers/{module}.neon");
     println!("  Rebuild: neondb build");
     println!("  Restart: neondb start");
     println!();
 
-    // Auto-rebuild so the project works immediately.
     println!("  Recompiling...");
     build_neon_reducers(project_path)?;
     Ok(())
@@ -1476,6 +1576,402 @@ const PERF_MD: &str           = include_str!("../templates/performance.md.txt");
 const SCALING_MD: &str        = include_str!("../templates/scaling.md.txt");
 
 // ── Neon language template content (inline — no extra template files needed) ──
+/// VS Code language association — makes .neon files use Rust syntax highlighting.
+const VSCODE_NEON_SETTINGS: &str = r#"{
+  "files.associations": {
+    "*.neon": "rust"
+  }
+}
+"#;
+
+/// Concatenate a slice of string slices with a newline between each.
+fn concat_strs(parts: &[&str]) -> String {
+    parts.join("\n")
+}
+
+// ── neon/basic per-file constants ────────────────────────────────────────────
+
+const NEON_BASIC_SCHEMA: &str = r#"// schema.neon — table definitions
+// Add fields here, then run: neondb build
+
+table players {
+    hp:    int   = 100,
+    alive: bool  = true,
+    x:     float = 0.0,
+    y:     float = 0.0,
+    kills: int   = 0,
+    name:  str   = "",
+}
+"#;
+
+const NEON_BASIC_SPAWN: &str = r#"// spawn.neon — player lifecycle
+
+reducer spawn(player_id: str, name: str, x: float, y: float) {
+    players[player_id] = { hp: 100, alive: true, x: x, y: y, kills: 0, name: name }
+    set_counter("online", counter("online") + 1)
+    return { ok: true, player_id: player_id }
+}
+
+reducer despawn(player_id: str) {
+    let p = players[player_id] else { error("Player not found") }
+    delete players[player_id]
+    set_counter("online", counter("online") - 1)
+    return { ok: true }
+}
+"#;
+
+const NEON_BASIC_MOVEMENT: &str = r#"// movement.neon — position updates
+
+reducer move_player(player_id: str, x: float, y: float) {
+    let p = players[player_id] else { error("Player not found") }
+    players[player_id].x = x
+    players[player_id].y = y
+    return { ok: true, x: x, y: y }
+}
+"#;
+
+const NEON_BASIC_COMBAT: &str = r#"// combat.neon — damage & healing
+
+reducer damage(target_id: str, amount: int) {
+    let p = players[target_id] else { error("Player not found") }
+    let new_hp = max(0, p.hp - amount)
+    players[target_id].hp = new_hp
+    if new_hp <= 0 {
+        players[target_id].alive = false
+    }
+    return { hp: new_hp, alive: new_hp > 0 }
+}
+
+reducer heal(target_id: str, amount: int) {
+    let p = players[target_id] else { error("Player not found") }
+    let new_hp = min(100, p.hp + amount)
+    players[target_id].hp = new_hp
+    return { hp: new_hp }
+}
+"#;
+
+const NEON_BASIC_SYSTEM: &str = r#"// system.neon — stats & scheduled maintenance
+
+reducer get_stats() {
+    let online = counter("online")
+    let total  = count_rows("players")
+    let ts     = timestamp()
+    return { online: online, total_players: total, server_time: ts }
+}
+
+// Add to neondb.toml [[scheduler]] to run automatically
+reducer cleanup_dead() {
+    let removed = 0
+    for id, p in players {
+        if p.alive == false {
+            delete players[id]
+            removed = removed + 1
+        }
+    }
+    return { removed: removed }
+}
+"#;
+
+// ── neon/game-ready per-file constants ───────────────────────────────────────
+
+const NEON_GAME_SCHEMA: &str = r#"// schema.neon — table definitions
+
+table players {
+    hp:     int   = 100,
+    max_hp: int   = 100,
+    level:  int   = 1,
+    xp:     int   = 0,
+    alive:  bool  = true,
+    x:      float = 0.0,
+    y:      float = 0.0,
+    kills:  int   = 0,
+    gold:   int   = 0,
+    name:   str   = "",
+    guild:  str   = "",
+}
+
+table guilds {
+    owner:        str   = "",
+    member_count: int   = 0,
+    score:        float = 0.0,
+    name:         str   = "",
+}
+"#;
+
+const NEON_GAME_SPAWN: &str = r#"// spawn.neon — player lifecycle
+
+reducer spawn(player_id: str, name: str, x: float, y: float) {
+    players[player_id] = { hp: 100, max_hp: 100, level: 1, xp: 0,
+                           alive: true, x: x, y: y, kills: 0,
+                           gold: 50, name: name, guild: "" }
+    set_counter("total_players", counter("total_players") + 1)
+    return { ok: true, player_id: player_id }
+}
+
+reducer despawn(player_id: str) {
+    let p = players[player_id] else { error("Player not found") }
+    delete players[player_id]
+    set_counter("total_players", counter("total_players") - 1)
+    return { ok: true }
+}
+"#;
+
+const NEON_GAME_MOVEMENT: &str = r#"// movement.neon — position updates
+
+reducer move_player(player_id: str, x: float, y: float) {
+    let p = players[player_id] else { error("Player not found") }
+    players[player_id].x = x
+    players[player_id].y = y
+    return { ok: true, x: x, y: y }
+}
+"#;
+
+const NEON_GAME_COMBAT: &str = r#"// combat.neon — damage & healing
+
+reducer take_damage(player_id: str, amount: int, attacker_id: str) {
+    let p = players[player_id] else { error("Player not found") }
+    let new_hp = max(0, p.hp - amount)
+    players[player_id].hp = new_hp
+    if new_hp <= 0 {
+        players[player_id].alive = false
+        let killer = players[attacker_id] else { return { died: true, killer: "unknown" } }
+        players[attacker_id].kills += 1
+        set_counter("total_kills", counter("total_kills") + 1)
+        return { died: true, killer: attacker_id }
+    } else if new_hp <= 25 {
+        return { died: false, hp: new_hp, status: "critical" }
+    } else if new_hp <= 50 {
+        return { died: false, hp: new_hp, status: "wounded" }
+    } else {
+        return { died: false, hp: new_hp, status: "healthy" }
+    }
+}
+
+reducer heal(player_id: str, amount: int) {
+    let p = players[player_id] else { error("Player not found") }
+    let new_hp = min(p.max_hp, p.hp + amount)
+    players[player_id].hp = new_hp
+    return { hp: new_hp }
+}
+"#;
+
+const NEON_GAME_PROGRESSION: &str = r#"// progression.neon — XP, leveling, loot
+
+reducer grant_xp(player_id: str, amount: int) {
+    let p = players[player_id] else { error("Player not found") }
+    let cur_xp  = p.xp + amount
+    let cur_lvl = p.level
+    while cur_xp >= cur_lvl * 100 {
+        cur_xp  = cur_xp - cur_lvl * 100
+        cur_lvl = cur_lvl + 1
+    }
+    players[player_id].level = cur_lvl
+    players[player_id].xp    = cur_xp
+    return { level: cur_lvl, xp: cur_xp }
+}
+
+reducer roll_loot(player_id: str) {
+    let roll = rand_int(1, 100)
+    if roll >= 90 {
+        return { rarity: "legendary", roll: roll }
+    } else if roll >= 60 {
+        return { rarity: "rare",      roll: roll }
+    } else if roll >= 30 {
+        return { rarity: "uncommon",  roll: roll }
+    } else {
+        return { rarity: "common",    roll: roll }
+    }
+}
+"#;
+
+const NEON_GAME_ECONOMY: &str = r#"// economy.neon — gold transfers
+
+reducer transfer_gold(from_id: str, to_id: str, amount: int) {
+    let from = players[from_id] else { error("Sender not found") }
+    let to   = players[to_id]   else { error("Recipient not found") }
+    if from.gold < amount {
+        error("Insufficient gold")
+    }
+    players[from_id].gold -= amount
+    players[to_id].gold   += amount
+    return { ok: true, transferred: amount }
+}
+"#;
+
+const NEON_GAME_GUILDS: &str = r#"// guilds.neon — guild management
+
+reducer create_guild(guild_id: str, name: str) {
+    let owner = caller_id
+    guilds[guild_id] = { owner: owner, member_count: 1, score: 0.0, name: name }
+    players[owner].guild = guild_id
+    return { ok: true, guild_id: guild_id }
+}
+
+reducer join_guild(guild_id: str) {
+    let player_id = caller_id
+    let g = guilds[guild_id] else { error("Guild not found") }
+    guilds[guild_id].member_count += 1
+    players[player_id].guild = guild_id
+    return { ok: true }
+}
+
+reducer leave_guild() {
+    let player_id = caller_id
+    let p = players[player_id] else { error("Player not found") }
+    let gid = p.guild
+    guilds[gid].member_count -= 1
+    players[player_id].guild = ""
+    return { ok: true }
+}
+"#;
+
+const NEON_GAME_LEADERBOARD: &str = r#"// leaderboard.neon — rankings
+
+reducer leaderboard(field: str) {
+    let rows = sort_by("players", field, "desc")
+    return { rows: rows }
+}
+
+reducer top_killers() {
+    let top = top_n("players", "kills", 10)
+    return { top: top }
+}
+"#;
+
+const NEON_GAME_SYSTEM: &str = r#"// system.neon — stats & scheduled maintenance
+
+reducer get_stats() {
+    let total  = count_rows("players")
+    let kills  = counter("total_kills")
+    let avg_k  = avg_field("players", "kills")
+    let ts     = timestamp()
+    return { total_players: total, total_kills: kills, avg_kills: avg_k, server_time: ts }
+}
+
+// Add to neondb.toml [[scheduler]] to run automatically
+reducer cleanup_dead() {
+    let removed = 0
+    for id, p in players {
+        if p.alive == false {
+            delete players[id]
+            removed = removed + 1
+        }
+    }
+    return { removed: removed }
+}
+"#;
+
+// ── neon/chat per-file constants ─────────────────────────────────────────────
+
+const NEON_CHAT_SCHEMA_NEON: &str = r#"// schema.neon — table definitions
+
+table rooms {
+    name:         str = "",
+    member_count: int = 0,
+    created_by:   str = "",
+}
+
+table room_members {
+    room:   str = "",
+    player: str = "",
+}
+
+table messages {
+    room:   str = "",
+    sender: str = "",
+    text:   str = "",
+    ts:     int = 0,
+}
+"#;
+
+const NEON_CHAT_ROOMS: &str = r#"// rooms.neon — room lifecycle
+
+reducer create_room(room_id: str, name: str) {
+    let creator = caller_id
+    rooms[room_id] = { name: name, member_count: 0, created_by: creator }
+    return { ok: true, room_id: room_id }
+}
+
+reducer join_room(room_id: str) {
+    let player_id = caller_id
+    let r = rooms[room_id] else { error("Room not found") }
+    let member_key = concat(room_id, concat(":", player_id))
+    room_members[member_key] = { room: room_id, player: player_id }
+    rooms[room_id].member_count += 1
+    return { ok: true, room: room_id, members: r.member_count + 1 }
+}
+
+reducer leave_room(room_id: str) {
+    let player_id = caller_id
+    let member_key = concat(room_id, concat(":", player_id))
+    let r = rooms[room_id] else { return { ok: true } }
+    delete room_members[member_key]
+    rooms[room_id].member_count -= 1
+    return { ok: true }
+}
+"#;
+
+const NEON_CHAT_MESSAGES: &str = r#"// messages.neon — messaging & room listing
+
+reducer send_message(room_id: str, text: str) {
+    let sender = caller_id
+    let r = rooms[room_id] else { error("Room not found") }
+    let trimmed = trim(text)
+    if len(trimmed) == 0 {
+        error("Message cannot be empty")
+    }
+    let msg_key = concat(room_id, concat(":", str(timestamp())))
+    messages[msg_key] = { room: room_id, sender: sender, text: trimmed, ts: timestamp() }
+    set_counter("total_messages", counter("total_messages") + 1)
+    return { ok: true, room: room_id }
+}
+
+reducer list_rooms() {
+    let rows = sort_by("rooms", "member_count", "desc")
+    return { rooms: rows }
+}
+"#;
+
+const NEON_CHAT_SYSTEM: &str = r#"// system.neon — presence, moderation & cleanup
+
+reducer online_count() {
+    let count = count_rows("room_members")
+    let msgs  = counter("total_messages")
+    return { online: count, total_messages: msgs }
+}
+
+reducer room_members(room_id: str) {
+    let members = find_all("room_members", "room", room_id)
+    return { room: room_id, members: members, count: array_len(members) }
+}
+
+reducer kick_from_room(room_id: str, target_id: str) {
+    let requester = caller_id
+    let r = rooms[room_id] else { error("Room not found") }
+    if r.created_by != requester {
+        error("Only the room creator can kick members")
+    }
+    let member_key = concat(room_id, concat(":", target_id))
+    delete room_members[member_key]
+    rooms[room_id].member_count -= 1
+    return { ok: true, kicked: target_id }
+}
+
+// Add to neondb.toml [[scheduler]] to run automatically
+reducer cleanup_old_messages() {
+    let cutoff = timestamp() - 86400000000000
+    let removed = 0
+    for id, m in messages {
+        if m.ts < cutoff {
+            delete messages[id]
+            removed = removed + 1
+        }
+    }
+    return { removed: removed }
+}
+"#;
+
+// ── Legacy single-file constants (kept for backward compatibility) ────────────
 const NEON_BASIC_REDUCERS: &str = r#"// ============================================================
 // reducers.neon — basic game template
 //
