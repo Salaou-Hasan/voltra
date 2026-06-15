@@ -1347,7 +1347,13 @@ fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
         eprintln!("No schema.toml found. Run `neondb add` from inside your project directory.");
         return Err(neondb::error::NeonDBError::invalid_argument("not a NeonDB project directory"));
     }
-    // `add_module_files` registers the module in src/reducers/mod.rs itself.
+
+    // If this is a Neon-language project, append .neon content instead of Rust files.
+    if project_path.join("reducers.neon").exists() {
+        return cmd_add_module_neon(module, project_path);
+    }
+
+    // Rust project path — write .rs files.
     match module {
         "chat" | "inventory" | "leaderboard" | "matchmaking" |
         "guilds" | "quests" | "economy" | "combat" | "world" => {
@@ -1365,6 +1371,55 @@ fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
         }
     }
     println!();
+    Ok(())
+}
+
+/// Neon project: append module reducer definitions to reducers.neon, then rebuild.
+fn cmd_add_module_neon(module: &str, project_path: &Path) -> Result<()> {
+    let neon_snippet = match module {
+        "chat"        => NEON_MOD_CHAT,
+        "inventory"   => NEON_MOD_INVENTORY,
+        "leaderboard" => NEON_MOD_LEADERBOARD,
+        "economy"     => NEON_MOD_ECONOMY,
+        "guilds"      => NEON_MOD_GUILDS,
+        "quests"      => NEON_MOD_QUESTS,
+        "combat"      => NEON_MOD_COMBAT,
+        "matchmaking" => NEON_MOD_MATCHMAKING,
+        "world"       => NEON_MOD_WORLD,
+        other => {
+            let names: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
+            eprintln!("Unknown module '{}'. Available: {}", other, names.join(", "));
+            return Err(neondb::error::NeonDBError::invalid_argument(
+                format!("unknown module '{}'", other)));
+        }
+    };
+
+    // Check if module marker is already present (idempotent).
+    let neon_path = project_path.join("reducers.neon");
+    let existing = fs::read_to_string(&neon_path).unwrap_or_default();
+    let marker = format!("// ── {module} module");
+    if existing.contains(&marker) {
+        println!("  {module} module already present in reducers.neon — skipped.");
+        println!();
+        return Ok(());
+    }
+
+    // Append to reducers.neon.
+    use std::io::Write as _;
+    let mut file = fs::OpenOptions::new().append(true).open(&neon_path)
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("open reducers.neon: {e}")))?;
+    writeln!(file, "\n{}", neon_snippet.trim())
+        .map_err(|e| neondb::error::NeonDBError::internal(format!("append reducers.neon: {e}")))?;
+
+    println!();
+    println!("  Added {module} module → reducers.neon");
+    println!("  Rebuild: neondb build");
+    println!("  Restart: neondb start");
+    println!();
+
+    // Auto-rebuild so the project works immediately.
+    println!("  Recompiling...");
+    build_neon_reducers(project_path)?;
     Ok(())
 }
 
@@ -1838,6 +1893,387 @@ type = "string"
 [[table.column]]
 name = "ts"
 type = "integer"
+"#;
+
+// ── Neon module snippets (appended to reducers.neon by `neondb add <module>`) ─
+const NEON_MOD_CHAT: &str = r#"
+// ── chat module ───────────────────────────────────────────────────────────────
+table chat_messages {
+    room:   str = "",
+    sender: str = "",
+    text:   str = "",
+    ts:     int = 0,
+}
+
+table chat_members {
+    room:   str = "",
+    player: str = "",
+}
+
+reducer join_room(room: str) {
+    let player_id = caller_id
+    let key = concat(room, concat(":", player_id))
+    chat_members[key] = { room: room, player: player_id }
+    set_counter(concat("room_count:", room), counter(concat("room_count:", room)) + 1)
+    return { ok: true, room: room }
+}
+
+reducer leave_room(room: str) {
+    let player_id = caller_id
+    let key = concat(room, concat(":", player_id))
+    delete chat_members[key]
+    set_counter(concat("room_count:", room), counter(concat("room_count:", room)) - 1)
+    return { ok: true }
+}
+
+reducer send_message(room: str, text: str) {
+    let sender = caller_id
+    let trimmed = trim(text)
+    if len(trimmed) == 0 { error("Message cannot be empty") }
+    let key = concat(room, concat(":", str(timestamp())))
+    chat_messages[key] = { room: room, sender: sender, text: trimmed, ts: timestamp() }
+    return { ok: true }
+}
+
+reducer cleanup_chat() {
+    let cutoff = timestamp() - 86400000000000
+    for id, m in chat_messages {
+        if m.ts < cutoff { delete chat_messages[id] }
+    }
+}
+"#;
+
+const NEON_MOD_INVENTORY: &str = r#"
+// ── inventory module ──────────────────────────────────────────────────────────
+table inventories {
+    owner: str = "",
+    item:  str = "",
+    qty:   int = 0,
+    slot:  int = 0,
+}
+
+reducer add_item(owner_id: str, item: str, qty: int) {
+    let key = concat(owner_id, concat(":", item))
+    let existing = inventories[key] else {
+        inventories[key] = { owner: owner_id, item: item, qty: qty, slot: 0 }
+        return { ok: true, qty: qty }
+    }
+    let new_qty = existing.qty + qty
+    inventories[key].qty = new_qty
+    return { ok: true, qty: new_qty }
+}
+
+reducer remove_item(owner_id: str, item: str, qty: int) {
+    let key = concat(owner_id, concat(":", item))
+    let existing = inventories[key] else { error("Item not in inventory") }
+    if existing.qty < qty { error("Not enough quantity") }
+    let new_qty = existing.qty - qty
+    if new_qty == 0 {
+        delete inventories[key]
+    } else {
+        inventories[key].qty = new_qty
+    }
+    return { ok: true, qty: new_qty }
+}
+
+reducer get_inventory(owner_id: str) {
+    let items = find_all("inventories", "owner", owner_id)
+    return { items: items, count: array_len(items) }
+}
+"#;
+
+const NEON_MOD_LEADERBOARD: &str = r#"
+// ── leaderboard module ────────────────────────────────────────────────────────
+table scores {
+    player: str   = "",
+    score:  int   = 0,
+    name:   str   = "",
+}
+
+reducer submit_score(score: int) {
+    let player_id = caller_id
+    let existing = scores[player_id] else {
+        scores[player_id] = { player: player_id, score: score, name: player_id }
+        return { ok: true, score: score }
+    }
+    if score > existing.score {
+        scores[player_id].score = score
+        return { ok: true, score: score, improved: true }
+    }
+    return { ok: true, score: existing.score, improved: false }
+}
+
+reducer get_leaderboard() {
+    let top = top_n("scores", "score", 100)
+    return { leaderboard: top }
+}
+
+reducer reset_leaderboard() {
+    for id, s in scores { delete scores[id] }
+    return { ok: true }
+}
+"#;
+
+const NEON_MOD_ECONOMY: &str = r#"
+// ── economy module ────────────────────────────────────────────────────────────
+table wallets {
+    player: str = "",
+    gold:   int = 0,
+    gems:   int = 0,
+}
+
+reducer add_gold(player_id: str, amount: int) {
+    let existing = wallets[player_id] else {
+        wallets[player_id] = { player: player_id, gold: amount, gems: 0 }
+        return { ok: true, gold: amount }
+    }
+    wallets[player_id].gold += amount
+    return { ok: true, gold: existing.gold + amount }
+}
+
+reducer spend_gold(player_id: str, amount: int) {
+    let w = wallets[player_id] else { error("Wallet not found") }
+    if w.gold < amount { error("Insufficient gold") }
+    wallets[player_id].gold -= amount
+    return { ok: true, gold: w.gold - amount }
+}
+
+reducer transfer_gold(to_id: str, amount: int) {
+    let from_id = caller_id
+    let from = wallets[from_id] else { error("Sender wallet not found") }
+    let to   = wallets[to_id]   else { error("Recipient wallet not found") }
+    if from.gold < amount { error("Insufficient gold") }
+    wallets[from_id].gold -= amount
+    wallets[to_id].gold   += amount
+    return { ok: true, transferred: amount }
+}
+
+reducer get_wallet(player_id: str) {
+    let w = wallets[player_id] else { return { gold: 0, gems: 0 } }
+    return { gold: w.gold, gems: w.gems }
+}
+"#;
+
+const NEON_MOD_GUILDS: &str = r#"
+// ── guilds module ─────────────────────────────────────────────────────────────
+table guilds {
+    name:         str   = "",
+    owner:        str   = "",
+    member_count: int   = 0,
+    score:        float = 0.0,
+}
+
+table guild_members {
+    guild:  str = "",
+    player: str = "",
+    rank:   str = "member",
+}
+
+reducer create_guild(guild_id: str, name: str) {
+    let owner = caller_id
+    guilds[guild_id] = { name: name, owner: owner, member_count: 1, score: 0.0 }
+    let key = concat(guild_id, concat(":", owner))
+    guild_members[key] = { guild: guild_id, player: owner, rank: "owner" }
+    return { ok: true, guild_id: guild_id }
+}
+
+reducer join_guild(guild_id: str) {
+    let player_id = caller_id
+    let g = guilds[guild_id] else { error("Guild not found") }
+    let key = concat(guild_id, concat(":", player_id))
+    guild_members[key] = { guild: guild_id, player: player_id, rank: "member" }
+    guilds[guild_id].member_count += 1
+    return { ok: true }
+}
+
+reducer leave_guild(guild_id: str) {
+    let player_id = caller_id
+    let key = concat(guild_id, concat(":", player_id))
+    delete guild_members[key]
+    guilds[guild_id].member_count -= 1
+    return { ok: true }
+}
+
+reducer kick_member(guild_id: str, target_id: str) {
+    let requester = caller_id
+    let g = guilds[guild_id] else { error("Guild not found") }
+    if g.owner != requester { error("Only guild owner can kick members") }
+    let key = concat(guild_id, concat(":", target_id))
+    delete guild_members[key]
+    guilds[guild_id].member_count -= 1
+    return { ok: true, kicked: target_id }
+}
+
+reducer get_guild_members(guild_id: str) {
+    let members = find_all("guild_members", "guild", guild_id)
+    return { members: members, count: array_len(members) }
+}
+"#;
+
+const NEON_MOD_QUESTS: &str = r#"
+// ── quests module ─────────────────────────────────────────────────────────────
+table quest_progress {
+    player:   str  = "",
+    quest_id: str  = "",
+    progress: int  = 0,
+    goal:     int  = 1,
+    done:     bool = false,
+    claimed:  bool = false,
+}
+
+reducer accept_quest(quest_id: str, goal: int) {
+    let player_id = caller_id
+    let key = concat(player_id, concat(":", quest_id))
+    quest_progress[key] = { player: player_id, quest_id: quest_id,
+                            progress: 0, goal: goal, done: false, claimed: false }
+    return { ok: true, quest_id: quest_id }
+}
+
+reducer advance_quest(quest_id: str, amount: int) {
+    let player_id = caller_id
+    let key = concat(player_id, concat(":", quest_id))
+    let q = quest_progress[key] else { error("Quest not accepted") }
+    if q.done { return { already_done: true } }
+    let new_progress = min(q.progress + amount, q.goal)
+    quest_progress[key].progress = new_progress
+    if new_progress >= q.goal {
+        quest_progress[key].done = true
+        return { done: true, progress: new_progress }
+    }
+    return { done: false, progress: new_progress }
+}
+
+reducer claim_quest(quest_id: str) {
+    let player_id = caller_id
+    let key = concat(player_id, concat(":", quest_id))
+    let q = quest_progress[key] else { error("Quest not found") }
+    if q.done == false { error("Quest not completed") }
+    if q.claimed { error("Reward already claimed") }
+    quest_progress[key].claimed = true
+    return { ok: true, quest_id: quest_id }
+}
+"#;
+
+const NEON_MOD_COMBAT: &str = r#"
+// ── combat module ─────────────────────────────────────────────────────────────
+reducer attack(target_id: str, damage: int) {
+    let attacker_id = caller_id
+    let target = players[target_id] else { error("Target not found") }
+    let crit = rand_int(1, 100)
+    let final_dmg = if crit >= 95 { damage * 2 } else { damage }
+    let new_hp = max(0, target.hp - final_dmg)
+    players[target_id].hp = new_hp
+    if new_hp <= 0 {
+        players[target_id].alive = false
+        players[attacker_id].kills += 1
+        return { hit: true, damage: final_dmg, crit: crit >= 95, killed: true }
+    }
+    return { hit: true, damage: final_dmg, crit: crit >= 95, killed: false }
+}
+
+reducer respawn(player_id: str, x: float, y: float) {
+    let p = players[player_id] else { error("Player not found") }
+    players[player_id].hp    = 100
+    players[player_id].alive = true
+    players[player_id].x     = x
+    players[player_id].y     = y
+    return { ok: true }
+}
+
+reducer use_ability(target_id: str, ability: str) {
+    let attacker_id = caller_id
+    let target = players[target_id] else { error("Target not found") }
+    let dmg = if ability == "fireball" { rand_int(30, 60) } else if ability == "ice_lance" { rand_int(20, 40) } else { rand_int(10, 25) }
+    let new_hp = max(0, target.hp - dmg)
+    players[target_id].hp = new_hp
+    return { ability: ability, damage: dmg, target_hp: new_hp }
+}
+"#;
+
+const NEON_MOD_MATCHMAKING: &str = r#"
+// ── matchmaking module ────────────────────────────────────────────────────────
+table mm_queue {
+    player: str   = "",
+    rating: float = 1000.0,
+    ts:     int   = 0,
+}
+
+table matches {
+    player1: str = "",
+    player2: str = "",
+    status:  str = "pending",
+}
+
+reducer queue_up(rating: float) {
+    let player_id = caller_id
+    mm_queue[player_id] = { player: player_id, rating: rating, ts: timestamp() }
+    return { ok: true, position: count_rows("mm_queue") }
+}
+
+reducer leave_queue() {
+    let player_id = caller_id
+    delete mm_queue[player_id]
+    return { ok: true }
+}
+
+reducer mm_match() {
+    let waiting = sort_by("mm_queue", "ts", "asc")
+    let n = array_len(waiting)
+    let paired = 0
+    let i = 0
+    while i + 1 < n {
+        let p1 = get_index(waiting, i)
+        let p2 = get_index(waiting, i + 1)
+        let match_id = concat(str(timestamp()), concat(":", str(i)))
+        matches[match_id] = { player1: p1, player2: p2, status: "active" }
+        delete mm_queue[p1]
+        delete mm_queue[p2]
+        paired = paired + 2
+        i = i + 2
+    }
+    return { paired: paired, remaining: n - paired }
+}
+"#;
+
+const NEON_MOD_WORLD: &str = r#"
+// ── world module ──────────────────────────────────────────────────────────────
+table zones {
+    name:        str = "",
+    player_count: int = 0,
+    max_players: int = 100,
+}
+
+table portals {
+    from_zone: str = "",
+    to_zone:   str = "",
+    x:         float = 0.0,
+    y:         float = 0.0,
+}
+
+reducer enter_zone(zone_id: str) {
+    let player_id = caller_id
+    let z = zones[zone_id] else { error("Zone not found") }
+    if z.player_count >= z.max_players { error("Zone is full") }
+    zones[zone_id].player_count += 1
+    return { ok: true, zone: zone_id, count: z.player_count + 1 }
+}
+
+reducer leave_zone(zone_id: str) {
+    let player_id = caller_id
+    let z = zones[zone_id] else { return { ok: true } }
+    zones[zone_id].player_count -= 1
+    return { ok: true }
+}
+
+reducer create_zone(zone_id: str, name: str, max_players: int) {
+    zones[zone_id] = { name: name, player_count: 0, max_players: max_players }
+    return { ok: true, zone_id: zone_id }
+}
+
+reducer world_tick() {
+    let total = count_rows("zones")
+    return { zones_active: total, ts: timestamp() }
+}
 "#;
 
 // ── Rust game templates ───────────────────────────────────────────────────────

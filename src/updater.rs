@@ -76,6 +76,22 @@ fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
             .map_err(|e| crate::error::NeonDBError::internal(format!("chmod: {e}")))?;
     }
 
+    // On Windows, rename() fails with "Access is denied" when the destination
+    // exe is currently in use (i.e. this very process).  Work around it by
+    // renaming the old binary out of the way first, then placing the new one.
+    #[cfg(windows)]
+    {
+        let old = dest.with_extension("old.exe");
+        let _ = fs::remove_file(&old); // remove stale .old from a previous update
+        if dest.exists() {
+            fs::rename(&dest, &old)
+                .map_err(|e| crate::error::NeonDBError::internal(format!("rename old binary: {e}")))?;
+        }
+        fs::rename(&tmp, &dest)
+            .map_err(|e| crate::error::NeonDBError::internal(format!("replace {}: {e}", dest.display())))?;
+        let _ = fs::remove_file(&old); // best-effort; may still be locked until process exits
+    }
+    #[cfg(not(windows))]
     fs::rename(&tmp, &dest)
         .map_err(|e| crate::error::NeonDBError::internal(format!("replace {}: {e}", dest.display())))?;
 
