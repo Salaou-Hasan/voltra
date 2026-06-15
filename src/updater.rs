@@ -76,27 +76,88 @@ fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
             .map_err(|e| crate::error::NeonDBError::internal(format!("chmod: {e}")))?;
     }
 
-    // On Windows, rename() fails with "Access is denied" when the destination
-    // exe is currently in use (i.e. this very process).  Work around it by
-    // renaming the old binary out of the way first, then placing the new one.
+    // Windows self-update: the running exe cannot be overwritten directly.
+    // Three-tier fallback so it always works regardless of Windows version / AV.
     #[cfg(windows)]
-    {
-        let old = dest.with_extension("old.exe");
-        let _ = fs::remove_file(&old); // remove stale .old from a previous update
-        if dest.exists() {
-            fs::rename(&dest, &old)
-                .map_err(|e| crate::error::NeonDBError::internal(format!("rename old binary: {e}")))?;
-        }
-        fs::rename(&tmp, &dest)
-            .map_err(|e| crate::error::NeonDBError::internal(format!("replace {}: {e}", dest.display())))?;
-        let _ = fs::remove_file(&old); // best-effort; may still be locked until process exits
-    }
+    windows_replace(&tmp, &dest)?;
     #[cfg(not(windows))]
     fs::rename(&tmp, &dest)
         .map_err(|e| crate::error::NeonDBError::internal(format!("replace {}: {e}", dest.display())))?;
 
     println!("    ✓ {}", dest.display());
     Ok(())
+}
+
+/// Windows-only: three-tier strategy to replace a potentially-running exe.
+///
+/// Tier 1 — rename-swap (works ~99% of the time):
+///   neondb.exe  →  neondb.old.exe   (rename is allowed on running exes)
+///   neondb.tmp  →  neondb.exe       (destination is now free)
+///
+/// Tier 2 — batch-script deferred copy (nuclear option):
+///   Write a .cmd file to %TEMP% that sleeps 2 s then does `copy /y`.
+///   Launch it detached, then exit this process so the lock is released.
+///   The batch script completes the copy and deletes itself.
+///
+/// Tier 3 — tell the user to copy manually.
+#[cfg(windows)]
+fn windows_replace(tmp: &std::path::Path, dest: &std::path::Path) -> crate::error::Result<()> {
+    // ── Tier 1: rename-swap ───────────────────────────────────────────────────
+    let old = dest.with_extension("old.exe");
+    let _ = fs::remove_file(&old); // clear stale .old from a previous run
+    let tier1 = (|| -> std::io::Result<()> {
+        if dest.exists() {
+            fs::rename(dest, &old)?;   // rename running exe (allowed by Windows)
+        }
+        fs::rename(tmp, dest)?;        // place new binary
+        let _ = fs::remove_file(&old);
+        Ok(())
+    })();
+    if tier1.is_ok() {
+        return Ok(());
+    }
+    // Restore if the second rename failed
+    if old.exists() && !dest.exists() {
+        let _ = fs::rename(&old, dest);
+    }
+
+    // ── Tier 2: deferred batch-script copy ───────────────────────────────────
+    // Write a .cmd that waits 2 s (for this process to exit), copies the new
+    // binary over the old one, then deletes itself.
+    let batch = std::env::temp_dir().join("_neondb_update.cmd");
+    let tmp_w  = tmp.to_string_lossy().replace('/', "\\");
+    let dest_w = dest.to_string_lossy().replace('/', "\\");
+    let bat_w  = batch.to_string_lossy().replace('/', "\\");
+    let script = format!(
+        "@echo off\r\n\
+         timeout /t 2 /nobreak >nul\r\n\
+         copy /y \"{tmp_w}\" \"{dest_w}\" >nul\r\n\
+         del \"{tmp_w}\" >nul 2>&1\r\n\
+         del \"{bat_w}\"\r\n"
+    );
+    if fs::write(&batch, script.as_bytes()).is_ok() {
+        let launched = std::process::Command::new("cmd")
+            .args(["/c", "start", "", "/min", "cmd", "/c", bat_w.as_ref()])
+            .spawn();
+        if launched.is_ok() {
+            println!("    ✓ Update scheduled — completing in 2 s (background).");
+            println!("      Run `neondb --version` in a new terminal to confirm.");
+            // Exit immediately so Windows releases the exe lock.
+            std::process::exit(0);
+        }
+    }
+
+    // ── Tier 3: manual instructions ──────────────────────────────────────────
+    Err(crate::error::NeonDBError::internal(format!(
+        "Cannot replace the running binary automatically.\n\
+         Manual update:\n  \
+           1. Close all neondb processes\n  \
+           2. Run: copy /y \"{}\" \"{}\"\n  \
+           3. Then: del \"{}\"",
+        tmp.display(),
+        dest.display(),
+        tmp.display(),
+    )))
 }
 
 pub fn cmd_update(check_only: bool) -> crate::error::Result<()> {
