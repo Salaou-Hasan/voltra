@@ -303,7 +303,7 @@ fn gen_call_stmt(name: &str, args: &[Expr], scope: &Scope, pad: &str) -> Result<
         "set_counter" => {
             let n = a(0);
             let v = a(1);
-            Ok(format!("{pad}ctx.set_counter(&({n}), ({v}) as u64)?;\n"))
+            Ok(format!("{pad}ctx.set_counter(({n}).to_string(), ({v}) as i32)?;\n"))
         }
 
         // ── Array mutation stmts ──────────────────────────────────────────────
@@ -410,7 +410,7 @@ fn gen_builtin_call(name: &str, args: &[String]) -> String {
         "timestamp"   => "(ctx.timestamp() as i64)".to_owned(),
 
         // ── Counters ─────────────────────────────────────────────────────────
-        "counter"     => format!("(ctx.get_counter(&{}) as i64)", a(0)),
+        "counter"     => format!("ctx.get_counter(&({}).to_string()).ok().flatten().map(|__c| __c.value as i64).unwrap_or(0i64)", a(0)),
 
         // ── Math ─────────────────────────────────────────────────────────────
         "min"         => format!("({}).min({})", a(0), a(1)),
@@ -679,7 +679,7 @@ fn gen_return_expr(expr: &Expr, scope: &Scope) -> String {
     match expr {
         Expr::RowLiteral { fields } => {
             let parts: Vec<_> = fields.iter()
-                .map(|(k, v)| format!("{k}: {}", gen_json_val(v, scope)))
+                .map(|(k, v)| format!("{k:?}: {}", gen_json_val(v, scope)))
                 .collect();
             format!("{{ {} }}", parts.join(", "))
         }
@@ -817,7 +817,7 @@ mod tests {
     fn codegen_return_row_literal() {
         let out = compile(r#"reducer info(id: str) { return { ok: true } }"#);
         assert!(out.contains("neondb::ret!"));
-        assert!(out.contains("ok:"));
+        assert!(out.contains("\"ok\":"));
     }
 
     #[test]
