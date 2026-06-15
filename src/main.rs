@@ -1221,7 +1221,8 @@ fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
     wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
-    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language game server.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/` for the language reference.\n"))?;
+    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language game server.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/README.md` for the language reference.\n"))?;
+    wf(p, "docs/neon/README.md",         NEON_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/basic", &[
         ("reducers/schema.neon",          "table definitions"),
@@ -1230,6 +1231,7 @@ fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
         ("reducers/combat.neon",          "damage + heal"),
         ("reducers/system.neon",          "get_stats + cleanup_dead (scheduler)"),
         ("src/reducers.rs",               "auto-generated — do not edit"),
+        ("docs/neon/README.md",           "Neon language reference"),
         ("clients/rust/src/main.rs",      "Rust client"),
         ("clients/unity/NeonDBClient.cs", "Unity C# client"),
         ("clients/godot/neondb_client.gd","Godot 4 client"),
@@ -1238,8 +1240,6 @@ fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
     println!("    1. Edit any file in reducers/");
     println!("    2. neondb build    — compile .neon → native Rust");
     println!("    3. neondb start    — start the server");
-    println!();
-    println!("  Language docs: docs/neon/README.md");
     println!();
     Ok(())
 }
@@ -1267,7 +1267,8 @@ fn scaffold_neon_game_ready(p: &Path, name: &str) -> Result<()> {
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
     wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
-    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language game server — full game template.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/` for the language reference.\n"))?;
+    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language game server — full game template.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/README.md` for the language reference.\n"))?;
+    wf(p, "docs/neon/README.md",         NEON_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/game-ready", &[
         ("reducers/schema.neon",       "table definitions (players + guilds)"),
@@ -1280,6 +1281,7 @@ fn scaffold_neon_game_ready(p: &Path, name: &str) -> Result<()> {
         ("reducers/leaderboard.neon",  "leaderboard + top_killers"),
         ("reducers/system.neon",       "get_stats + cleanup_dead (scheduler)"),
         ("src/reducers.rs",            "auto-generated — do not edit"),
+        ("docs/neon/README.md",        "Neon language reference"),
         ("clients/",                   "Rust, Unity, Godot client SDKs"),
     ]);
     println!("  Neon workflow:");
@@ -1306,7 +1308,8 @@ fn scaffold_neon_chat(p: &Path, name: &str) -> Result<()> {
     wf(p, "src/reducers.rs",             &compile_neon_to_rs(&all_neon))?;
     wf(p, "schema.toml",                 NEON_CHAT_SCHEMA)?;
     wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
-    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language chat server.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n"))?;
+    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language chat server.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/README.md` for the language reference.\n"))?;
+    wf(p, "docs/neon/README.md",         NEON_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/chat", &[
         ("reducers/schema.neon",   "table definitions (rooms + messages + members)"),
@@ -1314,6 +1317,7 @@ fn scaffold_neon_chat(p: &Path, name: &str) -> Result<()> {
         ("reducers/messages.neon", "send_message + list_rooms"),
         ("reducers/system.neon",   "online_count + room_members + kick + cleanup"),
         ("src/reducers.rs",        "auto-generated — do not edit"),
+        ("docs/neon/README.md",    "Neon language reference"),
     ]);
     println!("  Neon workflow:");
     println!("    1. Edit any file in reducers/");
@@ -1589,6 +1593,167 @@ const VSCODE_NEON_SETTINGS: &str = r#"{
 fn concat_strs(parts: &[&str]) -> String {
     parts.join("\n")
 }
+
+// ── Neon language reference (written to docs/neon/README.md) ────────────────
+
+const NEON_LANG_REFERENCE: &str = r#"# Neon Language Reference
+
+Neon is NeonDB's built-in language for writing game-server logic. Files live in
+`reducers/`, compile to native Rust with `neondb build`, and run at full speed —
+no interpreter, no overhead.
+
+---
+
+## Tables
+
+Declare persistent tables with typed columns and default values:
+
+```neon
+table players {
+    hp:    int   = 100,
+    alive: bool  = true,
+    x:     float = 0.0,
+    name:  str   = "",
+}
+```
+
+Types: `int` (i64), `float` (f64), `bool`, `str`.
+
+---
+
+## Reducers
+
+Entry points called by clients over WebSocket:
+
+```neon
+reducer spawn(player_id: str, name: str) {
+    players[player_id] = { hp: 100, alive: true, name: name }
+    return { ok: true }
+}
+```
+
+Parameters are typed (`str`, `int`, `float`, `bool`).
+
+---
+
+## Row operations
+
+| Syntax | What it does |
+|--------|-------------|
+| `table[key] = { field: val, ... }` | Insert / replace a row |
+| `let p = table[key] else { error("msg") }` | Read row or handle missing |
+| `delete table[key]` | Delete a row |
+| `p.field` | Read a field |
+| `table[key].field = expr` | Update a single field |
+| `table[key].field += expr` | Increment in place |
+
+---
+
+## Control flow
+
+```neon
+if hp <= 0 {
+    players[id].alive = false
+} else if hp <= 25 {
+    // critical
+} else {
+    // healthy
+}
+
+while cur_xp >= cur_lvl * 100 {
+    cur_xp  = cur_xp - cur_lvl * 100
+    cur_lvl = cur_lvl + 1
+}
+
+for id, p in players {
+    if p.alive == false { delete players[id] }
+}
+```
+
+---
+
+## Return values
+
+```neon
+return { ok: true, hp: new_hp }   // send data back to the client
+error("Player not found")          // return an error to the client
+```
+
+---
+
+## Built-in functions
+
+### Counters (persistent global integers)
+```neon
+let n = counter("online")          // read counter (returns int, 0 if missing)
+set_counter("online", n + 1)       // write counter
+```
+
+### Time
+```neon
+let ts = timestamp()               // server time as int (nanoseconds)
+```
+
+### Math
+```neon
+min(a, b)  max(a, b)  abs(x)
+floor(x)   ceil(x)    round(x)   sqrt(x)   pow(x, e)
+clamp(x, lo, hi)      sign(x)    log2(x)   log10(x)
+```
+
+### Random
+```neon
+let roll = rand_int(1, 100)        // seeded from timestamp
+```
+
+### Strings
+```neon
+concat("Hello, ", name)
+to_upper(s)   to_lower(s)   trim(s)
+len(s)        contains(s, sub)
+split(s, sep) index_of(s, sub)  substring(s, start, end)
+str(42)       // int/float → str
+int(s)        // str → int
+```
+
+### Arrays
+```neon
+let arr = [1, 2, 3]
+push(arr, 4)
+pop(arr)
+let n = array_len(arr)
+let v = get_index(arr, 0)
+remove_at(arr, 0)
+```
+
+### Table queries
+```neon
+let n   = count_rows("players")
+let s   = sum_field("players", "score")
+let avg = avg_field("players", "score")
+let top = top_n("players", "score", 10)           // top-10 rows by field
+let all = sort_by("players", "hp", "desc")
+let one = find_first("players", "alive", true)
+```
+
+### Caller identity (set by the client's auth token)
+```neon
+let id   = caller_id    // string — who made the call
+let role = caller_role  // string — their role ("admin", "user", etc.)
+```
+
+---
+
+## Workflow
+
+```
+1. Edit files in reducers/
+2. neondb build      ← compiles .neon → src/reducers.rs → native binary
+3. neondb start      ← starts the server
+```
+
+Changes to `.neon` files require `neondb build` before they take effect.
+"#;
 
 // ── neon/basic per-file constants ────────────────────────────────────────────
 
