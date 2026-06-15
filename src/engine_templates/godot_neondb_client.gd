@@ -20,9 +20,9 @@
 #   Subscribe    → { "Subscribe":   [sub_id, query] }
 #   Response     → [call_id, success, result_bin|nil, error|nil]
 #   Diff         → { "SubscriptionDiff": [sub_id, table, key, op, data|nil] }
-#   Batch        → { "BatchUpdate": [compressed_bool, payload_bin] }
+#   Batch        → { "BatchUpdate": [compressed_bool, payload_bin] }  (zstd)
 #                  payload is MsgPack [[sub_id, table, key, op, data|nil], ...]
-#                  gzip-compressed when compressed_bool = true
+#                  zstd-compressed when compressed_bool = true
 # ==============================================================================
 extends Node
 
@@ -147,8 +147,8 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 					if fields.size() >= 2 and fields[1] is PackedByteArray:
 						var batch_raw: PackedByteArray = fields[1]
 						if fields[0] == true:
-							# gzip decompress (FileAccess.COMPRESSION_GZIP = 3)
-							batch_raw = batch_raw.decompress_dynamic(-1, 3)
+							# zstd decompress (FileAccess.COMPRESSION_ZSTD = 2)
+							batch_raw = batch_raw.decompress_dynamic(-1, 2)
 						if batch_raw == null or batch_raw.size() == 0:
 							return
 						var diffs = MsgPack.unpack(batch_raw)

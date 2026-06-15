@@ -1466,8 +1466,9 @@ All messages are a **MessagePack map with one key** → value is a positional ar
 { "BatchUpdate": [compressed: bool, payload: bin] }
 ```
 - `payload` — when `compressed = false`: MessagePack array of SubscriptionDiff arrays
-- `payload` — when `compressed = true`: gzip( above )
+- `payload` — when `compressed = true`: zstd( above )
 - Each element: `[sub_id, table, row_key, op, data | nil]`
+- `op` may be `"patch"` — data contains only changed fields (delta patch)
 
 **In tick mode (default 20 Hz) the server sends BatchUpdate, not SubscriptionDiff.**
 Implement BatchUpdate first — it is the primary live-update path.
@@ -1484,7 +1485,7 @@ Implement BatchUpdate first — it is the primary live-update path.
 3. Await a bare-array `ReducerResponse` matching your `call_id`
 4. Send a `Subscribe` with a query string
 5. Await `SubscriptionAck` to confirm
-6. On each `BatchUpdate`: gzip-decompress if `compressed`, then MsgPack-decode the
+6. On each `BatchUpdate`: zstd-decompress if `compressed`, then MsgPack-decode the
    payload as `[[sub_id, table, row_key, op, data?], ...]` and dispatch to handlers
 7. Handle `SubscriptionDiff` for servers with tick mode disabled
 
@@ -2048,6 +2049,7 @@ async fn run_server(config: Config) -> Result<()> {
             lobby_routes: lobby_routes.clone(),
             leaderboard: leaderboard.clone(),
             stat_sync: stat_sync.clone(),
+            lobby_router: lobby_router.clone(),
         });
         let schema_c = schema_registry.clone();
         tokio::spawn(async move {
@@ -2567,6 +2569,8 @@ struct AdminState {
     lobby_routes: Arc<neondb::cluster::LobbyRouteRegistry>,
     leaderboard: Arc<neondb::leaderboard::LeaderboardEngine>,
     stat_sync: Arc<neondb::stat_sync::StatSyncQueue>,
+    /// Per-lobby worker router — exposes queue depths and call stats.
+    lobby_router: Arc<neondb::worker_pool::LobbyRouter>,
 }
 
 async fn start_metrics_server(
@@ -2987,6 +2991,18 @@ async fn handle_metrics_request(
                 }
                 Err(e) => Ok(bad_request(e.to_string())),
             }
+        }
+
+        // ── Per-lobby worker stats ────────────────────────────────────────────
+        //
+        // GET /admin/api/lobbies — all active lobby workers with queue/call/latency stats
+        (&Method::GET, "/admin/api/lobbies") => {
+            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
+            let snapshots = admin.lobby_router.lobbies_snapshot();
+            Ok(json_response(serde_json::json!({
+                "active_lobbies": snapshots.len(),
+                "lobbies": snapshots,
+            })))
         }
 
         // ── Replication endpoints ─────────────────────────────────────────────

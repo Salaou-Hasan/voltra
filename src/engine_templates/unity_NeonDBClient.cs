@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB Unity Client — single-file, zero dependencies.
+// NeonDB Unity Client
 //
 // Drop this file into Assets/Scripts/, add the NeonDBBehaviour component to a
 // GameObject (or call NeonDBClient directly), and you have:
@@ -17,9 +17,12 @@
 //   Response     → [call_id, success, result_bin|nil, error|nil]  (bare array)
 //                  or { "ReducerResponse": [...] }
 //   Diff         → { "SubscriptionDiff": [sub_id, table, key, op, data|nil] }
-//   Batch        → { "BatchUpdate": [compressed_bool, payload_bin] }
+//   Batch        → { "BatchUpdate": [compressed_bool, payload_bin] }  (zstd)
 //                  payload is MsgPack Vec<[sub_id, table, key, op, data|nil]>
-//                  gzip-compressed when compressed_bool = true
+//                  zstd-compressed when compressed_bool = true
+//
+// Dependency: ZstdSharp.Port (NuGet) — pure managed C# zstd decompressor.
+//   Install via: NuGet for Unity, or download from nuget.org.
 //
 // Works in the Editor and standalone players (uses System.Net.WebSockets).
 // For WebGL builds you need a JS WebSocket bridge — see README.
@@ -29,8 +32,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Net.WebSockets;
+using ZstdSharp;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -245,11 +248,8 @@ namespace NeonDB
                                 byte[] batchRaw;
                                 if (isCompressed)
                                 {
-                                    using var ms = new MemoryStream(batchPayload);
-                                    using var gz = new GZipStream(ms, CompressionMode.Decompress);
-                                    using var outMs = new MemoryStream();
-                                    gz.CopyTo(outMs);
-                                    batchRaw = outMs.ToArray();
+                                    using var dec = new Decompressor();
+                                    batchRaw = dec.Unwrap(batchPayload).ToArray();
                                 }
                                 else
                                 {

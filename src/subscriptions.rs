@@ -26,6 +26,7 @@
 //       missing field sorts last in both directions.
 // ============================================================================
 
+use crate::compression::HybridCompressor;
 use crate::error::{NeonDBError, Result};
 use crate::network::message::{ServerMessage, SubscriptionBody, SubscriptionDiff, SubscriptionRoute};
 use crate::table::{RowDelta, TableStore};
@@ -256,6 +257,7 @@ pub struct SubscriptionManager {
     /// per tick cuts fan-out volume 5–10× with no gameplay-visible cost.
     pending: DashMap<(String, String), crate::table::RowDelta>,
     tick_enabled: std::sync::atomic::AtomicBool,
+    compressor: Arc<HybridCompressor>,
 }
 
 impl SubscriptionManager {
@@ -271,7 +273,12 @@ impl SubscriptionManager {
             two_frame,
             pending: DashMap::new(),
             tick_enabled: std::sync::atomic::AtomicBool::new(false),
+            compressor: Arc::new(HybridCompressor::new(16_384)),
         }
+    }
+
+    pub fn compressor(&self) -> &Arc<HybridCompressor> {
+        &self.compressor
     }
 
     /// Enable tick-coalesced delivery and spawn the flush task.
@@ -534,23 +541,9 @@ impl SubscriptionManager {
     }
 
     // ── Batch fan-out (tick path) ─────────────────────────────────────────────────
-// Threshold above which the batch payload is zstd-compressed.
-// Below this (small ticks, few rows) compression overhead isn't worth it.
-const BATCH_COMPRESS_THRESHOLD: usize = 512;
 
-fn encode_batch_for_client(diffs: &[SubscriptionDiff]) -> Option<Arc<Bytes>> {
-    let raw = rmp_serde::to_vec(diffs).ok()?;
-    let (compressed, payload) = if raw.len() >= Self::BATCH_COMPRESS_THRESHOLD {
-        use flate2::write::GzEncoder;
-        use flate2::Compression;
-        use std::io::Write;
-        let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
-        enc.write_all(&raw).ok()?;
-        let c = enc.finish().ok()?;
-        (true, c)
-    } else {
-        (false, raw)
-    };
+fn encode_batch_for_client(&self, diffs: &[SubscriptionDiff]) -> Option<Arc<Bytes>> {
+    let (payload, compressed) = self.compressor.compress_subscription_batch(diffs)?;
     let msg = ServerMessage::BatchUpdate { compressed, payload };
     encode_server(&msg)
 }
@@ -757,7 +750,7 @@ fn publish_now(&self, deltas: &[RowDelta]) {
 
         let mut clients_to_remove: Vec<ClientId> = Vec::new();
         for (client_id, (tx, diffs)) in per_client {
-            if let Some(frame) = Self::encode_batch_for_client(&diffs) {
+            if let Some(frame) = self.encode_batch_for_client(&diffs) {
                 match tx.try_send(OutboundFrames::One(frame)) {
                     Ok(_) => {
                         if let Some(c) = self.clients.get(&client_id) {

@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod backup;
 pub mod cluster;
+pub mod compression;
 pub mod metrics;
 pub mod chat;
 pub mod tenant;

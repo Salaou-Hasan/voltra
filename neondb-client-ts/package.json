@@ -22,7 +22,8 @@
   "keywords": ["neondb", "websocket", "realtime", "game-backend", "messagepack", "react"],
   "license": "MIT",
   "dependencies": {
-    "@msgpack/msgpack": "^3.0.0"
+    "@msgpack/msgpack": "^3.0.0",
+    "fzstd": "^0.1.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

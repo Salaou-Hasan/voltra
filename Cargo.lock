@@ -1914,7 +1914,6 @@ dependencies = [
  "bytes",
  "dashmap",
  "env_logger",
- "flate2",
  "futures",
  "log",
  "rmp-serde",
@@ -1925,6 +1924,7 @@ dependencies = [
  "tokio-test",
  "tokio-tungstenite",
  "tungstenite",
+ "zstd 0.12.4",
 ]
 
 [[package]]

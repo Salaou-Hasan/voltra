@@ -25,6 +25,7 @@
 // ============================================================================
 
 import { encode, decode } from "@msgpack/msgpack";
+import { decompress as zstdDecompress } from "fzstd";
 import type {
   ReducerResult,
   SubscriptionAck,
@@ -37,6 +38,7 @@ export type DecodedMessage =
   | { type: "ReducerResponse"; data: ReducerResult }
   | { type: "SubscriptionAck"; data: SubscriptionAck }
   | { type: "SubscriptionDiff"; data: RowDiff }
+  | { type: "BatchUpdate"; diffs: RowDiff[] }
   | { type: "SubscriptionRoute"; data: SubscriptionRouteData }
   | { type: "SubscriptionBody"; data: SubscriptionBodyData }
   | { type: "Error"; message: string }
@@ -182,6 +184,53 @@ export function decodeServerMessage(
               error: inner[3] != null ? String(inner[3]) : null,
             },
           };
+        }
+
+        case "BatchUpdate": {
+          const isCompressed = Boolean(fields[0]);
+          const payloadRaw = fields[1];
+          if (!(payloadRaw instanceof Uint8Array)) {
+            return { type: "Unknown" };
+          }
+          let raw: Uint8Array;
+          if (isCompressed) {
+            try {
+              raw = zstdDecompress(payloadRaw);
+            } catch {
+              console.warn("[NeonDB] BatchUpdate zstd decompress failed");
+              return { type: "Unknown" };
+            }
+          } else {
+            raw = payloadRaw;
+          }
+          let diffArrays: unknown;
+          try {
+            diffArrays = decode(raw);
+          } catch {
+            console.warn("[NeonDB] BatchUpdate inner decode failed");
+            return { type: "Unknown" };
+          }
+          if (!Array.isArray(diffArrays)) {
+            return { type: "Unknown" };
+          }
+          const diffs: RowDiff[] = diffArrays.map((d: unknown) => {
+            const arr = Array.isArray(d) ? d : [];
+            const rawData = arr[4];
+            const rowData =
+              rawData != null &&
+              typeof rawData === "object" &&
+              !Array.isArray(rawData)
+                ? (rawData as Record<string, unknown>)
+                : null;
+            return {
+              subscriptionId: String(arr[0] ?? ""),
+              tableName: String(arr[1] ?? ""),
+              rowKey: String(arr[2] ?? ""),
+              operation: String(arr[3] ?? ""),
+              rowData,
+            };
+          });
+          return { type: "BatchUpdate", diffs };
         }
 
         case "Error":

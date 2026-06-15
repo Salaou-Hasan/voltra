@@ -691,6 +691,20 @@ export class NeonDBClient {
         break;
       }
 
+      case "BatchUpdate": {
+        for (const diff of msg.diffs) {
+          this.applyToCache(
+            diff.tableName,
+            diff.rowKey,
+            diff.operation,
+            diff.rowData,
+          );
+          const entry = this.subscriptions.get(diff.subscriptionId);
+          entry?.callback(diff);
+        }
+        break;
+      }
+
       case "Error":
         this.onError?.(msg.message);
         break;

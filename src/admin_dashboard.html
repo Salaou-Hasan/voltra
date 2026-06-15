@@ -238,6 +238,9 @@ pre.result {
       <button data-page="overview" class="active">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
         Overview</button>
+      <button data-page="lobbies">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="6" height="18" rx="1"/><rect x="9" y="3" width="6" height="18" rx="1"/><rect x="16" y="3" width="6" height="18" rx="1"/></svg>
+        Lobbies</button>
       <div class="group-label">Data</div>
       <button data-page="tables">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
@@ -285,6 +288,34 @@ pre.result {
       <div class="chart-box"><div class="title"><span class="swatch" style="background:#4493f8"></span>Memory (MB)</div><canvas id="ch-mem"></canvas></div>
       <div class="chart-box"><div class="title"><span class="swatch" style="background:#b083f0"></span>Active connections</div><canvas id="ch-conn"></canvas></div>
       <div class="chart-box"><div class="title"><span class="swatch" style="background:#f5a623"></span>Reducer queue depth</div><canvas id="ch-queue"></canvas></div>
+    </div>
+  </section>
+
+  <!-- ════════ LOBBIES ════════ -->
+  <section class="page" id="page-lobbies">
+    <div class="page-head">
+      <div><h2>Lobbies</h2><div class="sub">Per-lobby worker threads · call counts · latency · queue depth</div></div>
+      <div class="row-flex">
+        <button class="btn secondary" onclick="loadLobbies()">↻ Refresh</button>
+        <span id="lobbies-count" class="badge blue" style="margin-left:8px"></span>
+      </div>
+    </div>
+    <div id="lobbies-empty" class="empty" style="display:none;padding:48px;text-align:center;color:var(--muted)">No active lobby workers yet. Lobby workers spawn on first reducer call for each lobby.</div>
+    <div style="overflow-x:auto">
+      <table id="lobbies-table" style="display:none">
+        <thead>
+          <tr>
+            <th>Lobby ID</th>
+            <th style="text-align:right">Queue Depth</th>
+            <th style="text-align:right">Total Calls</th>
+            <th style="text-align:right">Errors</th>
+            <th style="text-align:right">Avg Latency</th>
+            <th style="text-align:right">Min Latency</th>
+            <th style="text-align:right">Max Latency</th>
+          </tr>
+        </thead>
+        <tbody id="lobbies-body"></tbody>
+      </table>
     </div>
   </section>
 
@@ -484,6 +515,7 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   if (S.page === "reducers") loadReducers();
   if (S.page === "schema") loadSchema();
   if (S.page === "ops") { loadRepl(); loadServerInfo(); loadCluster(); }
+  if (S.page === "lobbies") loadLobbies();
 });
 
 // ═══════════ Overview / polling ═══════════
@@ -581,6 +613,46 @@ function drawChart(id, data, color) {
   ctx.fillText(fmt(Math.round(max/1.15)), 4, 11);
 }
 setInterval(poll, 2000); poll();
+
+// ═══════════ Lobbies ═══════════
+let lobbiesTimer = null;
+async function loadLobbies() {
+  clearTimeout(lobbiesTimer);
+  const tbody = document.getElementById("lobbies-body");
+  const tbl   = document.getElementById("lobbies-table");
+  const empty = document.getElementById("lobbies-empty");
+  const badge = document.getElementById("lobbies-count");
+  try {
+    const d = await api("/admin/api/lobbies");
+    const lobbies = d.lobbies || [];
+    badge.textContent = lobbies.length + " active";
+    if (lobbies.length === 0) {
+      tbl.style.display = "none";
+      empty.style.display = "";
+    } else {
+      tbl.style.display = "";
+      empty.style.display = "none";
+      tbody.innerHTML = lobbies.map(l => {
+        const errCls = l.errors_total > 0 ? ' style="color:var(--warn)"' : '';
+        const qCls   = l.queue_depth  > 10 ? ' style="color:var(--warn)"' : '';
+        return `<tr>
+          <td><b>lobby-${esc(l.lobby_id)}</b></td>
+          <td style="text-align:right"${qCls}>${l.queue_depth}</td>
+          <td style="text-align:right">${l.calls_total.toLocaleString()}</td>
+          <td style="text-align:right"${errCls}>${l.errors_total}</td>
+          <td style="text-align:right">${l.avg_latency_ms.toFixed(2)} ms</td>
+          <td style="text-align:right">${l.min_latency_ms.toFixed(2)} ms</td>
+          <td style="text-align:right">${l.max_latency_ms.toFixed(2)} ms</td>
+        </tr>`;
+      }).join("");
+    }
+  } catch(e) {
+    empty.style.display = "";
+    empty.textContent = "Error loading lobbies: " + e.message;
+    tbl.style.display = "none";
+  }
+  if (S.page === "lobbies") lobbiesTimer = setTimeout(loadLobbies, 2000);
+}
 
 // ═══════════ Tables ═══════════
 const dbIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/></svg>';

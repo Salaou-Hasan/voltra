@@ -1,10 +1,68 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering as AOrdering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AOrdering};
 use std::collections::HashMap;
 
 use dashmap::DashMap;
+use serde::Serialize;
 
 use crate::network::PendingCall;
+
+/// Lightweight per-lobby runtime statistics collected by the dedicated worker.
+///
+/// All fields are atomically updated; no locking needed. Min/max/avg are
+/// approximate (race windows are harmless — we accept occasional stale reads).
+pub struct LobbyStats {
+    pub calls: AtomicU64,
+    pub errors: AtomicU64,
+    /// Sum of all call latencies in nanoseconds (for mean calculation).
+    pub total_latency_ns: AtomicU64,
+    /// Minimum observed call latency in nanoseconds (u64::MAX if no calls yet).
+    pub min_latency_ns: AtomicU64,
+    /// Maximum observed call latency in nanoseconds.
+    pub max_latency_ns: AtomicU64,
+}
+
+impl LobbyStats {
+    fn new() -> Arc<Self> {
+        Arc::new(LobbyStats {
+            calls: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            total_latency_ns: AtomicU64::new(0),
+            min_latency_ns: AtomicU64::new(u64::MAX),
+            max_latency_ns: AtomicU64::new(0),
+        })
+    }
+
+    fn record_call(&self, latency_ns: u64) {
+        self.calls.fetch_add(1, AOrdering::Relaxed);
+        self.total_latency_ns.fetch_add(latency_ns, AOrdering::Relaxed);
+        // Optimistic update for min — occasional stale races are acceptable.
+        let old = self.min_latency_ns.load(AOrdering::Relaxed);
+        if latency_ns < old {
+            let _ = self.min_latency_ns.compare_exchange_weak(
+                old, latency_ns, AOrdering::Relaxed, AOrdering::Relaxed,
+            );
+        }
+        let old = self.max_latency_ns.load(AOrdering::Relaxed);
+        if latency_ns > old {
+            let _ = self.max_latency_ns.compare_exchange_weak(
+                old, latency_ns, AOrdering::Relaxed, AOrdering::Relaxed,
+            );
+        }
+    }
+}
+
+/// A point-in-time snapshot of one lobby's stats — serialisable to JSON.
+#[derive(Serialize)]
+pub struct LobbySnapshot {
+    pub lobby_id: String,
+    pub queue_depth: usize,
+    pub calls_total: u64,
+    pub errors_total: u64,
+    pub avg_latency_ms: f64,
+    pub min_latency_ms: f64,
+    pub max_latency_ms: f64,
+}
 
 /// Per-lobby worker routing.
 ///
@@ -34,6 +92,8 @@ pub struct LobbyRouter {
     core_ids: Vec<core_affinity::CoreId>,
     /// Round-robin counter for core assignment.
     next_core: Arc<AtomicUsize>,
+    /// Per-lobby runtime statistics (created when the lobby worker spawns).
+    lobby_stats: DashMap<String, Arc<LobbyStats>>,
 }
 
 /// All the shared dependencies a lobby worker thread needs.
@@ -75,6 +135,7 @@ impl LobbyRouter {
             shutdown,
             core_ids,
             next_core: Arc::new(AtomicUsize::new(0)),
+            lobby_stats: DashMap::new(),
         }
     }
 
@@ -121,6 +182,9 @@ impl LobbyRouter {
         let (tx, rx) = kanal::bounded_async::<PendingCall>(self.channel_cap);
         self.lobby_channels.insert(lobby_id.clone(), tx.clone());
 
+        let stats = LobbyStats::new();
+        self.lobby_stats.insert(lobby_id.clone(), stats.clone());
+
         // Spawn a dedicated OS thread for this lobby, pinned to a core.
         let deps = self.worker_deps.clone();
         let lid = lobby_id.clone();
@@ -129,7 +193,7 @@ impl LobbyRouter {
         let handle = std::thread::Builder::new()
             .name(format!("lobby-{}", lid))
             .spawn(move || {
-                lobby_worker_loop(&lid, rx, deps, &mut shut, core_id);
+                lobby_worker_loop(&lid, rx, deps, &mut shut, core_id, stats);
             })
             .expect("Failed to spawn lobby worker thread");
 
@@ -172,6 +236,9 @@ impl LobbyRouter {
         let (tx, rx) = kanal::bounded_async::<PendingCall>(self.channel_cap);
         self.lobby_channels.insert(lobby_id.clone(), tx.clone());
 
+        let stats = LobbyStats::new();
+        self.lobby_stats.insert(lobby_id.clone(), stats.clone());
+
         let deps = self.worker_deps.clone();
         let lid = lobby_id.clone();
         let mut shut = self.shutdown.clone();
@@ -179,7 +246,7 @@ impl LobbyRouter {
         let handle = std::thread::Builder::new()
             .name(format!("lobby-{}", lid))
             .spawn(move || {
-                lobby_worker_loop(&lid, rx, deps, &mut shut, core_id);
+                lobby_worker_loop(&lid, rx, deps, &mut shut, core_id, stats);
             })
             .expect("Failed to spawn lobby worker thread");
 
@@ -194,6 +261,39 @@ impl LobbyRouter {
             .map(|e| (e.key().clone(), e.value().len()))
             .collect()
     }
+
+    /// Snapshot of all active lobbies for the admin dashboard.
+    pub fn lobbies_snapshot(&self) -> Vec<LobbySnapshot> {
+        let mut out: Vec<LobbySnapshot> = self.lobby_stats
+            .iter()
+            .map(|e| {
+                let id = e.key().clone();
+                let st = e.value().clone();
+                let calls = st.calls.load(AOrdering::Relaxed);
+                let errors = st.errors.load(AOrdering::Relaxed);
+                let total_ns = st.total_latency_ns.load(AOrdering::Relaxed);
+                let min_ns = st.min_latency_ns.load(AOrdering::Relaxed);
+                let max_ns = st.max_latency_ns.load(AOrdering::Relaxed);
+                let queue = self.lobby_channels.get(&id).map(|c| c.len()).unwrap_or(0);
+
+                let avg_ms = if calls > 0 { (total_ns / calls) as f64 / 1_000_000.0 } else { 0.0 };
+                let min_ms = if min_ns == u64::MAX { 0.0 } else { min_ns as f64 / 1_000_000.0 };
+                let max_ms = max_ns as f64 / 1_000_000.0;
+
+                LobbySnapshot {
+                    lobby_id: id,
+                    queue_depth: queue,
+                    calls_total: calls,
+                    errors_total: errors,
+                    avg_latency_ms: avg_ms,
+                    min_latency_ms: min_ms,
+                    max_latency_ms: max_ms,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.lobby_id.cmp(&b.lobby_id));
+        out
+    }
 }
 
 /// The worker loop for a single lobby's dedicated thread.
@@ -206,6 +306,7 @@ fn lobby_worker_loop(
     deps: Arc<WorkerDeps>,
     shutdown: &mut tokio::sync::watch::Receiver<()>,
     core_id: Option<core_affinity::CoreId>,
+    stats: Arc<LobbyStats>,
 ) {
     // Pin this thread to a dedicated CPU core — prevents cache invalidation
     // from OS migration and eliminates cross-core latency variance per lobby.
@@ -276,6 +377,7 @@ fn lobby_worker_loop(
                     Err(e) => {
                         ctx.rollback();
                         deps.metrics.reducer_errors_total.inc();
+                        stats.errors.fetch_add(1, AOrdering::Relaxed);
                         ReducerResponse::error(call_id, e.to_string())
                     }
                     Ok(result_bytes) => match ctx.commit() {
@@ -319,6 +421,7 @@ fn lobby_worker_loop(
                             deps.metrics
                                 .reducer_duration_seconds
                                 .observe(call_start.elapsed().as_secs_f64());
+                            stats.record_call(call_start.elapsed().as_nanos() as u64);
                             ReducerResponse::success(call_id, result_bytes)
                         }
                     },

@@ -17,7 +17,7 @@ bytes = "1.5"
 thiserror = "1.0"
 log = "0.4"
 dashmap = "5.5"
-flate2 = "1.0"
+zstd = "0.12"
 
 [dev-dependencies]
 tokio-test = "0.4"
