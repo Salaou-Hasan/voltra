@@ -18,8 +18,8 @@ The core engine is solid. The following components are stable and well-tested:
 
 The following items are partial or in progress:
 
-- **TLS**: not terminated by NeonDB itself. Use a reverse proxy (Caddy or nginx). See [docs/deployment.md](deployment.md).
-- **JS heap memory limit**: Boa 0.19 does not expose a hard heap cap. The wall-clock timeout is enforced. For untrusted code, use the WASM backend.
+- **TLS**: supported natively via `[tls]` config section (auto-generates self-signed cert; bring your own for production). For advanced termination, a reverse proxy (Caddy or nginx) still works. See [docs/deployment.md](deployment.md).
+- **JS heap memory limit**: QuickJS enforces a 64 MB memory cap per runtime. The CPU timeout is also enforced. For untrusted code, the WASM backend provides the strongest isolation.
 - **Graceful shutdown**: workers drain and the WAL flushes, but there is no formal quiesce-and-drain for in-flight WebSocket connections.
 - **Transparent shard routing**: multiple NeonDB clusters can be used as shards, but routing is client-side. There is no built-in proxy layer.
 
@@ -27,24 +27,9 @@ For a single-node game server or backend with moderate traffic, NeonDB is ready 
 
 ---
 
-## How does it compare to SpacetimeDB?
-
-Both NeonDB and SpacetimeDB are WebSocket game backends with reducer-based state management and live subscriptions. The key differences:
-
-- **License**: NeonDB is MIT. SpacetimeDB uses the Business Source License (BSL) — source-available but with commercial restrictions on self-hosted deployments.
-- **Self-hosting**: NeonDB is designed for self-hosted deployments on any hardware. SpacetimeDB offers both cloud and self-hosted options, but the self-hosted path is more complex.
-- **JS engine**: NeonDB uses Boa, a pure-Rust JS engine with no native dependencies. SpacetimeDB uses V8 (C++), which requires platform-specific binaries and does not build on Windows without significant effort.
-- **Raft consensus**: NeonDB bundles Raft consensus (openraft). SpacetimeDB's clustering is proprietary.
-- **Query language**: NeonDB uses a simple subscription predicate language for live queries plus ad-hoc SQL. SpacetimeDB has its own SQL dialect.
-- **Throughput**: NeonDB in-process benchmarks show ~2.9 M ops/s. SpacetimeDB does not publish equivalent numbers.
-
-Neither is universally better — choose based on your licensing needs, deployment constraints, and team familiarity.
-
----
-
 ## Can I use NeonDB without knowing Rust?
 
-Yes. The JS runtime (Boa) lets you write reducers in plain JavaScript with no Rust knowledge required:
+Yes. The JS runtime (QuickJS) lets you write reducers in plain JavaScript with no Rust knowledge required:
 
 1. Run `neondb init my-game --template rust/game-ready`.
 2. Edit the generated `.js` files in `modules/`.

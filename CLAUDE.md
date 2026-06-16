@@ -892,8 +892,7 @@ pub struct Player {
 
 ## 🎯 SESSION 44 — DIRECTION SET BY PROJECT OWNER (read this)
 
-**Goal:** Single-node SpacetimeDB *parity* (feature + performance), then make NeonDB the easiest
-game/app database to build on. Full detail in `TODO.md` → "🎯 THE GOAL".
+**Goal:** Make NeonDB the easiest, highest-performance self-hosted game backend to build on. Full detail in `TODO.md` → "🎯 THE GOAL".
 
 Three pillars:
 1. **Multi-language reducers** — add **C# (→ WASM via .NET 8 WASI)** and **Go (→ WASM via TinyGo)**

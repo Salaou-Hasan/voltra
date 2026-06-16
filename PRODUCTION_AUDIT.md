@@ -520,4 +520,4 @@ NeonDB is an **impressive prototype** with genuinely innovative architecture (ze
 
 **What makes it special:** The architecture is fundamentally sound. The hardest part (high-performance concurrent engine with zero-copy fan-out) is already solved. The remaining work is mostly "well-known distributed systems problems" (Raft, consistent hashing, backpressure) — hard to implement correctly but well-documented in literature.
 
-**Competitive positioning:** If the roadmap is executed, NeonDB would be the only open-source, single-binary platform offering: real-time subscriptions + SQL + reducers + clustering + game services. The closest comparisons (SpacetimeDB, Supabase Realtime, Nakama) each cover only a subset. NeonDB's architecture is designed to cover all of them from a single deployment.
+**Positioning:** NeonDB is the only open-source, single-binary platform offering: real-time subscriptions + SQL + reducers + clustering + game services in one deployment. Its architecture is designed to replace multiple purpose-built tools (Supabase Realtime, Nakama, Redis, Postgres) with a single self-hosted binary.

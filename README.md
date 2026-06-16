@@ -4,7 +4,7 @@ Self-hosted, real-time, in-memory game backend in Rust.
 
 NeonDB is a single-binary WebSocket server for games and real-time applications. Clients call **reducers** (named, atomic functions) over WebSocket, data lands in a lock-free in-memory table store, every write is durably logged to a WAL, and subscribers receive live row diffs instantly. Three reducer runtimes — native Rust, JavaScript (QuickJS), and WASM (Wasmtime/Cranelift JIT) — let you write game logic in whichever language fits the problem.
 
-[![Version](https://img.shields.io/badge/version-1.0.1-blue)](#installation)
+[![Version](https://img.shields.io/badge/version-1.0.21-blue)](#installation)
 [![Tests](https://img.shields.io/badge/tests-541%20passing-brightgreen)](#testing)
 [![TPS](https://img.shields.io/badge/throughput-53K%20TPS%20%4015K%20CCU-blue)](#benchmarks)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#installation)
@@ -424,23 +424,6 @@ neondb update --check                   Check for updates without installing
 ```
 
 ---
-
-## vs SpacetimeDB
-
-| | NeonDB | SpacetimeDB |
-|---|---|---|
-| License | MIT | BSL (source-available) |
-| Hosting | Fully self-hosted | Cloud + self-hosted |
-| Reducer runtimes | Rust native, QuickJS, WASM, C# (WASI), Go (TinyGo) | Rust, C#, TypeScript |
-| JS engine | QuickJS (64MB cap, CPU timeouts) | V8 (C++) |
-| Replication | WAL streaming + promote; optional cluster fan-out | Proprietary |
-| Multi-tenancy | Built-in (namespace isolation, quotas, rate limits) | Cloud plans only |
-| Admin UI | Built-in dark-theme dashboard at `/admin` | Cloud UI only |
-| Redis/PostgreSQL compat | Built-in (RESP2/RESP3 + pgwire v3) | No |
-| Observability | Prometheus `/metrics`, 11 metrics | Custom |
-| Windows support | Yes (no native deps) | Partial |
-| Memory efficiency | Hybrid MsgPack/zstd; ~15–25 bytes/row | Higher |
-| Self-update | `neondb update` | Manual |
 
 ---
 

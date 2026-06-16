@@ -31,7 +31,7 @@ use crate::subscriptions::SubscriptionManager;
 use crate::table::TableStore;
 use crate::ttl::TtlManager;
 use crate::wal::{
-    snapshot::{find_latest_snapshot, load_snapshot},
+    snapshot::{find_latest_snapshot, load_snapshot, save_snapshot},
     BatchedWalWriter, WalEntry, WalReader,
 };
 use hyper::{
@@ -335,6 +335,16 @@ async fn run_server_inner(
     let queue_cap = config.reducer_queue_cap;
     let (tx, rx)  = kanal::bounded_async::<PendingCall>(queue_cap);
 
+    // Guards against overlapping snapshot tasks: save_snapshot() clones every
+    // row into memory before serializing. If a snapshot takes longer than the
+    // interval between triggers, a second snapshot would start before the
+    // first finishes, piling up full-dataset clones and exploding memory.
+    let snapshot_in_progress = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Periodically return allocator-retained memory to the OS so RSS tracks the
+    // live working set, not the high-throughput churn peak (see lib.rs).
+    crate::spawn_memory_reclaimer(15);
+
     // ── Worker pool ───────────────────────────────────────────────────────────
     let worker_count = if config.workers > 0 { config.workers } else { num_cpus::get().max(2) };
 
@@ -351,6 +361,9 @@ async fn run_server_inner(
         let persist_w   = persistence.clone();
         let cluster_w   = cluster_bus.clone();
         let mut shut_w  = shutdown_rx.clone();
+        let snap_iv     = config.snapshot_interval;
+        let snap_dir_w  = config.snapshot_dir.clone();
+        let snap_busy_w = snapshot_in_progress.clone();
 
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
@@ -359,7 +372,7 @@ async fn run_server_inner(
             // to BATCH+1 calls instead of 1.  Pure-computation reducers (no DB
             // writes) are safe to batch; JS/WASM reducers benefit too because each
             // one is still executed serially on this thread.
-            const DRAIN_LIMIT: usize = 15;
+            const DRAIN_LIMIT: usize = 63;
 
             loop {
                 // Block until a call arrives or shutdown fires.
@@ -459,14 +472,30 @@ async fn run_server_inner(
                                     cluster_w.fanout_deltas(&deltas);
                                 }
 
-                                // Append to WAL for crash recovery.
                                 let seq_num = seq_w.fetch_add(1, Ordering::Relaxed);
+
+                                // Write-through to disk store (non-fatal on failure).
+                                // Done BEFORE the WAL append below so `deltas` can be
+                                // handed to the WAL entry by value instead of cloning
+                                // the whole delta vec on every single call. On a crash
+                                // between this and the WAL write the row is still in the
+                                // disk store, which is loaded before WAL replay.
+                                if let Some(ref pe) = persist_w {
+                                    if !deltas.is_empty() {
+                                        if let Err(e) = pe.persist_deltas(&deltas, seq_num) {
+                                            log::warn!("[neondb] Disk persist failed: {}", e);
+                                        }
+                                    }
+                                }
+
+                                // Append to WAL for crash recovery. `deltas` is moved in
+                                // (its last use) — no per-call clone of the delta vec.
                                 let entry = WalEntry::new(
                                     ts,
                                     seq_num,
                                     call.reducer_name.clone(),
                                     call.args.clone(),
-                                    deltas.clone(),
+                                    deltas,
                                 );
                                 if let Err(e) = wal_w.append(&entry, seq_num) {
                                     log::warn!("[neondb] WAL append failed: {}", e);
@@ -474,13 +503,47 @@ async fn run_server_inner(
                                     metrics_w.wal_entries_written_total.inc();
                                 }
 
-                                // Write-through to disk store (non-fatal on failure).
-                                if let Some(ref pe) = persist_w {
-                                    if !deltas.is_empty() {
-                                        if let Err(e) = pe.persist_deltas(&deltas, seq_num) {
-                                            log::warn!("[neondb] Disk persist failed: {}", e);
+                                // Periodic snapshot + WAL rotation to bound WAL file size.
+                                // Skip if a snapshot is already in flight — overlapping
+                                // snapshots each clone the full dataset into memory and
+                                // would compound rather than bound memory usage.
+                                if snap_iv > 0 && (seq_num + 1) % snap_iv == 0
+                                    && !snap_busy_w.swap(true, Ordering::AcqRel)
+                                {
+                                    let tbl2  = tables_w.clone();
+                                    let dir2  = snap_dir_w.clone();
+                                    let dir3  = snap_dir_w.clone();
+                                    let wal2  = wal_w.clone();
+                                    let busy2 = snap_busy_w.clone();
+                                    let ts2   = now_nanos();
+                                    tokio::spawn(async move {
+                                        let result = tokio::task::spawn_blocking(move || save_snapshot(&tbl2, &dir2, seq_num, ts2)).await;
+                                        match result {
+                                            Ok(Ok(())) => {
+                                                log::info!("[neondb] Snapshot at seq {}", seq_num);
+                                                if let Err(e) = wal2.truncate_before(seq_num) {
+                                                    log::error!("[neondb] WAL rotation failed: {}", e);
+                                                }
+                                                // Prune older snapshot files — only the latest is
+                                                // needed for recovery; without this, snapshots
+                                                // accumulate on disk indefinitely over long runs.
+                                                if let Ok(entries) = std::fs::read_dir(&dir3) {
+                                                    for entry in entries.flatten() {
+                                                        let name = entry.file_name();
+                                                        let name = name.to_string_lossy();
+                                                        if let Some(seq_str) = name.strip_prefix("neondb_snapshot_").and_then(|s| s.strip_suffix(".bin")) {
+                                                            if seq_str.parse::<u64>().map(|s| s < seq_num).unwrap_or(false) {
+                                                                let _ = std::fs::remove_file(entry.path());
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Ok(Err(e)) => log::error!("[neondb] Snapshot failed: {}", e),
+                                            Err(e)     => log::error!("[neondb] Snapshot panic: {}", e),
                                         }
-                                    }
+                                        busy2.store(false, Ordering::Release);
+                                    });
                                 }
 
                                 metrics_w.reducer_calls_total.inc();

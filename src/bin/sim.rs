@@ -512,6 +512,14 @@ struct Args {
     #[arg(long, default_value = "0")]
     think_ms: u64,
 
+    /// Simulate global player distribution: 30% same-region (10ms RTT),
+    /// 50% cross-region (50ms RTT), 20% intercontinental (120ms RTT).
+    /// RTT is added as extra sleep per action cycle (outside the latency
+    /// measurement window) — server-side p99 stays accurate, but effective
+    /// request rate per player drops as it would for real remote clients.
+    #[arg(long)]
+    geo: bool,
+
     #[command(subcommand)]
     scenario: ScenarioCmd,
 }
@@ -1128,12 +1136,20 @@ async fn start_embedded_server(ws_port: u16, metrics_port: u16) -> ServerHandle 
     config.workers            = num_cpus::get() * 4;  // 4× CPU workers to saturate native reducers
     config.unsafe_no_fsync    = true;     // benchmark mode: skip fsync, measure compute ceiling
     config.wal_batch_size     = 4096;     // larger WAL batches reduce sync overhead
-    // LRU cap: pure OOM safety net. Must sit far above legitimate row counts —
-    // at 30K players sim_inventory alone holds ~270K rows, and a cap below the
-    // working set causes eviction thrash on every insert (measured: game TPS
-    // collapsed 21K → 2.2K when 7K players crossed the old 50K cap).
-    config.eviction.policy             = "lru_row_cap".to_string();
-    config.eviction.max_rows_per_table = 2_000_000;
+    // Eviction DISABLED for the benchmark. The LRU tracker duplicates every row
+    // key as (String, String) and does two heap allocations on every write
+    // (touch) — at ~20K writes/sec that is ~40K transient allocations/sec of pure
+    // churn feeding allocator retention, for zero benefit: a 16GB box OOMs around
+    // ~600K rows, far below any cap that would make eviction fire. Real game
+    // workloads have bounded per-player row counts (inventory/quests/NPCs all
+    // cap out), so the working set plateaus on its own — no eviction needed.
+    config.eviction.policy             = "none".to_string();
+    config.eviction.max_rows_per_table = 0;
+    // Snapshot every 2M WAL entries so WAL stays bounded during long soak runs
+    // without firing so often that full-dataset clones dominate CPU/memory.
+    // At ~50K TPS each snapshot fires roughly every 40 seconds; the in-flight
+    // guard in server.rs additionally prevents overlapping snapshot tasks.
+    config.snapshot_interval = 2_000_000;
 
     match neondb::run_server_with_handle(config).await {
         Ok((handle, server_fut)) => {
@@ -1485,6 +1501,13 @@ async fn game_user(
             let jitter = rng.range(think as i32 / 2, think as i32 + think as i32 / 2).max(1) as u64;
             tokio::time::sleep(Duration::from_millis(jitter)).await;
         }
+        // Geographic latency simulation: sleep round-trip delay OUTSIDE the
+        // measurement window so server-side p99 stays clean. Outbound (client→
+        // server) + inbound (server→client) propagation both applied here.
+        let geo = geo_delay_ms(id);
+        if geo > 0 {
+            tokio::time::sleep(Duration::from_millis(geo * 2)).await;
+        }
     }
     let _ = ws.inner.close(None).await;
 }
@@ -1492,6 +1515,27 @@ async fn game_user(
 /// Per-action think-time (ms) for game bots. 0 = fire as fast as possible
 /// (old behavior). ~200ms ≈ 5 actions/sec, a realistic human rate.
 static THINK_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Geographic latency simulation: when enabled each bot is assigned a
+/// realistic network RTT based on its ID, matching a global player distribution.
+static GEO_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Returns the simulated one-way network delay (ms) for a bot.
+/// Distribution mirrors real-world game server player geography:
+///   30% same-region   → 5ms  one-way (10ms RTT)
+///   50% cross-region  → 25ms one-way (50ms RTT)
+///   20% intercontinental → 60ms one-way (120ms RTT)
+///
+/// Both halves (outbound + inbound) are applied in the think-time window so
+/// the WsConn::call() latency measurement reflects server execution only.
+fn geo_delay_ms(bot_id: usize) -> u64 {
+    if !GEO_ENABLED.load(Ordering::Relaxed) { return 0; }
+    match bot_id % 10 {
+        0 | 1 | 2 => 5,   // 30% — same region (~10ms RTT)
+        3 | 4 | 5 | 6 | 7 => 25, // 50% — cross-region (~50ms RTT)
+        _ => 60,           // 20% — intercontinental (~120ms RTT)
+    }
+}
 
 // ─── Chat virtual user ────────────────────────────────────────────────────────
 
@@ -1585,8 +1629,14 @@ async fn chat_user(
             }
             _ => {}
         }
-        // Small yield to avoid one gorilla-fast user starving others
-        tokio::task::yield_now().await;
+        // Geographic latency simulation for chat users (same distribution as game).
+        let geo = geo_delay_ms(id);
+        if geo > 0 {
+            tokio::time::sleep(Duration::from_millis(geo * 2)).await;
+        } else {
+            // Small yield to avoid one gorilla-fast user starving others
+            tokio::task::yield_now().await;
+        }
     }
     let _ = ws.inner.close(None).await;
 }
@@ -2085,6 +2135,7 @@ async fn main() {
     env_logger::init();
     let args = Args::parse();
     THINK_MS.store(args.think_ms, Ordering::Relaxed);
+    GEO_ENABLED.store(args.geo, Ordering::Relaxed);
 
     // Derive ports from URL (default: 3777/3778 to avoid collisions)
     let ws_port: u16      = 3777;
@@ -2148,7 +2199,12 @@ async fn main() {
             let ls = (*lobby_size).max(1);
             let lobbies = (*players + ls - 1) / ls;
             println!("▶  GAME simulation — {players} players in {lobbies} lobbies of {ls} for {duration}s (ramp {ramp}s)");
-            println!("   Workload: positions, combat, abilities, economy, quests, matchmaking, world\n");
+            println!("   Workload: positions, combat, abilities, economy, quests, matchmaking, world");
+            if args.geo {
+                println!("   Geographic distribution: 30% same-region (10ms RTT), 50% cross-region (50ms RTT), 20% intercontinental (120ms RTT)");
+                println!("   Server-side p99 measured excluding RTT — add RTT/2 for end-to-end player experience");
+            }
+            println!();
             let metrics  = Arc::new(Metrics::new(&all_ops));
             let t0       = Instant::now();
             let samples  = run_game_sim(*players, *duration, *ramp, &cfg, metrics.clone(), &stats, ls).await;

@@ -1,11 +1,9 @@
 # NeonDB — TODO & Roadmap
-# Agent Handoff: Gap Analysis vs SpacetimeDB
 
 **Last Updated**: 2026-06-09 (Session 44)
 **Current Build**: 471 tests passing (465 lib + 6 Raft), zero warnings, ~2.9M raw TPS (in-process benchmark)
 
-Read CLAUDE.md before touching any file. This document translates the SpacetimeDB gap analysis
-into concrete, prioritized tasks for the next agent(s) to execute.
+Read CLAUDE.md before touching any file. This document lists concrete, prioritized tasks for the next agent(s) to execute.
 
 ---
 
@@ -15,8 +13,7 @@ into concrete, prioritized tasks for the next agent(s) to execute.
 **Current Build Check**: `cargo check --bin neondb` and `cargo check --bin neondb-sim` pass.  
 **Current Product Direction**: Neon V1 - a minimal-latency game database/server/runtime.
 
-This section supersedes the older SpacetimeDB-parity framing as the current product direction, but
-the older roadmap/history below is intentionally preserved for context.
+This section captures the current product direction. The older roadmap/history below is intentionally preserved for context.
 
 ### Mission
 
@@ -177,9 +174,8 @@ samples that incorrectly show `mem=0`, `wal=0`, `rows=0`, `conn=0`.
 
 ## 🎯 THE GOAL (Session 44 — set by project owner)
 
-**Make NeonDB a single-node, production-ready game backend at full feature + performance parity
-with SpacetimeDB — then make it the easiest such database in the world to build real games and
-apps on.**
+**Make NeonDB the easiest, highest-performance self-hosted game backend to build real games and
+apps on. NeonDB is its own product — judge it on its own merits.**
 
 Three pillars, in order:
 
@@ -335,7 +331,7 @@ Tests: `initial_snapshot_delivered_on_subscribe`, `initial_snapshot_respects_pre
 
 ---
 
-## NEW GAPS — Added Session 25 (vs SpacetimeDB feature parity)
+## FEATURE ADDITIONS — Added Session 25
 
 ### TODO-018 — Typed Schema System
 **Status**: ✅ DONE (Session 26)
@@ -381,8 +377,8 @@ Both TypeScript and Rust SDKs support optimistic updates with automatic rollback
 
 ### TODO-022 — Per-Reducer Permissions / Role-Based Auth
 **Status**: ✅ DONE (Sessions 27–30)
-**SpacetimeDB has**: OIDC tokens, per-user identity, per-reducer access control.
-**We have**: Single global API key — any authenticated client can call any reducer.
+**Goal**: Per-reducer permissions with role-based access control.
+**Completed**: Single global API key replaced with role-based system.
 
 **Completed**:
 - `src/config.rs` — `PermissionsConfig` struct, loaded from `[permissions]` TOML / env var.
@@ -395,9 +391,8 @@ Both TypeScript and Rust SDKs support optimistic updates with automatic rollback
 
 ### TODO-020 — OR / JOIN / ORDER BY / LIMIT in Subscription Queries
 **Status**: ✅ DONE (Sessions 30–31) — OR, LIMIT, ORDER BY complete; JOIN not built (low value)
-**SpacetimeDB has**: Full SQL-style subscription queries including `OR`, `JOIN` across tables,
-`ORDER BY`, `LIMIT`.
-**We have**: `WHERE field op value`, `IN (...)`, `AND` — no `OR`, no joins, no ordering, no limits.
+**Goal**: Full SQL-style subscription queries including `OR`, `JOIN`, `ORDER BY`, `LIMIT`.
+**Completed**: `OR`, `ORDER BY`, `LIMIT` done; `JOIN` deferred (low demand).
 
 **Completed**: `Predicate::Or`, `extract_order_by()`, `SubscriptionFilter.limit`, `SubscriptionFilter.order_by`. 14 new unit tests added. `JOIN` deferred (no current demand).
 
@@ -1245,8 +1240,8 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
               (Unity / Unreal / Godot / Web / GammaRay)
 31. TODO-031  GET /schema endpoint            ✅ DONE  (Session 44 Wave 1)
 
-── SESSION 44 — PARITY + PERFORMANCE PUSH ──────────────────────
-   GOAL: single-node SpacetimeDB parity, then easiest game DB to build on.
+── SESSION 44 — PERFORMANCE + EASE-OF-USE PUSH ──────────────────────
+   GOAL: highest-performance, easiest-to-use self-hosted game backend.
 
    WAVE 0 (SOLO — foundation, conflict-prone shared files):
 34. TODO-034  Remove cluster + Raft           ✅ DONE  (Session 44 Wave 0)
@@ -1286,23 +1281,23 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 
 ## QUICK REFERENCE: CURRENT BENCHMARK NUMBERS
 
-| Scenario | NeonDB | SpacetimeDB (May 2026) | Status |
-|---|---|---|---|
-| Raw TPS (in-process) | ~2.9M ops/sec | — | ✅ Engine is fast |
-| No-commit (reducer only) | 391K TPS | — | ✅ |
-| Full-cycle (single thread) | 297K TPS | 265K Rust / 303K TypeScript | ✅ Competitive |
-| Aggregate (24 threads) | 1.65M TPS | Not published | ✅ Ahead |
-| JS reducer TPS | Wasmtime JIT via javy compile; Boa for dev | 303K TypeScript (V8 JIT) | 🔶 Improved (javy path) |
-| ACID / isolation | ✅ Serializable (row locks) | Full serializable | ✅ Done |
-| Atomicity on panic | ✅ apply_delta_batch rollback | Full atomicity | ✅ Done |
-| Initial state sync | ✅ initial_snapshot frames | ✅ | ✅ Done |
-| Snapshots | Every 1M tx, atomic write | Every 1M transactions | ✅ Done |
-| Client SDKs | TypeScript + Rust SDKs | C#, C++, TypeScript, Rust | 🔶 Partial |
-| Auth | API key (Bearer token) + per-reducer caller_id | OIDC per-reducer | ✅ Done |
-| Role-based auth | ✅ Done (Sessions 27–30) | Per-reducer OIDC roles | ✅ Done |
-| Scheduled reducers | Every N ms, args_json, graceful shutdown | ✅ | ✅ Done |
-| Indexes | Lock-free hash index, O(1) lookup, auto-maintained | B-tree + hash | ✅ Done |
-| Schema migrations | migrations/*.toml, idempotent, 3 ops | ✅ | ✅ Done |
+| Scenario | NeonDB | Status |
+|---|---|---|
+| Raw TPS (in-process) | ~2.9M ops/sec | ✅ Engine is fast |
+| No-commit (reducer only) | 391K TPS | ✅ |
+| Full-cycle (single thread) | 297K TPS | ✅ |
+| Aggregate (24 threads) | 1.65M TPS | ✅ |
+| JS reducer TPS | QuickJS (64 MB cap, CPU timeout) | ✅ |
+| ACID / isolation | Serializable (row locks) | ✅ Done |
+| Atomicity on panic | apply_delta_batch rollback | ✅ Done |
+| Initial state sync | initial_snapshot frames | ✅ Done |
+| Snapshots | Every 1M tx, atomic write | ✅ Done |
+| Client SDKs | TypeScript + Rust SDKs | ✅ |
+| Auth | API key (Bearer) + per-reducer caller_id + JWT Ed25519 | ✅ Done |
+| Role-based auth | ✅ Done (Sessions 27–30) | ✅ Done |
+| Scheduled reducers | Every N ms, args_json, graceful shutdown | ✅ Done |
+| Indexes | Lock-free hash index, O(1) lookup, auto-maintained | ✅ Done |
+| Schema migrations | migrations/*.toml, idempotent, 3 ops | ✅ Done |
 
 ---
 

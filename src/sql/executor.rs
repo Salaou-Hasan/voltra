@@ -929,7 +929,7 @@ fn is_truthy(v: &Value) -> bool {
 
 fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Null, Value::Null) => true, // NULL = NULL in our engine (SpacetimeDB style)
+        (Value::Null, Value::Null) => true, // NULL = NULL in our engine (game-engine semantics)
         (Value::Null, _) | (_, Value::Null) => false,
         (Value::Number(an), Value::Number(bn)) => {
             if let (Some(ai), Some(bi)) = (an.as_i64(), bn.as_i64()) { ai == bi }

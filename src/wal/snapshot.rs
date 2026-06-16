@@ -112,24 +112,40 @@ pub fn save_snapshot(tables: &TableStore, dir: &Path, last_seq: u64, timestamp: 
         tables: all_tables,
     };
 
-    let encoded = rmp_serde::to_vec(&snap)?;
-
     fs::create_dir_all(dir)?;
     let final_path = snapshot_path(dir, last_seq);
     let tmp_path = dir.join(format!("neondb_snapshot_{}.bin.tmp", last_seq));
 
     {
-        let mut file = fs::File::create(&tmp_path)?;
-        file.write_all(&encoded)?;
+        // Stream the MessagePack encoding straight to a buffered file writer
+        // instead of materializing the entire encoded blob in a Vec<u8> first.
+        // `rmp_serde::encode::write` uses the same default Serializer as
+        // `to_vec`, so the on-disk bytes are identical and `from_slice` in
+        // load_snapshot reads them unchanged — this only removes the second
+        // full-dataset-sized copy that previously sat in memory alongside the
+        // decoded `snap` during the write, halving the snapshot memory spike.
+        let file = fs::File::create(&tmp_path)?;
+        let mut writer = std::io::BufWriter::with_capacity(1 << 20, file);
+        rmp_serde::encode::write(&mut writer, &snap)?;
+        writer.flush()?;
+        // Recover the inner File to fsync it (BufWriter::into_inner flushes too).
+        let file = writer.into_inner().map_err(|e| {
+            crate::error::NeonDBError::wal_error(format!("snapshot buffer flush failed: {e}"))
+        })?;
         file.sync_all()?;
     }
+
+    // Drop the decoded snapshot as soon as it is on disk so the allocator can
+    // reclaim it promptly rather than holding it until function return.
+    let table_count = snap.tables.len();
+    drop(snap);
 
     fs::rename(&tmp_path, &final_path)?;
 
     log::info!(
         "Snapshot saved: {} rows, {} tables, seq={} → {:?}",
         row_count,
-        snap.meta.row_count, // same value; named field for clarity
+        table_count,
         last_seq,
         final_path
     );

@@ -21,7 +21,7 @@
 
 ## Executive Summary
 
-**NeonDB** is a unified in-memory database + application server designed to match or exceed SpacetimeDB's performance (304k TPS TypeScript, 266k TPS Rust) while being 100% self-hostable on consumer hardware via Dokploy with zero cloud fees.
+**NeonDB** is a unified in-memory database + application server designed for maximum throughput and minimum latency, 100% self-hostable on consumer hardware via Dokploy with zero cloud fees.
 
 **Key Design Principles:**
 - Single-threaded execution model (maximize CPU cache locality, eliminate lock contention)
@@ -411,7 +411,7 @@ You provide explicit go/no-go. If issues arise, we pivot or extend the phase.
 - [ ] Example Rust reducer (WASM): compiled to `.wasm`, loaded by server, executes correctly
 - [ ] Example TS reducer: parsed from `reducers.ts`, executed in V8 isolate, modifies tables
 - [ ] Both reducers can write to same table without interference
-- [ ] Benchmark: Rust reducer TPS vs. TS reducer TPS (target: Rust within 10% of SpacetimeDB, TS within 20%)
+- [ ] Benchmark: Rust reducer TPS vs. TS reducer TPS (target: TS within 20% of Rust native)
 
 ### Phase 3 Acceptance
 - [ ] Client can subscribe to `SELECT * FROM table WHERE column = value`
@@ -437,7 +437,7 @@ You provide explicit go/no-go. If issues arise, we pivot or extend the phase.
 - [ ] Newbie can deploy to Dokploy in <5 minutes with setup instructions
 - [ ] Example game (tic-tac-toe or MMO movement) runs without observable lag
 - [ ] **Benchmarking tool**: Standalone binary that simulates multiple clients, measures p50/p95/p99 latency and TPS (included as part of deliverable, not just a script)
-- [ ] Benchmark report: TPS & latency (p99) vs. published SpacetimeDB numbers
+- [ ] Benchmark report: TPS & latency (p99) across all reducer runtimes
 
 ### Final Acceptance: Production-Ready Declaration
 NeonDB is **production-ready** when all Phase 6 criteria pass AND:

@@ -51,8 +51,14 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::Message;
 
 /// Maximum queued outbound frames per client before the connection is forcibly closed.
-/// 4096 frames × ~512 bytes average ≈ 2 MB per slow client (bounded).
-pub const CLIENT_SEND_BUFFER_CAPACITY: usize = 4096;
+/// Each queued frame is an owned `Vec<u8>` copy (see sub_task), so this directly
+/// bounds per-connection channel memory: 1024 frames × ~128 bytes ≈ 128 KiB.
+/// Combined with the 512 KiB tungstenite write-buffer cap, total worst-case
+/// outbound buffering per connection is well under 1 MiB — and a client that
+/// stays maxed is dropped (slow-consumer eviction) rather than buffered forever.
+/// Lowered from 4096 in the 15-20K CCU memory pass: at 15K connections the old
+/// cap allowed multi-GB of channel copies to accumulate for slow clients.
+pub const CLIENT_SEND_BUFFER_CAPACITY: usize = 1024;
 
 /// Create N TCP listeners all bound to the same address.
 ///
@@ -377,7 +383,26 @@ where
     let auth_v  = auth_validator.clone();
     let iss_v   = identity_issuer.clone();
     let tenant_v = tenant_registry.clone();
-    let ws_stream = tokio_tungstenite::accept_hdr_async(
+
+    // Bound per-connection memory. tungstenite's default max_write_buffer_size
+    // is usize::MAX — under subscription fan-out a slow client's outbound buffer
+    // grows without limit, so total server memory climbs proportionally to
+    // backed-up frames. Capping it converts that unbounded climb into a hard
+    // per-connection ceiling: once a client is this far behind, feed() returns
+    // WriteBufferFull, the write task breaks, and the connection is dropped
+    // (slow-consumer eviction — stale game state is shed first, exactly right
+    // for state-sync semantics). Game frames are tiny, so message/frame caps
+    // also tighten the worst-case single-allocation.
+    let ws_config = {
+        let mut c = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+        c.write_buffer_size     = 64 * 1024;        // flush threshold (64 KiB)
+        c.max_write_buffer_size  = 512 * 1024;       // hard per-conn cap (512 KiB)
+        c.max_message_size       = Some(1 << 20);    // 1 MiB inbound message cap
+        c.max_frame_size         = Some(1 << 20);    // 1 MiB inbound frame cap
+        c
+    };
+
+    let ws_stream = tokio_tungstenite::accept_hdr_async_with_config(
         stream,
         move |request: &Request, response: Response| {
             let auth_header = request
@@ -468,6 +493,7 @@ where
             }
             Ok(response)
         },
+        Some(ws_config),
     )
     .await
     .map_err(|e| NeonDBError::network_error(format!("WebSocket handshake error: {}", e)))?;

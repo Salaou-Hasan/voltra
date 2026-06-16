@@ -3675,6 +3675,10 @@ async fn run_server(config: Config) -> Result<()> {
     log::info!("Starting {} reducer workers", worker_count);
     let global_seq = Arc::new(std::sync::atomic::AtomicU64::new(initial_seq));
 
+    // Periodically return allocator-retained memory to the OS so RSS tracks the
+    // live working set, not the high-throughput churn peak (see lib.rs).
+    neondb::spawn_memory_reclaimer(15);
+
     let lobby_router = {
         let worker_deps = std::sync::Arc::new(neondb::worker_pool::WorkerDeps {
             tables: tables.clone(),
@@ -3890,6 +3894,13 @@ async fn run_server(config: Config) -> Result<()> {
     neondb::cluster::gossip::start_gossip(cluster_bus.clone(), shutdown_rx.clone());
     neondb::cluster::fanout::start_fanout_retry(cluster_bus.clone(), shutdown_rx.clone());
 
+    // Guards against overlapping snapshot tasks: save_snapshot() clones every
+    // row into memory before serializing. If a snapshot takes longer than the
+    // interval between triggers, a second snapshot would start before the first
+    // finishes, piling up full-dataset clones and exploding memory. Shared
+    // across all workers so only one snapshot is ever in flight process-wide.
+    let snapshot_in_progress = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     let mut worker_handles = Vec::with_capacity(worker_count);
     for worker_id in 0..worker_count {
         let rx = reducer_rx.clone(); let tables_w = tables.clone();
@@ -3900,6 +3911,7 @@ async fn run_server(config: Config) -> Result<()> {
         let ttl_w = ttl_manager.clone();
         let tenant_w = tenant_registry.clone();
         let cluster_w = cluster_bus.clone();
+        let snap_busy_w = snapshot_in_progress.clone();
         let mut rx_shutdown_w = shutdown_rx.clone();
         let metrics_w = metrics.clone();
 
@@ -4004,16 +4016,24 @@ async fn run_server(config: Config) -> Result<()> {
                                 cluster_w.fanout_deltas(&deltas);
                             }
                             let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas.clone());
+                            // `deltas` is moved into the WAL entry (its last use) — no
+                            // per-call clone of the delta vec.
+                            let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas);
                             if let Err(e) = wal_w.append(&entry, seq_num) {
                                 log::warn!("WAL append failed: {}", e);
                             } else {
                                 metrics_w.wal_entries_written_total.inc();
                             }
-                            // Periodic snapshot.
-                            if snap_iv > 0 && (seq_num + 1) % snap_iv == 0 {
+                            // Periodic snapshot + WAL rotation. Skip if a snapshot is
+                            // already in flight — overlapping snapshots each clone the
+                            // full dataset into memory and would compound, not bound it.
+                            if snap_iv > 0 && (seq_num + 1) % snap_iv == 0
+                                && !snap_busy_w.swap(true, std::sync::atomic::Ordering::AcqRel)
+                            {
                                 let tbl = tables_w.clone(); let dir = snap_dir_ww.clone(); let ts2 = current_timestamp_nanos();
+                                let dir_prune = snap_dir_ww.clone();
                                 let wal_rotate = wal_w.clone();
+                                let busy = snap_busy_w.clone();
                                 tokio::spawn(async move {
                                     match tokio::task::spawn_blocking(move || save_snapshot(&tbl, &dir, seq_num, ts2)).await {
                                         Ok(Ok(())) => {
@@ -4021,10 +4041,25 @@ async fn run_server(config: Config) -> Result<()> {
                                             if let Err(e) = wal_rotate.truncate_before(seq_num) {
                                                 log::error!("WAL rotation after snapshot failed: {}", e);
                                             }
+                                            // Prune older snapshot files — only the latest
+                                            // is needed for recovery; without this they
+                                            // accumulate on disk indefinitely over long runs.
+                                            if let Ok(entries) = std::fs::read_dir(&dir_prune) {
+                                                for entry in entries.flatten() {
+                                                    let name = entry.file_name();
+                                                    let name = name.to_string_lossy();
+                                                    if let Some(seq_str) = name.strip_prefix("neondb_snapshot_").and_then(|s| s.strip_suffix(".bin")) {
+                                                        if seq_str.parse::<u64>().map(|s| s < seq_num).unwrap_or(false) {
+                                                            let _ = std::fs::remove_file(entry.path());
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                         Ok(Err(e)) => log::error!("Snapshot failed: {}", e),
                                         Err(e)     => log::error!("Snapshot panicked: {}", e),
                                     }
+                                    busy.store(false, std::sync::atomic::Ordering::Release);
                                 });
                             }
                             // Record successful reducer call + duration.

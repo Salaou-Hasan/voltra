@@ -13,6 +13,10 @@ core_affinity = "0.8"
 zstd = "0.12"
 libc = "0.2"
 mimalloc = { version = "0.1.52", default-features = false, optional = true }
+# Direct FFI to mimalloc's mi_collect — periodic memory reclamation back to the OS.
+# Already in the tree transitively via mimalloc; pinned to the same version so cargo
+# unifies them (no second copy of the C library is compiled).
+libmimalloc-sys = { version = "0.1.49", features = ["extended"], optional = true }
 tokio = { version = "1.35", features = ["full"] }
 tungstenite = "0.21"
 tokio-tungstenite = "0.21"
@@ -88,6 +92,16 @@ tokio-test = "0.4"
 criterion = "0.5"
 tempfile = "3"
 
+# ── Raw engine benchmark (no network, no WAL, no templates) ──────────────────
+[[bin]]
+name = "neondb-engine-bench"
+path = "src/bin/engine_bench.rs"
+
+# ── WebSocket round-trip latency benchmark ────────────────────────────────────
+[[bin]]
+name = "neondb-latency-bench"
+path = "src/bin/latency_bench.rs"
+
 # ── Standalone benchmark binary ──────────────────────────────────────────────
 [[bin]]
 name = "neondb-bench"
@@ -144,3 +158,6 @@ codegen-units = 1
 [features]
 default = ["simd", "mimalloc"]
 simd = []
+# "mimalloc" enables both the global allocator and the mi_collect FFI used by
+# the periodic memory reclaimer. They are always enabled together.
+mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
