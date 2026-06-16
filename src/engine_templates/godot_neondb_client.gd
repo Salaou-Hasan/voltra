@@ -214,7 +214,9 @@ class MsgPack:
 			b.reverse()
 			out.append_array(b)
 		elif v is String:
-			var utf := v.to_utf8_buffer()
+			# Explicit type: Godot 4.6's stricter inference rejects `:=` here
+			# because `v` is untyped (the method's return type can't be inferred).
+			var utf: PackedByteArray = v.to_utf8_buffer()
 			if utf.size() < 32:
 				out.append(0xa0 | utf.size())
 			elif utf.size() < 256:

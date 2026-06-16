@@ -899,7 +899,10 @@ fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -
     let scheduler_note = match template {
         "game/full" =>
             "\n[[scheduler]]\nreducer = \"cleanup_chat\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"session_cleanup\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"mm_match\"\ninterval_ms = 5000\n",
-        _ => "\n[[scheduler]]\nreducer = \"cleanup_chat\"\ninterval_ms = 60000\n\n# Add more scheduled reducers here after running `neondb add world` or `neondb add matchmaking`\n# [[scheduler]]\n# reducer = \"world_tick\"\n# interval_ms = 1000\n",
+        // No active scheduler by default — referencing a reducer the chosen
+        // template doesn't define makes the scheduler error on every tick.
+        // Uncomment after adding a matching reducer (e.g. `neondb add world`).
+        _ => "\n# [[scheduler]]\n# reducer = \"world_tick\"\n# interval_ms = 1000\n",
     };
 
     let permissions_example =

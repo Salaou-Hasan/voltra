@@ -81,7 +81,11 @@ fn gen_reducer(r: &ReducerDecl, scope: &mut Scope) -> Result<String, NeonError> 
     let mut out = String::new();
 
     out.push_str("#[neondb::reducer]\n");
-    out.push_str(&format!("fn {}(ctx: ReducerContext", r.name));
+    // A reducer may legitimately be named after a Rust keyword (e.g. `move`,
+    // `type`, `match`). Escape it as a raw identifier so the generated Rust
+    // compiles; the `#[neondb::reducer]` macro strips the `r#` back off when it
+    // derives the wire name, so clients still call it by its plain Neon name.
+    out.push_str(&format!("fn {}(ctx: ReducerContext", escape_rust_keyword(&r.name)));
     for p in &r.params {
         out.push_str(&format!(", {}: {}", p.name, p.ty.to_rust()));
     }
@@ -93,6 +97,26 @@ fn gen_reducer(r: &ReducerDecl, scope: &mut Scope) -> Result<String, NeonError> 
 
     out.push_str("}\n");
     Ok(out)
+}
+
+/// Wrap a name in `r#` if it collides with a Rust keyword, so it can be used
+/// as a Rust identifier. The handful of keywords that cannot be raw identifiers
+/// (`crate`, `self`, `Self`, `super`) are left unchanged — they are not valid
+/// Neon reducer names in practice.
+fn escape_rust_keyword(name: &str) -> String {
+    const KEYWORDS: &[&str] = &[
+        "as", "break", "const", "continue", "dyn", "else", "enum", "extern",
+        "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
+        "move", "mut", "pub", "ref", "return", "static", "struct", "trait",
+        "true", "type", "unsafe", "use", "where", "while", "async", "await",
+        "abstract", "become", "box", "do", "final", "macro", "override", "priv",
+        "typeof", "unsized", "virtual", "yield", "try",
+    ];
+    if KEYWORDS.contains(&name) {
+        format!("r#{name}")
+    } else {
+        name.to_string()
+    }
 }
 
 // ── Statements ────────────────────────────────────────────────────────────────
@@ -762,6 +786,25 @@ mod tests {
         let out = compile("reducer reset() {}");
         assert!(out.contains("#[neondb::reducer]"));
         assert!(out.contains("fn reset(ctx: ReducerContext)"));
+    }
+
+    #[test]
+    fn codegen_reducer_named_rust_keyword_is_escaped() {
+        // `move` is a Rust keyword — the generated fn must be a raw identifier
+        // (`fn r#move`) or it won't compile. The #[reducer] macro strips the
+        // `r#` back off, so the wire name stays "move" for clients.
+        let out = compile("reducer move(id: str, x: float) {}");
+        assert!(out.contains("fn r#move(ctx: ReducerContext"),
+            "keyword reducer name must be escaped as a raw identifier:\n{out}");
+        assert!(!out.contains("fn move("),
+            "must not emit the bare keyword `fn move(`");
+    }
+
+    #[test]
+    fn codegen_non_keyword_name_not_escaped() {
+        let out = compile("reducer attack(id: str) {}");
+        assert!(out.contains("fn attack(ctx: ReducerContext"));
+        assert!(!out.contains("r#attack"));
     }
 
     #[test]
