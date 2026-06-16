@@ -563,6 +563,49 @@ async fn run_server_inner(
         });
     }
 
+    // ── Scheduled reducers ─────────────────────────────────────────────────────
+    // Fire each configured reducer on its interval by enqueuing a PendingCall
+    // through the same reducer queue as client calls. Without this, embedded
+    // servers (run_server / .neon projects) silently never run their schedulers.
+    let sched_seq = Arc::new(AtomicU64::new(u64::MAX / 2));
+    for sched in &config.scheduled_reducers {
+        let sched = sched.clone();
+        let tx_sched = tx.clone();
+        let seq_sched = sched_seq.clone();
+        let mut shutdown_sched = shutdown_rx.clone();
+        let args_bytes: Vec<u8> = sched.args_json.as_deref()
+            .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+            .and_then(|v| rmp_serde::to_vec(&v).ok())
+            .unwrap_or_default();
+        log::info!("[neondb] Scheduler: '{}' every {}ms", sched.reducer, sched.interval_ms);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(
+                std::time::Duration::from_millis(sched.interval_ms.max(1)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // consume the immediate first tick
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let call_id = seq_sched.fetch_add(1, Ordering::Relaxed);
+                        let (resp_tx, _resp_rx) = tokio::sync::mpsc::unbounded_channel::<ReducerResponse>();
+                        let call = PendingCall {
+                            call_id,
+                            reducer_name: sched.reducer.clone(),
+                            args: args_bytes.clone(),
+                            caller_id: "scheduler".to_string(),
+                            caller_role: "scheduler".to_string(),
+                            tenant_id: None,
+                            lobby_hint: None,
+                            response_tx: resp_tx,
+                        };
+                        if tx_sched.send(call).await.is_err() { break; }
+                    }
+                    _ = shutdown_sched.changed() => break,
+                }
+            }
+        });
+    }
+
     // ── WebSocket listener ────────────────────────────────────────────────────
     let host      = config.host.clone();
     let port      = config.port;

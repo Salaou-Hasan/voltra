@@ -112,6 +112,20 @@ func unsubscribe(sub_id: String) -> void:
 
 # ── Frame handling ────────────────────────────────────────────────────────────
 
+# rmp_serde encodes the reducer's Option<Vec<u8>> result as a MsgPack array
+# of ints (not a bin), so accept either a PackedByteArray or an int array.
+func _decode_result(rb):
+	if rb == null:
+		return null
+	if rb is Array:
+		var pb := PackedByteArray()
+		for b in rb:
+			pb.append(int(b))
+		rb = pb
+	if rb is PackedByteArray:
+		return MsgPack.unpack(rb)
+	return null
+
 func _handle_frame(bytes: PackedByteArray) -> void:
 	var parsed = MsgPack.unpack(bytes)
 	if parsed == null:
@@ -121,9 +135,7 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 	if parsed is Array and parsed.size() >= 2 and parsed[1] is bool:
 		var call_id = int(parsed[0])
 		if _pending.has(call_id):
-			var data = null
-			if parsed.size() > 2 and parsed[2] is PackedByteArray:
-				data = MsgPack.unpack(parsed[2])
+			var data = _decode_result(parsed[2] if parsed.size() > 2 else null)
 			var err = parsed[3] if parsed.size() > 3 else null
 			_pending[call_id] = {"done": true, "result": {
 				"success": parsed[1], "data": data, "error": err}}
