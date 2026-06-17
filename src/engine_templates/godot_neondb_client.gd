@@ -41,8 +41,12 @@ var _api_key := ""
 
 func connect_to(url: String, api_key: String = "") -> void:
 	_api_key = api_key
+	# ngrok-skip-browser-warning bypasses ngrok's free-tier interstitial so the
+	# WebSocket upgrade isn't intercepted; harmless for non-ngrok servers.
+	var headers := PackedStringArray(["ngrok-skip-browser-warning: true"])
 	if api_key != "":
-		_ws.handshake_headers = PackedStringArray(["Authorization: Bearer " + api_key])
+		headers.append("Authorization: Bearer " + api_key)
+	_ws.handshake_headers = headers
 	var err := _ws.connect_to_url(url)
 	if err != OK:
 		push_error("[NeonDB] connect failed: %s" % err)
