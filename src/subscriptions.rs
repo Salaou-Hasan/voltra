@@ -798,6 +798,16 @@ impl SubscriptionFilter {
         if self.table_name != delta.table_name {
             return false;
         }
+        // A delete carries no row data, so a WHERE predicate can't be evaluated
+        // against it (every field is absent → predicate is false). Without this
+        // bypass, a row that is deleted — or that leaves a filtered subscription —
+        // is never removed on subscribers whose filter no longer matches, leaving
+        // a "ghost" row (e.g. a player who left still shown, frozen, to others).
+        // Deliver deletes to every subscriber of the table; the client removes the
+        // row if it has it and ignores it otherwise (idempotent).
+        if delta.operation == "delete" {
+            return true;
+        }
         match &self.predicate {
             None => true,
             Some(p) => p.eval(delta),
