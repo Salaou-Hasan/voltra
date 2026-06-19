@@ -118,6 +118,16 @@ func unsubscribe(sub_id: String) -> void:
 
 # rmp_serde encodes the reducer's Option<Vec<u8>> result as a MsgPack array
 # of ints (not a bin), so accept either a PackedByteArray or an int array.
+func _to_bytes(v) -> PackedByteArray:
+	if v is PackedByteArray:
+		return v
+	if v is Array:
+		var pb := PackedByteArray()
+		for b in v:
+			pb.append(int(b))
+		return pb
+	return PackedByteArray()
+
 func _decode_result(rb):
 	if rb == null:
 		return null
@@ -160,8 +170,8 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 					_handle_frame(MsgPack.pack(fields))
 				"BatchUpdate":
 					# fields = [compressed_bool, payload_bytes]
-					if fields.size() >= 2 and fields[1] is PackedByteArray:
-						var batch_raw: PackedByteArray = fields[1]
+					if fields.size() >= 2:
+						var batch_raw := _to_bytes(fields[1])
 						if fields[0] == true:
 							# zstd decompress (FileAccess.COMPRESSION_ZSTD = 2)
 							batch_raw = batch_raw.decompress_dynamic(-1, 2)
