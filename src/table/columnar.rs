@@ -49,7 +49,7 @@ impl ColumnIndex {
         let field_str = self.value_to_key(field_value);
         self.buckets
             .entry(field_str)
-            .or_insert_with(|| DashMap::new())
+            .or_insert_with(DashMap::new)
             .insert(row_key.to_string(), ());
         Ok(())
     }

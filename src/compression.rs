@@ -63,50 +63,25 @@ impl HybridCompressor {
     }
 
     pub fn compress(&self, raw: &[u8]) -> (Vec<u8>, bool) {
-        let tier = self.select_tier(raw.len());
-
-        match tier {
+        let level = match self.select_tier(raw.len()) {
             CompressionTier::None => {
                 self.batches_skipped.fetch_add(1, Ordering::Relaxed);
+                return (raw.to_vec(), false);
+            }
+            CompressionTier::Basic => ZSTD_BASIC,
+            CompressionTier::Heavy => ZSTD_HEAVY,
+        };
+
+        match zstd::encode_all(raw, level) {
+            Ok(compressed) if compressed.len() < raw.len() => {
+                let saved = (raw.len() - compressed.len()) as u64;
+                self.bytes_saved.fetch_add(saved, Ordering::Relaxed);
+                self.batches_compressed.fetch_add(1, Ordering::Relaxed);
+                (compressed, true)
+            }
+            _ => {
+                self.batches_skipped.fetch_add(1, Ordering::Relaxed);
                 (raw.to_vec(), false)
-            }
-            CompressionTier::Basic => {
-                match zstd::encode_all(raw, ZSTD_BASIC) {
-                    Ok(compressed) => {
-                        if compressed.len() < raw.len() {
-                            let saved = (raw.len() - compressed.len()) as u64;
-                            self.bytes_saved.fetch_add(saved, Ordering::Relaxed);
-                            self.batches_compressed.fetch_add(1, Ordering::Relaxed);
-                            (compressed, true)
-                        } else {
-                            self.batches_skipped.fetch_add(1, Ordering::Relaxed);
-                            (raw.to_vec(), false)
-                        }
-                    }
-                    Err(_) => {
-                        self.batches_skipped.fetch_add(1, Ordering::Relaxed);
-                        (raw.to_vec(), false)
-                    }
-                }
-            }
-            CompressionTier::Heavy => {
-                match zstd::encode_all(raw, ZSTD_HEAVY) {
-                    Ok(compressed) => {
-                        if compressed.len() < raw.len() {
-                            let saved = (raw.len() - compressed.len()) as u64;
-                            self.bytes_saved.fetch_add(saved, Ordering::Relaxed);
-                            self.batches_compressed.fetch_add(1, Ordering::Relaxed);
-                            (compressed, true)
-                        } else {
-                            self.batches_skipped.fetch_add(1, Ordering::Relaxed);
-                            (raw.to_vec(), false)
-                        }
-                    }
-                    Err(_) => {
-                        self.batches_skipped.fetch_add(1, Ordering::Relaxed);
-                        (raw.to_vec(), false)
-                    }
-                }
             }
         }
     }
@@ -130,13 +105,6 @@ impl HybridCompressor {
 
     pub fn batches_skipped_total(&self) -> u64 {
         self.batches_skipped.load(Ordering::Relaxed)
-    }
-
-    pub fn compression_ratio_estimate(&self) -> f64 {
-        let compressed = self.batches_compressed.load(Ordering::Relaxed);
-        let total = compressed + self.batches_skipped.load(Ordering::Relaxed);
-        if total == 0 { return 0.0; }
-        compressed as f64 / total as f64
     }
 }
 

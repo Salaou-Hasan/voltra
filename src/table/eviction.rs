@@ -17,8 +17,10 @@ use std::time::Instant;
 // ── Eviction policy ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum EvictionPolicy {
     /// No eviction — rows accumulate without bound (default behaviour).
+    #[default]
     None,
     /// Evict least-recently-used rows when a table exceeds this row count.
     LruRowCap { max_rows_per_table: usize },
@@ -27,11 +29,6 @@ pub enum EvictionPolicy {
     LruByteCap { max_bytes_total: usize },
 }
 
-impl Default for EvictionPolicy {
-    fn default() -> Self {
-        EvictionPolicy::None
-    }
-}
 
 // ── LRU access tracker ───────────────────────────────────────────────────────
 

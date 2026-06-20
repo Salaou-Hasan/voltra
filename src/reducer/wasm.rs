@@ -20,7 +20,7 @@ use wasmtime::{Caller, Engine, Instance, Linker, Module, PoolingAllocationConfig
 // the pointer is never accessed after the call returns.
 
 thread_local! {
-    static WASM_CTX: Cell<usize> = Cell::new(0);
+    static WASM_CTX: Cell<usize> = const { Cell::new(0) };
 }
 
 struct WasmCtxGuard;
@@ -106,7 +106,7 @@ fn build_pooling_engine() -> std::result::Result<Engine, wasmtime::Error> {
     config.consume_fuel(true);
 
     let cores = num_cpus::get();
-    let slots = ((cores * 4) as u32).max(32).min(512);
+    let slots = ((cores * 4) as u32).clamp(32, 512);
 
     let mut pool = PoolingAllocationConfig::default();
     pool.total_memories(slots);

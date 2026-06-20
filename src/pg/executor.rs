@@ -766,11 +766,10 @@ impl PgEngine {
                     match item {
                         SelectItem::UnnamedExpr(e) => {
                             let v = eval(&env, &rep, Some(grows), e)?;
-                            if gi == 0 || cols.is_empty() {
-                                if out.len() >= cols.len() {
+                            if (gi == 0 || cols.is_empty())
+                                && out.len() >= cols.len() {
                                     cols.push((expr_label(e), scalar_oid(&v)));
                                 }
-                            }
                             out.push(v);
                         }
                         SelectItem::ExprWithAlias { expr, alias } => {
@@ -1629,12 +1628,12 @@ fn eval_function(
         "GREATEST" => Ok(vals
             .into_iter()
             .filter(|v| !v.is_null())
-            .max_by(|a, b| scalar_cmp(a, b))
+            .max_by(scalar_cmp)
             .unwrap_or(Scalar::Null)),
         "LEAST" => Ok(vals
             .into_iter()
             .filter(|v| !v.is_null())
-            .min_by(|a, b| scalar_cmp(a, b))
+            .min_by(scalar_cmp)
             .unwrap_or(Scalar::Null)),
         "ABS" => match vals.first() {
             Some(Scalar::Int(i)) => Ok(Scalar::Int(i.abs())),
@@ -1738,7 +1737,7 @@ fn like_inner(t: &[char], p: &[char]) -> bool {
 
 fn sort_output(
     cols: &[(String, u32)],
-    rows: &mut Vec<Vec<Scalar>>,
+    rows: &mut [Vec<Scalar>],
     order_by: &[ast::OrderByExpr],
 ) -> Result<(), String> {
     let mut specs: Vec<(usize, bool)> = Vec::new();

@@ -35,9 +35,6 @@ impl SkillRating {
         }
     }
 
-    pub fn default_rating() -> Self {
-        Self::new(1000.0)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +298,7 @@ impl MatchmakingService {
         };
 
         // Stable sort by join time (oldest first).
-        candidates.sort_by(|a, b| a.joined_at.cmp(&b.joined_at));
+        candidates.sort_by_key(|a| a.joined_at);
 
         let mut matched_ids: Vec<String> = Vec::new();
         let mut new_matches: Vec<Match> = Vec::new();

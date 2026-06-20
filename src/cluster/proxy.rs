@@ -35,15 +35,6 @@ pub struct ProxyCallResponse {
     pub error: Option<String>,
 }
 
-impl ProxyCallResponse {
-    pub fn success_response(result: &[u8]) -> Self {
-        ProxyCallResponse { ok: true, result_b64: Some(B64.encode(result)), error: None }
-    }
-
-    pub fn error_response(msg: impl Into<String>) -> Self {
-        ProxyCallResponse { ok: false, result_b64: None, error: Some(msg.into()) }
-    }
-}
 
 pub fn proxy_call(
     bus: &Arc<ClusterBus>,

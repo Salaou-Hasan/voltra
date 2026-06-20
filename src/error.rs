@@ -62,10 +62,6 @@ impl NeonDBError {
         NeonDBError::NetworkError(msg.into())
     }
 
-    pub fn row_not_found(msg: impl Into<String>) -> Self {
-        NeonDBError::RowNotFound(msg.into())
-    }
-
     pub fn invalid_argument(msg: impl Into<String>) -> Self {
         NeonDBError::InvalidArgument(msg.into())
     }

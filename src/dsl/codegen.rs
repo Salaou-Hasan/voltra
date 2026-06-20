@@ -463,10 +463,8 @@ fn gen_builtin_call(name: &str, args: &[String]) -> String {
              __lo + __r as i64 }}",
             a(0), a(1)
         ),
-        "rand_float"  => format!(
-            "{{ let __ts = ctx.timestamp(); \
-             ((__ts ^ (__ts >> 33)) % 1_000_000u64) as f64 / 1_000_000.0f64 }}"
-        ),
+        "rand_float"  => "{ let __ts = ctx.timestamp(); \
+             ((__ts ^ (__ts >> 33)) % 1_000_000u64) as f64 / 1_000_000.0f64 }".to_string(),
 
         // ── Type casts ───────────────────────────────────────────────────────
         "str"         => format!("({}).to_string()", a(0)),

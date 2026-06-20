@@ -732,7 +732,7 @@ async fn blocking_pop(ctx: &Arc<RedisCtx>, dbi: u32, args: &[Bytes], left: bool)
             .apply(move |w: &mut Writer| {
                 let mut result = Resp::NullArray;
                 for k in &keys_try {
-                    let pop = dispatch_data(w, dbi, if left { "LPOP" } else { "RPOP" }, &[k.clone()]);
+                    let pop = dispatch_data(w, dbi, if left { "LPOP" } else { "RPOP" }, std::slice::from_ref(k));
                     if let Resp::Bulk(v) = pop {
                         result = Resp::Array(vec![Resp::Bulk(k.clone()), Resp::Bulk(v)]);
                         break;

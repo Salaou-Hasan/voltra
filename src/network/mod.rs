@@ -38,6 +38,12 @@ pub struct InlineRegistry {
     table: HashMap<String, InlineFn>,
 }
 
+impl Default for InlineRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InlineRegistry {
     pub fn new() -> Self {
         Self { table: HashMap::new() }

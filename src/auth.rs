@@ -25,8 +25,10 @@ pub struct NeonDBClaims {
 
 /// Supported authentication modes.
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub enum AuthMode {
     /// No authentication required (dev mode).
+    #[default]
     None,
     /// Static API key (existing behavior).
     ApiKey(String),
@@ -41,11 +43,6 @@ pub enum AuthMode {
     },
 }
 
-impl Default for AuthMode {
-    fn default() -> Self {
-        AuthMode::None
-    }
-}
 
 /// Result of validating an auth token.
 #[derive(Clone, Debug)]

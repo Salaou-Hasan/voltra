@@ -436,7 +436,7 @@ pub fn zadd(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
         return Resp::err("ERR GT, LT, and/or NX options at the same time are not compatible");
     }
     let rest = &args[i..];
-    if rest.is_empty() || rest.len() % 2 != 0 {
+    if rest.is_empty() || !rest.len().is_multiple_of(2) {
         return Resp::syntax();
     }
     if incr && rest.len() != 2 {

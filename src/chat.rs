@@ -384,11 +384,7 @@ impl ChatEngine {
         };
 
         // Take up to `limit` messages before end_idx.
-        let start_idx = if end_idx > limit {
-            end_idx - limit
-        } else {
-            0
-        };
+        let start_idx = end_idx.saturating_sub(limit);
 
         let messages: Vec<ChatMessage> = history
             .iter()
@@ -457,7 +453,7 @@ impl ChatEngine {
         let mut entry = self
             .reactions
             .entry(message_id.to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
 
         // Find or create the reaction entry for this emoji.
         if let Some(reaction) = entry.value_mut().iter_mut().find(|r| r.emoji == emoji) {
@@ -511,7 +507,7 @@ impl ChatEngine {
         let user_cursors = self
             .read_cursors
             .entry(user_id.to_string())
-            .or_insert_with(DashMap::new);
+            .or_default();
         user_cursors.insert(room_id.to_string(), message_id.to_string());
     }
 
@@ -586,7 +582,7 @@ impl ChatEngine {
 
         self.moderation
             .entry(room_id.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(action.clone());
 
         Ok(action)
@@ -618,7 +614,7 @@ impl ChatEngine {
 
         self.moderation
             .entry(room_id.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(action.clone());
 
         // Also remove the user from the room if they are a member.

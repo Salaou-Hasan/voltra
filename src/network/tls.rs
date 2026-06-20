@@ -67,10 +67,8 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerCo
                 })?;
                 let mut kr = BufReader::new(kf);
                 let mut pkcs8_keys: Vec<PrivateKeyDer<'static>> = Vec::new();
-                for item in rustls_pemfile::pkcs8_private_keys(&mut kr) {
-                    if let Ok(k) = item {
-                        pkcs8_keys.push(PrivateKeyDer::Pkcs8(k));
-                    }
+                for k in rustls_pemfile::pkcs8_private_keys(&mut kr).flatten() {
+                    pkcs8_keys.push(PrivateKeyDer::Pkcs8(k));
                 }
                 if !pkcs8_keys.is_empty() {
                     pkcs8_keys.remove(0)

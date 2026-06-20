@@ -11,7 +11,7 @@ use bytes::Bytes;
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn hset(db: &mut dyn Db, ns: u32, args: &[Bytes], hmset_compat: bool) -> Resp {
-    if args.len() < 3 || args.len() % 2 == 0 {
+    if args.len() < 3 || args.len().is_multiple_of(2) {
         return Resp::arity(if hmset_compat { "hmset" } else { "hset" });
     }
     let (mut h, exp) = match read_hash(db, ns, &args[0]) {
@@ -477,7 +477,7 @@ pub fn lrem(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
     let mut keep: Vec<Bytes> = Vec::with_capacity(items.len());
     if count >= 0 {
         for v in items {
-            if (&v == target) && (limit == 0 || (removed as usize) < limit) {
+            if (v == target) && (limit == 0 || (removed as usize) < limit) {
                 removed += 1;
             } else {
                 keep.push(v);
@@ -485,7 +485,7 @@ pub fn lrem(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
         }
     } else {
         for v in items.into_iter().rev() {
-            if (&v == target) && ((removed as usize) < limit) {
+            if (v == target) && ((removed as usize) < limit) {
                 removed += 1;
             } else {
                 keep.push(v);

@@ -316,7 +316,7 @@ impl PersistentStore {
         let itype_filter = item_type.map(|s| s.to_owned());
         let tuples: Vec<(String, String, String, String, i64)> = raw
             .into_iter()
-            .filter(|(_, _, t, _, _)| itype_filter.as_deref().map_or(true, |f| t == f))
+            .filter(|(_, _, t, _, _)| itype_filter.as_deref().is_none_or(|f| t == f))
             .collect();
         Ok(tuples
             .into_iter()

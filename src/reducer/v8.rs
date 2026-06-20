@@ -80,7 +80,7 @@ var caller = {
 // ── Thread-local state ────────────────────────────────────────────────────────
 
 thread_local! {
-    static QJS_RT: RefCell<Option<Runtime>> = RefCell::new(None);
+    static QJS_RT: RefCell<Option<Runtime>> = const { RefCell::new(None) };
 
     // One warm Context per (thread, script_path).
     static QJS_CTXS: RefCell<HashMap<String, Context>> =
@@ -88,13 +88,13 @@ thread_local! {
 
     // Raw pointer to the live ReducerContext — set before JS call, cleared after.
     // SAFETY: valid for the entire synchronous eval of reducer(args).
-    static CURRENT_CTX: Cell<*mut ReducerContext> = Cell::new(std::ptr::null_mut());
+    static CURRENT_CTX: Cell<*mut ReducerContext> = const { Cell::new(std::ptr::null_mut()) };
 
     // Wall-clock deadline for the currently-executing JS call.  Read by the
     // QuickJS interrupt handler (which fires periodically during execution);
     // when `Instant::now()` passes the deadline the handler returns `true`
     // and QuickJS aborts the script with an "interrupted" error.
-    static QJS_DEADLINE: Cell<Option<Instant>> = Cell::new(None);
+    static QJS_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
 /// RAII guard: sets the JS execution deadline on construction, clears on drop
@@ -129,7 +129,7 @@ fn ensure_runtime() -> Result<()> {
             // CPU watchdog: QuickJS invokes this periodically mid-execution.
             // Returning `true` aborts the running script.  No deadline armed
             // (None) means never interrupt — e.g. during context build.
-            new_rt.set_interrupt_handler(Some(Box::new(|| DeadlineGuard::expired())));
+            new_rt.set_interrupt_handler(Some(Box::new(DeadlineGuard::expired)));
             *rt = Some(new_rt);
         }
         Ok(())

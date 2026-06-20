@@ -18,12 +18,6 @@ impl WalReader {
         })
     }
 
-    /// Read the next entry from the WAL
-    pub fn next_entry(&mut self) -> Result<Option<WalEntry>> {
-        // This simplified version is not used in Phase 1; we use read_all_entries instead
-        Ok(None)
-    }
-
     /// Read all entries from the WAL (simpler approach for Phase 1)
     pub fn read_all_entries(&mut self) -> Result<Vec<WalEntry>> {
         let mut entries = Vec::new();

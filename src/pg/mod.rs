@@ -300,7 +300,7 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<PgCtx>) -> std::io::Result<()
         }
         let tag = buf[0];
         let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-        if len < 4 || len > 256 * 1024 * 1024 {
+        if !(4..=256 * 1024 * 1024).contains(&len) {
             return Ok(());
         }
         while buf.len() < 1 + len {

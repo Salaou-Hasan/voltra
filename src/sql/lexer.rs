@@ -280,7 +280,7 @@ impl<'a> Lexer<'a> {
             if ch.is_ascii_digit() {
                 s.push(ch as char);
                 self.pos += 1;
-            } else if ch == b'.' && !is_float && self.peek2().map_or(false, |c| c.is_ascii_digit()) {
+            } else if ch == b'.' && !is_float && self.peek2().is_some_and(|c| c.is_ascii_digit()) {
                 is_float = true;
                 s.push('.');
                 self.pos += 1;
@@ -354,7 +354,7 @@ impl<'a> Lexer<'a> {
                 b'='  => Token::Eq,
                 b'!'  => {
                     if self.peek() == Some(b'=') { self.pos += 1; Token::Ne }
-                    else { return Err(NeonDBError::invalid_argument(format!("Unexpected char '!'"))) }
+                    else { return Err(NeonDBError::invalid_argument("Unexpected char '!'".to_string())) }
                 }
                 b'<'  => {
                     if self.peek() == Some(b'=') { self.pos += 1; Token::Le }

@@ -794,14 +794,14 @@ fn handle_watch_frame(data: &[u8], pending_route: &mut Option<Vec<String>>) {
                     }
                     "SubscriptionRoute" => {
                         let ids = content.get("subscription_ids").and_then(|v| v.as_array())
-                            .or_else(|| fields.get(0).and_then(|v| v.as_array()))
+                            .or_else(|| fields.first().and_then(|v| v.as_array()))
                             .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
                             .unwrap_or_default();
                         *pending_route = Some(ids);
                     }
                     "SubscriptionBody" => {
                         let table = content.get("table_name").and_then(|v| v.as_str())
-                            .or_else(|| fields.get(0).and_then(|v| v.as_str())).unwrap_or("?");
+                            .or_else(|| fields.first().and_then(|v| v.as_str())).unwrap_or("?");
                         let key = content.get("row_key").and_then(|v| v.as_str())
                             .or_else(|| fields.get(1).and_then(|v| v.as_str())).unwrap_or("?");
                         let op = content.get("operation").and_then(|v| v.as_str())

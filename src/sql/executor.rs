@@ -82,7 +82,7 @@ impl Executor {
             } else {
                 // UNION deduplicates — use string rep as key
                 let mut seen: std::collections::HashSet<String> = all_rows
-                    .iter().map(|r| value_fingerprint(r)).collect();
+                    .iter().map(value_fingerprint).collect();
                 for row in rhs_result.rows {
                     let fp = value_fingerprint(&row);
                     if seen.insert(fp) { all_rows.push(row); }
@@ -1033,7 +1033,7 @@ fn like_dp(s: &[char], p: &[char], si: usize, pi: usize) -> bool {
 }
 
 fn has_aggregate(cols: &[Expr]) -> bool {
-    cols.iter().any(|e| expr_has_aggregate(e))
+    cols.iter().any(expr_has_aggregate)
 }
 
 fn expr_has_aggregate(expr: &Expr) -> bool {

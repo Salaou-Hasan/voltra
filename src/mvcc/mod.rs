@@ -290,9 +290,7 @@ impl<'a> Writer<'a> {
         match self.inner.chains.get(&nk) {
             Some(chain) => match chain.versions.first() {
                 Some(v) => {
-                    if v.value.is_none() {
-                        return None;
-                    }
+                    v.value.as_ref()?;
                     if v.expires_at_ms.map(|e| e <= self.now_ms).unwrap_or(false) {
                         drop(chain);
                         // Lazy expiry: reap on touch, exactly like Redis.

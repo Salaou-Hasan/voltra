@@ -260,6 +260,12 @@ pub struct SubscriptionManager {
     compressor: Arc<HybridCompressor>,
 }
 
+impl Default for SubscriptionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SubscriptionManager {
     pub fn new() -> Self {
         SubscriptionManager::new_with_options(false)
@@ -277,9 +283,6 @@ impl SubscriptionManager {
         }
     }
 
-    pub fn compressor(&self) -> &Arc<HybridCompressor> {
-        &self.compressor
-    }
 
     /// Enable tick-coalesced delivery and spawn the flush task.
     /// Call once at server startup; `tick_ms` of 0 keeps immediate delivery.
@@ -380,7 +383,7 @@ impl SubscriptionManager {
             .entry(table_name.clone())
             .or_insert_with(|| DashMap::with_capacity_and_shard_amount(64, 4))
             .entry(client_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(subscription_id.clone());
 
         // TODO-003 + LIMIT + ORDER BY: initial state sync.
@@ -845,7 +848,7 @@ impl Predicate {
 
 /// Collect every (field, value) pair from `Eq` comparison leaves in a predicate tree.
 /// Used to auto-create secondary indexes when a subscription is first registered.
-fn collect_eq_fields<'a>(pred: &'a Predicate) -> Vec<(&'a str, &'a Value)> {
+fn collect_eq_fields(pred: &Predicate) -> Vec<(&str, &Value)> {
     match pred {
         Predicate::Comparison { field, op: ComparisonOp::Eq, value } => {
             vec![(field.as_str(), value)]
@@ -1127,9 +1130,9 @@ fn parse_predicate_value(value: &str) -> Result<Value> {
         return Ok(Value::Number(i.into()));
     }
     if let Ok(f) = t.parse::<f64>() {
-        return Ok(serde_json::Number::from_f64(f)
+        return serde_json::Number::from_f64(f)
             .map(Value::Number)
-            .ok_or_else(|| NeonDBError::invalid_argument("Invalid numeric literal"))?);
+            .ok_or_else(|| NeonDBError::invalid_argument("Invalid numeric literal"));
     }
     if t.eq_ignore_ascii_case("true") {
         return Ok(Value::Bool(true));

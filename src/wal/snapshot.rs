@@ -72,7 +72,7 @@ pub fn find_latest_snapshot(dir: &Path) -> Option<(PathBuf, u64)> {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         if let Some(seq) = parse_snapshot_seq(&name_str) {
-            if best.as_ref().map_or(true, |(_, s)| seq > *s) {
+            if best.as_ref().is_none_or(|(_, s)| seq > *s) {
                 best = Some((entry.path(), seq));
             }
         }

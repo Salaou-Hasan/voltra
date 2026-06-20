@@ -374,15 +374,6 @@ impl LeaderboardEngine {
         }
     }
 
-    /// Reset a time-windowed board (called when the window expires).
-    pub fn reset_board(&self, board_name: &str) {
-        if let Some(board_ref) = self.boards.get(board_name) {
-            let mut data = board_ref.value().lock().unwrap();
-            data.entries.clear();
-            data.player_index.clear();
-        }
-    }
-
     /// Check if a time window has expired and reset if needed.
     /// Returns true if the board was reset.
     pub fn check_window_expiry(&self, board_name: &str, now_ms: u64) -> bool {

@@ -140,7 +140,7 @@ pub fn mget(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
 }
 
 pub fn mset(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
-    if args.is_empty() || args.len() % 2 != 0 {
+    if args.is_empty() || !args.len().is_multiple_of(2) {
         return Resp::arity("mset");
     }
     for pair in args.chunks(2) {
@@ -150,7 +150,7 @@ pub fn mset(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
 }
 
 pub fn msetnx(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
-    if args.is_empty() || args.len() % 2 != 0 {
+    if args.is_empty() || !args.len().is_multiple_of(2) {
         return Resp::arity("msetnx");
     }
     for pair in args.chunks(2) {
@@ -501,7 +501,7 @@ pub fn ttl(db: &mut dyn Db, ns: u32, args: &[Bytes], ms: bool) -> Resp {
     match db.expiry(ns, &args[0]) {
         Some(at) => {
             let rem = at.saturating_sub(db.now_ms());
-            Resp::Int(if ms { rem as i64 } else { ((rem + 999) / 1000) as i64 })
+            Resp::Int(if ms { rem as i64 } else { rem.div_ceil(1000) as i64 })
         }
         None => Resp::Int(-1),
     }

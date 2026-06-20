@@ -43,7 +43,6 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
     Arc,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 
 const ADMIN_DASHBOARD_HTML: &str = include_str!("admin_dashboard.html");
@@ -61,13 +60,7 @@ pub struct ServerHandle {
     pub wal_file_size: Arc<AtomicU64>,
 }
 
-#[inline]
-fn now_nanos() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-}
+use crate::now_nanos;
 
 /// Start an embedded NeonDB server and return a [`ServerHandle`] once the
 /// server has finished bootstrapping (snapshot + WAL replay + listener bound).
@@ -178,7 +171,7 @@ async fn run_server_inner(
         Some(path) => {
             match PersistenceEngine::open(path) {
                 Ok(pe) => {
-                    match pe.load_all(&*tables) {
+                    match pe.load_all(&tables) {
                         Ok((rows, last_seq)) => {
                             if rows > 0 {
                                 initial_seq = last_seq;
@@ -218,7 +211,7 @@ async fn run_server_inner(
     let loaded_from_redb = initial_seq > 0;
     if !loaded_from_redb {
         if let Some((snap_path, snap_seq)) = find_latest_snapshot(&wal_path) {
-            load_snapshot(&snap_path, &*tables)?;
+            load_snapshot(&snap_path, &tables)?;
             initial_seq = snap_seq;
             log::info!("[neondb] Loaded snapshot seq={}", snap_seq);
         }
@@ -507,7 +500,7 @@ async fn run_server_inner(
                                 // Skip if a snapshot is already in flight — overlapping
                                 // snapshots each clone the full dataset into memory and
                                 // would compound rather than bound memory usage.
-                                if snap_iv > 0 && (seq_num + 1) % snap_iv == 0
+                                if snap_iv > 0 && (seq_num + 1).is_multiple_of(snap_iv)
                                     && !snap_busy_w.swap(true, Ordering::AcqRel)
                                 {
                                     let tbl2  = tables_w.clone();

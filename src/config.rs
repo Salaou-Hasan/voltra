@@ -21,16 +21,13 @@ pub struct ScheduledReducerConfig {
 /// - `Open`   (default): unlisted reducers are callable by any role (fail-open).
 /// - `Closed`: unlisted reducers are denied unless the caller is the scheduler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PermissionsPolicy {
+    #[default]
     Open,
     Closed,
 }
 
-impl Default for PermissionsPolicy {
-    fn default() -> Self {
-        PermissionsPolicy::Open
-    }
-}
 
 /// Role-based access control configuration.
 ///
@@ -365,7 +362,7 @@ impl Config {
             sql_timeout_ms: 5_000,
             max_blob_size_bytes: 16 * 1024 * 1024,
             reducer_max_memory_bytes: 64 * 1024 * 1024,
-            reducer_max_io_bytes: 1 * 1024 * 1024,
+            reducer_max_io_bytes: 1024 * 1024,
             rate_limit_capacity: 100,
             rate_limit_refill_rate: 50.0,
             presence_heartbeat_timeout_ms: 30_000,

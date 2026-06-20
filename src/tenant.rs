@@ -148,7 +148,7 @@ impl TenantRegistry {
 
     pub fn list(&self) -> Vec<TenantInfo> {
         let mut v: Vec<TenantInfo> = self.tenants.iter().map(|e| e.value().clone()).collect();
-        v.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        v.sort_by_key(|a| a.created_at);
         v
     }
 

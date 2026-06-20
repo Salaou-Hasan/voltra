@@ -124,11 +124,7 @@ pub fn replay(path: &Path, mut f: impl FnMut(AofRecord)) -> std::io::Result<()> 
     };
     let mut r = BufReader::with_capacity(256 * 1024, file);
     let mut header = [0u8; 8];
-    loop {
-        match r.read_exact(&mut header) {
-            Ok(()) => {}
-            Err(_) => break, // clean EOF or torn header
-        }
+    while r.read_exact(&mut header).is_ok() {
         let len = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         let crc = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
         if len == 0 || len > MAX_RECORD {

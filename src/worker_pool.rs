@@ -359,7 +359,7 @@ fn lobby_worker_loop(
                 continue;
             }
 
-            let ts = now_nanos();
+            let ts = crate::now_nanos();
             let mut ctx = ReducerContext::new(deps.tables.clone(), ts)
                 .with_schema(deps.schema_registry.clone())
                 .with_ttl(deps.ttl_manager.clone());
@@ -435,13 +435,6 @@ fn lobby_worker_loop(
     }
 
     log::debug!("Lobby worker {} stopped", lobby_id);
-}
-
-fn now_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
 }
 
 #[cfg(test)]
