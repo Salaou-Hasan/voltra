@@ -376,7 +376,13 @@ fn gen_expr(expr: &Expr, scope: &Scope) -> String {
         Expr::Var(name) => match name.as_str() {
             "caller_id"   => "ctx.caller_id.clone()".to_owned(),
             "caller_role" => "ctx.caller_role.clone()".to_owned(),
-            _             => name.clone(),
+            _ => {
+                if let Some(Binding::Param(Type::Str)) = scope.get(name) {
+                    format!("{name}.clone()")
+                } else {
+                    name.clone()
+                }
+            }
         },
 
         Expr::RowRead { table, key } => {
