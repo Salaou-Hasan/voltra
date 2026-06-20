@@ -33,6 +33,12 @@ pub struct Metrics {
     pub websocket_connections_active: IntGauge,
     /// Total WebSocket connections accepted since server start.
     pub websocket_connects_total: IntCounter,
+    /// Total subscription fan-out frames dropped because a client's outbound
+    /// buffer was full (transient back-pressure; stale state is shed first).
+    pub subscription_frames_dropped_total: IntCounter,
+    /// Total connections evicted for sustained send-buffer backlog
+    /// (slow-consumer eviction — the client could not keep up with fan-out).
+    pub slow_consumer_evictions_total: IntCounter,
 
     // ── WAL metrics ───────────────────────────────────────────────────────
     /// Total WAL entries successfully written.
@@ -91,6 +97,18 @@ impl Metrics {
         ))
         .expect("metric creation failed");
 
+        let subscription_frames_dropped_total = IntCounter::with_opts(Opts::new(
+            "neondb_subscription_frames_dropped_total",
+            "Total subscription fan-out frames dropped due to full client buffers",
+        ))
+        .expect("metric creation failed");
+
+        let slow_consumer_evictions_total = IntCounter::with_opts(Opts::new(
+            "neondb_slow_consumer_evictions_total",
+            "Total connections evicted for sustained send-buffer backlog",
+        ))
+        .expect("metric creation failed");
+
         let wal_entries_written_total = IntCounter::with_opts(Opts::new(
             "neondb_wal_entries_written_total",
             "Total WAL entries written",
@@ -133,6 +151,8 @@ impl Metrics {
         registry.register(Box::new(reducer_duration_seconds.clone())).unwrap();
         registry.register(Box::new(websocket_connections_active.clone())).unwrap();
         registry.register(Box::new(websocket_connects_total.clone())).unwrap();
+        registry.register(Box::new(subscription_frames_dropped_total.clone())).unwrap();
+        registry.register(Box::new(slow_consumer_evictions_total.clone())).unwrap();
         registry.register(Box::new(wal_entries_written_total.clone())).unwrap();
         registry.register(Box::new(wal_queue_depth.clone())).unwrap();
         registry.register(Box::new(rows_total.clone())).unwrap();
@@ -147,6 +167,8 @@ impl Metrics {
             reducer_duration_seconds,
             websocket_connections_active,
             websocket_connects_total,
+            subscription_frames_dropped_total,
+            slow_consumer_evictions_total,
             wal_entries_written_total,
             wal_queue_depth,
             rows_total,

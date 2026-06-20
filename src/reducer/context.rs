@@ -37,12 +37,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-pub struct SubscriptionDiff {
-    pub table_name: String,
-    pub row_key: String,
-    pub payload: Arc<Bytes>,
-}
-
 pub struct ReducerContext {
     pub tables: Arc<TableStore>,
     pub timestamp: u64,
@@ -60,7 +54,6 @@ pub struct ReducerContext {
     pub tenant_id: Option<String>,
     tenant_registry: Option<Arc<TenantRegistry>>,
     pending_deltas: Vec<RowDelta>,
-    pub pending_diffs: Vec<SubscriptionDiff>,
     /// OCC read set: (physical table, row key) → version seen at first read.
     /// Validated against rows this txn writes at commit; mismatch = conflict
     /// (the worker re-executes the reducer). Eliminates silent lost updates.
@@ -81,7 +74,6 @@ impl ReducerContext {
             tenant_id: None,
             tenant_registry: None,
             pending_deltas: Vec::with_capacity(4),
-            pending_diffs: Vec::with_capacity(4),
             read_versions: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -191,10 +183,6 @@ impl ReducerContext {
         Ok(value)
     }
 
-    pub fn get_row_json(&self, table_name: &str, row_key: &str) -> Result<Option<Value>> {
-        self.get_row(table_name, row_key)
-    }
-
     pub fn list_counters(&self) -> Result<Vec<Counter>> {
         self.tables.list_counters()
     }
@@ -254,45 +242,32 @@ impl ReducerContext {
     }
 
     pub fn get_counter(&self, name: &str) -> Result<Option<Counter>> {
-        if self.tenant_id.is_some() {
-            // Tenant path: counters live as regular rows in the physical counters table.
-            let phys = self.phys("counters");
-            // Read-your-writes from pending deltas.
-            for delta in self.pending_deltas.iter().rev() {
-                if delta.table_name == phys && delta.row_key == name {
-                    return match delta.operation.as_str() {
-                        "delete" => Ok(None),
-                        _ => Ok(delta.row_data_value()
-                            .and_then(|v| serde_json::from_value(v).ok())),
-                    };
-                }
-            }
-            return Ok(self.tables.get_row(&phys, name)?
-                .and_then(|v| serde_json::from_value(v).ok()));
-        }
-
-        // Global path: use the special counter table.
-        let mut base = self.tables.get_counter(name)?;
+        // Global counters live in "counters", tenant counters in "tn:<id>:counters".
+        // Both go through the same atomic counter_add path; phys() picks the table.
+        let table = self.phys("counters");
+        let mut base = self.tables.get_counter_in(&table, name)?;
         for delta in &self.pending_deltas {
-            if delta.table_name == "counters" && delta.row_key == name {
-                match delta.operation.as_str() {
-                    "delete" => { base = None; }
-                    "counter_add" => {
-                        let cur = base.as_ref().map(|c| c.value).unwrap_or(0);
-                        let id  = base.as_ref().map(|c| c.id).unwrap_or(0);
-                        base = Some(Counter {
-                            id,
-                            name: name.to_string(),
-                            value: cur + delta.counter_add_amount,
-                            last_modified: delta.counter_add_timestamp,
-                        });
-                    }
-                    _ => {
-                        if let Some(v) = delta.row_data_value() {
-                            if let Ok(c) = serde_json::from_value::<Counter>(v) {
-                                base = Some(c);
-                            }
-                        }
+            if delta.table_name != table || delta.row_key != name {
+                continue;
+            }
+            match delta.operation.as_str() {
+                "delete" => base = None,
+                "counter_add" => {
+                    let cur = base.as_ref().map(|c| c.value).unwrap_or(0);
+                    let id = base.as_ref().map(|c| c.id).unwrap_or(0);
+                    base = Some(Counter {
+                        id,
+                        name: name.to_string(),
+                        value: cur + delta.counter_add_amount,
+                        last_modified: delta.counter_add_timestamp,
+                    });
+                }
+                _ => {
+                    if let Some(c) = delta
+                        .row_data_value()
+                        .and_then(|v| serde_json::from_value::<Counter>(v).ok())
+                    {
+                        base = Some(c);
                     }
                 }
             }
@@ -301,27 +276,11 @@ impl ReducerContext {
     }
 
     pub fn set_counter(&mut self, name: String, amount: i32) -> Result<RowDelta> {
-        if self.tenant_id.is_some() {
-            // Tenant path: counters are regular rows (no counter_add atomics needed
-            // because each tenant's counters are fully isolated rows).
-            let phys = self.phys("counters");
-            let current_val = self.get_counter(&name)?.map(|c| c.value).unwrap_or(0);
-            let new_val = current_val + amount;
-            let _ = phys; // physical name resolved inside set_row via phys()
-            return self.set_row(
-                "counters".to_string(),
-                name.clone(),
-                serde_json::json!({
-                    "id": 0,
-                    "name": name,
-                    "value": new_val,
-                    "last_modified": self.timestamp as i64,
-                }),
-            );
-        }
-
+        // Stage a relative counter_add against the physical table. apply_delta_batch
+        // re-reads under the row lock, so concurrent increments never lose updates —
+        // for global AND tenant counters alike (fixes the old tenant read-then-write).
         let delta = RowDelta {
-            table_name: "counters".to_string(),
+            table_name: self.phys("counters"),
             operation: "counter_add".to_string(),
             row_key: name,
             row_id: 0,
@@ -339,20 +298,6 @@ impl ReducerContext {
         self.delete_row("counters".to_string(), name.to_string())
     }
 
-    pub fn emit_diff(
-        &mut self,
-        table_name: String,
-        row_key: String,
-        payload: Arc<Bytes>,
-    ) -> Result<()> {
-        self.pending_diffs.push(SubscriptionDiff {
-            table_name,
-            row_key,
-            payload,
-        });
-        Ok(())
-    }
-
     pub fn commit(&mut self) -> Result<Vec<RowDelta>> {
         // ── Tenant row-quota enforcement ───────────────────────────────────────
         if let (Some(tid), Some(reg)) = (&self.tenant_id, &self.tenant_registry) {
@@ -364,7 +309,6 @@ impl ReducerContext {
                 let current_count = reg.tenant_row_count(tid);
                 if current_count + pending_inserts > quota {
                     self.pending_deltas.clear();
-                    self.pending_diffs.clear();
                     return Err(NeonDBError::invalid_argument(format!(
                         "Tenant row quota exceeded ({}/{} rows)",
                         current_count, quota
@@ -416,7 +360,6 @@ impl ReducerContext {
 
             if !denied_keys.is_empty() {
                 self.pending_deltas.clear();
-                self.pending_diffs.clear();
                 return Err(NeonDBError::PermissionDenied(format!(
                     "Access denied to rows: {:?}",
                     denied_keys
@@ -434,7 +377,6 @@ impl ReducerContext {
             .tables
             .apply_delta_batch_versioned(&self.pending_deltas, &read_set)?;
         self.pending_deltas.clear();
-        self.pending_diffs.clear();
         if let Ok(mut rv) = self.read_versions.lock() {
             rv.clear();
         }
@@ -445,33 +387,17 @@ impl ReducerContext {
     /// the re-executed reducer observes fresh state.
     pub fn reset_for_retry(&mut self) {
         self.pending_deltas.clear();
-        self.pending_diffs.clear();
         if let Ok(mut rv) = self.read_versions.lock() {
             rv.clear();
         }
     }
 
-    /// Extract staged deltas WITHOUT applying them to the TableStore.
-    ///
-    /// Used by the Raft write path: the caller forwards the returned deltas to
-    /// `Raft::client_write(RaftRequest { deltas, … })`. The Raft state machine
-    /// then applies the deltas on every node (including the leader) via
-    /// `apply_delta_batch` once the entry is committed.
-    ///
-    /// After calling this, `pending_deltas` is empty and subsequent reads
-    /// will see the old committed state (read-your-writes is now the caller's
-    /// responsibility, since the deltas haven't been applied yet).
-    pub fn drain_pending_deltas(&mut self) -> Vec<RowDelta> {
-        self.pending_diffs.clear();
-        std::mem::take(&mut self.pending_deltas)
-    }
 
     pub fn rollback(&mut self) {
         if let Ok(mut rv) = self.read_versions.lock() {
             rv.clear();
         }
         self.pending_deltas.clear();
-        self.pending_diffs.clear();
     }
 
     // ── Ergonomic shortcuts for use in `#[reducer]`-annotated functions ───────

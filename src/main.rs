@@ -542,15 +542,9 @@ fn generate_typescript(
     );
     for r in reducers {
         let name = match r.as_str() { Some(s) => s, None => continue };
-        let camel: String = {
-            let mut parts = name.split('_');
-            let first = parts.next().unwrap_or("");
-            let rest: String = parts.map(|w| {
-                let mut c = w.chars();
-                match c.next() { None => String::new(), Some(f) => f.to_uppercase().to_string() + c.as_str() }
-            }).collect();
-            format!("{}{}", first, rest)
-        };
+        // camelCase = PascalCase with a lowercased first character.
+        let mut camel = snake_to_pascal(name);
+        if let Some(f) = camel.get_mut(0..1) { f.make_ascii_lowercase(); }
         reducers_ts.push_str(&format!(
             "  {}: (db: NeonDBClient, ...args: unknown[]) => db.call('{}', args),\n",
             camel, name
@@ -5143,6 +5137,8 @@ async fn handle_metrics_request(
             "memory_usage_bytes": get_memory_usage_bytes(),
             "presence_tracked": presence_manager.count(),
             "ttl_active": ttl_manager.count(),
+            "slow_consumer_evictions": prom.slow_consumer_evictions_total.get(),
+            "subscription_frames_dropped": prom.subscription_frames_dropped_total.get(),
         }))),
 
         (&Method::GET, "/stats") => {
@@ -5611,7 +5607,7 @@ async fn handle_metrics_request(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn current_timestamp_nanos() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+    neondb::now_nanos()
 }
 
 /// Best-effort memory usage query (WorkingSetSize on Windows, /proc/self/statm on Linux).

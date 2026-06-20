@@ -398,6 +398,12 @@ pub struct TableStore {
     lobby_stores: Option<Arc<DashMap<String, Arc<TableStore>>>>,
 }
 
+impl Default for TableStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TableStore {
     pub fn new() -> Self {
         Self::with_eviction(EvictionPolicy::None)
@@ -918,12 +924,13 @@ impl TableStore {
                 // data race outside the lock window.
                 "counter_add" => {
                     let name = &delta.row_key;
-                    let current_val = self.get_counter(name)?.map(|c| c.value).unwrap_or(0);
-                    let new_val = current_val + delta.counter_add_amount;
-
-                    // Preserve existing row_id if the row already exists.
-                    let row_id = self
-                        .get_counter(name)?
+                    // Read the current counter from the delta's OWN table (global
+                    // "counters" or a tenant's "tn:<id>:counters") under the lock —
+                    // this is what makes concurrent tenant increments atomic too.
+                    let existing = self.get_counter_in(&delta.table_name, name)?;
+                    let new_val = existing.as_ref().map(|c| c.value).unwrap_or(0)
+                        + delta.counter_add_amount;
+                    let row_id = existing
                         .map(|c| c.id)
                         .unwrap_or_else(|| self.alloc_row_id());
 
@@ -1117,12 +1124,17 @@ impl TableStore {
     // ── Counter convenience layer ─────────────────────────────────────────────
 
     pub fn get_counter(&self, name: &str) -> Result<Option<Counter>> {
-        if let Some(value) = self.get_row("counters", name)? {
-            let counter: Counter = serde_json::from_value(value)
-                .map_err(|e| NeonDBError::SerializationError(format!("Counter decode: {}", e)))?;
-            Ok(Some(counter))
-        } else {
-            Ok(None)
+        self.get_counter_in("counters", name)
+    }
+
+    /// Read a counter from an arbitrary table (tenant counters live in
+    /// `tn:<id>:counters`, not the global `counters` table).
+    pub fn get_counter_in(&self, table: &str, name: &str) -> Result<Option<Counter>> {
+        match self.get_row(table, name)? {
+            Some(value) => Ok(Some(serde_json::from_value(value).map_err(|e| {
+                NeonDBError::SerializationError(format!("Counter decode: {}", e))
+            })?)),
+            None => Ok(None),
         }
     }
 
@@ -1441,27 +1453,6 @@ impl TableStore {
     }
 
     // ── Snapshot helpers ──────────────────────────────────────────────────────
-
-    /// Return all rows in `table_name` as a `HashMap<key, value>`.
-    /// Used by the Raft snapshot builder.
-    pub fn get_all_rows(
-        &self,
-        table_name: &str,
-    ) -> std::collections::HashMap<String, Value> {
-        match self.list_rows_with_keys(table_name) {
-            Ok(pairs) => pairs.into_iter().collect(),
-            Err(_) => std::collections::HashMap::new(),
-        }
-    }
-
-    /// Return all counter values as a `HashMap<name, value>`.
-    /// Used by the Raft snapshot builder.
-    pub fn get_all_counters_map(&self) -> std::collections::HashMap<String, i32> {
-        match self.list_counters() {
-            Ok(counters) => counters.into_iter().map(|c| (c.name, c.value)).collect(),
-            Err(_) => std::collections::HashMap::new(),
-        }
-    }
 
     /// Remove all rows from all tables, including all lobby sub-stores.
     pub fn clear_all(&self) {
@@ -1823,6 +1814,33 @@ mod tests {
         };
         s.apply_delta_batch(&[delta]).unwrap();
         assert_eq!(s.get_counter("pts").unwrap().unwrap().value, 15);
+    }
+
+    // ── counter_add against a tenant table: atomic AND isolated from global ───
+    #[test]
+    fn test_counter_add_per_table_isolation() {
+        let s = store();
+        let add = |table: &str, amount: i32| RowDelta {
+            table_name: table.to_string(),
+            operation: "counter_add".to_string(),
+            row_key: "score".to_string(),
+            row_id: 0,
+            shard_id: 0,
+            payload_arc: None,
+            row_data: None,
+            counter_add_amount: amount,
+            counter_add_timestamp: 1,
+        };
+        // Two increments to the same tenant counter accumulate (no lost update).
+        s.apply_delta_batch(&[add("tn:t1:counters", 5)]).unwrap();
+        s.apply_delta_batch(&[add("tn:t1:counters", 3)]).unwrap();
+        assert_eq!(s.get_counter_in("tn:t1:counters", "score").unwrap().unwrap().value, 8);
+        // A different tenant + the global table share the key but stay independent.
+        s.apply_delta_batch(&[add("tn:t2:counters", 100)]).unwrap();
+        s.apply_delta_batch(&[add("counters", 1)]).unwrap();
+        assert_eq!(s.get_counter_in("tn:t2:counters", "score").unwrap().unwrap().value, 100);
+        assert_eq!(s.get_counter("score").unwrap().unwrap().value, 1);
+        assert_eq!(s.get_counter_in("tn:t1:counters", "score").unwrap().unwrap().value, 8);
     }
 
     // ── Secondary index tests ────────────────────────────────────────────────

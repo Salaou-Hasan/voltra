@@ -60,6 +60,21 @@ use tokio_tungstenite::tungstenite::Message;
 /// cap allowed multi-GB of channel copies to accumulate for slow clients.
 pub const CLIENT_SEND_BUFFER_CAPACITY: usize = 1024;
 
+/// How many *consecutive* full-buffer events a client may incur on the
+/// subscription fan-out path before it is evicted (Redis-style
+/// `client-output-buffer-limit`). A transient spike drops a few stale frames
+/// and recovers (strike counter resets on the next successful send); only a
+/// client that stays behind for this many deliveries in a row is disconnected.
+/// Tunable via `NEONDB_SLOW_CONSUMER_MAX_STRIKES` (default 64).
+pub static SLOW_CONSUMER_MAX_STRIKES: std::sync::LazyLock<u32> =
+    std::sync::LazyLock::new(|| {
+        std::env::var("NEONDB_SLOW_CONSUMER_MAX_STRIKES")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(64)
+    });
+
 /// Create N TCP listeners all bound to the same address.
 ///
 /// On Linux, each socket gets `SO_REUSEPORT` so the kernel load-balances
@@ -302,7 +317,7 @@ pub async fn start_listener(
 
     // Spawn N accept tasks: one per logical core (capped at 8) on Linux with
     // SO_REUSEPORT, exactly 1 everywhere else (create_listeners handles this).
-    let accept_count = num_cpus::get().min(8).max(1);
+    let accept_count = num_cpus::get().clamp(1, 8);
     let listeners = create_listeners(&bind_addr, accept_count)
         .map_err(|e| crate::error::NeonDBError::network_error(format!("bind {}: {}", bind_addr, e)))?;
 
@@ -313,24 +328,24 @@ pub async fn start_listener(
     }
 
     let state = Arc::new(AcceptState {
-        reducer_tx:           reducer_tx,
-        subscription_manager: subscription_manager,
-        tables:               tables,
-        api_key:              api_key,
-        active_connections:   active_connections,
-        permissions:          permissions,
-        sql_timeout_ms:       sql_timeout_ms,
-        auth_validator:       auth_validator,
-        rate_limiter:         rate_limiter,
-        presence:             presence,
-        ttl_manager:          ttl_manager,
-        identity_issuer:      identity_issuer,
-        metrics:              metrics,
-        tenant_registry:      tenant_registry,
-        inline_registry:      inline_registry,
-        lobby_router:         lobby_router,
-        drain_flag:           drain_flag,
-        max_connections:      max_connections,
+        reducer_tx,
+        subscription_manager,
+        tables,
+        api_key,
+        active_connections,
+        permissions,
+        sql_timeout_ms,
+        auth_validator,
+        rate_limiter,
+        presence,
+        ttl_manager,
+        identity_issuer,
+        metrics,
+        tenant_registry,
+        inline_registry,
+        lobby_router,
+        drain_flag,
+        max_connections,
     });
 
     let mut handles = Vec::with_capacity(listeners.len());
@@ -583,7 +598,17 @@ where
 
     let write_tx_sub = write_tx.clone();
     let sub_tenant_id = tenant_id.clone();
+    let sub_metrics = metrics.clone();
     let sub_task = tokio::spawn(async move {
+        // Slow-consumer eviction (Redis-style client-output-buffer-limit):
+        // a full outbound buffer drops the (stale) frame rather than killing
+        // the connection — game state-sync semantics shed old state first.
+        // `strikes` counts CONSECUTIVE deliveries that found the buffer full;
+        // any successful send resets it. Only a client that stays behind for
+        // SLOW_CONSUMER_MAX_STRIKES deliveries in a row is evicted, so a
+        // transient spike costs a few frames, not the session.
+        let max_strikes = *SLOW_CONSUMER_MAX_STRIKES;
+        let mut strikes: u32 = 0;
         while let Some(frames) = sub_rx.recv().await {
             // For tenant connections, strip the physical table prefix from
             // outbound subscription frames so clients see logical table names.
@@ -591,29 +616,44 @@ where
                 Some(tid) => strip_tenant_frames(frames, tid),
                 None => frames,
             };
-            let full = match frames {
+            // Returns the number of sub-frames that could not be enqueued.
+            let dropped = match frames {
                 OutboundFrames::One(bytes) => {
-                    matches!(
-                        write_tx_sub.try_send(Message::Binary(bytes.to_vec())),
-                        Err(mpsc::error::TrySendError::Full(_))
-                    )
+                    match write_tx_sub.try_send(Message::Binary(bytes.to_vec())) {
+                        Err(mpsc::error::TrySendError::Full(_)) => 1u64,
+                        _ => 0,
+                    }
                 }
                 OutboundFrames::Two { first, second } => {
+                    let mut d = 0u64;
                     if let Err(mpsc::error::TrySendError::Full(_)) =
                         write_tx_sub.try_send(Message::Binary(first.to_vec()))
                     {
-                        true
-                    } else {
-                        matches!(
-                            write_tx_sub.try_send(Message::Binary(second.to_vec())),
-                            Err(mpsc::error::TrySendError::Full(_))
-                        )
+                        d += 1;
                     }
+                    if let Err(mpsc::error::TrySendError::Full(_)) =
+                        write_tx_sub.try_send(Message::Binary(second.to_vec()))
+                    {
+                        d += 1;
+                    }
+                    d
                 }
             };
-            if full {
-                log::warn!("Client send buffer full (subscription task), dropping connection");
-                break;
+
+            if dropped > 0 {
+                sub_metrics.subscription_frames_dropped_total.inc_by(dropped);
+                strikes = strikes.saturating_add(1);
+                if strikes >= max_strikes {
+                    sub_metrics.slow_consumer_evictions_total.inc();
+                    log::warn!(
+                        "Slow consumer evicted: send buffer full for {} consecutive deliveries",
+                        strikes
+                    );
+                    break;
+                }
+            } else {
+                // Client kept up — clear accumulated back-pressure.
+                strikes = 0;
             }
         }
     });
@@ -653,7 +693,7 @@ where
                             );
                             if let Ok(encoded) = protocol::encode_response(&limited) {
                                 if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                    log::warn!("Client send buffer full, disconnecting slow client");
+                                    metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
                                     break;
                                 }
                             }
@@ -675,7 +715,7 @@ where
                             );
                             if let Ok(encoded) = protocol::encode_response(&denied) {
                                 if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
                                         break;
                                     }
                             }
@@ -749,7 +789,7 @@ where
                         };
                         if let Ok(encoded) = protocol::encode_server_message(&ack) {
                             if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
                                         break;
                                     }
                         }
@@ -776,7 +816,7 @@ where
                         };
                         if let Ok(encoded) = protocol::encode_server_message(&ack) {
                             if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
                                         break;
                                     }
                         }
@@ -884,7 +924,7 @@ where
                                     );
                                     if let Ok(encoded) = protocol::encode_response(&limited) {
                                         if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                            log::warn!("Client send buffer full, disconnecting slow client");
+                                            metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
                                             break;
                                         }
                                     }
@@ -905,7 +945,7 @@ where
                                     );
                                     if let Ok(encoded) = protocol::encode_response(&denied) {
                                         if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
                                         break;
                                     }
                                     }
@@ -944,7 +984,7 @@ where
                                 };
                                 if let Ok(encoded) = protocol::encode_server_message(&error) {
                                     if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        log::warn!("Client send buffer full, disconnecting slow client");
+                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
                                         break;
                                     }
                                 }
@@ -1308,6 +1348,71 @@ mod tests {
             Ok(_) => panic!("Expected channel to be full after {} sends", CLIENT_SEND_BUFFER_CAPACITY),
             Err(mpsc::error::TrySendError::Closed(_)) => panic!("Channel unexpectedly closed"),
         }
+    }
+
+    #[test]
+    fn test_slow_consumer_max_strikes_default_is_sane() {
+        // Default must be > 0 so a single transient full-buffer event never
+        // evicts a healthy client on the first strike.
+        assert!(
+            *SLOW_CONSUMER_MAX_STRIKES >= 1,
+            "SLOW_CONSUMER_MAX_STRIKES must be >= 1, got {}",
+            *SLOW_CONSUMER_MAX_STRIKES
+        );
+    }
+
+    #[test]
+    fn test_slow_consumer_eviction_policy() {
+        // Mirror the sub_task policy: a full buffer drops the frame and adds a
+        // strike; any successful send resets strikes; eviction only fires after
+        // `max` CONSECUTIVE strikes. This locks in "transient spike != eviction".
+        let max: u32 = 4;
+        let mut strikes: u32 = 0;
+        let mut evicted = false;
+        let mut frames_dropped: u64 = 0;
+
+        // A delivery pattern: F = buffer full (drop), O = sent ok.
+        // Three drops then a success must NOT evict (strikes reset).
+        for ev in ['F', 'F', 'F', 'O', 'F', 'F'] {
+            if ev == 'F' {
+                frames_dropped += 1;
+                strikes = strikes.saturating_add(1);
+                if strikes >= max {
+                    evicted = true;
+                    break;
+                }
+            } else {
+                strikes = 0;
+            }
+        }
+        assert!(!evicted, "transient spikes (reset by a success) must not evict");
+        assert_eq!(frames_dropped, 5);
+
+        // Now four drops IN A ROW must evict.
+        strikes = 0;
+        evicted = false;
+        for _ in 0..max {
+            strikes = strikes.saturating_add(1);
+            if strikes >= max {
+                evicted = true;
+            }
+        }
+        assert!(evicted, "{} consecutive full-buffer strikes must evict", max);
+    }
+
+    #[test]
+    fn test_slow_consumer_metrics_increment() {
+        let m = crate::metrics::Metrics::new();
+        assert_eq!(m.subscription_frames_dropped_total.get(), 0);
+        assert_eq!(m.slow_consumer_evictions_total.get(), 0);
+        m.subscription_frames_dropped_total.inc_by(3);
+        m.slow_consumer_evictions_total.inc();
+        assert_eq!(m.subscription_frames_dropped_total.get(), 3);
+        assert_eq!(m.slow_consumer_evictions_total.get(), 1);
+        // Both must appear in the Prometheus exposition output.
+        let out = m.render();
+        assert!(out.contains("neondb_subscription_frames_dropped_total"));
+        assert!(out.contains("neondb_slow_consumer_evictions_total"));
     }
 
     // ── is_jwt helper tests ──────────────────────────────────────────────────
