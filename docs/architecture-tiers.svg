@@ -1,0 +1,39 @@
+<svg viewBox="0 0 680 384" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Voltra in the game-backend data tiers</title>
+<desc>Game server and clients talk to Voltra, a single binary that owns the hot path (in-RAM world with WAL and snapshots) and the warm path (Redis-wire cache, presence, matchmaking, leaderboards), then persists to PostgreSQL as the durable source of truth.</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="#8a93a6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<rect x="250" y="36" width="180" height="40" rx="8" fill="#e8eaf0" stroke="#c2c8d6"/>
+<text x="340" y="61" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="600" fill="#2a3142">game server · clients</text>
+
+<line x1="340" y1="76" x2="340" y2="100" stroke="#8a93a6" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="80" y="100" width="520" height="156" rx="12" fill="#0b0f1a" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="100" y="126" font-family="sans-serif" font-size="17" font-weight="600" fill="#34d6f0">Voltra</text>
+<text x="158" y="125" font-family="sans-serif" font-size="12" fill="#9fb0c3">one binary · in-RAM + WAL · speaks Redis &amp; Postgres wire · reducers</text>
+
+<rect x="100" y="140" width="232" height="98" rx="8" fill="#fde2e1" stroke="#e06b66"/>
+<text x="116" y="165" font-family="sans-serif" font-size="14" font-weight="600" fill="#9b2c2c">Hot · live world</text>
+<text x="116" y="189" font-family="sans-serif" font-size="12" fill="#9b2c2c">positions · entities · NPCs</text>
+<text x="116" y="208" font-family="sans-serif" font-size="12" fill="#9b2c2c">RAM + WAL + snapshots</text>
+<text x="116" y="227" font-family="sans-serif" font-size="12" fill="#c2524d">per-tick · sub-millisecond</text>
+
+<rect x="348" y="140" width="232" height="98" rx="8" fill="#fdebc8" stroke="#d9a441"/>
+<text x="364" y="165" font-family="sans-serif" font-size="14" font-weight="600" fill="#8a5a00">Warm · shared state</text>
+<text x="364" y="189" font-family="sans-serif" font-size="12" fill="#8a5a00">sessions · presence · matchmaking</text>
+<text x="364" y="208" font-family="sans-serif" font-size="12" fill="#8a5a00">leaderboards · caches</text>
+<text x="364" y="227" font-family="sans-serif" font-size="12" fill="#a9842f">recoverable if lost</text>
+
+<line x1="340" y1="256" x2="340" y2="282" stroke="#8a93a6" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="350" y="274" font-family="sans-serif" font-size="11" fill="#8a93a6">snapshots / change data</text>
+
+<rect x="210" y="282" width="260" height="58" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+<text x="340" y="306" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="600" fill="#1e40af">PostgreSQL · source of truth</text>
+<text x="340" y="326" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#1e40af">accounts · purchases · inventory · money</text>
+
+<text x="80" y="368" font-family="sans-serif" font-size="11" fill="#8a93a6">At scale: ScyllaDB / Cassandra for telemetry &amp; match history; EventStoreDB for replayable history.</text>
+</svg>
