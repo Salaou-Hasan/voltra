@@ -7,17 +7,17 @@ Read CLAUDE.md before touching any file. This document lists concrete, prioritiz
 
 ---
 
-## CURRENT ADDENDUM - NEON V1 LOW-LATENCY GAME RUNTIME
+## CURRENT ADDENDUM - VOLTRA V1 LOW-LATENCY GAME RUNTIME
 
 **Added**: 2026-06-12  
 **Current Build Check**: `cargo check --bin voltra` and `cargo check --bin voltra-sim` pass.  
-**Current Product Direction**: Neon V1 - a minimal-latency game database/server/runtime.
+**Current Product Direction**: Voltra V1 - a minimal-latency game database/server/runtime.
 
 This section captures the current product direction. The older roadmap/history below is intentionally preserved for context.
 
 ### Mission
 
-Voltra is being rebuilt into **Neon V1**: a low-latency authoritative game database/server/runtime.
+Voltra is being rebuilt into **Voltra V1**: a low-latency authoritative game database/server/runtime.
 
 Every major change must improve or preserve p50/p99 latency, hot-path allocation rate, fanout cost,
 tick cost, memory per player/lobby, bandwidth per player, crash recovery, durability, and developer
@@ -37,9 +37,9 @@ speed through modular templates.
 - `voltra-sim serve --external` benchmark split.
 - Existing auth, permissions, presence, TTL, metrics, backups, and admin surfaces where still useful.
 
-### Neon V1 Architecture Target
+### Voltra V1 Architecture Target
 
-Neon V1 needs two complementary state models:
+Voltra V1 needs two complementary state models:
 
 1. **Durable Gameplay State**
    - Stored in `TableStore`.
@@ -60,19 +60,19 @@ player id, session id, roles/permissions, and runtime character/state id.
 - `voltra --version` prints `voltra 1`.
 - Added `src/runtime/mod.rs` with runtime module catalog, dependency resolution, and genre recipes.
 - Added `voltra modules` command.
-- Added `docs/neon-v1-runtime.md`.
+- Added `docs/voltra-v1-runtime.md`.
 - Added `--duration-secs` compatibility alias for `voltra-sim`.
 - Raised OCC conflict retry limit from 5 to 64 in both server entry paths.
 - Added a thread yield between OCC retries.
 
-### Immediate Neon V1 TODOs
+### Immediate Voltra V1 TODOs
 
 #### TODO-V1-001 - Replace Preset Templates With Module-First Recipes
 
 **Status**: Not started  
 **Priority**: Critical
 
-Current templates are preset-first. Neon V1 needs module-first composition:
+Current templates are preset-first. Voltra V1 needs module-first composition:
 
 ```text
 fps = lobby + tick + ecs + aoi + movement + weapons + combat + hit-detection + matchmaking

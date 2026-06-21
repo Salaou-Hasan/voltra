@@ -1201,25 +1201,25 @@ fn compile_voltra_to_rs(voltra_source: &str) -> String {
 
 fn scaffold_voltra_basic(p: &Path, name: &str) -> Result<()> {
     let all_voltra = concat_strs(&[
-        NEON_BASIC_SCHEMA, NEON_BASIC_SPAWN, NEON_BASIC_MOVEMENT,
-        NEON_BASIC_COMBAT, NEON_BASIC_SYSTEM,
+        VOLTRA_BASIC_SCHEMA, VOLTRA_BASIC_SPAWN, VOLTRA_BASIC_MOVEMENT,
+        VOLTRA_BASIC_COMBAT, VOLTRA_BASIC_SYSTEM,
     ]);
     wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
     wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
     // Per-file reducer layout (mirrors the Rust template structure)
-    wf(p, "reducers/schema.vol",        NEON_BASIC_SCHEMA)?;
-    wf(p, "reducers/spawn.vol",         NEON_BASIC_SPAWN)?;
-    wf(p, "reducers/movement.vol",      NEON_BASIC_MOVEMENT)?;
-    wf(p, "reducers/combat.vol",        NEON_BASIC_COMBAT)?;
-    wf(p, "reducers/system.vol",        NEON_BASIC_SYSTEM)?;
+    wf(p, "reducers/schema.vol",        VOLTRA_BASIC_SCHEMA)?;
+    wf(p, "reducers/spawn.vol",         VOLTRA_BASIC_SPAWN)?;
+    wf(p, "reducers/movement.vol",      VOLTRA_BASIC_MOVEMENT)?;
+    wf(p, "reducers/combat.vol",        VOLTRA_BASIC_COMBAT)?;
+    wf(p, "reducers/system.vol",        VOLTRA_BASIC_SYSTEM)?;
     wf(p, "src/reducers.rs",             &compile_voltra_to_rs(&all_voltra))?;
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
-    wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
+    wf(p, ".vscode/settings.json",       VSCODE_VOLTRA_SETTINGS)?;
     wf(p, "README.md",                   &format!("# {name}\n\nVoltra Voltra-language game server.\n\nEdit files in `reducers/`, run `voltra build`, then `voltra start`.\n\nSee `docs/voltra/README.md` for the language reference.\n"))?;
-    wf(p, "docs/voltra/README.md",         NEON_LANG_REFERENCE)?;
+    wf(p, "docs/voltra/README.md",         VOLTRA_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "voltra/basic", &[
         ("reducers/schema.vol",          "table definitions"),
@@ -1243,29 +1243,29 @@ fn scaffold_voltra_basic(p: &Path, name: &str) -> Result<()> {
 
 fn scaffold_voltra_game_ready(p: &Path, name: &str) -> Result<()> {
     let all_voltra = concat_strs(&[
-        NEON_GAME_SCHEMA, NEON_GAME_SPAWN, NEON_GAME_MOVEMENT,
-        NEON_GAME_COMBAT, NEON_GAME_PROGRESSION, NEON_GAME_ECONOMY,
-        NEON_GAME_GUILDS, NEON_GAME_LEADERBOARD, NEON_GAME_SYSTEM,
+        VOLTRA_GAME_SCHEMA, VOLTRA_GAME_SPAWN, VOLTRA_GAME_MOVEMENT,
+        VOLTRA_GAME_COMBAT, VOLTRA_GAME_PROGRESSION, VOLTRA_GAME_ECONOMY,
+        VOLTRA_GAME_GUILDS, VOLTRA_GAME_LEADERBOARD, VOLTRA_GAME_SYSTEM,
     ]);
     wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
     wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
-    wf(p, "reducers/schema.vol",        NEON_GAME_SCHEMA)?;
-    wf(p, "reducers/spawn.vol",         NEON_GAME_SPAWN)?;
-    wf(p, "reducers/movement.vol",      NEON_GAME_MOVEMENT)?;
-    wf(p, "reducers/combat.vol",        NEON_GAME_COMBAT)?;
-    wf(p, "reducers/progression.vol",   NEON_GAME_PROGRESSION)?;
-    wf(p, "reducers/economy.vol",       NEON_GAME_ECONOMY)?;
-    wf(p, "reducers/guilds.vol",        NEON_GAME_GUILDS)?;
-    wf(p, "reducers/leaderboard.vol",   NEON_GAME_LEADERBOARD)?;
-    wf(p, "reducers/system.vol",        NEON_GAME_SYSTEM)?;
+    wf(p, "reducers/schema.vol",        VOLTRA_GAME_SCHEMA)?;
+    wf(p, "reducers/spawn.vol",         VOLTRA_GAME_SPAWN)?;
+    wf(p, "reducers/movement.vol",      VOLTRA_GAME_MOVEMENT)?;
+    wf(p, "reducers/combat.vol",        VOLTRA_GAME_COMBAT)?;
+    wf(p, "reducers/progression.vol",   VOLTRA_GAME_PROGRESSION)?;
+    wf(p, "reducers/economy.vol",       VOLTRA_GAME_ECONOMY)?;
+    wf(p, "reducers/guilds.vol",        VOLTRA_GAME_GUILDS)?;
+    wf(p, "reducers/leaderboard.vol",   VOLTRA_GAME_LEADERBOARD)?;
+    wf(p, "reducers/system.vol",        VOLTRA_GAME_SYSTEM)?;
     wf(p, "src/reducers.rs",             &compile_voltra_to_rs(&all_voltra))?;
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
-    wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
+    wf(p, ".vscode/settings.json",       VSCODE_VOLTRA_SETTINGS)?;
     wf(p, "README.md",                   &format!("# {name}\n\nVoltra Voltra-language game server — full game template.\n\nEdit files in `reducers/`, run `voltra build`, then `voltra start`.\n\nSee `docs/voltra/README.md` for the language reference.\n"))?;
-    wf(p, "docs/voltra/README.md",         NEON_LANG_REFERENCE)?;
+    wf(p, "docs/voltra/README.md",         VOLTRA_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "voltra/game-ready", &[
         ("reducers/schema.vol",       "table definitions (players + guilds)"),
@@ -1291,22 +1291,22 @@ fn scaffold_voltra_game_ready(p: &Path, name: &str) -> Result<()> {
 
 fn scaffold_voltra_chat(p: &Path, name: &str) -> Result<()> {
     let all_voltra = concat_strs(&[
-        NEON_CHAT_SCHEMA_NEON, NEON_CHAT_ROOMS,
-        NEON_CHAT_MESSAGES, NEON_CHAT_SYSTEM,
+        VOLTRA_CHAT_SCHEMA_VOLTRA, VOLTRA_CHAT_ROOMS,
+        VOLTRA_CHAT_MESSAGES, VOLTRA_CHAT_SYSTEM,
     ]);
     wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
     wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
-    wf(p, "reducers/schema.vol",        NEON_CHAT_SCHEMA_NEON)?;
-    wf(p, "reducers/rooms.vol",         NEON_CHAT_ROOMS)?;
-    wf(p, "reducers/messages.vol",      NEON_CHAT_MESSAGES)?;
-    wf(p, "reducers/system.vol",        NEON_CHAT_SYSTEM)?;
+    wf(p, "reducers/schema.vol",        VOLTRA_CHAT_SCHEMA_VOLTRA)?;
+    wf(p, "reducers/rooms.vol",         VOLTRA_CHAT_ROOMS)?;
+    wf(p, "reducers/messages.vol",      VOLTRA_CHAT_MESSAGES)?;
+    wf(p, "reducers/system.vol",        VOLTRA_CHAT_SYSTEM)?;
     wf(p, "src/reducers.rs",             &compile_voltra_to_rs(&all_voltra))?;
-    wf(p, "schema.toml",                 NEON_CHAT_SCHEMA)?;
-    wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
+    wf(p, "schema.toml",                 VOLTRA_CHAT_SCHEMA)?;
+    wf(p, ".vscode/settings.json",       VSCODE_VOLTRA_SETTINGS)?;
     wf(p, "README.md",                   &format!("# {name}\n\nVoltra Voltra-language chat server.\n\nEdit files in `reducers/`, run `voltra build`, then `voltra start`.\n\nSee `docs/voltra/README.md` for the language reference.\n"))?;
-    wf(p, "docs/voltra/README.md",         NEON_LANG_REFERENCE)?;
+    wf(p, "docs/voltra/README.md",         VOLTRA_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "voltra/chat", &[
         ("reducers/schema.vol",   "table definitions (rooms + messages + members)"),
@@ -1460,15 +1460,15 @@ fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
 /// Voltra project: write a dedicated reducers/<module>.vol file, then rebuild.
 fn cmd_add_module_voltra(module: &str, project_path: &Path) -> Result<()> {
     let voltra_snippet = match module {
-        "chat"        => NEON_MOD_CHAT,
-        "inventory"   => NEON_MOD_INVENTORY,
-        "leaderboard" => NEON_MOD_LEADERBOARD,
-        "economy"     => NEON_MOD_ECONOMY,
-        "guilds"      => NEON_MOD_GUILDS,
-        "quests"      => NEON_MOD_QUESTS,
-        "combat"      => NEON_MOD_COMBAT,
-        "matchmaking" => NEON_MOD_MATCHMAKING,
-        "world"       => NEON_MOD_WORLD,
+        "chat"        => VOLTRA_MOD_CHAT,
+        "inventory"   => VOLTRA_MOD_INVENTORY,
+        "leaderboard" => VOLTRA_MOD_LEADERBOARD,
+        "economy"     => VOLTRA_MOD_ECONOMY,
+        "guilds"      => VOLTRA_MOD_GUILDS,
+        "quests"      => VOLTRA_MOD_QUESTS,
+        "combat"      => VOLTRA_MOD_COMBAT,
+        "matchmaking" => VOLTRA_MOD_MATCHMAKING,
+        "world"       => VOLTRA_MOD_WORLD,
         other => {
             let names: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
             eprintln!("Unknown module '{}'. Available: {}", other, names.join(", "));
@@ -1579,7 +1579,7 @@ const SCALING_MD: &str        = include_str!("../templates/scaling.md.txt");
 
 // ── Voltra language template content (inline — no extra template files needed) ──
 /// VS Code language association — makes .vol files use Rust syntax highlighting.
-const VSCODE_NEON_SETTINGS: &str = r#"{
+const VSCODE_VOLTRA_SETTINGS: &str = r#"{
   "files.associations": {
     "*.vol": "rust"
   }
@@ -1593,7 +1593,7 @@ fn concat_strs(parts: &[&str]) -> String {
 
 // ── Voltra language reference (written to docs/voltra/README.md) ────────────────
 
-const NEON_LANG_REFERENCE: &str = r#"# Voltra Language Reference
+const VOLTRA_LANG_REFERENCE: &str = r#"# Voltra Language Reference
 
 Voltra is Voltra's built-in language for writing game-server logic. Files live in
 `reducers/`, compile to native Rust with `voltra build`, and run at full speed —
@@ -1754,7 +1754,7 @@ Changes to `.vol` files require `voltra build` before they take effect.
 
 // ── voltra/basic per-file constants ────────────────────────────────────────────
 
-const NEON_BASIC_SCHEMA: &str = r#"// schema.vol — table definitions
+const VOLTRA_BASIC_SCHEMA: &str = r#"// schema.vol — table definitions
 // Add fields here, then run: voltra build
 
 table players {
@@ -1767,7 +1767,7 @@ table players {
 }
 "#;
 
-const NEON_BASIC_SPAWN: &str = r#"// spawn.vol — player lifecycle
+const VOLTRA_BASIC_SPAWN: &str = r#"// spawn.vol — player lifecycle
 
 reducer spawn(player_id: str, name: str, x: float, y: float) {
     players[player_id] = { hp: 100, alive: true, x: x, y: y, kills: 0, name: name }
@@ -1783,7 +1783,7 @@ reducer despawn(player_id: str) {
 }
 "#;
 
-const NEON_BASIC_MOVEMENT: &str = r#"// movement.vol — position updates
+const VOLTRA_BASIC_MOVEMENT: &str = r#"// movement.vol — position updates
 
 reducer move_player(player_id: str, x: float, y: float) {
     let p = players[player_id] else { error("Player not found") }
@@ -1793,7 +1793,7 @@ reducer move_player(player_id: str, x: float, y: float) {
 }
 "#;
 
-const NEON_BASIC_COMBAT: &str = r#"// combat.vol — damage & healing
+const VOLTRA_BASIC_COMBAT: &str = r#"// combat.vol — damage & healing
 
 reducer damage(target_id: str, amount: int) {
     let p = players[target_id] else { error("Player not found") }
@@ -1813,7 +1813,7 @@ reducer heal(target_id: str, amount: int) {
 }
 "#;
 
-const NEON_BASIC_SYSTEM: &str = r#"// system.vol — stats & scheduled maintenance
+const VOLTRA_BASIC_SYSTEM: &str = r#"// system.vol — stats & scheduled maintenance
 
 reducer get_stats() {
     let online = counter("online")
@@ -1837,7 +1837,7 @@ reducer cleanup_dead() {
 
 // ── voltra/game-ready per-file constants ───────────────────────────────────────
 
-const NEON_GAME_SCHEMA: &str = r#"// schema.vol — table definitions
+const VOLTRA_GAME_SCHEMA: &str = r#"// schema.vol — table definitions
 
 table players {
     hp:     int   = 100,
@@ -1861,7 +1861,7 @@ table guilds {
 }
 "#;
 
-const NEON_GAME_SPAWN: &str = r#"// spawn.vol — player lifecycle
+const VOLTRA_GAME_SPAWN: &str = r#"// spawn.vol — player lifecycle
 
 reducer spawn(player_id: str, name: str, x: float, y: float) {
     players[player_id] = { hp: 100, max_hp: 100, level: 1, xp: 0,
@@ -1879,7 +1879,7 @@ reducer despawn(player_id: str) {
 }
 "#;
 
-const NEON_GAME_MOVEMENT: &str = r#"// movement.vol — position updates
+const VOLTRA_GAME_MOVEMENT: &str = r#"// movement.vol — position updates
 
 reducer move_player(player_id: str, x: float, y: float) {
     let p = players[player_id] else { error("Player not found") }
@@ -1889,7 +1889,7 @@ reducer move_player(player_id: str, x: float, y: float) {
 }
 "#;
 
-const NEON_GAME_COMBAT: &str = r#"// combat.vol — damage & healing
+const VOLTRA_GAME_COMBAT: &str = r#"// combat.vol — damage & healing
 
 reducer take_damage(player_id: str, amount: int, attacker_id: str) {
     let p = players[player_id] else { error("Player not found") }
@@ -1918,7 +1918,7 @@ reducer heal(player_id: str, amount: int) {
 }
 "#;
 
-const NEON_GAME_PROGRESSION: &str = r#"// progression.vol — XP, leveling, loot
+const VOLTRA_GAME_PROGRESSION: &str = r#"// progression.vol — XP, leveling, loot
 
 reducer grant_xp(player_id: str, amount: int) {
     let p = players[player_id] else { error("Player not found") }
@@ -1947,7 +1947,7 @@ reducer roll_loot(player_id: str) {
 }
 "#;
 
-const NEON_GAME_ECONOMY: &str = r#"// economy.vol — gold transfers
+const VOLTRA_GAME_ECONOMY: &str = r#"// economy.vol — gold transfers
 
 reducer transfer_gold(from_id: str, to_id: str, amount: int) {
     let from = players[from_id] else { error("Sender not found") }
@@ -1961,7 +1961,7 @@ reducer transfer_gold(from_id: str, to_id: str, amount: int) {
 }
 "#;
 
-const NEON_GAME_GUILDS: &str = r#"// guilds.vol — guild management
+const VOLTRA_GAME_GUILDS: &str = r#"// guilds.vol — guild management
 
 reducer create_guild(guild_id: str, name: str) {
     let owner = caller_id
@@ -1988,7 +1988,7 @@ reducer leave_guild() {
 }
 "#;
 
-const NEON_GAME_LEADERBOARD: &str = r#"// leaderboard.vol — rankings
+const VOLTRA_GAME_LEADERBOARD: &str = r#"// leaderboard.vol — rankings
 
 reducer leaderboard(field: str) {
     let rows = sort_by("players", field, "desc")
@@ -2001,7 +2001,7 @@ reducer top_killers() {
 }
 "#;
 
-const NEON_GAME_SYSTEM: &str = r#"// system.vol — stats & scheduled maintenance
+const VOLTRA_GAME_SYSTEM: &str = r#"// system.vol — stats & scheduled maintenance
 
 reducer get_stats() {
     let total  = count_rows("players")
@@ -2026,7 +2026,7 @@ reducer cleanup_dead() {
 
 // ── voltra/chat per-file constants ─────────────────────────────────────────────
 
-const NEON_CHAT_SCHEMA_NEON: &str = r#"// schema.vol — table definitions
+const VOLTRA_CHAT_SCHEMA_VOLTRA: &str = r#"// schema.vol — table definitions
 
 table rooms {
     name:         str = "",
@@ -2047,7 +2047,7 @@ table messages {
 }
 "#;
 
-const NEON_CHAT_ROOMS: &str = r#"// rooms.vol — room lifecycle
+const VOLTRA_CHAT_ROOMS: &str = r#"// rooms.vol — room lifecycle
 
 reducer create_room(room_id: str, name: str) {
     let creator = caller_id
@@ -2074,7 +2074,7 @@ reducer leave_room(room_id: str) {
 }
 "#;
 
-const NEON_CHAT_MESSAGES: &str = r#"// messages.vol — messaging & room listing
+const VOLTRA_CHAT_MESSAGES: &str = r#"// messages.vol — messaging & room listing
 
 reducer send_message(room_id: str, text: str) {
     let sender = caller_id
@@ -2095,7 +2095,7 @@ reducer list_rooms() {
 }
 "#;
 
-const NEON_CHAT_SYSTEM: &str = r#"// system.vol — presence, moderation & cleanup
+const VOLTRA_CHAT_SYSTEM: &str = r#"// system.vol — presence, moderation & cleanup
 
 reducer online_count() {
     let count = count_rows("room_members")
@@ -2135,7 +2135,7 @@ reducer cleanup_old_messages() {
 "#;
 
 // ── Legacy single-file constants (kept for backward compatibility) ────────────
-const NEON_BASIC_REDUCERS: &str = r#"// ============================================================
+const VOLTRA_BASIC_REDUCERS: &str = r#"// ============================================================
 // reducers.vol — basic game template
 //
 // This is your entire game logic. Edit here, then run:
@@ -2215,7 +2215,7 @@ reducer cleanup_dead() {
 }
 "#;
 
-const NEON_GAME_READY_REDUCERS: &str = r#"// ============================================================
+const VOLTRA_GAME_READY_REDUCERS: &str = r#"// ============================================================
 // reducers.vol — full game template (Voltra Language)
 //
 // Covers: spawn/despawn, movement, combat, XP/leveling,
@@ -2397,7 +2397,7 @@ reducer cleanup_dead() {
 }
 "#;
 
-const NEON_CHAT_REDUCERS: &str = r#"// ============================================================
+const VOLTRA_CHAT_REDUCERS: &str = r#"// ============================================================
 // reducers.vol — chat server template (Voltra Language)
 //
 // Covers: rooms, messages, presence, moderation.
@@ -2507,7 +2507,7 @@ reducer cleanup_old_messages() {
 }
 "#;
 
-const NEON_CHAT_SCHEMA: &str = r#"# Chat server schema
+const VOLTRA_CHAT_SCHEMA: &str = r#"# Chat server schema
 [[table]]
 name = "rooms"
 
@@ -2555,7 +2555,7 @@ type = "integer"
 "#;
 
 // ── Voltra module snippets (appended to reducers.vol by `voltra add <module>`) ─
-const NEON_MOD_CHAT: &str = r#"
+const VOLTRA_MOD_CHAT: &str = r#"
 // ── chat module ───────────────────────────────────────────────────────────────
 table chat_messages {
     room:   str = "",
@@ -2602,7 +2602,7 @@ reducer cleanup_chat() {
 }
 "#;
 
-const NEON_MOD_INVENTORY: &str = r#"
+const VOLTRA_MOD_INVENTORY: &str = r#"
 // ── inventory module ──────────────────────────────────────────────────────────
 table inventories {
     owner: str = "",
@@ -2641,7 +2641,7 @@ reducer get_inventory(owner_id: str) {
 }
 "#;
 
-const NEON_MOD_LEADERBOARD: &str = r#"
+const VOLTRA_MOD_LEADERBOARD: &str = r#"
 // ── leaderboard module ────────────────────────────────────────────────────────
 table scores {
     player: str   = "",
@@ -2673,7 +2673,7 @@ reducer reset_leaderboard() {
 }
 "#;
 
-const NEON_MOD_ECONOMY: &str = r#"
+const VOLTRA_MOD_ECONOMY: &str = r#"
 // ── economy module ────────────────────────────────────────────────────────────
 table wallets {
     player: str = "",
@@ -2713,7 +2713,7 @@ reducer get_wallet(player_id: str) {
 }
 "#;
 
-const NEON_MOD_GUILDS: &str = r#"
+const VOLTRA_MOD_GUILDS: &str = r#"
 // ── guilds module ─────────────────────────────────────────────────────────────
 table guilds {
     name:         str   = "",
@@ -2769,7 +2769,7 @@ reducer get_guild_members(guild_id: str) {
 }
 "#;
 
-const NEON_MOD_QUESTS: &str = r#"
+const VOLTRA_MOD_QUESTS: &str = r#"
 // ── quests module ─────────────────────────────────────────────────────────────
 table quest_progress {
     player:   str  = "",
@@ -2813,7 +2813,7 @@ reducer claim_quest(quest_id: str) {
 }
 "#;
 
-const NEON_MOD_COMBAT: &str = r#"
+const VOLTRA_MOD_COMBAT: &str = r#"
 // ── combat module ─────────────────────────────────────────────────────────────
 reducer attack(target_id: str, damage: int) {
     let attacker_id = caller_id
@@ -2849,7 +2849,7 @@ reducer use_ability(target_id: str, ability: str) {
 }
 "#;
 
-const NEON_MOD_MATCHMAKING: &str = r#"
+const VOLTRA_MOD_MATCHMAKING: &str = r#"
 // ── matchmaking module ────────────────────────────────────────────────────────
 table mm_queue {
     player: str   = "",
@@ -2894,7 +2894,7 @@ reducer mm_match() {
 }
 "#;
 
-const NEON_MOD_WORLD: &str = r#"
+const VOLTRA_MOD_WORLD: &str = r#"
 // ── world module ──────────────────────────────────────────────────────────────
 table zones {
     name:        str = "",

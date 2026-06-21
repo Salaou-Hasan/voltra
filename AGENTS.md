@@ -1019,7 +1019,7 @@ parallel waves of ~5 agents on disjoint file sets. See `TODO.md` execution-order
    - Dependencies: `tokio-rustls 0.25`, `rustls 0.22`, `rustls-pemfile 2.0`, `rcgen 0.12`
 
 9. **JWT + Ed25519 identity** (`worktree-agent-aff5cdd7b954d973d` → `297e1b4`):
-   - `src/auth.rs`: `NeonClaims`, `IdentityIssuer` (generate/issue/verify/save/load key pair)
+   - `src/auth.rs`: `VoltraClaims`, `IdentityIssuer` (generate/issue/verify/save/load key pair)
    - `POST /auth/token` issues JWT; `GET /auth/public-key` returns PEM public key
    - WebSocket Bearer token branch: detects `eyJ` prefix → JWT verify path; else API key path
    - Ed25519 key pair persisted to `<wal_dir>/identity_key.pem` across restarts
@@ -1069,10 +1069,10 @@ pub async fn start_listener(
   - Legacy cluster `bus_w.fanout_deltas()` is still called for non-Raft peers.
   - `subs_w` renamed to `_subs_w` (subscription fan-out now done inside the state machine, not the worker).
 
-- **Zero-warning build achieved**: removed the unused `NeonRaft` import from `main.rs` and the unused `EntryPayload` import from `storage.rs` test module.
+- **Zero-warning build achieved**: removed the unused `VoltraRaft` import from `main.rs` and the unused `EntryPayload` import from `storage.rs` test module.
 
 - **6 Raft consensus integration tests** (`tests/raft_consensus_test.rs` — NEW):
-  - In-process network: `InProcFactory + InProcNetwork` implementing `RaftNetworkFactory + RaftNetwork` using a `DashMap<NodeId, Arc<NeonRaft>>`. No HTTP, no subprocesses, no ports.
+  - In-process network: `InProcFactory + InProcNetwork` implementing `RaftNetworkFactory + RaftNetwork` using a `DashMap<NodeId, Arc<VoltraRaft>>`. No HTTP, no subprocesses, no ports.
   - `test_single_node_leader_election_and_write` — bootstrap, elect leader, write, verify state machine applied.
   - `test_single_node_multiple_writes_ordered` — 5 sequential writes all land correctly.
   - `test_three_node_membership_change` — `add_learner` × 2 then `change_membership` to `{1,2,3}` voter set.
@@ -1094,7 +1094,7 @@ New module: `src/raft/` with four files:
   - `RaftRequest` — the payload flowing through the Raft log (reducer_name, args, deltas, timestamp_ms). `Serialize + Deserialize` so openraft can replicate it.
   - `RaftResponse` — returned after `apply()` (applied delta count).
   - `openraft::declare_raft_types!(TypeConfig)` — ties Voltra types to openraft: NodeId=u64, Node=BasicNode, Entry=openraft::Entry<TypeConfig>, SnapshotData=Cursor<Vec<u8>>, AsyncRuntime=TokioRuntime.
-  - `NeonRaft = openraft::Raft<TypeConfig>` convenience alias.
+  - `VoltraRaft = openraft::Raft<TypeConfig>` convenience alias.
   - `build_raft_config()` — heartbeat 250ms, election 750-1500ms, max 300 entries/RPC, snapshot every 10k entries.
   - 5 unit tests.
 
@@ -1107,11 +1107,11 @@ New module: `src/raft/` with four files:
   - `get_log_reader()` returns a clone (shared `Arc<RwLock<>>>`).
   - 7 unit tests (using direct inner-map insertion since `LogFlushed::new` is `pub(crate)` in openraft).
 
-- **`src/raft/state_machine.rs`** — `NeonStateMachine` implementing `RaftStateMachine`:
+- **`src/raft/state_machine.rs`** — `VoltraStateMachine` implementing `RaftStateMachine`:
   - `apply()`: for `EntryPayload::Normal(req)` → `TableStore::apply_delta_batch(&req.deltas)` → `SubscriptionManager::publish_deltas()` fan-out. Membership entries stored in `last_membership`. Blank entries are no-ops.
   - `build_snapshot()`: serializes all TableStore rows + counters to `SerializedState` JSON, returns as `Cursor<Vec<u8>>`.
   - `install_snapshot()`: calls `TableStore::clear_all()` then replays all rows and counters from the snapshot.
-  - `NeonSnapshotBuilder` is a separate type holding `Arc<RwLock<StateMachineInner>>`.
+  - `VoltraSnapshotBuilder` is a separate type holding `Arc<RwLock<StateMachineInner>>`.
   - 4 unit tests including full snapshot roundtrip.
 
 - **`src/raft/http.rs`** — HTTP handlers for incoming Raft RPCs:
@@ -1124,7 +1124,7 @@ New module: `src/raft/` with four files:
   - `handle_raft_init` → `POST /raft/init` (bootstrap single-node cluster).
   - 3 unit tests.
 
-- **`src/raft/network.rs`** — `NeonNetworkFactory + NeonNetwork` implementing Raft HTTP transport:
+- **`src/raft/network.rs`** — `VoltraNetworkFactory + VoltraNetwork` implementing Raft HTTP transport:
   - `append_entries` → `POST <peer>/raft/append`
   - `install_snapshot` → `POST <peer>/raft/snapshot`
   - `vote` → `POST <peer>/raft/vote`
@@ -1138,10 +1138,10 @@ New module: `src/raft/` with four files:
 - `src/lib.rs` — added `pub mod raft;`.
 - `src/table/mod.rs` — added 3 methods: `get_all_rows(table_name) → HashMap`, `get_all_counters_map() → HashMap`, `clear_all()` (for snapshot install).
 - `src/main.rs` — Raft node initialised at server startup:
-  - `MemLogStore + NeonStateMachine + NeonNetworkFactory` constructed.
+  - `MemLogStore + VoltraStateMachine + VoltraNetworkFactory` constructed.
   - `openraft::Raft::new()` creates the Raft node.
   - Single-node mode auto-bootstraps; multi-node mode waits for `/raft/change-membership`.
-  - `start_metrics_server` and `handle_metrics_request` now accept `Arc<NeonRaft>`.
+  - `start_metrics_server` and `handle_metrics_request` now accept `Arc<VoltraRaft>`.
   - 7 new Raft routes registered in `handle_metrics_request`.
 
 **Correctness guarantees provided by openraft (not custom code):**
@@ -1170,7 +1170,7 @@ New module: `src/raft/` with four files:
 43. **`anyerror` must be a direct dependency** — openraft's `StorageIOError` constructors take `impl Into<AnyError>`. The `anyerror` crate is a transitive dep of openraft but not available without adding it to Cargo.toml.
 44. **`Wait::leader()` does not exist in openraft 0.9** — use `wait.current_leader(expected_id, msg)` to block until the given node is leader.
 45. **`change_membership` takes `BTreeSet<NodeId>`, not `BTreeMap<NodeId, Node>`** — `ChangeMembers` implements `From<BTreeSet<NID>>` but NOT `From<BTreeMap<NID, N>>`. Pass `BTreeSet::<u64>::from_iter([1,2,3])`. Node addresses were registered via `add_learner` earlier; they don't need to be re-supplied.
-46. **In-process Raft network: `Raft::append_entries/vote/install_snapshot` are public** — these methods accept the raw RPC structs and return the response structs, allowing a test-only `RaftNetworkFactory` implementation that routes RPCs directly to in-memory `Arc<NeonRaft>` instances. No HTTP needed for unit/integration testing.
+46. **In-process Raft network: `Raft::append_entries/vote/install_snapshot` are public** — these methods accept the raw RPC structs and return the response structs, allowing a test-only `RaftNetworkFactory` implementation that routes RPCs directly to in-memory `Arc<VoltraRaft>` instances. No HTTP needed for unit/integration testing.
 47. **Raft write path is two-phase: drain then `client_write`** — after the reducer executes, call `ctx.drain_pending_deltas()` (NOT `ctx.commit()`). The deltas flow into `RaftRequest`, are replicated by Raft, and applied via the state machine's `apply()`. Double-applying (commit + raft) will cause every row to be written twice on the leader.
 
 After Session 39 (5-agent production-readiness wave):

@@ -87,7 +87,7 @@ impl Out {
     fn backend_key_data(&mut self) {
         let mut b = Vec::new();
         b.extend_from_slice(&(std::process::id() as i32).to_be_bytes());
-        b.extend_from_slice(&0x6e656f6ei32.to_be_bytes()); // "neon"
+        b.extend_from_slice(&0x766f6c74i32.to_be_bytes()); // "volt"
         self.msg(b'K', &b);
     }
     fn ready(&mut self, status: u8) {

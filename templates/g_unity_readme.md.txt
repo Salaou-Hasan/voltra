@@ -54,12 +54,12 @@ Voltra handles thousands of concurrent players on a single node. For multi-regio
 
 | Command                    | What it adds                                      |
 |----------------------------|---------------------------------------------------|
-| `neon add chat`            | Room-based chat with join/leave/send              |
-| `neon add inventory`       | Per-player items with add/remove/equip            |
-| `neon add leaderboard`     | Score tracking with auto-reset scheduler          |
-| `neon add matchmaking`     | Rating-based queue with auto-pairing scheduler    |
-| `neon add guilds`          | Guild creation, invites, membership, kick         |
-| `neon add quests`          | Quest accept, progress tracking, claim            |
-| `neon add economy`         | Gold/gem wallets, shop, transfers, loot boxes     |
-| `neon add combat`          | NPC table, attack, respawn, abilities             |
-| `neon add world`           | Zones, NPC spawning, world tick + session cleanup |
+| `voltra add chat`            | Room-based chat with join/leave/send              |
+| `voltra add inventory`       | Per-player items with add/remove/equip            |
+| `voltra add leaderboard`     | Score tracking with auto-reset scheduler          |
+| `voltra add matchmaking`     | Rating-based queue with auto-pairing scheduler    |
+| `voltra add guilds`          | Guild creation, invites, membership, kick         |
+| `voltra add quests`          | Quest accept, progress tracking, claim            |
+| `voltra add economy`         | Gold/gem wallets, shop, transfers, loot boxes     |
+| `voltra add combat`          | NPC table, attack, respawn, abilities             |
+| `voltra add world`           | Zones, NPC spawning, world tick + session cleanup |

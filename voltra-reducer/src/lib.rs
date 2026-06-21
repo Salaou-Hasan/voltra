@@ -67,13 +67,13 @@
 ///
 /// Errors are plain strings so they can be serialised directly into the JSON
 /// response payload: `{"error": "<message>"}`.
-pub type NeonError = String;
+pub type VoltraError = String;
 
 /// Convenience `Result` alias for reducer functions.
 ///
 /// `Ok(V)` is serialised to JSON and returned to the caller.
 /// `Err(e)` is wrapped as `{"error": e}` and returned to the caller.
-pub type Result<T> = std::result::Result<T, NeonError>;
+pub type Result<T> = std::result::Result<T, VoltraError>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Host ABI — WASM import declarations (wasm32 only)
@@ -566,15 +566,15 @@ macro_rules! reducer {
 mod tests {
     use super::*;
 
-    /// `NeonError` is a plain `String` so reducer authors can use string
+    /// `VoltraError` is a plain `String` so reducer authors can use string
     /// literals, `format!`, and `.to_string()` without any extra imports.
     #[test]
-    fn neon_error_is_string() {
-        let e: NeonError = "something went wrong".to_string();
+    fn voltra_error_is_string() {
+        let e: VoltraError = "something went wrong".to_string();
         assert_eq!(e, "something went wrong");
 
         // Can be constructed from a &str via into()
-        let e2: NeonError = "another error".into();
+        let e2: VoltraError = "another error".into();
         assert!(e2.contains("another"));
     }
 

@@ -17,7 +17,7 @@ fn expand_inner(input: ItemFn) -> Result<TokenStream, syn::Error> {
     // A raw identifier (e.g. `r#move`, emitted by the .vol codegen for reducers
     // named after Rust keywords) stringifies to "r#move". Strip the prefix so the
     // wire name, struct name, and inner-fn name are derived from the plain name
-    // ("move") — clients call the reducer by its real Neon name, not "r#move".
+    // ("move") — clients call the reducer by its real Voltra name, not "r#move".
     let fn_name_s = {
         let s = fn_name.to_string();
         s.strip_prefix("r#").map(|s| s.to_string()).unwrap_or(s)

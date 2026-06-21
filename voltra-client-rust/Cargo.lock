@@ -557,7 +557,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "neondb-client"
+name = "voltradb-client"
 version = "0.1.0"
 dependencies = [
  "bytes",

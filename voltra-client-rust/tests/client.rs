@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use futures::{SinkExt, StreamExt};
-use voltra_client::{NeonDbClient, NeonDbClientOptions};
+use voltra_client::{VoltraClient, VoltraClientOptions};
 use voltra_client::types::{ClientMessage, ServerMessage};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
@@ -44,7 +44,7 @@ async fn sends_authorization_header_when_api_key_set() {
         }
     });
 
-    let client = NeonDbClient::connect(NeonDbClientOptions {
+    let client = VoltraClient::connect(VoltraClientOptions {
         url: format!("ws://{}", addr),
         api_key: Some("secret".to_string()),
         identity: None,
@@ -103,7 +103,7 @@ async fn supports_two_frame_subscription_delivery() {
             .unwrap();
     });
 
-    let client = NeonDbClient::connect(NeonDbClientOptions {
+    let client = VoltraClient::connect(VoltraClientOptions {
         url: format!("ws://{}", addr),
         api_key: None,
         identity: None,
