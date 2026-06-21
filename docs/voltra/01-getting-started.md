@@ -1,4 +1,4 @@
-# Getting Started with Neon
+# Getting Started with Voltra
 
 This guide takes you from zero to a running multiplayer game server in under five minutes.
 
@@ -36,7 +36,7 @@ The binary will be at `target/release/voltra.exe`.
 ## Step 2 — Create a New Project
 
 ```
-voltra init my-game --template neon/basic
+voltra init my-game --template voltra/basic
 ```
 
 Expected output:
@@ -64,7 +64,7 @@ cd my-game
 
 Open `reducers.vol`. The basic template gives you a starting point:
 
-```neon
+```voltra
 table players {
     hp:    int   = 100,
     alive: bool  = true,

@@ -18,7 +18,7 @@ This is the core safety guarantee of Voltra. You never need to think about locks
 
 ## Declaring a Reducer
 
-```neon
+```voltra
 reducer spawn(player_id: str, name: str, x: float, y: float) {
     players[player_id] = { hp: 100, alive: true, x: x, y: y, name: name }
     return { ok: true }
@@ -47,7 +47,7 @@ Supported types:
 - `float` — a decimal number
 - `bool` — true or false
 
-```neon
+```voltra
 reducer no_args() {
     return { ok: true }
 }
@@ -74,7 +74,7 @@ voltra call many_args '["alice", 3.5, 7.2, 5, true]'
 
 Every reducer must return a JSON object. The object can have any fields you want — the client receives it as the response.
 
-```neon
+```voltra
 reducer get_player(player_id: str) {
     let p = players[player_id] else { error("not found") }
     return { hp: p.hp, alive: p.alive, name: p.name }
@@ -88,7 +88,7 @@ The client receives:
 
 You can return any fields:
 
-```neon
+```voltra
 return { ok: true }
 return { ok: false, reason: "out of gold" }
 return { count: 42, updated: true }
@@ -101,7 +101,7 @@ return { items: ["sword", "shield"], gold: 500 }
 
 Call `error("message")` to stop execution and return an error to the client. **No writes made before the error call are saved.**
 
-```neon
+```voltra
 reducer buy_item(player_id: str, item_name: str, price: int) {
     let p = players[player_id] else { error("player not found") }
     if p.gold < price {
@@ -135,7 +135,7 @@ Two special variables are available inside every reducer:
 
 The ID of the player who called this reducer. Set automatically from the player's connection.
 
-```neon
+```voltra
 reducer send_message(room_id: str, text: str) {
     // caller_id is automatically set — no need to pass it as a parameter
     let key = concat(room_id, concat(":", caller_id))
@@ -150,7 +150,7 @@ Use `caller_id` instead of trusting a `player_id` parameter. A client could lie 
 
 The role of the player who called this reducer. Set from the `Authorization` header: `Bearer <key>:<role>`.
 
-```neon
+```voltra
 reducer ban_player(target_id: str) {
     if caller_role != "admin" {
         error("permission denied")
@@ -168,7 +168,7 @@ Built-in roles: `"player"` (default), `"admin"`, `"scheduler"` (for timed reduce
 
 All writes inside a reducer are buffered until the `return` statement. They are applied atomically as a single batch.
 
-```neon
+```voltra
 reducer transfer_gold(from_id: str, to_id: str, amount: int) {
     let from = players[from_id] else { error("sender not found") }
     let to   = players[to_id]   else { error("receiver not found") }
@@ -193,7 +193,7 @@ If anything goes wrong after the two write lines — a crash, a server error —
 
 Reducers can take zero parameters. These are useful for scheduled tasks or status queries.
 
-```neon
+```voltra
 reducer ping() {
     return { ok: true, time: timestamp() }
 }
@@ -209,7 +209,7 @@ reducer player_count() {
 
 A `reducers.vol` file can have any number of reducers. There is no limit.
 
-```neon
+```voltra
 table players { ... }
 table items   { ... }
 
@@ -242,7 +242,7 @@ leaderboard = { reducer = "update_ranks", interval_secs = 300 }
 
 Inside a scheduled reducer, `caller_id` will be `"scheduler"` and `caller_role` will be `"scheduler"`.
 
-```neon
+```voltra
 reducer cleanup_sessions() {
     for id, p in players {
         if p.last_seen < timestamp() - 300000000000 {

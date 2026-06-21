@@ -8,14 +8,14 @@ These builtins let you search, count, aggregate, and sort table data without ite
 
 **Returns** the number of rows currently in the named table.
 
-```neon
+```voltra
 count_rows("players")       // e.g. 1247
 count_rows("items")         // e.g. 8903
 count_rows("leaderboard")   // e.g. 500
 ```
 
 **Game use — count active players:**
-```neon
+```voltra
 reducer server_status() {
     return {
         players_online: count_rows("players"),
@@ -25,7 +25,7 @@ reducer server_status() {
 ```
 
 **Game use — enforce a server population cap:**
-```neon
+```voltra
 reducer spawn(player_id: str, name: str) {
     if count_rows("players") >= 1000 {
         error("server full")
@@ -41,13 +41,13 @@ reducer spawn(player_id: str, name: str) {
 
 **Returns** the sum of a numeric field across all rows in the table.
 
-```neon
+```voltra
 sum_field("players", "gold")     // total gold held by all players
 sum_field("items", "quantity")   // total item quantity in world
 ```
 
 **Game use — economy audit:**
-```neon
+```voltra
 reducer economy_report() {
     return {
         total_gold_in_circulation: sum_field("players", "gold"),
@@ -62,13 +62,13 @@ reducer economy_report() {
 
 **Returns** the average (mean) of a numeric field across all rows. Returns `0.0` if the table is empty.
 
-```neon
+```voltra
 avg_field("players", "hp")      // average HP of all players
 avg_field("players", "level")   // average player level
 ```
 
 **Game use — check server health balance:**
-```neon
+```voltra
 reducer balance_report() {
     return {
         avg_player_hp:    avg_field("players", "hp"),
@@ -84,13 +84,13 @@ reducer balance_report() {
 
 **Returns** the minimum value of a numeric field across all rows.
 
-```neon
+```voltra
 min_field("players", "hp")      // lowest HP any player has
 min_field("players", "level")   // lowest level
 ```
 
 **Game use — find the most vulnerable player:**
-```neon
+```voltra
 let lowest_hp = min_field("players", "hp")
 return { most_vulnerable_hp: lowest_hp }
 ```
@@ -101,13 +101,13 @@ return { most_vulnerable_hp: lowest_hp }
 
 **Returns** the maximum value of a numeric field across all rows.
 
-```neon
+```voltra
 max_field("leaderboard", "score")   // highest score on the board
 max_field("players", "level")       // highest level player
 ```
 
 **Game use — dynamic difficulty:**
-```neon
+```voltra
 reducer spawn_boss() {
     let top_level = int(max_field("players", "level"))
     let boss_hp   = top_level * 500
@@ -122,7 +122,7 @@ reducer spawn_boss() {
 
 **Returns** the first row where `field` equals `value`, or null if no row matches.
 
-```neon
+```voltra
 let p = find_first("players", "name", "Alice")
 // p is a full row object, or null
 ```
@@ -130,7 +130,7 @@ let p = find_first("players", "name", "Alice")
 **Note:** Row order in a table is not guaranteed. `find_first` returns *a* matching row, not necessarily the one created first. Use it when only one row should match (e.g. unique username lookup).
 
 **Game use — find player by display name:**
-```neon
+```voltra
 reducer find_player(name: str) {
     let p = find_first("players", "name", name)
     if p == null {
@@ -141,7 +141,7 @@ reducer find_player(name: str) {
 ```
 
 **Game use — find an open guild:**
-```neon
+```voltra
 reducer find_open_guild() {
     let g = find_first("guilds", "open", true)
     if g == null {
@@ -157,13 +157,13 @@ reducer find_open_guild() {
 
 **Returns** an array of all rows where `field` equals `value`.
 
-```neon
+```voltra
 let guild_members = find_all("players", "guild_id", "shadow-wolves")
 // array of player row objects
 ```
 
 **Game use — get all members of a guild:**
-```neon
+```voltra
 reducer guild_roster(guild_id: str) {
     let members = find_all("players", "guild_id", guild_id)
     return { count: array_len(members), members: members }
@@ -171,7 +171,7 @@ reducer guild_roster(guild_id: str) {
 ```
 
 **Game use — count alive players in a zone:**
-```neon
+```voltra
 reducer zone_alive_count(zone: str) {
     let in_zone = find_all("players", "zone", zone)
     let alive   = 0
@@ -190,14 +190,14 @@ reducer zone_alive_count(zone: str) {
 
 **Returns** an array of all rows sorted by `field` in ascending or descending order. Numbers are sorted numerically; strings are sorted lexicographically.
 
-```neon
+```voltra
 let by_score = sort_by("leaderboard", "score", "desc")   // highest first
 let by_level = sort_by("players", "level", "asc")        // lowest first
 let by_name  = sort_by("players", "name", "asc")         // A to Z
 ```
 
 **Game use — full sorted leaderboard:**
-```neon
+```voltra
 reducer get_leaderboard() {
     let sorted = sort_by("leaderboard", "score", "desc")
     return { entries: sorted }
@@ -205,7 +205,7 @@ reducer get_leaderboard() {
 ```
 
 **Game use — find the weakest and strongest players:**
-```neon
+```voltra
 reducer hp_extremes() {
     let by_hp = sort_by("players", "hp", "asc")
     let count  = array_len(by_hp)
@@ -223,13 +223,13 @@ reducer hp_extremes() {
 
 **Returns** an array of the top `n` rows ranked by `field` (highest value first). Equivalent to `sort_by(..., "desc")` followed by `slice(..., 0, n)`, but more efficient.
 
-```neon
+```voltra
 let top10 = top_n("leaderboard", "score", 10)
 let top3  = top_n("players", "kills", 3)
 ```
 
 **Game use — leaderboard endpoint:**
-```neon
+```voltra
 reducer top_players(count: int) {
     let top = top_n("players", "score", count)
     return { leaderboard: top, count: array_len(top) }
@@ -237,7 +237,7 @@ reducer top_players(count: int) {
 ```
 
 **Game use — reward top 3 players at season end:**
-```neon
+```voltra
 reducer season_rewards() {
     if caller_role != "admin" {
         error("permission denied")
@@ -259,13 +259,13 @@ reducer season_rewards() {
 
 **Returns** an array of all row keys (strings) in the named table.
 
-```neon
+```voltra
 let all_player_ids = keys_of("players")
 let all_guild_ids  = keys_of("guilds")
 ```
 
 **Game use — broadcast a message to all players:**
-```neon
+```voltra
 reducer admin_broadcast(message: str) {
     if caller_role != "admin" {
         error("permission denied")
@@ -283,7 +283,7 @@ reducer admin_broadcast(message: str) {
 ```
 
 **Game use — delete all rows in a table (reset):**
-```neon
+```voltra
 reducer reset_leaderboard() {
     if caller_role != "admin" {
         error("permission denied")
@@ -302,14 +302,14 @@ reducer reset_leaderboard() {
 
 **Returns** `true` if a row with the given key exists in the table.
 
-```neon
+```voltra
 exists("players", "alice")    // true if alice is spawned
 exists("guilds", "my-guild")  // true if guild exists
 ```
 
 This is preferred over reading the row just to check existence — it does not allocate or decode the row data.
 
-```neon
+```voltra
 reducer spawn(name: str) {
     let key = to_lower(trim(name))
     if exists("players", key) {
@@ -326,7 +326,7 @@ reducer spawn(name: str) {
 
 **Returns** the current server time as an integer (nanoseconds since Unix epoch).
 
-```neon
+```voltra
 let now = timestamp()
 // e.g. 1718400000000000000
 ```
@@ -336,7 +336,7 @@ Use it for:
 - Checking if a cooldown has expired
 - Generating unique keys
 
-```neon
+```voltra
 reducer log_event(event_type: str) {
     let now = timestamp()
     let key = concat(caller_id, concat(":", str(now)))
@@ -346,7 +346,7 @@ reducer log_event(event_type: str) {
 ```
 
 **Game use — cooldown check:**
-```neon
+```voltra
 reducer use_ability(player_id: str, ability: str) {
     let p   = players[player_id] else { error("not found") }
     let now = timestamp()
@@ -363,7 +363,7 @@ reducer use_ability(player_id: str, ability: str) {
 
 ## Practical: Global Leaderboard
 
-```neon
+```voltra
 table players {
     name:    str  = "",
     score:   int  = 0,

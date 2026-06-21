@@ -1,6 +1,6 @@
 # Math and Random Builtins
 
-Neon provides a complete set of math functions for game calculations: damage formulas, movement, XP curves, cooldowns, and randomness.
+Voltra provides a complete set of math functions for game calculations: damage formulas, movement, XP curves, cooldowns, and randomness.
 
 ---
 
@@ -8,14 +8,14 @@ Neon provides a complete set of math functions for game calculations: damage for
 
 **Returns** the smaller of two values.
 
-```neon
+```voltra
 min(3, 7)       // 3
 min(10, 10)     // 10
 min(-5, 0)      // -5
 ```
 
 **Game use — clamp HP at zero:**
-```neon
+```voltra
 reducer apply_damage(player_id: str, damage: int) {
     let p = players[player_id] else { error("not found") }
     players[player_id].hp = max(0, p.hp - damage)
@@ -29,14 +29,14 @@ reducer apply_damage(player_id: str, damage: int) {
 
 **Returns** the larger of two values.
 
-```neon
+```voltra
 max(3, 7)       // 7
 max(10, 10)     // 10
 max(-5, 0)      // 0
 ```
 
 **Game use — ensure minimum damage:**
-```neon
+```voltra
 let actual_damage = max(1, raw_damage - target.armor)
 ```
 
@@ -46,14 +46,14 @@ let actual_damage = max(1, raw_damage - target.armor)
 
 **Returns** the absolute value (removes the sign).
 
-```neon
+```voltra
 abs(-15)    // 15
 abs(15)     // 15
 abs(0)      // 0
 ```
 
 **Game use — distance without direction:**
-```neon
+```voltra
 let dx = abs(p.x - target.x)
 let dy = abs(p.y - target.y)
 ```
@@ -64,14 +64,14 @@ let dy = abs(p.y - target.y)
 
 **Returns** the largest integer less than or equal to `x` (round down).
 
-```neon
+```voltra
 floor(3.7)    // 3.0
 floor(3.0)    // 3.0
 floor(-3.2)   // -4.0
 ```
 
 **Game use — grid snapping:**
-```neon
+```voltra
 let grid_x = int(floor(p.x / 32.0)) * 32
 ```
 
@@ -81,14 +81,14 @@ let grid_x = int(floor(p.x / 32.0)) * 32
 
 **Returns** the smallest integer greater than or equal to `x` (round up).
 
-```neon
+```voltra
 ceil(3.2)    // 4.0
 ceil(3.0)    // 3.0
 ceil(-3.7)   // -3.0
 ```
 
 **Game use — time division (round up to nearest second):**
-```neon
+```voltra
 let seconds = int(ceil(float(ms) / 1000.0))
 ```
 
@@ -98,14 +98,14 @@ let seconds = int(ceil(float(ms) / 1000.0))
 
 **Returns** `x` rounded to the nearest integer (0.5 rounds up).
 
-```neon
+```voltra
 round(3.4)    // 3.0
 round(3.5)    // 4.0
 round(-3.5)   // -3.0
 ```
 
 **Game use — display a clean stat:**
-```neon
+```voltra
 let shown_dps = round(damage * attacks_per_second)
 ```
 
@@ -115,14 +115,14 @@ let shown_dps = round(damage * attacks_per_second)
 
 **Returns** the square root of `x`.
 
-```neon
+```voltra
 sqrt(9.0)    // 3.0
 sqrt(2.0)    // 1.4142...
 sqrt(0.0)    // 0.0
 ```
 
 **Game use — Euclidean distance between two players:**
-```neon
+```voltra
 reducer in_range(player_id: str, target_id: str, range: float) {
     let p = players[player_id] else { error("not found") }
     let t = players[target_id] else { error("not found") }
@@ -139,14 +139,14 @@ reducer in_range(player_id: str, target_id: str, range: float) {
 
 **Returns** `x` raised to the power `y`.
 
-```neon
+```voltra
 pow(2.0, 10.0)    // 1024.0
 pow(3.0, 2.0)     // 9.0
 pow(10.0, 0.0)    // 1.0
 ```
 
 **Game use — XP curve (exponential leveling):**
-```neon
+```voltra
 reducer xp_needed_for_level(level: int) {
     let xp = int(pow(float(level), 1.5) * 100.0)
     return { xp_needed: xp }
@@ -155,7 +155,7 @@ reducer xp_needed_for_level(level: int) {
 ```
 
 **Game use — crit damage multiplier:**
-```neon
+```voltra
 let crit_multiplier = pow(2.0, float(crit_stacks) * 0.5)
 let crit_damage = int(float(base_damage) * crit_multiplier)
 ```
@@ -166,19 +166,19 @@ let crit_damage = int(float(base_damage) * crit_multiplier)
 
 **Returns** `x` clamped to the range `[lo, hi]`. If `x < lo`, returns `lo`. If `x > hi`, returns `hi`. Otherwise returns `x`.
 
-```neon
+```voltra
 clamp(150, 0, 100)   // 100
 clamp(-10, 0, 100)   // 0
 clamp(50,  0, 100)   // 50
 ```
 
 **Game use — enforce HP bounds:**
-```neon
+```voltra
 players[id].hp = int(clamp(float(new_hp), 0.0, float(p.max_hp)))
 ```
 
 **Game use — keep a player in bounds:**
-```neon
+```voltra
 players[id].x = clamp(new_x, -500.0, 500.0)
 players[id].y = clamp(new_y, -500.0, 500.0)
 ```
@@ -189,14 +189,14 @@ players[id].y = clamp(new_y, -500.0, 500.0)
 
 **Returns** `-1`, `0`, or `1` depending on the sign of `x`.
 
-```neon
+```voltra
 sign(-42.0)    // -1.0
 sign(0.0)      // 0.0
 sign(17.0)     // 1.0
 ```
 
 **Game use — knockback direction:**
-```neon
+```voltra
 let dir = sign(target.x - attacker.x)
 players[target_id].x += dir * 5.0
 ```
@@ -207,14 +207,14 @@ players[target_id].x += dir * 5.0
 
 **Returns** the base-2 logarithm of `x`.
 
-```neon
+```voltra
 log2(1.0)     // 0.0
 log2(2.0)     // 1.0
 log2(1024.0)  // 10.0
 ```
 
 **Game use — bit position of a flag:**
-```neon
+```voltra
 let bit = int(log2(float(flag)))
 ```
 
@@ -224,14 +224,14 @@ let bit = int(log2(float(flag)))
 
 **Returns** the base-10 logarithm of `x`.
 
-```neon
+```voltra
 log10(1.0)      // 0.0
 log10(10.0)     // 1.0
 log10(1000.0)   // 3.0
 ```
 
 **Game use — score magnitude for display tier:**
-```neon
+```voltra
 let tier = int(log10(float(score) + 1.0))
 // 0-9: tier 0, 10-99: tier 1, 100-999: tier 2, ...
 ```
@@ -242,14 +242,14 @@ let tier = int(log10(float(score) + 1.0))
 
 **Returns** a random integer in the range `[lo, hi]` (both inclusive).
 
-```neon
+```voltra
 rand_int(1, 6)      // roll a 6-sided die: 1, 2, 3, 4, 5, or 6
 rand_int(0, 99)     // 0 to 99 inclusive
 rand_int(10, 20)    // 10 to 20 inclusive
 ```
 
 **Game use — random loot drop:**
-```neon
+```voltra
 let loot_pool = ["sword", "shield", "potion", "gold_bag", "gem"]
 let roll = rand_int(0, array_len(loot_pool) - 1)
 let loot = get_index(loot_pool, roll)
@@ -257,7 +257,7 @@ return { loot: loot }
 ```
 
 **Game use — crit chance:**
-```neon
+```voltra
 let roll = rand_int(1, 100)
 let is_crit = roll <= crit_chance_pct
 let damage = base_damage
@@ -267,7 +267,7 @@ if is_crit {
 ```
 
 **Game use — random spawn zone:**
-```neon
+```voltra
 let zones = ["north", "south", "east", "west"]
 let zone = get_index(zones, rand_int(0, 3))
 players[caller_id].zone = zone
@@ -279,12 +279,12 @@ players[caller_id].zone = zone
 
 **Returns** a random float in the range `[0.0, 1.0)`.
 
-```neon
+```voltra
 rand_float()    // e.g. 0.732, 0.041, 0.999
 ```
 
 **Game use — drop rate check:**
-```neon
+```voltra
 let drop_chance = 0.05    // 5% chance
 if rand_float() < drop_chance {
     // rare item dropped
@@ -292,7 +292,7 @@ if rand_float() < drop_chance {
 ```
 
 **Game use — random position in a circle:**
-```neon
+```voltra
 let angle  = rand_float() * 6.2832    // 0 to 2*pi
 let radius = rand_float() * 100.0
 let spawn_x = center_x + radius * cos_approx
@@ -300,7 +300,7 @@ let spawn_y = center_y + radius * sin_approx
 ```
 
 **Game use — weighted random choice:**
-```neon
+```voltra
 // 60% common, 30% rare, 10% legendary
 let r = rand_float()
 let rarity = "common"
@@ -315,7 +315,7 @@ if r >= 0.60 and r < 0.90 {
 
 ## Practical: Complete Damage Formula
 
-```neon
+```voltra
 reducer attack(attacker_id: str, target_id: str) {
     let attacker = players[attacker_id] else { error("attacker not found") }
     let target   = players[target_id]   else { error("target not found") }

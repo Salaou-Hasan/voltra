@@ -1,12 +1,12 @@
 # Tables
 
-Tables are how Neon stores game data. Every player, item, guild, room, and leaderboard entry lives in a table.
+Tables are how Voltra stores game data. Every player, item, guild, room, and leaderboard entry lives in a table.
 
 ---
 
 ## Declaring a Table
 
-```neon
+```voltra
 table players {
     hp:    int   = 100,
     alive: bool  = true,
@@ -30,7 +30,7 @@ Every field needs a **default value**. This is required — if a reducer writes 
 
 ## Field Types
 
-Neon has four types:
+Voltra has four types:
 
 | Type | Description | Example values |
 |---|---|---|
@@ -50,7 +50,7 @@ Under the hood, a Voltra table is a **key-value store** where:
 - Each **row value** is a JSON object
 
 When you write:
-```neon
+```voltra
 players["alice"] = { hp: 100, alive: true, x: 0.0, name: "Alice" }
 ```
 
@@ -81,7 +81,7 @@ The server does **not** enforce types by default. If you write `players["alice"]
 
 ### Players
 
-```neon
+```voltra
 table players {
     hp:       int   = 100,
     max_hp:   int   = 100,
@@ -100,7 +100,7 @@ Row keys for players are usually the player's connection ID, user ID, or a slug 
 
 ### Items
 
-```neon
+```voltra
 table items {
     name:     str   = "",
     owner_id: str   = "",
@@ -115,7 +115,7 @@ Row keys for items might be a UUID or `"<owner_id>_<slot>"` depending on your ga
 
 ### Guilds
 
-```neon
+```voltra
 table guilds {
     name:        str  = "",
     owner_id:    str  = "",
@@ -129,7 +129,7 @@ Row keys for guilds could be a generated slug like `"shadow-wolves-4821"`.
 
 ### Rooms (Chat or Game)
 
-```neon
+```voltra
 table rooms {
     name:         str  = "",
     owner_id:     str  = "",
@@ -142,7 +142,7 @@ table rooms {
 
 ### Leaderboard
 
-```neon
+```voltra
 table leaderboard {
     player_name: str   = "",
     score:       int   = 0,
@@ -159,7 +159,7 @@ Row keys for leaderboard entries are usually the player ID so each player has ex
 
 A single `reducers.vol` file can declare any number of tables:
 
-```neon
+```voltra
 table players {
     hp:   int  = 100,
     name: str  = "",
@@ -187,9 +187,9 @@ Reducers can read and write any table. There is no restriction on which tables a
 
 ## No Joins, No Foreign Keys
 
-Neon tables are independent key-value stores. There are no SQL-style joins or foreign key constraints. If you need to look up related data, you do it manually in your reducer:
+Voltra tables are independent key-value stores. There are no SQL-style joins or foreign key constraints. If you need to look up related data, you do it manually in your reducer:
 
-```neon
+```voltra
 reducer get_guild_owner_hp(guild_id: str) {
     let guild = guilds[guild_id] else { error("guild not found") }
     let owner = players[guild.owner_id] else { error("owner not in game") }

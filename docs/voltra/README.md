@@ -1,6 +1,6 @@
-# Neon Language
+# Voltra Language
 
-**Neon** is the purpose-built language for Voltra game backends. You write simple, readable game logic in `.vol` files. `voltra build` compiles them to native Rust — zero interpreter, zero overhead, full performance.
+**Voltra** is the purpose-built language for Voltra game backends. You write simple, readable game logic in `.vol` files. `voltra build` compiles them to native Rust — zero interpreter, zero overhead, full performance.
 
 ---
 
@@ -26,7 +26,7 @@ There is no JavaScript. There is no interpreter. Every `.vol` file becomes nativ
 
 Create `reducers.vol`:
 
-```neon
+```voltra
 table players {
     hp:    int   = 100,
     alive: bool  = true,
@@ -67,7 +67,7 @@ That's it. Your multiplayer game backend is live.
 | File | Topic |
 |---|---|
 | [01 — Getting Started](01-getting-started.md) | Install, init, build, run, first call |
-| [02 — Project Structure](02-project-structure.md) | Every file in a Neon project explained |
+| [02 — Project Structure](02-project-structure.md) | Every file in a Voltra project explained |
 | [03 — Tables](03-tables.md) | Declaring tables, field types, defaults |
 | [04 — Reducers](04-reducers.md) | Writing game logic, parameters, returns, errors |
 | [05 — Data Access](05-data-access.md) | Read, write, update, delete rows |
@@ -82,12 +82,12 @@ That's it. Your multiplayer game backend is live.
 
 ---
 
-## Why Neon?
+## Why Voltra?
 
-| Pain with other backends | Neon solution |
+| Pain with other backends | Voltra solution |
 |---|---|
 | Configure a database, write ORM models, write API handlers, deploy — for every feature | One `.vol` file. `voltra build`. Done. |
-| Runtime scripting is slow | Neon compiles to native Rust — same speed as hand-written Rust |
+| Runtime scripting is slow | Voltra compiles to native Rust — same speed as hand-written Rust |
 | Atomic transactions are hard | Every reducer is atomic by default. Error halfway? Nothing was written. |
 | Real-time subscriptions need extra infrastructure | Built in. `voltra watch "players WHERE zone = 'lobby'"` |
 | Scaling requires rewrites | Add cluster builtins. Same `.vol` file, distributed. |

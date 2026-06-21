@@ -1,6 +1,6 @@
-# Neon V1 Runtime Direction
+# Voltra V1 Runtime Direction
 
-Neon V1 turns Voltra into a low-latency game database/server/runtime while
+Voltra V1 turns Voltra into a low-latency game database/server/runtime while
 keeping the systems that already make Voltra fast: reducers, WAL recovery,
 subscriptions, SDKs, and protocol support.
 
@@ -29,7 +29,7 @@ avoidable allocation.
 
 ## Composition
 
-Neon V1 replaces preset-first templates with module-first composition. Genre
+Voltra V1 replaces preset-first templates with module-first composition. Genre
 templates become recipes over reusable modules:
 
 ```text

@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::ast::*;
-use super::error::NeonError;
+use super::error::VoltraError;
 use super::lexer::{Token, Spanned};
 
 struct Parser {
@@ -30,32 +30,32 @@ impl Parser {
         t
     }
 
-    fn eat(&mut self, expected: &Token) -> Result<(), NeonError> {
+    fn eat(&mut self, expected: &Token) -> Result<(), VoltraError> {
         if self.peek() == expected {
             self.advance();
             Ok(())
         } else {
-            Err(NeonError::new(self.line(), format!(
+            Err(VoltraError::new(self.line(), format!(
                 "expected {:?}, found {:?}", expected, self.peek()
             )))
         }
     }
 
-    fn eat_ident(&mut self) -> Result<String, NeonError> {
+    fn eat_ident(&mut self) -> Result<String, VoltraError> {
         match self.peek().clone() {
             Token::Ident(s) => { self.advance(); Ok(s) }
-            other => Err(NeonError::new(self.line(), format!("expected identifier, found {:?}", other))),
+            other => Err(VoltraError::new(self.line(), format!("expected identifier, found {:?}", other))),
         }
     }
 
-    fn eat_type(&mut self) -> Result<Type, NeonError> {
+    fn eat_type(&mut self) -> Result<Type, VoltraError> {
         let line = self.line();
         let ty = match self.peek() {
             Token::TStr   => Type::Str,
             Token::TInt   => Type::Int,
             Token::TFloat => Type::Float,
             Token::TBool  => Type::Bool,
-            other => return Err(NeonError::new(line, format!("expected type (str/int/float/bool), found {:?}", other))),
+            other => return Err(VoltraError::new(line, format!("expected type (str/int/float/bool), found {:?}", other))),
         };
         self.advance();
         Ok(ty)
@@ -67,7 +67,7 @@ impl Parser {
 
     // ── Top-level ─────────────────────────────────────────────────────────────
 
-    fn parse_program(&mut self) -> Result<Program, NeonError> {
+    fn parse_program(&mut self) -> Result<Program, VoltraError> {
         let mut tables   = Vec::new();
         let mut reducers = Vec::new();
 
@@ -75,7 +75,7 @@ impl Parser {
             match self.peek() {
                 Token::Table   => tables.push(self.parse_table()?),
                 Token::Reducer => reducers.push(self.parse_reducer()?),
-                other => return Err(NeonError::new(self.line(), format!(
+                other => return Err(VoltraError::new(self.line(), format!(
                     "expected 'table' or 'reducer', found {:?}", other
                 ))),
             }
@@ -86,7 +86,7 @@ impl Parser {
 
     // ── Table declaration ─────────────────────────────────────────────────────
 
-    fn parse_table(&mut self) -> Result<TableDecl, NeonError> {
+    fn parse_table(&mut self) -> Result<TableDecl, VoltraError> {
         let line = self.line();
         self.eat(&Token::Table)?;
         let name = self.eat_ident()?;
@@ -102,7 +102,7 @@ impl Parser {
         Ok(TableDecl { name, fields, line })
     }
 
-    fn parse_field_def(&mut self) -> Result<FieldDef, NeonError> {
+    fn parse_field_def(&mut self) -> Result<FieldDef, VoltraError> {
         let line = self.line();
         let name = self.eat_ident()?;
         self.eat(&Token::Colon)?;
@@ -118,20 +118,20 @@ impl Parser {
         Ok(FieldDef { name, ty, default, line })
     }
 
-    fn parse_literal(&mut self) -> Result<Literal, NeonError> {
+    fn parse_literal(&mut self) -> Result<Literal, VoltraError> {
         let line = self.line();
         match self.peek().clone() {
             Token::IntLit(n)  => { self.advance(); Ok(Literal::Int(n)) }
             Token::FloatLit(f)=> { self.advance(); Ok(Literal::Float(f)) }
             Token::StrLit(s)  => { self.advance(); Ok(Literal::Str(s)) }
             Token::BoolLit(b) => { self.advance(); Ok(Literal::Bool(b)) }
-            other => Err(NeonError::new(line, format!("expected literal, found {:?}", other))),
+            other => Err(VoltraError::new(line, format!("expected literal, found {:?}", other))),
         }
     }
 
     // ── Reducer declaration ───────────────────────────────────────────────────
 
-    fn parse_reducer(&mut self) -> Result<ReducerDecl, NeonError> {
+    fn parse_reducer(&mut self) -> Result<ReducerDecl, VoltraError> {
         let line = self.line();
         self.eat(&Token::Reducer)?;
         let name = self.eat_ident()?;
@@ -153,7 +153,7 @@ impl Parser {
 
     // ── Block: { stmt* } ─────────────────────────────────────────────────────
 
-    fn parse_block(&mut self) -> Result<Vec<Stmt>, NeonError> {
+    fn parse_block(&mut self) -> Result<Vec<Stmt>, VoltraError> {
         self.eat(&Token::LBrace)?;
         let mut stmts = Vec::new();
         while self.peek() != &Token::RBrace && !self.at_end() {
@@ -165,7 +165,7 @@ impl Parser {
 
     // ── Statement ─────────────────────────────────────────────────────────────
 
-    fn parse_stmt(&mut self) -> Result<Stmt, NeonError> {
+    fn parse_stmt(&mut self) -> Result<Stmt, VoltraError> {
         let line = self.line();
         match self.peek().clone() {
             Token::Let      => self.parse_let(line),
@@ -178,11 +178,11 @@ impl Parser {
             Token::Break    => { self.advance(); Ok(Stmt::Break { line }) }
             Token::Continue => { self.advance(); Ok(Stmt::Continue { line }) }
             Token::Ident(name) => self.parse_ident_stmt(name, line),
-            other => Err(NeonError::new(line, format!("unexpected statement start: {:?}", other))),
+            other => Err(VoltraError::new(line, format!("unexpected statement start: {:?}", other))),
         }
     }
 
-    fn parse_let(&mut self, line: usize) -> Result<Stmt, NeonError> {
+    fn parse_let(&mut self, line: usize) -> Result<Stmt, VoltraError> {
         self.eat(&Token::Let)?;
         let name = self.eat_ident()?;
         self.eat(&Token::Eq)?;
@@ -212,7 +212,7 @@ impl Parser {
         Ok(Stmt::Let { name, value: Box::new(value), line })
     }
 
-    fn parse_delete(&mut self, line: usize) -> Result<Stmt, NeonError> {
+    fn parse_delete(&mut self, line: usize) -> Result<Stmt, VoltraError> {
         self.eat(&Token::Delete)?;
         let table = self.eat_ident()?;
         self.eat(&Token::LBracket)?;
@@ -221,7 +221,7 @@ impl Parser {
         Ok(Stmt::DeleteRow { table, key: Box::new(key), line })
     }
 
-    fn parse_if(&mut self, line: usize) -> Result<Stmt, NeonError> {
+    fn parse_if(&mut self, line: usize) -> Result<Stmt, VoltraError> {
         self.eat(&Token::If)?;
         let condition = self.parse_expr()?;
         let then_body = self.parse_block()?;
@@ -241,18 +241,18 @@ impl Parser {
         Ok(Stmt::If { condition: Box::new(condition), then_body, else_body, line })
     }
 
-    fn parse_return(&mut self, line: usize) -> Result<Stmt, NeonError> {
+    fn parse_return(&mut self, line: usize) -> Result<Stmt, VoltraError> {
         self.eat(&Token::Return)?;
         let value = self.parse_expr()?;
         Ok(Stmt::Return { value: Box::new(value), line })
     }
 
-    fn parse_error_stmt(&mut self, line: usize) -> Result<Stmt, NeonError> {
+    fn parse_error_stmt(&mut self, line: usize) -> Result<Stmt, VoltraError> {
         self.eat(&Token::Error)?;
         self.eat(&Token::LParen)?;
         let message = match self.peek().clone() {
             Token::StrLit(s) => { self.advance(); s }
-            other => return Err(NeonError::new(line, format!("error() expects a string literal, found {:?}", other))),
+            other => return Err(VoltraError::new(line, format!("error() expects a string literal, found {:?}", other))),
         };
         self.eat(&Token::RParen)?;
         Ok(Stmt::Error { message, line })
@@ -260,7 +260,7 @@ impl Parser {
 
     /// `for key_var, val_var in table { ... }`  →  ForRow
     /// `for item_var in expr { ... }`           →  ForArray
-    fn parse_for_stmt(&mut self, line: usize) -> Result<Stmt, NeonError> {
+    fn parse_for_stmt(&mut self, line: usize) -> Result<Stmt, VoltraError> {
         self.eat(&Token::For)?;
         let first_var = self.eat_ident()?;
 
@@ -282,7 +282,7 @@ impl Parser {
     }
 
     /// `while expr { ... }`
-    fn parse_while_stmt(&mut self, line: usize) -> Result<Stmt, NeonError> {
+    fn parse_while_stmt(&mut self, line: usize) -> Result<Stmt, VoltraError> {
         self.eat(&Token::While)?;
         let condition = self.parse_expr()?;
         let body = self.parse_block()?;
@@ -295,7 +295,7 @@ impl Parser {
     ///   `ident[key] = expr`           → AssignRow
     ///   `ident[key].field = expr`     → AssignField
     ///   `ident[key].field += expr`    → AssignFieldOp
-    fn parse_ident_stmt(&mut self, name: String, line: usize) -> Result<Stmt, NeonError> {
+    fn parse_ident_stmt(&mut self, name: String, line: usize) -> Result<Stmt, VoltraError> {
         self.advance(); // consume the ident
 
         // Function-call statement: set_counter("kills", v)
@@ -349,7 +349,7 @@ impl Parser {
 
     // ── Argument list (shared by FnCall expr and CallStmt) ────────────────────
 
-    fn parse_arg_list(&mut self) -> Result<Vec<Expr>, NeonError> {
+    fn parse_arg_list(&mut self) -> Result<Vec<Expr>, VoltraError> {
         let mut args = Vec::new();
         while self.peek() != &Token::RParen && !self.at_end() {
             args.push(self.parse_expr()?);
@@ -364,11 +364,11 @@ impl Parser {
     //   or → and → bitor → bitxor → bitand → equality → comparison
     //   → shift → additive → multiplicative → unary → postfix → primary
 
-    fn parse_expr(&mut self) -> Result<Expr, NeonError> {
+    fn parse_expr(&mut self) -> Result<Expr, VoltraError> {
         self.parse_or()
     }
 
-    fn parse_or(&mut self) -> Result<Expr, NeonError> {
+    fn parse_or(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_and()?;
         while self.peek() == &Token::PipePipe {
             self.advance();
@@ -378,7 +378,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_and(&mut self) -> Result<Expr, NeonError> {
+    fn parse_and(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_bitor()?;
         while self.peek() == &Token::AmpAmp {
             self.advance();
@@ -388,7 +388,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_bitor(&mut self) -> Result<Expr, NeonError> {
+    fn parse_bitor(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_bitxor()?;
         while self.peek() == &Token::Pipe {
             self.advance();
@@ -398,7 +398,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_bitxor(&mut self) -> Result<Expr, NeonError> {
+    fn parse_bitxor(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_bitand()?;
         while self.peek() == &Token::Caret {
             self.advance();
@@ -408,7 +408,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_bitand(&mut self) -> Result<Expr, NeonError> {
+    fn parse_bitand(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_equality()?;
         while self.peek() == &Token::Amp {
             self.advance();
@@ -418,7 +418,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_equality(&mut self) -> Result<Expr, NeonError> {
+    fn parse_equality(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_comparison()?;
         loop {
             let op = match self.peek() {
@@ -433,7 +433,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_comparison(&mut self) -> Result<Expr, NeonError> {
+    fn parse_comparison(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_shift()?;
         loop {
             let op = match self.peek() {
@@ -450,7 +450,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_shift(&mut self) -> Result<Expr, NeonError> {
+    fn parse_shift(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_additive()?;
         loop {
             let op = match self.peek() {
@@ -465,7 +465,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_additive(&mut self) -> Result<Expr, NeonError> {
+    fn parse_additive(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_multiplicative()?;
         loop {
             let op = match self.peek() {
@@ -480,7 +480,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_multiplicative(&mut self) -> Result<Expr, NeonError> {
+    fn parse_multiplicative(&mut self) -> Result<Expr, VoltraError> {
         let mut left = self.parse_unary()?;
         loop {
             let op = match self.peek() {
@@ -496,7 +496,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_unary(&mut self) -> Result<Expr, NeonError> {
+    fn parse_unary(&mut self) -> Result<Expr, VoltraError> {
         if self.peek() == &Token::Bang {
             self.advance();
             let inner = self.parse_unary()?;
@@ -505,7 +505,7 @@ impl Parser {
         self.parse_postfix()
     }
 
-    fn parse_postfix(&mut self) -> Result<Expr, NeonError> {
+    fn parse_postfix(&mut self) -> Result<Expr, VoltraError> {
         let mut expr = self.parse_primary()?;
         loop {
             if self.peek() == &Token::Dot {
@@ -519,7 +519,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_primary(&mut self) -> Result<Expr, NeonError> {
+    fn parse_primary(&mut self) -> Result<Expr, VoltraError> {
         let line = self.line();
         match self.peek().clone() {
             Token::IntLit(n)  => { self.advance(); Ok(Expr::Lit(Literal::Int(n))) }
@@ -615,12 +615,12 @@ impl Parser {
                 Ok(Expr::FnCall { name: "bool".to_owned(), args })
             }
 
-            other => Err(NeonError::new(line, format!("unexpected expression token: {:?}", other))),
+            other => Err(VoltraError::new(line, format!("unexpected expression token: {:?}", other))),
         }
     }
 }
 
-pub fn parse(tokens: Vec<Spanned>) -> Result<Program, NeonError> {
+pub fn parse(tokens: Vec<Spanned>) -> Result<Program, VoltraError> {
     let mut p = Parser::new(tokens);
     p.parse_program()
 }

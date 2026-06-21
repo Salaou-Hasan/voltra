@@ -1,4 +1,4 @@
-//! Neon V1 game-runtime composition model.
+//! Voltra V1 game-runtime composition model.
 //!
 //! This module is the first foundation for the low-latency runtime direction:
 //! lobbies, ECS, AOI, delta fanout, and gameplay modules are explicit concepts
@@ -42,7 +42,7 @@ pub struct RuntimeComposition {
     pub modules: Vec<&'static RuntimeModule>,
 }
 
-/// Built-in Neon V1 module catalog.
+/// Built-in Voltra V1 module catalog.
 pub fn builtin_modules() -> &'static [RuntimeModule] {
     &MODULES
 }

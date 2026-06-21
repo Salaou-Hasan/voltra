@@ -3,9 +3,9 @@
 // Add to any GameObject. It connects on Start, pumps subscription callbacks
 // onto the main thread every frame, and exposes the client to your scripts:
 //
-//   var neon = GetComponent<VoltraBehaviour>();
-//   var result = await neon.Client.Call("spawn", new object[] { "p1", 0, 0, "warrior" });
-//   neon.Client.Subscribe("players WHERE zone = 'z_0_0'", diff => { ... });
+//   var voltra = GetComponent<VoltraBehaviour>();
+//   var result = await voltra.Client.Call("spawn", new object[] { "p1", 0, 0, "warrior" });
+//   voltra.Client.Subscribe("players WHERE zone = 'z_0_0'", diff => { ... });
 
 using System;
 using UnityEngine;

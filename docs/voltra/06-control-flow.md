@@ -1,18 +1,18 @@
 # Control Flow
 
-Neon supports if/else, loops, break, and continue. This document covers every control flow construct with examples.
+Voltra supports if/else, loops, break, and continue. This document covers every control flow construct with examples.
 
 ---
 
 ## if / else if / else
 
-```neon
+```voltra
 if hp <= 0 {
     players[id].alive = false
 }
 ```
 
-```neon
+```voltra
 if hp <= 0 {
     players[id].alive = false
 } else if hp <= 25 {
@@ -26,7 +26,7 @@ if hp <= 0 {
 
 The condition can be any expression that evaluates to a boolean. You can use `and`, `or`, and `not` to combine conditions:
 
-```neon
+```voltra
 if p.alive and p.hp > 0 {
     // player is actually alive
 }
@@ -46,13 +46,13 @@ if p.level >= 10 and p.xp >= 1000 {
 
 When you read a row, the `else` block runs if the row is missing:
 
-```neon
+```voltra
 let p = players[id] else { error("player not found") }
 ```
 
 Without the `else`, the server automatically errors with a generic "Row not found" message:
 
-```neon
+```voltra
 let p = players[id]
 // if id doesn't exist, execution stops here with a generic error
 ```
@@ -62,7 +62,7 @@ The `else` block can contain:
 - `return { ... }` — return a response (not found is a valid non-error outcome)
 - Any other statements — run fallback logic
 
-```neon
+```voltra
 // Error with a descriptive message
 let guild = guilds[guild_id] else { error("guild does not exist") }
 
@@ -82,7 +82,7 @@ let counter = counters[counter_id] else {
 
 Iterate over every row in a table with a `for id, row in table` loop:
 
-```neon
+```voltra
 for id, p in players {
     // id is the row key (string)
     // p is the row value (object)
@@ -91,7 +91,7 @@ for id, p in players {
 
 Example — find all alive players:
 
-```neon
+```voltra
 reducer count_alive() {
     let count = 0
     for id, p in players {
@@ -105,7 +105,7 @@ reducer count_alive() {
 
 Example — deal area-of-effect damage to all players:
 
-```neon
+```voltra
 reducer aoe_blast(damage: int) {
     for id, p in players {
         if p.alive {
@@ -124,7 +124,7 @@ reducer aoe_blast(damage: int) {
 
 You can delete rows while iterating a table. The iteration is over a snapshot taken at the start of the loop, so deletes inside the loop are safe:
 
-```neon
+```voltra
 reducer cleanup_dead() {
     for id, p in players {
         if not p.alive {
@@ -141,7 +141,7 @@ reducer cleanup_dead() {
 
 Iterate over every element in an array with a `for item in arr` loop:
 
-```neon
+```voltra
 let skills = ["fireball", "shield", "dash"]
 for skill in skills {
     // skill is each element in turn
@@ -150,7 +150,7 @@ for skill in skills {
 
 Example — apply multiple damage types:
 
-```neon
+```voltra
 reducer apply_effects(player_id: str, fire: int, poison: int, frost: int) {
     let damages = [fire, poison, frost]
     for dmg in damages {
@@ -167,7 +167,7 @@ reducer apply_effects(player_id: str, fire: int, poison: int, frost: int) {
 
 Run a block while a condition is true:
 
-```neon
+```voltra
 while condition {
     // ...
 }
@@ -175,7 +175,7 @@ while condition {
 
 Example — grant XP and level up as many times as needed:
 
-```neon
+```voltra
 reducer grant_xp(player_id: str, xp_amount: int) {
     players[player_id].xp += xp_amount
     let p = players[player_id]
@@ -198,7 +198,7 @@ reducer grant_xp(player_id: str, xp_amount: int) {
 
 Example — countdown timer with a while loop:
 
-```neon
+```voltra
 let n = 5
 while n > 0 {
     n = n - 1
@@ -211,7 +211,7 @@ while n > 0 {
 
 Exit a loop early:
 
-```neon
+```voltra
 reducer find_weak_player() {
     let found_id = ""
     for id, p in players {
@@ -235,7 +235,7 @@ reducer find_weak_player() {
 
 Skip to the next iteration of a loop:
 
-```neon
+```voltra
 reducer heal_injured() {
     for id, p in players {
         // Skip players who are full health or dead
@@ -257,7 +257,7 @@ reducer heal_injured() {
 
 Loops can be nested. `break` and `continue` affect the innermost loop:
 
-```neon
+```voltra
 reducer check_all_matchups() {
     let conflicts = 0
     for id_a, pa in players {
@@ -281,7 +281,7 @@ reducer check_all_matchups() {
 
 Real reducers combine everything together:
 
-```neon
+```voltra
 reducer zone_cleanup(zone: str, poison_damage: int) {
     // Iterate all players
     for id, p in players {

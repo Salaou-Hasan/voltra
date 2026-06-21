@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Claims extracted from a valid JWT.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct VoltraClaims {
+pub struct LegacyClaims {
     /// Subject — the user ID.
     pub sub: String,
     /// Role (e.g., "admin", "player", "spectator").
@@ -51,7 +51,7 @@ pub enum AuthResult {
     Authenticated {
         user_id: String,
         role: String,
-        claims: VoltraClaims,
+        claims: LegacyClaims,
     },
     /// Authentication failed with reason.
     Denied(String),
@@ -96,7 +96,7 @@ impl AuthValidator {
                         AuthResult::Authenticated {
                             user_id: "api_key_user".into(),
                             role: role_part.to_string(),
-                            claims: VoltraClaims {
+                            claims: LegacyClaims {
                                 sub: "api_key_user".into(),
                                 role: role_part.to_string(),
                                 iat: 0,
@@ -111,7 +111,7 @@ impl AuthValidator {
                     AuthResult::Authenticated {
                         user_id: "api_key_user".into(),
                         role: "default".into(),
-                        claims: VoltraClaims {
+                        claims: LegacyClaims {
                             sub: "api_key_user".into(),
                             role: "default".into(),
                             iat: 0,
@@ -130,7 +130,7 @@ impl AuthValidator {
                 // We handle exp validation ourselves to support exp=0 meaning no expiry
                 validation.validate_exp = false;
 
-                match decode::<VoltraClaims>(
+                match decode::<LegacyClaims>(
                     token,
                     &DecodingKey::from_secret(secret.as_bytes()),
                     &validation,
@@ -175,7 +175,7 @@ impl AuthValidator {
                     }
                 };
 
-                match decode::<VoltraClaims>(token, &decoding_key, &validation) {
+                match decode::<LegacyClaims>(token, &decoding_key, &validation) {
                     Ok(token_data) => {
                         let claims = token_data.claims;
                         // Check expiration manually: exp=0 means no expiry
@@ -224,7 +224,7 @@ impl AuthValidator {
                     now + ttl_seconds
                 };
 
-                let claims = VoltraClaims {
+                let claims = LegacyClaims {
                     sub: user_id.to_string(),
                     role: role.to_string(),
                     iat: now,
@@ -265,7 +265,7 @@ impl AuthValidator {
                     now + ttl_seconds
                 };
 
-                let claims = VoltraClaims {
+                let claims = LegacyClaims {
                     sub: user_id.to_string(),
                     role: role.to_string(),
                     iat: now,
@@ -365,11 +365,11 @@ impl AuthValidator {
 
 /// JWT claims for the Ed25519 identity system.
 ///
-/// Unlike `VoltraClaims` (which is for backwards-compat HMAC/RSA tokens),
-/// `NeonClaims` carries a `roles` *list* so a single token can hold multiple
+/// Unlike `LegacyClaims` (which is for backwards-compat HMAC/RSA tokens),
+/// `VoltraClaims` carries a `roles` *list* so a single token can hold multiple
 /// roles simultaneously.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct NeonClaims {
+pub struct VoltraClaims {
     /// Subject — identity / user id.
     pub sub: String,
     /// List of roles the identity holds.
@@ -431,7 +431,7 @@ impl IdentityIssuer {
         // Year 9999 in Unix seconds: safe upper bound (fits in i64/jsonwebtoken)
         let exp = if ttl_secs == 0 { 253_402_300_799_u64 } else { now + ttl_secs };
 
-        let claims = NeonClaims { sub: identity.to_string(), roles, iat: now, exp };
+        let claims = VoltraClaims { sub: identity.to_string(), roles, iat: now, exp };
 
         // jsonwebtoken 9 requires the PEM bytes for EdDSA.
         let pem = self
@@ -449,7 +449,7 @@ impl IdentityIssuer {
     ///
     /// Returns an error if the token is expired, tampered, or signed by a
     /// different key.
-    pub fn verify(&self, token: &str) -> crate::error::Result<NeonClaims> {
+    pub fn verify(&self, token: &str) -> crate::error::Result<VoltraClaims> {
         let pub_pem = self.public_key_pem();
         let key = DecodingKey::from_ed_pem(pub_pem.as_bytes())
             .map_err(|e| crate::error::VoltraError::internal(format!("JWT decoding key error: {}", e)))?;
@@ -462,7 +462,7 @@ impl IdentityIssuer {
         // No leeway — strict expiry.
         validation.leeway = 0;
 
-        decode::<NeonClaims>(token, &key, &validation)
+        decode::<VoltraClaims>(token, &key, &validation)
             .map(|data| data.claims)
             .map_err(|e| crate::error::VoltraError::internal(format!("JWT verify error: {}", e)))
     }
@@ -605,7 +605,7 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let claims = VoltraClaims {
+        let claims = LegacyClaims {
             sub: "expired_user".into(),
             role: "player".into(),
             iat: now - 7200,  // issued 2 hours ago
@@ -795,7 +795,7 @@ mod tests {
     fn test_claims_deserialize_with_defaults() {
         // Only sub is truly required; everything else has defaults
         let json = r#"{"sub": "minimal_user"}"#;
-        let claims: VoltraClaims = serde_json::from_str(json).unwrap();
+        let claims: LegacyClaims = serde_json::from_str(json).unwrap();
         assert_eq!(claims.sub, "minimal_user");
         assert_eq!(claims.role, ""); // default empty string
         assert_eq!(claims.iat, 0);
@@ -879,7 +879,7 @@ mod tests {
             .as_secs();
 
         // Manually craft a token with exp in the past by directly constructing
-        // NeonClaims and encoding it (bypass the issuer's ttl logic).
+        // VoltraClaims and encoding it (bypass the issuer's ttl logic).
         use jsonwebtoken::{encode, Header, Algorithm, EncodingKey};
         use ed25519_dalek::pkcs8::EncodePrivateKey;
 
@@ -887,7 +887,7 @@ mod tests {
             .to_pkcs8_pem(LineEnding::LF)
             .unwrap();
         let key = EncodingKey::from_ed_pem(pem.as_bytes()).unwrap();
-        let expired_claims = super::NeonClaims {
+        let expired_claims = super::VoltraClaims {
             sub: "expired".into(),
             roles: vec!["player".into()],
             iat: now - 7200,

@@ -16,13 +16,13 @@ using Voltra;
 
 public class Player : MonoBehaviour
 {
-    public VoltraBehaviour neon;
+    public VoltraBehaviour voltra;
 
     async void Start()
     {
-        neon.OnReady += async () =>
+        voltra.OnReady += async () =>
         {
-            var r = await neon.Client.Call("spawn",
+            var r = await voltra.Client.Call("spawn",
                 new object[] { "player1", 0, 0, "warrior" });
             Debug.Log($"spawn ok={r.Success} result={r.Result}");
         };
@@ -30,7 +30,7 @@ public class Player : MonoBehaviour
 
     async void Move(float x, float y)
     {
-        await neon.Client.Call("move", new object[] { "player1", x, y });
+        await voltra.Client.Call("move", new object[] { "player1", x, y });
     }
 }
 ```
@@ -38,7 +38,7 @@ public class Player : MonoBehaviour
 ## Live subscriptions (lobby state sync)
 
 ```csharp
-neon.Client.Subscribe("players WHERE lobby = 'l42'", diff =>
+voltra.Client.Subscribe("players WHERE lobby = 'l42'", diff =>
 {
     // Runs on the Unity main thread (safe to touch GameObjects).
     // diff.Op: "initial_snapshot" | "set" | "delete"

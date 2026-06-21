@@ -6,7 +6,7 @@ Everything your reducer does with game data goes through table reads and writes.
 
 ## Reading a Row
 
-```neon
+```voltra
 let p = players[player_id]
 ```
 
@@ -23,13 +23,13 @@ This default behavior is usually what you want. If a player calls `attack` with 
 
 ## Reading with a Custom Error
 
-```neon
+```voltra
 let p = players[player_id] else { error("player not found") }
 ```
 
 The `else { ... }` block runs only if the row is missing. Use this to give the client a more descriptive error message.
 
-```neon
+```voltra
 reducer attack(attacker_id: str, target_id: str, damage: int) {
     let attacker = players[attacker_id] else { error("attacker does not exist") }
     let target   = players[target_id]   else { error("target does not exist") }
@@ -42,13 +42,13 @@ reducer attack(attacker_id: str, target_id: str, damage: int) {
 
 ## Reading with a Fallback Return
 
-```neon
+```voltra
 let p = players[player_id] else { return { found: false } }
 ```
 
 Instead of erroring, return a specific response. Useful when "not found" is a valid outcome, not an error.
 
-```neon
+```voltra
 reducer check_player(player_id: str) {
     let p = players[player_id] else { return { found: false } }
     return { found: true, hp: p.hp, name: p.name }
@@ -59,7 +59,7 @@ reducer check_player(player_id: str) {
 
 ## Writing a Full Row
 
-```neon
+```voltra
 players[player_id] = { hp: 100, alive: true, x: 0.0, name: "Alice" }
 ```
 
@@ -70,7 +70,7 @@ Use this for:
 - Resetting a player to initial state
 - Setting all fields at once
 
-```neon
+```voltra
 reducer spawn(player_id: str, name: str) {
     players[player_id] = { hp: 100, alive: true, x: 0.0, y: 0.0, name: name }
     return { ok: true }
@@ -81,7 +81,7 @@ reducer spawn(player_id: str, name: str) {
 
 ## Writing a Single Field
 
-```neon
+```voltra
 players[player_id].hp = 50
 ```
 
@@ -89,7 +89,7 @@ This reads the existing row and changes only the `hp` field. All other fields ar
 
 Use this when you want to update one thing without affecting everything else:
 
-```neon
+```voltra
 reducer set_position(player_id: str, x: float, y: float) {
     players[player_id].x = x
     players[player_id].y = y
@@ -101,7 +101,7 @@ reducer set_position(player_id: str, x: float, y: float) {
 
 ## Compound Write Operators
 
-```neon
+```voltra
 players[player_id].hp   -= 30    // hp = hp - 30
 players[player_id].gold += 100   // gold = gold + 100
 players[player_id].xp   *= 2     // xp = xp * 2
@@ -111,7 +111,7 @@ players[player_id].kills %= 10   // kills = kills % 10
 
 These are **read-modify-write** operations. Voltra reads the current value, applies the operation, and writes it back. Because reducers are atomic, you never get a lost update even if multiple clients call the same reducer simultaneously.
 
-```neon
+```voltra
 reducer gain_xp(player_id: str, amount: int) {
     players[player_id].xp += amount
     return { ok: true }
@@ -122,13 +122,13 @@ reducer gain_xp(player_id: str, amount: int) {
 
 ## Deleting a Row
 
-```neon
+```voltra
 delete players[player_id]
 ```
 
 Removes the row entirely. If the row does not exist, this is a no-op (no error).
 
-```neon
+```voltra
 reducer despawn(player_id: str) {
     delete players[player_id]
     return { ok: true }
@@ -139,7 +139,7 @@ reducer despawn(player_id: str) {
 
 ## Checking if a Row Exists
 
-```neon
+```voltra
 let found = exists("players", player_id)
 if found {
     // player exists
@@ -148,7 +148,7 @@ if found {
 
 `exists` returns `true` if the row is present, `false` if not. Use this when you want to branch on existence without reading the row.
 
-```neon
+```voltra
 reducer safe_damage(target_id: str, amount: int) {
     if not exists("players", target_id) {
         return { ok: false, reason: "target not in game" }
@@ -164,7 +164,7 @@ reducer safe_damage(target_id: str, amount: int) {
 
 After reading a row into a variable, access its fields with dot notation:
 
-```neon
+```voltra
 let p = players[player_id]
 let current_hp   = p.hp
 let player_name  = p.name
@@ -174,7 +174,7 @@ let pos_x        = p.x
 
 Use these values in expressions:
 
-```neon
+```voltra
 reducer apply_damage(player_id: str, amount: int) {
     let p = players[player_id] else { error("not found") }
     let new_hp = max(0, p.hp - amount)
@@ -192,7 +192,7 @@ reducer apply_damage(player_id: str, amount: int) {
 
 This example shows several data access patterns working together:
 
-```neon
+```voltra
 table players {
     hp:        int  = 100,
     gold:      int  = 0,

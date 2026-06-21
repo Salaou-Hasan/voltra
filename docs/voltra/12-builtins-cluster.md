@@ -60,7 +60,7 @@ VOLTRA_CLUSTER_SECRET=your-shared-cluster-secret
 
 **Returns** the shard ID (integer) that owns the given row key. Uses a consistent hash function — the same key always returns the same shard ID, regardless of which server you call it on.
 
-```neon
+```voltra
 let shard = cluster_route("alice")      // e.g. 1
 let shard = cluster_route("player_99")  // e.g. 0
 let shard = cluster_route(player_id)    // determine the owning shard
@@ -69,7 +69,7 @@ let shard = cluster_route(player_id)    // determine the owning shard
 The return value is an integer from `0` to `shard_count - 1`.
 
 **Game use — check if a player's data is on this shard:**
-```neon
+```voltra
 reducer get_player_location(player_id: str) {
     let shard = cluster_route(player_id)
     return { shard_id: shard, player_id: player_id }
@@ -77,7 +77,7 @@ reducer get_player_location(player_id: str) {
 ```
 
 **Game use — route a cross-shard action:**
-```neon
+```voltra
 reducer attack_player(attacker_id: str, target_id: str, damage: int) {
     let my_shard     = 0   // replace with VOLTRA_SHARD_ID
     let target_shard = cluster_route(target_id)
@@ -101,7 +101,7 @@ reducer attack_player(attacker_id: str, target_id: str, damage: int) {
 
 **Calls a reducer on a remote shard** and returns the result. The call is synchronous from the perspective of your reducer — your reducer waits for the remote shard to respond.
 
-```neon
+```voltra
 let result = cross_cluster_call(1, "get_player_hp", "[\"alice\"]")
 ```
 
@@ -113,7 +113,7 @@ Arguments:
 **The reducer being called on the remote shard must exist with that name.** It runs on the remote shard exactly as if a client called it there.
 
 **Game use — cross-shard trade:**
-```neon
+```voltra
 reducer send_gold(recipient_id: str, amount: int) {
     let sender = players[caller_id] else { error("sender not found") }
     if sender.gold < amount {
@@ -150,14 +150,14 @@ reducer receive_gold(recipient_id: str, amount: int) {
 
 **Returns** the total number of rows in the named table across **all shards** in the cluster. On a single-node deployment, this is the same as `count_rows("table")`.
 
-```neon
+```voltra
 let global_player_count = region_count_rows("players")
 ```
 
 This queries every shard and sums the counts. It is slightly slower than `count_rows` (which is local only) because it must contact all peers.
 
 **Game use — cluster-wide population:**
-```neon
+```voltra
 reducer server_status() {
     return {
         players_online_this_shard:   count_rows("players"),
@@ -167,7 +167,7 @@ reducer server_status() {
 ```
 
 **Game use — enforce a global cap (across all shards):**
-```neon
+```voltra
 reducer spawn(player_id: str, name: str) {
     if region_count_rows("players") >= 100000 {
         error("all servers full")
@@ -183,7 +183,7 @@ reducer spawn(player_id: str, name: str) {
 
 **Moves a row** from the current shard to the specified shard. The row is deleted locally and created on the target shard.
 
-```neon
+```voltra
 migrate_to_cluster("players", player_id, new_shard_id)
 ```
 
@@ -195,7 +195,7 @@ Use this when:
 **Note:** Migration is not instant. The row is deleted locally first, then created on the target shard. During this window (microseconds), the row does not exist on either shard. Design your reducers to handle this gracefully.
 
 **Game use — player changes region:**
-```neon
+```voltra
 reducer change_region(target_region: int) {
     if not exists("players", caller_id) {
         error("player not spawned")
@@ -219,7 +219,7 @@ reducer change_region(target_region: int) {
 
 The key insight for clustering is: **put a player's data on the same shard as the player**. Use the player's ID as the shard key for all their associated data (inventory, progress, stats). This way, most reducer calls touch only one shard.
 
-```neon
+```voltra
 // Good: player and their items on the same shard
 let player_shard = cluster_route(player_id)
 let item_key = concat(player_id, concat("_item_", item_id))
@@ -245,7 +245,7 @@ The `cluster_route` function uses `shard_count` to determine which shard owns a 
 
 ## Example: 3-Shard Cluster Spawn Router
 
-```neon
+```voltra
 // This reducer routes new players to the least-loaded shard
 
 reducer spawn_routed(player_id: str, name: str) {

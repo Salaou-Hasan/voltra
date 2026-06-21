@@ -1,14 +1,14 @@
 # Array Builtins
 
-Arrays in Neon let you store ordered lists inside table rows — inventories, skill lists, loot pools, chat history, and more.
+Arrays in Voltra let you store ordered lists inside table rows — inventories, skill lists, loot pools, chat history, and more.
 
 ---
 
-## Arrays in Neon
+## Arrays in Voltra
 
 An array is a JSON list. You can store arrays in table fields and return them from reducers:
 
-```neon
+```voltra
 table players {
     inventory: str = "[]",   // stored as a JSON string
     skills:    str = "[]",
@@ -18,20 +18,20 @@ table players {
 ```
 
 Create an array literal:
-```neon
+```voltra
 let items   = ["sword", "shield", "potion"]
 let numbers = [1, 2, 3, 4, 5]
 let empty   = []
 ```
 
 Read an array field from a row:
-```neon
+```voltra
 let p    = players[player_id]
 let inv  = p.inventory    // the array stored in that field
 ```
 
 Write an array field to a row:
-```neon
+```voltra
 push(inv, "new_item")
 players[player_id].inventory = inv
 ```
@@ -42,13 +42,13 @@ players[player_id].inventory = inv
 
 **Returns** the number of elements in the array.
 
-```neon
+```voltra
 array_len(["a", "b", "c"])    // 3
 array_len([])                 // 0
 ```
 
 **Game use — check inventory size:**
-```neon
+```voltra
 let p = players[player_id]
 if array_len(p.inventory) >= 20 {
     error("inventory is full")
@@ -61,7 +61,7 @@ if array_len(p.inventory) >= 20 {
 
 **Returns** the element at index `i` (zero-based). Returns a null-like value if out of bounds.
 
-```neon
+```voltra
 let items = ["sword", "shield", "potion"]
 get_index(items, 0)    // "sword"
 get_index(items, 2)    // "potion"
@@ -69,7 +69,7 @@ get_index(items, 5)    // null (out of bounds)
 ```
 
 **Game use — pick a random item from a loot pool:**
-```neon
+```voltra
 let loot_pool = ["common_ore", "iron_ore", "gold_ore", "gem", "ancient_relic"]
 let roll = rand_int(0, array_len(loot_pool) - 1)
 let reward = get_index(loot_pool, roll)
@@ -82,14 +82,14 @@ return { loot: reward }
 
 **Returns** `true` if `val` is in the array.
 
-```neon
+```voltra
 array_contains(["a", "b", "c"], "b")    // true
 array_contains(["a", "b", "c"], "d")    // false
 array_contains([], "x")                  // false
 ```
 
 **Game use — check if player has an item:**
-```neon
+```voltra
 reducer use_item(item_name: str) {
     let p   = players[caller_id] else { error("not found") }
     let inv = p.inventory
@@ -102,7 +102,7 @@ reducer use_item(item_name: str) {
 ```
 
 **Game use — check if player has a skill unlocked:**
-```neon
+```voltra
 if not array_contains(p.skills, "fireball") {
     error("fireball not unlocked")
 }
@@ -114,7 +114,7 @@ if not array_contains(p.skills, "fireball") {
 
 **Returns** a new array containing elements from index `start` (inclusive) to index `end` (exclusive).
 
-```neon
+```voltra
 let items = ["a", "b", "c", "d", "e"]
 slice(items, 1, 3)    // ["b", "c"]
 slice(items, 0, 2)    // ["a", "b"]
@@ -122,7 +122,7 @@ slice(items, 3, 5)    // ["d", "e"]
 ```
 
 **Game use — get the last 5 chat messages:**
-```neon
+```voltra
 let all_msgs = room.history
 let count    = array_len(all_msgs)
 let recent   = slice(all_msgs, max(0, count - 5), count)
@@ -130,7 +130,7 @@ return { messages: recent }
 ```
 
 **Game use — paginate a leaderboard:**
-```neon
+```voltra
 reducer get_leaderboard_page(page: int) {
     let all   = sort_by("leaderboard", "score", "desc")
     let start = page * 10
@@ -146,14 +146,14 @@ reducer get_leaderboard_page(page: int) {
 
 **Returns** the first element of the array, or null if empty.
 
-```neon
+```voltra
 array_first(["a", "b", "c"])    // "a"
 array_first([42, 99, 7])        // 42
 array_first([])                 // null
 ```
 
 **Game use — peek at the top of a queue:**
-```neon
+```voltra
 let queue = matchmaking_queue.players
 let next_player = array_first(queue)
 ```
@@ -164,14 +164,14 @@ let next_player = array_first(queue)
 
 **Returns** the last element of the array, or null if empty.
 
-```neon
+```voltra
 array_last(["a", "b", "c"])    // "c"
 array_last([42, 99, 7])        // 7
 array_last([])                 // null
 ```
 
 **Game use — get the most recently added item:**
-```neon
+```voltra
 let p    = players[player_id]
 let last = array_last(p.inventory)
 return { last_acquired: last }
@@ -183,13 +183,13 @@ return { last_acquired: last }
 
 **Returns** a new array with elements in reverse order.
 
-```neon
+```voltra
 array_reverse(["a", "b", "c"])    // ["c", "b", "a"]
 array_reverse([1, 2, 3])          // [3, 2, 1]
 ```
 
 **Game use — show history in newest-first order:**
-```neon
+```voltra
 let history  = p.action_log
 let reversed = array_reverse(history)
 return { recent_actions: slice(reversed, 0, 10) }
@@ -201,7 +201,7 @@ return { recent_actions: slice(reversed, 0, 10) }
 
 **Modifies** `arr` by appending `val` to the end. This is a statement, not a function that returns a value.
 
-```neon
+```voltra
 let items = ["sword"]
 push(items, "shield")
 push(items, "potion")
@@ -209,7 +209,7 @@ push(items, "potion")
 ```
 
 **Game use — add an item to inventory:**
-```neon
+```voltra
 reducer pickup_item(item_name: str) {
     let p   = players[caller_id] else { error("not found") }
     let inv = p.inventory
@@ -231,7 +231,7 @@ reducer pickup_item(item_name: str) {
 
 **Modifies** `arr` by removing and returning the last element.
 
-```neon
+```voltra
 let items = ["sword", "shield", "potion"]
 let removed = pop(items)
 // removed = "potion"
@@ -239,7 +239,7 @@ let removed = pop(items)
 ```
 
 **Game use — consume from a stack:**
-```neon
+```voltra
 reducer use_top_item() {
     let p   = players[caller_id] else { error("not found") }
     let inv = p.inventory
@@ -261,14 +261,14 @@ reducer use_top_item() {
 
 **Modifies** `arr` by removing the element at index `idx`. Elements after `idx` shift left.
 
-```neon
+```voltra
 let items = ["sword", "shield", "potion"]
 remove_at(items, 1)
 // items is now ["sword", "potion"]
 ```
 
 **Game use — remove a specific item from inventory:**
-```neon
+```voltra
 reducer drop_item(item_name: str) {
     let p   = players[caller_id] else { error("not found") }
     let inv = p.inventory
@@ -299,7 +299,7 @@ reducer drop_item(item_name: str) {
 
 Iterate over every element in an array:
 
-```neon
+```voltra
 let skills = ["fireball", "ice_shard", "lightning"]
 for skill in skills {
     // skill is each element: "fireball", then "ice_shard", then "lightning"
@@ -307,7 +307,7 @@ for skill in skills {
 ```
 
 **Game use — apply multiple effects:**
-```neon
+```voltra
 reducer apply_status_effects(player_id: str, effects: str) {
     // effects might be passed as a JSON-encoded list
     // Here we demonstrate iterating a known list
@@ -325,7 +325,7 @@ reducer apply_status_effects(player_id: str, effects: str) {
 
 ## Practical Example: Full Inventory System
 
-```neon
+```voltra
 table players {
     name:      str  = "",
     hp:        int  = 100,

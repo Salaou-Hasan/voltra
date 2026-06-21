@@ -2,7 +2,7 @@
 // .vol DSL — Lexer
 // ============================================================================
 
-use super::error::NeonError;
+use super::error::VoltraError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -40,7 +40,7 @@ pub struct Spanned {
     pub line:  usize,
 }
 
-pub fn tokenize(src: &str) -> Result<Vec<Spanned>, NeonError> {
+pub fn tokenize(src: &str) -> Result<Vec<Spanned>, VoltraError> {
     let mut tokens = Vec::new();
     let mut chars  = src.chars().peekable();
     let mut line   = 1usize;
@@ -71,11 +71,11 @@ pub fn tokenize(src: &str) -> Result<Vec<Spanned>, NeonError> {
                             Some('\\') => s.push('\\'),
                             Some('"')  => s.push('"'),
                             Some(c)    => s.push(c),
-                            None => return Err(NeonError { line, message: "unterminated string escape".into() }),
+                            None => return Err(VoltraError { line, message: "unterminated string escape".into() }),
                         },
-                        Some('\n') => return Err(NeonError { line, message: "unterminated string literal".into() }),
+                        Some('\n') => return Err(VoltraError { line, message: "unterminated string literal".into() }),
                         Some(c)    => s.push(c),
-                        None => return Err(NeonError { line, message: "unterminated string literal".into() }),
+                        None => return Err(VoltraError { line, message: "unterminated string literal".into() }),
                     }
                 }
                 tokens.push(Spanned { token: Token::StrLit(s), line });
@@ -93,10 +93,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Spanned>, NeonError> {
                     while chars.peek().map(|&c: &char| c.is_ascii_digit()).unwrap_or(false) {
                         num.push(chars.next().unwrap());
                     }
-                    let f: f64 = num.parse().map_err(|_| NeonError { line, message: format!("invalid float: {}", num) })?;
+                    let f: f64 = num.parse().map_err(|_| VoltraError { line, message: format!("invalid float: {}", num) })?;
                     tokens.push(Spanned { token: Token::FloatLit(f), line });
                 } else {
-                    let i: i64 = num.parse().map_err(|_| NeonError { line, message: format!("invalid integer: {}", num) })?;
+                    let i: i64 = num.parse().map_err(|_| VoltraError { line, message: format!("invalid integer: {}", num) })?;
                     tokens.push(Spanned { token: Token::IntLit(i), line });
                 }
             }
@@ -206,7 +206,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Spanned>, NeonError> {
             '^' => { chars.next(); tokens.push(Spanned { token: Token::Caret,    line }); }
 
             other => {
-                return Err(NeonError { line, message: format!("unexpected character: {:?}", other) });
+                return Err(VoltraError { line, message: format!("unexpected character: {:?}", other) });
             }
         }
     }

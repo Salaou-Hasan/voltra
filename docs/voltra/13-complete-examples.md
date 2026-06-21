@@ -8,7 +8,7 @@ Three fully working `reducers.vol` files you can copy into a new project and run
 
 A shrinking-zone battle royale. Players spawn, move, shoot each other, heal, and respawn. The server tracks kills and provides a live leaderboard.
 
-```neon
+```voltra
 // ============================================================
 // BATTLE ROYALE — reducers.vol
 // ============================================================
@@ -221,7 +221,7 @@ reducer cleanup_dead() {
 
 **Run it:**
 ```
-voltra init battle-royale --template neon/basic
+voltra init battle-royale --template voltra/basic
 # replace reducers.vol with the above
 voltra build
 voltra start
@@ -236,7 +236,7 @@ voltra call get_leaderboard '[]'
 
 Rooms with membership, message history, and moderation.
 
-```neon
+```voltra
 // ============================================================
 // CHAT SERVER — reducers.vol
 // ============================================================
@@ -508,7 +508,7 @@ reducer mute_player(room_id: str, target_player_id: str, muted: bool) {
 
 Players collect cards, build hands, and battle. Gold economy for buying new cards.
 
-```neon
+```voltra
 // ============================================================
 // TRADING CARD GAME — reducers.vol
 // ============================================================
@@ -769,7 +769,7 @@ reducer leaderboard() {
 
 **Run it:**
 ```
-voltra init card-game --template neon/basic
+voltra init card-game --template voltra/basic
 # replace reducers.vol with the above
 voltra build
 voltra start

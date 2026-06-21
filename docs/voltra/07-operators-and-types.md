@@ -4,13 +4,13 @@
 
 ## The Four Types
 
-Neon has four primitive types. Every variable and every table field is one of these.
+Voltra has four primitive types. Every variable and every table field is one of these.
 
 ### int
 
 A 64-bit signed whole number.
 
-```neon
+```voltra
 let hp     = 100
 let damage = -25
 let level  = 1
@@ -23,7 +23,7 @@ Range: approximately -9.2 × 10^18 to +9.2 × 10^18. For game purposes, treat it
 
 A 64-bit decimal number.
 
-```neon
+```voltra
 let x        = 0.0
 let speed    = 3.14
 let health   = 99.5
@@ -36,20 +36,20 @@ Floats are written with a decimal point. `3` is an `int`; `3.0` is a `float`.
 
 A text string.
 
-```neon
+```voltra
 let name   = "Alice"
 let zone   = "zone_3"
 let empty  = ""
 let msg    = "hello, world!"
 ```
 
-Strings use double quotes. There are no single-quoted strings in Neon.
+Strings use double quotes. There are no single-quoted strings in Voltra.
 
 ### bool
 
 True or false.
 
-```neon
+```voltra
 let alive   = true
 let stunned = false
 let done    = true
@@ -61,7 +61,7 @@ let done    = true
 
 Declare a variable with `let`:
 
-```neon
+```voltra
 let x = 10
 let name = "Alice"
 let alive = true
@@ -70,7 +70,7 @@ let speed = 2.5
 
 Variables are **mutable** — you can change them after declaring:
 
-```neon
+```voltra
 let count = 0
 count = count + 1
 count = count + 1
@@ -94,7 +94,7 @@ Variables are **local** to the reducer. They do not persist between reducer call
 | array | `["a", "b", "c"]`, `[1, 2, 3]`, `[]` |
 | object | `{ hp: 100, name: "Alice" }` |
 
-Arrays and objects can be stored in table rows and returned from reducers. They are not typed by the Neon type system — they are JSON values.
+Arrays and objects can be stored in table rows and returned from reducers. They are not typed by the Voltra type system — they are JSON values.
 
 ---
 
@@ -110,12 +110,12 @@ Arrays and objects can be stored in table rows and returned from reducers. They 
 | `-` (unary) | Negation | `-damage` |
 
 **int / int = int** (integer division, truncates toward zero):
-```neon
+```voltra
 let result = 7 / 2    // result is 3, not 3.5
 ```
 
 **int + float = float** (int is promoted to float):
-```neon
+```voltra
 let x = 1 + 2.5    // x is 3.5 (float)
 ```
 
@@ -134,7 +134,7 @@ All comparison operators return a `bool`.
 | `<=` | Less or equal | `hp <= 0` |
 | `>=` | Greater or equal | `level >= 10` |
 
-```neon
+```voltra
 if hp == 0 { players[id].alive = false }
 if name != "" { /* name is set */ }
 if score >= 1000 { /* high score */ }
@@ -152,7 +152,7 @@ if score >= 1000 { /* high score */ }
 
 These are **keywords**, not symbols. Do not use `&&`, `||`, or `!`.
 
-```neon
+```voltra
 if p.alive and p.hp > 0 {
     // actually alive
 }
@@ -180,7 +180,7 @@ For cases where you need to work with flags or bitmasks:
 | `<<` | Left shift | `1 << bit_pos` |
 | `>>` | Right shift | `value >> 4` |
 
-```neon
+```voltra
 // Check if bit 3 is set
 let has_shield = flags & 8
 if has_shield != 0 {
@@ -207,7 +207,7 @@ These are shorthand for read-modify-write on table fields and variables:
 
 They work on both local variables and table fields:
 
-```neon
+```voltra
 let count = 0
 count += 1              // variable
 
@@ -237,7 +237,7 @@ From highest to lowest:
 
 When in doubt, use parentheses:
 
-```neon
+```voltra
 // Ambiguous — use parens to be explicit
 let ok = hp > 0 and alive or respawning
 
@@ -249,7 +249,7 @@ let ok = (hp > 0 and alive) or respawning
 
 ## Type Coercion
 
-Neon promotes types in expressions:
+Voltra promotes types in expressions:
 
 | Operation | Result |
 |---|---|
@@ -261,7 +261,7 @@ Neon promotes types in expressions:
 
 There is no implicit string coercion. Use `str(x)` to convert a number to a string:
 
-```neon
+```voltra
 let msg = concat("level: ", str(level))
 ```
 
@@ -276,7 +276,7 @@ let msg = concat("level: ", str(level))
 | `str(x)` | `str` (any value to string) |
 | `bool(x)` | `bool` (0 / "" / false = false; else true) |
 
-```neon
+```voltra
 let level_str = str(level)         // 5  →  "5"
 let x_int     = int(3.9)           // 3.9 → 3  (truncates)
 let parsed    = int("42")          // "42" → 42
@@ -293,7 +293,7 @@ A local variable (`let x = ...`) lives only for the duration of one reducer call
 
 A table field (`players[id].hp = ...`) persists to disk via the WAL. It is there on the next call, next server restart, forever — until you delete it.
 
-```neon
+```voltra
 reducer example(player_id: str) {
     // local variable — gone after this reducer returns
     let multiplier = 2
