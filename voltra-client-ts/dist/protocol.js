@@ -1,7 +1,7 @@
 // ============================================================================
-// NeonDB TypeScript Client SDK — MessagePack Wire Protocol
+// Voltra TypeScript Client SDK — MessagePack Wire Protocol
 //
-// NeonDB uses rmp_serde (Rust MessagePack) with the following conventions:
+// Voltra uses rmp_serde (Rust MessagePack) with the following conventions:
 //
 //   Structs     → MessagePack ARRAY (positional, no field names)
 //   Enums       → MessagePack MAP with one entry: { "VariantName": [fields…] }
@@ -24,6 +24,7 @@
 //   ServerMessage::SubscriptionBody   → { "SubscriptionBody":  [table, key, op, data|nil] }
 // ============================================================================
 import { encode, decode } from "@msgpack/msgpack";
+import { decompress as zstdDecompress } from "fzstd";
 export function encodeReducerCall(callId, reducerName, args) {
     return encode({ ReducerCall: [callId, reducerName, args] });
 }
@@ -139,6 +140,54 @@ export function decodeServerMessage(bytes) {
                             error: inner[3] != null ? String(inner[3]) : null,
                         },
                     };
+                }
+                case "BatchUpdate": {
+                    const isCompressed = Boolean(fields[0]);
+                    const payloadRaw = fields[1];
+                    if (!(payloadRaw instanceof Uint8Array)) {
+                        return { type: "Unknown" };
+                    }
+                    let raw;
+                    if (isCompressed) {
+                        try {
+                            raw = zstdDecompress(payloadRaw);
+                        }
+                        catch {
+                            console.warn("[Voltra] BatchUpdate zstd decompress failed");
+                            return { type: "Unknown" };
+                        }
+                    }
+                    else {
+                        raw = payloadRaw;
+                    }
+                    let diffArrays;
+                    try {
+                        diffArrays = decode(raw);
+                    }
+                    catch {
+                        console.warn("[Voltra] BatchUpdate inner decode failed");
+                        return { type: "Unknown" };
+                    }
+                    if (!Array.isArray(diffArrays)) {
+                        return { type: "Unknown" };
+                    }
+                    const diffs = diffArrays.map((d) => {
+                        const arr = Array.isArray(d) ? d : [];
+                        const rawData = arr[4];
+                        const rowData = rawData != null &&
+                            typeof rawData === "object" &&
+                            !Array.isArray(rawData)
+                            ? rawData
+                            : null;
+                        return {
+                            subscriptionId: String(arr[0] ?? ""),
+                            tableName: String(arr[1] ?? ""),
+                            rowKey: String(arr[2] ?? ""),
+                            operation: String(arr[3] ?? ""),
+                            rowData,
+                        };
+                    });
+                    return { type: "BatchUpdate", diffs };
                 }
                 case "Error":
                     return {

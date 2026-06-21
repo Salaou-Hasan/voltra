@@ -22,8 +22,8 @@ export interface ReconnectOptions {
      */
     jitter?: boolean;
 }
-/** Options passed to NeonDBClient constructor. */
-export interface NeonDBClientOptions {
+/** Options passed to VoltraClient constructor. */
+export interface VoltraClientOptions {
     /** WebSocket URL, e.g. "ws://localhost:3000" or "wss://db.yourgame.com" */
     url: string;
     /**

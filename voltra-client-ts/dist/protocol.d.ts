@@ -9,6 +9,9 @@ export type DecodedMessage = {
     type: "SubscriptionDiff";
     data: RowDiff;
 } | {
+    type: "BatchUpdate";
+    diffs: RowDiff[];
+} | {
     type: "SubscriptionRoute";
     data: SubscriptionRouteData;
 } | {

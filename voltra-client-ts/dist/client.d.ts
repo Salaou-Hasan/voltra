@@ -1,15 +1,29 @@
-import type { NeonDBClientOptions, OptimisticOptions, SubscriptionCallback, Subscription, RowCache } from "./types.js";
+import type { VoltraClientOptions, OptimisticOptions, SubscriptionCallback, Subscription, RowCache } from "./types.js";
 /**
  * Compute exponential-backoff delay for `attempt` (0-based).
  * Formula: min(maxDelayMs, baseDelayMs * 2^attempt) ± 25% jitter.
  */
 export declare function computeBackoffDelay(attempt: number, baseDelayMs: number, maxDelayMs: number, jitter: boolean): number;
-export declare class NeonDBClient {
+export declare class VoltraClient {
     private readonly opts;
     private readonly reconnectCfg;
     private ws;
     private pendingCalls;
     private subscriptions;
+    /**
+     * Server-confirmed row state — updated exclusively by subscription diffs and
+     * initial snapshots received from the server.  Never mutated by optimistic calls.
+     */
+    private serverBaseCache;
+    /**
+     * Ordered stack of in-flight optimistic mutations.  `rowCache` is always
+     * `serverBaseCache` + each layer's mutation applied in order.  Removing a
+     * layer and recomputing fixes the concurrent-update race (TODO-036): rolling
+     * back call #1 automatically re-applies call #2's mutation on top of the
+     * (now clean) server base.
+     */
+    private optimisticLayers;
+    /** Derived view: serverBaseCache + optimisticLayers applied in order. */
     private rowCache;
     private nextCallId;
     private nextSubId;
@@ -26,7 +40,7 @@ export declare class NeonDBClient {
     onConnected?: () => void;
     onDisconnected?: () => void;
     onError?: (message: string) => void;
-    constructor(options: NeonDBClientOptions);
+    constructor(options: VoltraClientOptions);
     connect(): Promise<void>;
     /**
      * Gracefully disconnect.  Sets `userInitiatedClose` so no reconnect fires.
@@ -75,7 +89,7 @@ export declare class NeonDBClient {
      */
     decodeResult<T = unknown>(bytes: Uint8Array): T;
     /**
-     * Subscribe to a NeonDB table (with an optional WHERE predicate).
+     * Subscribe to a Voltra table (with an optional WHERE predicate).
      *
      * ```ts
      * const sub = client.subscribe("players WHERE level > 5", (diff) => {
@@ -97,23 +111,33 @@ export declare class NeonDBClient {
     getRow(tableName: string, rowKey: string): Record<string, unknown> | undefined;
     isConnected(): boolean;
     /**
-     * Deep-snapshot the current row cache into an OptimisticCache
-     * (Map<tableName, Map<rowKey, rowData>>).  Used for handing the callback a
-     * safe-to-mutate copy and for the `onRollback` payload.
+     * Recompute `rowCache` = `serverBaseCache` + all `optimisticLayers` applied
+     * in dispatch order.
+     *
+     * Called after every event that mutates either the server base or the layers
+     * stack: subscription diffs, optimistic apply, optimistic rollback, disconnect.
+     *
+     * When no layers are pending this is a cheap shallow copy.  When layers ARE
+     * pending the server base is deep-cloned once and each mutation is applied in
+     * sequence — O(L × N) where L = layer count and N = touched rows per layer;
+     * typically both are small (1–3 calls, 1–10 rows each).
+     */
+    private recomputeRowCache;
+    /**
+     * Deep-snapshot the current (speculative) row cache into an OptimisticCache.
+     * Used for passing to the `optimistic` callback and for `onRollback` payloads.
      */
     private snapshotCache;
     /**
-     * Compare `proposed` against the live `rowCache`, find the (table, rowKey)
-     * coordinates that DIFFER, snapshot their pre-call values, then apply the
-     * proposed value at each one.  Returns the targeted rollback snapshot.
+     * Remove the optimistic layer for `callId` from the stack and recompute
+     * `rowCache`.  Called on reducer success (layer confirmed by server diffs),
+     * reducer error, timeout, and disconnect.
+     *
+     * Because we replay the remaining layers on top of `serverBaseCache`, rolling
+     * back call #1 automatically re-applies call #2's mutation — fixing the
+     * concurrent-overlapping-call race (TODO-036).
      */
-    private applyTargetedOptimistic;
-    /**
-     * Restore every (table, rowKey) pair recorded in `touched` to its pre-call
-     * value.  Rows NOT in `touched` are left at whatever value they hold right
-     * now — this is what preserves subscription diffs that arrived mid-flight.
-     */
-    private rollbackTouchedRows;
+    private removeOptimisticLayer;
     /**
      * Core call dispatch — assumes the socket IS currently open.
      */

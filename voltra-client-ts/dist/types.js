@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB TypeScript Client SDK — Type Definitions
+// Voltra TypeScript Client SDK — Type Definitions
 // ============================================================================
 export {};
 //# sourceMappingURL=types.js.map

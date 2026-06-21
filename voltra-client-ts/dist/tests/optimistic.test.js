@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer } from "ws";
 import { decode, encode } from "@msgpack/msgpack";
-import { NeonDBClient } from "../client.js";
+import { VoltraClient } from "../client.js";
 function randomPort() {
     return 30_000 + Math.floor(Math.random() * 20_000);
 }
@@ -80,7 +80,7 @@ function makeHoldingServer() {
 // ── test_a: happy path ────────────────────────────────────────────────────────
 test("optimistic: success leaves speculative value in cache", async () => {
     const server = await makeHoldingServer();
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${server.port}`,
         reconnectInterval: 0,
     });
@@ -107,7 +107,7 @@ test("optimistic: success leaves speculative value in cache", async () => {
 // ── test_b: THE RACE — error rolls back only touched rows ────────────────────
 test("optimistic: error preserves mid-flight subscription diffs on untouched rows", async () => {
     const server = await makeHoldingServer();
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${server.port}`,
         reconnectInterval: 0,
     });
@@ -154,7 +154,7 @@ test("optimistic: error preserves mid-flight subscription diffs on untouched row
 // ── test_c: no-op optimistic callback ────────────────────────────────────────
 test("optimistic: callback returns identical cache → empty touched set, no-op rollback", async () => {
     const server = await makeHoldingServer();
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${server.port}`,
         reconnectInterval: 0,
     });
@@ -183,7 +183,7 @@ test("optimistic: callback returns identical cache → empty touched set, no-op 
 // ── test_d: optimistic delete + mid-flight insert to another table ──────────
 test("optimistic: speculative delete is restored on error; other-table insert preserved", async () => {
     const server = await makeHoldingServer();
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${server.port}`,
         reconnectInterval: 0,
     });

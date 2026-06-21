@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer } from "ws";
 import { decode, encode } from "@msgpack/msgpack";
-import { NeonDBClient, computeBackoffDelay } from "../client.js";
+import { VoltraClient, computeBackoffDelay } from "../client.js";
 function randomPort() {
     // pick a random high port; if it's taken the test will fail fast.
     return 30_000 + Math.floor(Math.random() * 20_000);
@@ -34,7 +34,7 @@ test("client sends Authorization header in Node when apiKey is set", async () =>
             }
         });
     });
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${port}`,
         apiKey: "secret",
         reconnectInterval: 0,
@@ -61,7 +61,7 @@ test("subscribe receives diffs and updates row cache", async () => {
             }
         });
     });
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${port}`,
         reconnectInterval: 0,
     });
@@ -100,7 +100,7 @@ test("auto-reconnect re-sends subscriptions", async () => {
             setTimeout(() => ws.close(), 50);
         }
     });
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${port}`,
         reconnectInterval: 50,
     });
@@ -161,7 +161,7 @@ test("onReconnectFailed is called when maxAttempts is exhausted", async () => {
     // Track the server-side WebSocket so we can drop it.
     let serverWs;
     wss.on("connection", (ws) => { serverWs = ws; });
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${port}`,
         reconnect: {
             enabled: true,
@@ -209,7 +209,7 @@ test("call queued while disconnected is flushed after reconnect", async () => {
             }
         });
     });
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${port}`,
         reconnect: {
             enabled: true,
@@ -253,7 +253,7 @@ test("onReconnect is called with the attempt number after successful reconnect",
             setTimeout(() => ws.close(), 30);
         }
     });
-    const client = new NeonDBClient({
+    const client = new VoltraClient({
         url: `ws://127.0.0.1:${port}`,
         reconnect: {
             enabled: true,
