@@ -1,4 +1,4 @@
-# NeonDB — TODO & Roadmap
+# Voltra — TODO & Roadmap
 
 **Last Updated**: 2026-06-09 (Session 44)
 **Current Build**: 471 tests passing (465 lib + 6 Raft), zero warnings, ~2.9M raw TPS (in-process benchmark)
@@ -10,20 +10,20 @@ Read CLAUDE.md before touching any file. This document lists concrete, prioritiz
 ## CURRENT ADDENDUM - NEON V1 LOW-LATENCY GAME RUNTIME
 
 **Added**: 2026-06-12  
-**Current Build Check**: `cargo check --bin neondb` and `cargo check --bin neondb-sim` pass.  
+**Current Build Check**: `cargo check --bin voltra` and `cargo check --bin voltra-sim` pass.  
 **Current Product Direction**: Neon V1 - a minimal-latency game database/server/runtime.
 
 This section captures the current product direction. The older roadmap/history below is intentionally preserved for context.
 
 ### Mission
 
-NeonDB is being rebuilt into **Neon V1**: a low-latency authoritative game database/server/runtime.
+Voltra is being rebuilt into **Neon V1**: a low-latency authoritative game database/server/runtime.
 
 Every major change must improve or preserve p50/p99 latency, hot-path allocation rate, fanout cost,
 tick cost, memory per player/lobby, bandwidth per player, crash recovery, durability, and developer
 speed through modular templates.
 
-### Keep From Current NeonDB
+### Keep From Current Voltra
 
 - Native Rust `#[reducer]` workflow.
 - JS/WASM reducer loading where useful for developer flexibility.
@@ -34,7 +34,7 @@ speed through modular templates.
 - TypeScript and Rust SDKs.
 - Unity/Godot client templates.
 - Redis/PostgreSQL protocol surfaces where they do not touch the hot simulation path.
-- `neondb-sim serve --external` benchmark split.
+- `voltra-sim serve --external` benchmark split.
 - Existing auth, permissions, presence, TTL, metrics, backups, and admin surfaces where still useful.
 
 ### Neon V1 Architecture Target
@@ -57,11 +57,11 @@ player id, session id, roles/permissions, and runtime character/state id.
 ### Completed In This Pivot
 
 - Package version moved to `1.0.0`.
-- `neondb --version` prints `neondb 1`.
+- `voltra --version` prints `voltra 1`.
 - Added `src/runtime/mod.rs` with runtime module catalog, dependency resolution, and genre recipes.
-- Added `neondb modules` command.
+- Added `voltra modules` command.
 - Added `docs/neon-v1-runtime.md`.
-- Added `--duration-secs` compatibility alias for `neondb-sim`.
+- Added `--duration-secs` compatibility alias for `voltra-sim`.
 - Raised OCC conflict retry limit from 5 to 64 in both server entry paths.
 - Added a thread yield between OCC retries.
 
@@ -85,10 +85,10 @@ social = lobby + sessions + parties + chat + presence
 Target CLI:
 
 ```powershell
-neondb init my-game --genre fps
-neondb init my-game --genre mmo --with chat,guilds,trading
-neondb init my-game --modules lobby,movement,combat,inventory
-neondb init my-game --client unity --genre survival
+voltra init my-game --genre fps
+voltra init my-game --genre mmo --with chat,guilds,trading
+voltra init my-game --modules lobby,movement,combat,inventory
+voltra init my-game --client unity --genre survival
 ```
 
 Keep old templates until the new scaffolder works. Then move old presets under `legacy/*` or hide
@@ -132,7 +132,7 @@ Create a compact, transport-agnostic runtime delta format for hot-state updates.
 Separate account validation from runtime state. Runtime accepts validated session tokens; account
 credentials, billing, OAuth secrets, and business/account records stay outside the tick path.
 
-#### TODO-V1-007 - Integrate Module Recipes Into `neondb init`
+#### TODO-V1-007 - Integrate Module Recipes Into `voltra init`
 
 **Status**: Not started  
 **Priority**: High
@@ -145,10 +145,10 @@ Wire `src/runtime/mod.rs` into scaffolding with `--genre`, `--modules`, `--with`
 **Priority**: High
 
 ```powershell
-cargo build --release --bin neondb-sim
-.\target\release\neondb-sim.exe serve --ws-port 3777 --metrics-port 3778
-.\target\release\neondb-sim.exe --external --url ws://127.0.0.1:3777 --metrics-url http://127.0.0.1:3778 --id-offset 0 game --players 5000 --duration-secs 86400 --lobby-size 75
-.\target\release\neondb-sim.exe --external --url ws://127.0.0.1:3777 --metrics-url http://127.0.0.1:3778 --id-offset 5000 game --players 5000 --duration-secs 86400 --lobby-size 75
+cargo build --release --bin voltra-sim
+.\target\release\voltra-sim.exe serve --ws-port 3777 --metrics-port 3778
+.\target\release\voltra-sim.exe --external --url ws://127.0.0.1:3777 --metrics-url http://127.0.0.1:3778 --id-offset 0 game --players 5000 --duration-secs 86400 --lobby-size 75
+.\target\release\voltra-sim.exe --external --url ws://127.0.0.1:3777 --metrics-url http://127.0.0.1:3778 --id-offset 5000 game --players 5000 --duration-secs 86400 --lobby-size 75
 ```
 
 Watch error rate, p50/p99 latency, memory growth, WAL growth, connection count stability, and health
@@ -157,7 +157,7 @@ samples that incorrectly show `mem=0`, `wal=0`, `rows=0`, `conn=0`.
 ### Production Issues Still Worth Tracking
 
 - **PROD-001**: Health samples sometimes report zeroes during sim. Report sample unavailable instead.
-- **PROD-002**: Clean up `neondb-sim` warnings.
+- **PROD-002**: Clean up `voltra-sim` warnings.
 - **PROD-003**: OCC retry increase is a mitigation, not the final hot-row strategy.
 - **PROD-004**: Confirm full crash recovery end to end after runtime work begins.
 
@@ -174,8 +174,8 @@ samples that incorrectly show `mem=0`, `wal=0`, `rows=0`, `conn=0`.
 
 ## 🎯 THE GOAL (Session 44 — set by project owner)
 
-**Make NeonDB the easiest, highest-performance self-hosted game backend to build real games and
-apps on. NeonDB is its own product — judge it on its own merits.**
+**Make Voltra the easiest, highest-performance self-hosted game backend to build real games and
+apps on. Voltra is its own product — judge it on its own merits.**
 
 Three pillars, in order:
 
@@ -184,7 +184,7 @@ Three pillars, in order:
    - Add **C# reducers** and **Go reducers** that run *side by side* with native Rust at close-to-native
      throughput. The mechanism is **WASM compilation** (C# → .NET 8 WASI, Go → TinyGo), executed in
      the existing Wasmtime backend which already runs across the full Tokio worker pool (`num_cpus`).
-     Parallelism comes from NeonDB's worker dispatch, NOT from the language runtime — so a cheap,
+     Parallelism comes from Voltra's worker dispatch, NOT from the language runtime — so a cheap,
      re-entrant per-call WASM module rides every core for free.
    - Why not embed the real Go runtime / .NET CLR? Go's scheduler assumes it owns the process; the CLR
      is a heavyweight GC'd dependency that fights the DB for memory. WASM gets ~1.5–3× of native with
@@ -192,10 +192,10 @@ Three pillars, in order:
 
 2. **PRODUCTION-READY — implement every remaining hardening item.** Bounded reducer queue with
    backpressure, real queue-depth metric, WAL crash-recovery integration test, SDK optimistic-update
-   race fix, `neondb migrate` CLI, benchmark scaling-mode fix. (Full list: TODO-035…TODO-041 below.)
+   race fix, `voltra migrate` CLI, benchmark scaling-mode fix. (Full list: TODO-035…TODO-041 below.)
 
 3. **EASE OF USE — make building apps/games trivial.** The DX wave (TODO-027…TODO-031): `#[reducer]`
-   macros, rewritten templates, `neondb generate` typed-client codegen, engine templates
+   macros, rewritten templates, `voltra generate` typed-client codegen, engine templates
    (Unity / Unreal / Godot / Web / GammaRay), `GET /schema`.
 
 ### Explicitly DEFERRED (project owner decision, Session 44)
@@ -213,7 +213,7 @@ first, then disjoint work parallelises:
 - **Wave 0 (solo, foundation):** TODO-034 remove cluster/raft + TODO-035 bounded queue. Touches the
   hot shared files; must land before any agent branches.
 - **Wave 1 (parallel, disjoint):** TODO-032 C# backend, TODO-033 Go backend, TODO-036 SDK race fix,
-  TODO-037 WAL crash test, TODO-038 benchmark fix, TODO-039 `neondb migrate`, TODO-040 queue metric.
+  TODO-037 WAL crash test, TODO-038 benchmark fix, TODO-039 `voltra migrate`, TODO-040 queue metric.
 - **Wave 2 (parallel, disjoint):** DX foundation — TODO-027 macros, TODO-031 `/schema`.
 - **Wave 3 (parallel, disjoint):** TODO-028 template rewrite, TODO-029 codegen, TODO-030 engine templates.
 
@@ -268,7 +268,7 @@ Tests: `initial_snapshot_delivered_on_subscribe`, `initial_snapshot_respects_pre
 **Status**: ✅ DONE (Session 11) — single comparison, IN operator, AND compound predicates
 
 ### TODO-005 — Replace Boa with V8 or Wasmtime for JS Reducers
-**Status**: ✅ DONE (Session 21) — WASM-first loading (js → wasm auto-upgrade); neondb build invokes javy compiler; Boa kept for dev prototyping
+**Status**: ✅ DONE (Session 21) — WASM-first loading (js → wasm auto-upgrade); voltra build invokes javy compiler; Boa kept for dev prototyping
 
 ---
 
@@ -353,7 +353,7 @@ Tests: `initial_snapshot_delivered_on_subscribe`, `initial_snapshot_respects_pre
 `Arc<PermissionsConfig>` threaded through `main.rs`. `ctx.caller_role` set in worker loop.
 
 ### Template System — FIXED (Session 29)
-4 templates: `rust/basic`, `rust/game-ready`, `rust/chat`, `typescript`. `neondb templates` subcommand.
+4 templates: `rust/basic`, `rust/game-ready`, `rust/chat`, `typescript`. `voltra templates` subcommand.
 
 ### Query Completeness (OR / LIMIT / ORDER BY) — FIXED (Session 30–31)
 `Predicate::Or`, `LIMIT N`, `ORDER BY field ASC|DESC` all implemented in `subscriptions.rs`.
@@ -362,14 +362,14 @@ Tests: `initial_snapshot_delivered_on_subscribe`, `initial_snapshot_respects_pre
 Both TypeScript and Rust SDKs support optimistic updates with automatic rollback.
 
 ### v8.rs Complete Rewrite — FIXED (Session 32)
-- `__neondb_set` accepts full JSON objects (was number-only — broke all game reducers).
-- `__neondb_get` reads any table (was counter-only).
+- `__voltra_set` accepts full JSON objects (was number-only — broke all game reducers).
+- `__voltra_get` reads any table (was counter-only).
 - Empty scheduler args no longer crash with MessagePack decode error.
 - Scheduler reducer names corrected (`refresh`, `cleanup_sessions`).
-- Added `__neondb_delete`, `__neondb_get_all`, `__neondb_caller_id`, `__neondb_caller_role`.
+- Added `__voltra_delete`, `__voltra_get_all`, `__voltra_caller_id`, `__voltra_caller_role`.
 
 ### Known Non-Bug (Session 32)
-`neondb call attack '["player1", "enemy1", "sword", 25]'` → `{"error": "Target not found"}` is **correct** — `enemy1` was never spawned. The attack reducer itself works. See TODO-025.
+`voltra call attack '["player1", "enemy1", "sword", 25]'` → `{"error": "Target not found"}` is **correct** — `enemy1` was never spawned. The attack reducer itself works. See TODO-025.
 
 ---
 
@@ -410,15 +410,15 @@ Both TypeScript and Rust SDKs support optimistic updates with automatic rollback
 
 ---
 
-## DEVELOPER EXPERIENCE — Make NeonDB Easy to Write
+## DEVELOPER EXPERIENCE — Make Voltra Easy to Write
 
-The goal: a developer opening NeonDB for the first time should be able to write a reducer in
+The goal: a developer opening Voltra for the first time should be able to write a reducer in
 5 minutes without reading docs. Rust remains the runtime. The complexity is hidden behind macros
 and generated code, not removed.
 
 ---
 
-### TODO-027 — `neondb-macros` Proc Macro Crate (Python-like Reducer Syntax)
+### TODO-027 — `voltra-macros` Proc Macro Crate (Python-like Reducer Syntax)
 
 **Status**: ✅ DONE (Session 44 Wave 2)
 **Priority**: HIGH — this unblocks TODO-028, TODO-029, and all future templates
@@ -438,9 +438,9 @@ pub fn execute(&self, ctx: &mut ReducerContext, args: serde_json::Value)
     -> Result<serde_json::Value>
 {
     let name = args[0].as_str()
-        .ok_or_else(|| NeonDBError::invalid_argument("name required"))?;
+        .ok_or_else(|| VoltraError::invalid_argument("name required"))?;
     let delta = args[1].as_i64()
-        .ok_or_else(|| NeonDBError::invalid_argument("delta required"))? as i32;
+        .ok_or_else(|| VoltraError::invalid_argument("delta required"))? as i32;
 
     let current = ctx.get_counter("stats", name).unwrap_or(0);
     ctx.set_counter("stats", name, current + delta);
@@ -479,7 +479,7 @@ ret!()
 
 **`#[table]` macro for schema definition:**
 ```rust
-// Instead of manually building ColumnDef vectors in neondb.toml:
+// Instead of manually building ColumnDef vectors in voltra.toml:
 #[table]
 struct Player {
     #[key]
@@ -516,7 +516,7 @@ ctx.set("stats", "kills", 5i32);     // detects scalar → counter path
 
 **New crate structure:**
 ```
-neondb-macros/          ← new crate
+voltra-macros/          ← new crate
 ├── Cargo.toml          (proc-macro = true)
 └── src/
     ├── lib.rs          (exports: reducer, table, ret)
@@ -527,15 +527,15 @@ neondb-macros/          ← new crate
 Add to workspace `Cargo.toml`:
 ```toml
 [workspace]
-members = [".", "neondb-macros", "neondb-client-ts", "neondb-client-rust"]
+members = [".", "voltra-macros", "voltra-client-ts", "voltra-client-rust"]
 ```
 
 **Files to create/modify:**
-- `neondb-macros/` — new crate (create from scratch)
+- `voltra-macros/` — new crate (create from scratch)
 - `src/reducer/context.rs` — add unified `ctx.set()` / `ctx.get()` / `ctx.delete()` shortcuts
 - `src/reducer/native.rs` — update `NativeReducerBackend` to work with macro output
 - `src/reducer/registry.rs` — support static auto-registration if using `inventory` crate
-- `Cargo.toml` — add `neondb-macros` workspace member, add `inventory = "0.3"` dep
+- `Cargo.toml` — add `voltra-macros` workspace member, add `inventory = "0.3"` dep
 
 **Tests to write:**
 - `#[reducer]` macro expands correctly (use `cargo expand` / trybuild)
@@ -636,7 +636,7 @@ fn send_message(ctx, room: String, author: String, text: String) {
 
 ---
 
-### TODO-029 — `neondb generate` Code Generator Command
+### TODO-029 — `voltra generate` Code Generator Command
 
 **Status**: ✅ DONE (Session 48 — TypeScript + GDScript targets)
 **Priority**: HIGH
@@ -655,11 +655,11 @@ Run one command after changing server code → all client SDKs get typed, autoco
 
 **Command:**
 ```
-neondb generate
-neondb generate --lang csharp --out ../MyUnityGame/Assets/NeonDB/Generated/
-neondb generate --lang gdscript --out ../MyGodotGame/addons/neondb/generated/
-neondb generate --lang cpp --out ../MyUEGame/Plugins/NeonDB/Source/Generated/
-neondb generate --lang typescript --out ../web-client/src/generated/
+voltra generate
+voltra generate --lang csharp --out ../MyUnityGame/Assets/Voltra/Generated/
+voltra generate --lang gdscript --out ../MyGodotGame/addons/voltra/generated/
+voltra generate --lang cpp --out ../MyUEGame/Plugins/Voltra/Source/Generated/
+voltra generate --lang typescript --out ../web-client/src/generated/
 ```
 
 **What it reads:**
@@ -670,18 +670,18 @@ neondb generate --lang typescript --out ../web-client/src/generated/
 
 C# (Unity):
 ```csharp
-// Generated/NeonDBReducers.cs — DO NOT EDIT, run `neondb generate` to update
+// Generated/VoltraReducers.cs — DO NOT EDIT, run `voltra generate` to update
 public static class Reducers {
-    public static Task SpawnPlayer(this NeonDBClient db,
+    public static Task SpawnPlayer(this VoltraClient db,
         string id, float x, float y, string playerClass)
         => db.Call("spawn_player", id, x, y, playerClass);
 
-    public static Task Attack(this NeonDBClient db,
+    public static Task Attack(this VoltraClient db,
         string attackerId, string targetId, int damage)
         => db.Call("attack", attackerId, targetId, damage);
 }
 
-// Generated/NeonDBTables.cs
+// Generated/VoltraTables.cs
 [Serializable]
 public class Player {
     public string Id;
@@ -697,7 +697,7 @@ public class Player {
 GDScript (Godot):
 ```gdscript
 # generated/reducers.gd — DO NOT EDIT
-class_name NeonDBReducers
+class_name VoltraReducers
 
 static func spawn_player(db, id: String, x: float, y: float, player_class: String):
     return await db.call_reducer("spawn_player", [id, x, y, player_class])
@@ -710,10 +710,10 @@ TypeScript:
 ```typescript
 // generated/reducers.ts — DO NOT EDIT
 export const Reducers = {
-  spawnPlayer: (db: NeonDBClient, id: string, x: number, y: number, playerClass: string) =>
+  spawnPlayer: (db: VoltraClient, id: string, x: number, y: number, playerClass: string) =>
     db.call("spawn_player", [id, x, y, playerClass]),
 
-  attack: (db: NeonDBClient, attackerId: string, targetId: string, damage: number) =>
+  attack: (db: VoltraClient, attackerId: string, targetId: string, damage: number) =>
     db.call("attack", [attackerId, targetId, damage]),
 };
 ```
@@ -721,7 +721,7 @@ export const Reducers = {
 **How the generator reads the schema:**
 - Parse `#[table]` macro attributes from `reducers/*.rs` using `syn` crate (same crate proc macros use)
 - Parse `#[reducer]` function signatures from `reducers/*.rs`
-- Alternatively: emit a JSON schema file at `neondb start` time (`GET /schema` endpoint) and have
+- Alternatively: emit a JSON schema file at `voltra start` time (`GET /schema` endpoint) and have
   the generator read that — no Rust parsing required in the generator itself
 
 **Files to create/modify:**
@@ -736,27 +736,27 @@ export const Reducers = {
 
 ---
 
-### TODO-030 — Engine-Specific `neondb init` Templates
+### TODO-030 — Engine-Specific `voltra init` Templates
 
 **Status**: ❌ NOT STARTED (depends on TODO-027, TODO-028, TODO-029)
 **Priority**: MEDIUM
 **Effort**: varies per engine (see breakdown below)
 
 **Problem:**
-`neondb init` currently creates a server-only project. A game developer using Unity still has
+`voltra init` currently creates a server-only project. A game developer using Unity still has
 to manually wire up a WebSocket client, handle MessagePack, parse subscription frames, and
 figure out how to map server rows to Unity GameObjects. This is days of work before they write
 a single line of game logic.
 
 **Goal:**
-`neondb init mygame --engine unity` produces a complete, runnable starting point:
-a NeonDB server project (simplified Rust reducers) AND a ready-to-import client package
+`voltra init mygame --engine unity` produces a complete, runnable starting point:
+a Voltra server project (simplified Rust reducers) AND a ready-to-import client package
 for that engine, with typed generated code already in place.
 
 **New CLI flag:**
 ```
-neondb init <name> --engine <unity|unreal|godot|web|custom>
-neondb templates   # lists all available templates including engine templates
+voltra init <name> --engine <unity|unreal|godot|web|custom>
+voltra templates   # lists all available templates including engine templates
 ```
 
 **Output structure (example: Unity):**
@@ -764,20 +764,20 @@ neondb templates   # lists all available templates including engine templates
 mygame/
 ├── server/
 │   ├── Cargo.toml
-│   ├── neondb.toml
+│   ├── voltra.toml
 │   └── reducers/
 │       ├── player.rs     #[reducer] fn spawn_player(...)
 │       ├── combat.rs     #[reducer] fn attack(...)
 │       └── world.rs      #[reducer] fn move_player(...)
 │
 └── client-unity/         ← paste into Assets/ folder
-    └── NeonDB/
-        ├── NeonDBClient.cs
+    └── Voltra/
+        ├── VoltraClient.cs
         ├── TableWatcher.cs       (MonoBehaviour for live updates)
         ├── MessagePackHelper.cs
         ├── Generated/
-        │   ├── NeonDBReducers.cs (typed reducer calls)
-        │   ├── NeonDBTables.cs   (typed row structs)
+        │   ├── VoltraReducers.cs (typed reducer calls)
+        │   ├── VoltraTables.cs   (typed row structs)
         │   └── README.md
         └── package.json          (UPM package manifest)
 ```
@@ -792,10 +792,10 @@ mygame/
 **Key challenge**: Unity's main thread requirement — all GameObject operations must run on main thread;
 subscription callbacks must `Dispatch` to main thread via a `SynchronizationContext` or `Queue<Action>`
 **What the template includes**:
-- `NeonDBClient.cs` — Connect, Subscribe, CallReducer, Disconnect, auto-reconnect
-- `TableWatcher.cs` — MonoBehaviour that syncs a NeonDB table to a `Dictionary<string, T>`
+- `VoltraClient.cs` — Connect, Subscribe, CallReducer, Disconnect, auto-reconnect
+- `TableWatcher.cs` — MonoBehaviour that syncs a Voltra table to a `Dictionary<string, T>`
   and fires `OnInsert`, `OnUpdate`, `OnDelete` Unity events
-- `NeonDBManager.cs` — singleton MonoBehaviour that holds the client, survives scene loads
+- `VoltraManager.cs` — singleton MonoBehaviour that holds the client, survives scene loads
 - Sample scene: a `PlayerManager.cs` that calls `spawn_player` on Start and moves players around
 - Generated typed wrappers from the server schema
 
@@ -804,9 +804,9 @@ subscription callbacks must `Dispatch` to main thread via a `SynchronizationCont
 **Client tech**: Unreal's built-in `IWebSocket` module, custom MessagePack encoder (header-only `msgpack-c`)
 **Key challenge**: Unreal build system (`.Build.cs`), USTRUCT/UFUNCTION reflection macros, packaging
 **What the template includes**:
-- `UNeonDBSubsystem.h/.cpp` — `UGameInstanceSubsystem` for lifecycle management
-- `UNeonDBClient.h/.cpp` — Connect, Subscribe, CallReducer as `UFUNCTION(BlueprintCallable)`
-- `FNeonDBTableDiff` — USTRUCT with `TArray<FJsonObject>` Inserted/Updated/Deleted
+- `UVoltraSubsystem.h/.cpp` — `UGameInstanceSubsystem` for lifecycle management
+- `UVoltraClient.h/.cpp` — Connect, Subscribe, CallReducer as `UFUNCTION(BlueprintCallable)`
+- `FVoltraTableDiff` — USTRUCT with `TArray<FJsonObject>` Inserted/Updated/Deleted
 - Blueprint-callable reducer wrappers (from generated code)
 - `.uplugin` manifest + `.Build.cs` with module dependencies
 - Sample `APlayerSpawner.cpp` demonstrating spawn + movement sync
@@ -816,19 +816,19 @@ subscription callbacks must `Dispatch` to main thread via a `SynchronizationCont
 **Client tech**: Godot 4 built-in `WebSocketPeer`, GDScript MessagePack encoder (pure GDScript, ~100 lines)
 **Key challenge**: Godot addon structure, autoload singletons, signal-based update delivery
 **What the template includes**:
-- `addons/neondb/neondb.gd` — autoload singleton (add to Project Settings → Autoload)
-- `addons/neondb/neondb_client.gd` — WebSocket connection, MessagePack encode/decode
-- `addons/neondb/table_watcher.gd` — Node that watches one table and emits signals on changes
-- `addons/neondb/plugin.cfg` — addon manifest
+- `addons/voltra/voltra.gd` — autoload singleton (add to Project Settings → Autoload)
+- `addons/voltra/voltra_client.gd` — WebSocket connection, MessagePack encode/decode
+- `addons/voltra/table_watcher.gd` — Node that watches one table and emits signals on changes
+- `addons/voltra/plugin.cfg` — addon manifest
 - Generated `generated/reducers.gd` and `generated/tables.gd`
 - Sample scene: `examples/player_demo/player_manager.gd`
 
 #### Web / TypeScript — `--engine web`
 **Effort**: 2–3 days (SDK already exists, just needs a project template)
-**Client tech**: Existing `neondb-client-ts` SDK
+**Client tech**: Existing `voltra-client-ts` SDK
 **What the template includes**:
 - Vite + React starter project
-- Pre-wired `NeonDBProvider` React context
+- Pre-wired `VoltraProvider` React context
 - `useTable("players")` hook returning live-synced data
 - Generated `src/generated/reducers.ts` and `src/generated/tables.ts`
 - Example `PlayerList.tsx` component showing a live player list
@@ -837,10 +837,10 @@ subscription callbacks must `Dispatch` to main thread via a `SynchronizationCont
 **Effort**: 1–2 weeks
 **Client tech**: C header + Rust FFI shared library (`.dll`/`.so`)
 **What the template includes**:
-- `neondb.h` — pure C API: `neondb_connect`, `neondb_call`, `neondb_subscribe`, `neondb_disconnect`
-- `libneondb.dll` / `libneondb.so` built from a Rust FFI crate (`neondb-ffi/`)
-- Python binding (`neondb.py`) wrapping the C API via `ctypes` — for Pygame / Ren'Py / custom Python engines
-- Lua binding (`neondb.lua`) wrapping the C API via `ffi` — for Love2D / custom Lua engines
+- `voltra.h` — pure C API: `voltra_connect`, `voltra_call`, `voltra_subscribe`, `voltra_disconnect`
+- `libvoltra.dll` / `libvoltra.so` built from a Rust FFI crate (`voltra-ffi/`)
+- Python binding (`voltra.py`) wrapping the C API via `ctypes` — for Pygame / Ren'Py / custom Python engines
+- Lua binding (`voltra.lua`) wrapping the C API via `ffi` — for Love2D / custom Lua engines
 - A plain C example (`example.c`) demonstrating connect + call + subscribe
 
 ---
@@ -848,7 +848,7 @@ subscription callbacks must `Dispatch` to main thread via a `SynchronizationCont
 **Files to create/modify for TODO-030:**
 - `src/main.rs` — add engine template constants (server-side reducer files) + new `init --engine` branch
 - `src/cli.rs` — add `--engine` flag to `Commands::Init`
-- `neondb-ffi/` — new Rust crate for C FFI bindings (GammaRay target)
+- `voltra-ffi/` — new Rust crate for C FFI bindings (GammaRay target)
 - `templates/unity/` — C# source files for the Unity package
 - `templates/unreal/` — C++ source files for the UE plugin
 - `templates/godot/` — GDScript source files for the Godot addon
@@ -870,7 +870,7 @@ subscription callbacks must `Dispatch` to main thread via a `SynchronizationCont
 **Effort**: 2–3 days
 
 **Problem:**
-`neondb generate` needs to know the current tables and reducer signatures without parsing Rust
+`voltra generate` needs to know the current tables and reducer signatures without parsing Rust
 source files. A running server already has this information in `SchemaRegistry` and
 `ReducerRegistry`.
 
@@ -922,7 +922,7 @@ Returns:
 
 ## PILLAR 1 — MULTI-LANGUAGE REDUCERS (C# + Go via WASM)
 
-The thesis: NeonDB already dispatches every reducer call across N Tokio worker threads
+The thesis: Voltra already dispatches every reducer call across N Tokio worker threads
 (`num_cpus`). The Wasmtime backend (Cranelift JIT) is already parallel-safe — a compiled module is
 shared `Arc`, each call gets a fresh `Store`. So adding C# and Go is NOT about adding new threading;
 it is about **adding two new compile targets that produce `.wasm` modules the existing backend loads.**
@@ -935,15 +935,15 @@ This is how they run "side by side with native Rust" at near-native speed on all
 **Status**: ✅ DONE (Session 44)
 **Priority**: HIGH (Pillar 1)
 **Effort**: 1–2 weeks
-**Wave**: 1 (disjoint — touches `neondb build` + new template dir, minimal main.rs overlap)
+**Wave**: 1 (disjoint — touches `voltra build` + new template dir, minimal main.rs overlap)
 
-**Goal:** A game developer writes a reducer in C#, runs `neondb build`, and NeonDB loads the
+**Goal:** A game developer writes a reducer in C#, runs `voltra build`, and Voltra loads the
 resulting `.wasm` and executes it through the existing Wasmtime backend.
 
 **Developer experience:**
 ```csharp
 // reducers/Combat.cs
-using NeonDB;
+using Voltra;
 
 public static class Combat {
     [Reducer]
@@ -957,17 +957,17 @@ public static class Combat {
 }
 ```
 ```powershell
-neondb build          # detects C# project, runs dotnet publish --os wasi → attack.wasm
-neondb start          # Wasmtime loads attack.wasm like any other module
+voltra build          # detects C# project, runs dotnet publish --os wasi → attack.wasm
+voltra start          # Wasmtime loads attack.wasm like any other module
 ```
 
 **How it compiles:**
 - .NET 8 ships a WASI workload: `dotnet workload install wasi-experimental` (or .NET 9 `wasi-wasm`).
 - `dotnet publish -c Release -r wasi-wasm` produces a `.wasm` module.
-- The module imports NeonDB host functions (`__neondb_get`, `__neondb_set`, `__neondb_delete`,
-  `__neondb_get_all`, plus `__neondb_caller_id` / `__neondb_caller_role`) — the SAME host ABI the
+- The module imports Voltra host functions (`__voltra_get`, `__voltra_set`, `__voltra_delete`,
+  `__voltra_get_all`, plus `__voltra_caller_id` / `__voltra_caller_role`) — the SAME host ABI the
   WAT/JS-via-javy modules already use (see `src/reducer/wasm.rs`).
-- A small **`NeonDB` C# host-binding package** (provided in the template) wraps those imports into the
+- A small **`Voltra` C# host-binding package** (provided in the template) wraps those imports into the
   ergonomic `ReducerContext` API shown above.
 
 **What must be built:**
@@ -976,9 +976,9 @@ neondb start          # Wasmtime loads attack.wasm like any other module
    loads (it is plain wasm32; Wasmtime 21 handles it).
 2. `src/main.rs` `cmd_build()` — detect a C# reducer project (`*.csproj` in `reducers/`) and invoke
    `dotnet publish -c Release -r wasi-wasm -o modules/`. Copy the `.wasm` into `modules/`.
-3. `templates/csharp-reducers/` — a `.csproj`, the `NeonDB` host-binding `.cs` file, and a sample
+3. `templates/csharp-reducers/` — a `.csproj`, the `Voltra` host-binding `.cs` file, and a sample
    `Combat.cs` reducer.
-4. `neondb init <name> --reducer-lang csharp` — scaffolds the above.
+4. `voltra init <name> --reducer-lang csharp` — scaffolds the above.
 5. Docs: `docs/reducers-csharp.md`.
 
 **Acceptance test:** Build the sample C# reducer to wasm, load it, call `attack`, verify the row
@@ -1000,7 +1000,7 @@ installed (CI may not have the WASI workload).
 **Effort**: 1–2 weeks
 **Wave**: 1 (disjoint — parallel with TODO-032, separate template dir)
 
-**Goal:** Same as TODO-032 but for Go. Write a reducer in Go, `neondb build` compiles it to `.wasm`
+**Goal:** Same as TODO-032 but for Go. Write a reducer in Go, `voltra build` compiles it to `.wasm`
 via TinyGo, the Wasmtime backend runs it.
 
 **Developer experience:**
@@ -1008,10 +1008,10 @@ via TinyGo, the Wasmtime backend runs it.
 // reducers/combat.go
 package main
 
-import "neondb"
+import "voltra"
 
 //export attack
-func Attack(ctx *neondb.Context, attackerId, targetId string, damage int32) {
+func Attack(ctx *voltra.Context, attackerId, targetId string, damage int32) {
     target := ctx.Get("players", targetId)
     hp := target.Int("hp") - damage
     if hp < 0 { hp = 0 }
@@ -1023,8 +1023,8 @@ func Attack(ctx *neondb.Context, attackerId, targetId string, damage int32) {
 func main() {}  // required by TinyGo wasm target
 ```
 ```powershell
-neondb build          # detects Go project, runs: tinygo build -o modules/combat.wasm -target wasi
-neondb start
+voltra build          # detects Go project, runs: tinygo build -o modules/combat.wasm -target wasi
+voltra start
 ```
 
 **How it compiles:**
@@ -1032,15 +1032,15 @@ neondb start
   and is huge + slow to start. TinyGo produces compact, fast wasm32-wasi modules ideal for per-call
   execution.
 - `tinygo build -o combat.wasm -target wasi ./reducers`
-- Imports the same NeonDB host-function ABI as C#/WAT/JS.
-- A small **`neondb` Go host-binding package** (provided in template) wraps the imports.
+- Imports the same Voltra host-function ABI as C#/WAT/JS.
+- A small **`voltra` Go host-binding package** (provided in template) wraps the imports.
 
 **What must be built:**
 1. `src/main.rs` `cmd_build()` — detect a Go reducer project (`go.mod` + `*.go` in `reducers/`) and
    invoke `tinygo build -target wasi`. (Coordinate with TODO-032 — both edit `cmd_build`; one PR adds
    a `detect_reducer_lang()` dispatcher both hook into, to avoid a main.rs conflict.)
-2. `templates/go-reducers/` — `go.mod`, the `neondb` host-binding package, sample `combat.go`.
-3. `neondb init <name> --reducer-lang go`.
+2. `templates/go-reducers/` — `go.mod`, the `voltra` host-binding package, sample `combat.go`.
+3. `voltra init <name> --reducer-lang go`.
 4. Docs: `docs/reducers-go.md`.
 
 **Acceptance test:** Build sample Go reducer to wasm via TinyGo, load, call, verify mutation.
@@ -1087,7 +1087,7 @@ AND faster.
 9. `git rm -r src/cluster src/raft`.
 
 **Acceptance:** `cargo build` clean, `cargo test --lib` green (expect ~465 minus any cluster-only lib
-tests), single-node `neondb start` + `neondb call` round-trips a write through commit→publish→WAL.
+tests), single-node `voltra start` + `voltra call` round-trips a write through commit→publish→WAL.
 
 ---
 
@@ -1103,7 +1103,7 @@ overload the queue grows without limit, exhausting memory.
 
 **Fix:**
 - `kanal::bounded_async::<PendingCall>(cap)` where `cap` is configurable
-  (`NEONDB_REDUCER_QUEUE_CAP`, default e.g. 16_384).
+  (`VOLTRA_REDUCER_QUEUE_CAP`, default e.g. 16_384).
 - In `websocket.rs`, when `reducer_tx.try_send()` fails with `Full`, return a `ReducerResponse::error`
   ("server overloaded, retry") instead of awaiting indefinitely — fail fast, shed load.
 - Wire the chosen depth into TODO-040's metric.
@@ -1125,7 +1125,7 @@ call #2's speculative state is applied; rolling back #1 clobbers #2's state.
 - On resolve/rollback of one call, recompute the live cache as: base server state + replay of all
   still-pending optimistic layers in order (skip/insert the resolving one). This makes rollback
   order-independent.
-- `neondb-client-ts/src/client.ts` and `neondb-client-rust/src/client.rs`.
+- `voltra-client-ts/src/client.ts` and `voltra-client-rust/src/client.rs`.
 - Add a reproducer test: fire two overlapping optimistic calls, resolve #1 with a conflicting diff,
   assert #2's speculative state survives.
 
@@ -1138,7 +1138,7 @@ call #2's speculative state is applied; rolling back #1 clobbers #2's state.
 **Effort**: 2–3 days
 **Wave**: 1 (DISJOINT — new test file only)
 
-**Problem:** WAL recovery is unit-tested but no test starts a real `neondb start`, kills it
+**Problem:** WAL recovery is unit-tested but no test starts a real `voltra start`, kills it
 mid-write, restarts, and verifies state end-to-end.
 
 **Fix:** New `tests/crash_recovery_test.rs` using the existing `spawn_server_with_env` harness
@@ -1160,7 +1160,7 @@ fix the broadcast counter so `pushed > 0` is measured. Fix the `wmic` CPU/mem sa
 
 ---
 
-### TODO-039 — `neondb migrate` CLI Command
+### TODO-039 — `voltra migrate` CLI Command
 
 **Status**: ❌ NOT STARTED
 **Priority**: MEDIUM (Pillar 2)
@@ -1170,8 +1170,8 @@ fix the broadcast counter so `pushed > 0` is measured. Fix the `wmic` CPU/mem sa
 **Problem:** `apply_migrations()` exists in `src/migrations.rs` but there is no CLI command to run
 `migrations/*.toml` against a running server.
 
-**Fix:** `neondb migrate [--dry-run]` — reads `migrations/`, POSTs to a new `POST /migrate` admin
-endpoint (like `neondb seed` does for `/seed`), applies add/remove/rename field ops, reports a
+**Fix:** `voltra migrate [--dry-run]` — reads `migrations/`, POSTs to a new `POST /migrate` admin
+endpoint (like `voltra seed` does for `/seed`), applies add/remove/rename field ops, reports a
 per-migration summary.
 
 ---
@@ -1230,12 +1230,12 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 
 ── NEW GAPS (Session 32+) ────────────────────────────────────────
 25. TODO-025  Enemy/NPC spawning system       ✅ DONE (Session 33)
-26. TODO-026  CLI `neondb seed` command       ✅ DONE (Session 35)
+26. TODO-026  CLI `voltra seed` command       ✅ DONE (Session 35)
 
 ── DEVELOPER EXPERIENCE (Session 43+) ──────────────────────────
-27. TODO-027  neondb-macros proc macro crate  ✅ DONE (Session 44 Wave 2)
+27. TODO-027  voltra-macros proc macro crate  ✅ DONE (Session 44 Wave 2)
 28. TODO-028  Rewrite templates w/ #[reducer] ✅ DONE  (Session 45)
-29. TODO-029  neondb generate code generator  ✅ DONE  (Session 48 — TypeScript + GDScript)
+29. TODO-029  voltra generate code generator  ✅ DONE  (Session 48 — TypeScript + GDScript)
 30. TODO-030  Engine-specific init templates  ❌ NOT STARTED  ← Wave 3 (needs 028,029)
               (Unity / Unreal / Godot / Web / GammaRay)
 31. TODO-031  GET /schema endpoint            ✅ DONE  (Session 44 Wave 1)
@@ -1253,7 +1253,7 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 36. TODO-036  SDK optimistic race fix          ✅ DONE  (Session 44 Wave 1)
 37. TODO-037  WAL crash-recovery test          ✅ DONE  (Session 44 Wave 1)
 38. TODO-038  Benchmark scaling fix            ✅ DONE  (Session 44 Wave 1)
-39. TODO-039  neondb migrate CLI               ✅ DONE  (Session 44 Wave 1)
+39. TODO-039  voltra migrate CLI               ✅ DONE  (Session 44 Wave 1)
 40. TODO-040  Real queue-depth metric          ✅ DONE  (Session 44 Wave 1)
 
    WAVE 2 + 3: DX (TODO-027…031) per dependency order above.
@@ -1281,7 +1281,7 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 
 ## QUICK REFERENCE: CURRENT BENCHMARK NUMBERS
 
-| Scenario | NeonDB | Status |
+| Scenario | Voltra | Status |
 |---|---|---|
 | Raw TPS (in-process) | ~2.9M ops/sec | ✅ Engine is fast |
 | No-commit (reducer only) | 391K TPS | ✅ |
@@ -1304,7 +1304,7 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 ## Remaining for Production (post-Session-39 wave)
 
 The 5-agent Session-39 wave landed schema hardening, new WAL unit tests, and integration-style
-schema tests, but the following gaps remain before NeonDB is production-ready. They are listed
+schema tests, but the following gaps remain before Voltra is production-ready. They are listed
 in roughly decreasing order of severity.
 
 ### Build & Test Plumbing (BLOCKING)
@@ -1318,7 +1318,7 @@ in roughly decreasing order of severity.
 ### Data Reliability
 - **Full WAL crash recovery on a REAL server.** Session 39 added unit-level WAL recovery tests
   (`tests/wal_recovery_test.rs`) covering checksum corruption, mid-entry truncation, and
-  snapshot+replay. We do NOT yet have a test that starts a real `neondb start` process, kills it
+  snapshot+replay. We do NOT yet have a test that starts a real `voltra start` process, kills it
   mid-write, restarts it, and verifies the state matches expectations end-to-end. The integration
   test infrastructure exists (see Sessions 37–38) but no test exercises crash recovery.
 - **CRDT / HLC for cross-shard write conflict resolution** (Wave 4 of the original plan). With
@@ -1330,8 +1330,8 @@ in roughly decreasing order of severity.
 - **TS / Rust SDK optimistic-update concurrent-diff race** (Wave 3 of the original plan).
   When two `call_optimistic()` calls overlap and the server's diff for the FIRST call arrives
   AFTER the optimistic state of the SECOND call has been applied, the rollback path can clobber
-  the second call's speculative state. Reproducer + fix needed for both `neondb-client-ts/src/client.ts`
-  and `neondb-client-rust/src/client.rs`.
+  the second call's speculative state. Reproducer + fix needed for both `voltra-client-ts/src/client.ts`
+  and `voltra-client-rust/src/client.rs`.
 
 ### Cluster
 - **Cluster integration tests (two-node loopback).** `src/cluster/mod.rs` has solid unit tests

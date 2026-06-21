@@ -1,11 +1,11 @@
 use thiserror::Error;
 
-/// Result type for NeonDB operations
-pub type Result<T> = std::result::Result<T, NeonDBError>;
+/// Result type for Voltra operations
+pub type Result<T> = std::result::Result<T, VoltraError>;
 
-/// All error types that can occur in NeonDB
+/// All error types that can occur in Voltra
 #[derive(Error, Debug)]
-pub enum NeonDBError {
+pub enum VoltraError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -45,59 +45,59 @@ pub enum NeonDBError {
     TxnConflict(String),
 }
 
-impl NeonDBError {
+impl VoltraError {
     pub fn wal_error(msg: impl Into<String>) -> Self {
-        NeonDBError::WalError(msg.into())
+        VoltraError::WalError(msg.into())
     }
 
     pub fn table_error(msg: impl Into<String>) -> Self {
-        NeonDBError::TableError(msg.into())
+        VoltraError::TableError(msg.into())
     }
 
     pub fn reducer_error(msg: impl Into<String>) -> Self {
-        NeonDBError::ReducerError(msg.into())
+        VoltraError::ReducerError(msg.into())
     }
 
     pub fn network_error(msg: impl Into<String>) -> Self {
-        NeonDBError::NetworkError(msg.into())
+        VoltraError::NetworkError(msg.into())
     }
 
     pub fn invalid_argument(msg: impl Into<String>) -> Self {
-        NeonDBError::InvalidArgument(msg.into())
+        VoltraError::InvalidArgument(msg.into())
     }
 
     pub fn internal(msg: impl Into<String>) -> Self {
-        NeonDBError::Internal(msg.into())
+        VoltraError::Internal(msg.into())
     }
 }
 
-impl From<serde_json::Error> for NeonDBError {
+impl From<serde_json::Error> for VoltraError {
     fn from(err: serde_json::Error) -> Self {
-        NeonDBError::SerializationError(format!("JSON serialization error: {}", err))
+        VoltraError::SerializationError(format!("JSON serialization error: {}", err))
     }
 }
 
-impl From<rmp_serde::decode::Error> for NeonDBError {
+impl From<rmp_serde::decode::Error> for VoltraError {
     fn from(err: rmp_serde::decode::Error) -> Self {
-        NeonDBError::SerializationError(format!("MessagePack decode error: {}", err))
+        VoltraError::SerializationError(format!("MessagePack decode error: {}", err))
     }
 }
 
-impl From<rmp_serde::encode::Error> for NeonDBError {
+impl From<rmp_serde::encode::Error> for VoltraError {
     fn from(err: rmp_serde::encode::Error) -> Self {
-        NeonDBError::SerializationError(format!("MessagePack encode error: {}", err))
+        VoltraError::SerializationError(format!("MessagePack encode error: {}", err))
     }
 }
 
-impl From<std::str::Utf8Error> for NeonDBError {
+impl From<std::str::Utf8Error> for VoltraError {
     fn from(err: std::str::Utf8Error) -> Self {
-        NeonDBError::SerializationError(format!("UTF-8 decode error: {}", err))
+        VoltraError::SerializationError(format!("UTF-8 decode error: {}", err))
     }
 }
 
-impl From<rquickjs::Error> for NeonDBError {
+impl From<rquickjs::Error> for VoltraError {
     fn from(err: rquickjs::Error) -> Self {
-        NeonDBError::ReducerError(format!("JS error: {}", err))
+        VoltraError::ReducerError(format!("JS error: {}", err))
     }
 }
 

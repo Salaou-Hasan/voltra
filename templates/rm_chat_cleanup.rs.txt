@@ -1,7 +1,7 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 
 /// Scheduled: deletes chat messages older than 5 minutes.
-/// Wire up in neondb.toml:
+/// Wire up in voltra.toml:
 ///   [[scheduler]]
 ///   reducer = "cleanup_chat"
 ///   interval_ms = 60000

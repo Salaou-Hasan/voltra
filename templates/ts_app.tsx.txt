@@ -1,14 +1,14 @@
-// Example React app using the NeonDB hooks.
+// Example React app using the Voltra hooks.
 import { useState } from "react";
-import { NeonDBClient } from "neondb-client";
-import { NeonDBProvider, useNeonDBQuery, useNeonDBReducer } from "../hooks";
+import { VoltraClient } from "voltra-client";
+import { VoltraProvider, useVoltraQuery, useVoltraReducer } from "../hooks";
 
-const client = new NeonDBClient({ url: "ws://127.0.0.1:3000", auth: "dev-key" });
+const client = new VoltraClient({ url: "ws://127.0.0.1:3000", auth: "dev-key" });
 await client.connect();
 
 function CounterView() {
-  const rows = useNeonDBQuery<{ name: string; value: number }>("counters");
-  const hello = useNeonDBReducer<{ name: string; value: number }>("hello");
+  const rows = useVoltraQuery<{ name: string; value: number }>("counters");
+  const hello = useVoltraReducer<{ name: string; value: number }>("hello");
   const [name, setName] = useState("clicks");
   return (
     <div>
@@ -21,8 +21,8 @@ function CounterView() {
 
 export default function App() {
   return (
-    <NeonDBProvider client={client}>
+    <VoltraProvider client={client}>
       <CounterView />
-    </NeonDBProvider>
+    </VoltraProvider>
   );
 }

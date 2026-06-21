@@ -42,31 +42,31 @@ Start each node with a distinct WAL path and metrics port. The WebSocket port is
 Node 1 (`http://node1:3001`):
 
 ```bash
-NEONDB_HOST=0.0.0.0 \
-NEONDB_METRICS_PORT=3001 \
-NEONDB_WAL_PATH=/data/node1/neondb.wal \
-NEONDB_API_KEY=changeme \
-neondb start
+VOLTRA_HOST=0.0.0.0 \
+VOLTRA_METRICS_PORT=3001 \
+VOLTRA_WAL_PATH=/data/node1/voltra.wal \
+VOLTRA_API_KEY=changeme \
+voltra start
 ```
 
 Node 2 (`http://node2:3001`):
 
 ```bash
-NEONDB_HOST=0.0.0.0 \
-NEONDB_METRICS_PORT=3001 \
-NEONDB_WAL_PATH=/data/node2/neondb.wal \
-NEONDB_API_KEY=changeme \
-neondb start
+VOLTRA_HOST=0.0.0.0 \
+VOLTRA_METRICS_PORT=3001 \
+VOLTRA_WAL_PATH=/data/node2/voltra.wal \
+VOLTRA_API_KEY=changeme \
+voltra start
 ```
 
 Node 3 (`http://node3:3001`):
 
 ```bash
-NEONDB_HOST=0.0.0.0 \
-NEONDB_METRICS_PORT=3001 \
-NEONDB_WAL_PATH=/data/node3/neondb.wal \
-NEONDB_API_KEY=changeme \
-neondb start
+VOLTRA_HOST=0.0.0.0 \
+VOLTRA_METRICS_PORT=3001 \
+VOLTRA_WAL_PATH=/data/node3/voltra.wal \
+VOLTRA_API_KEY=changeme \
+voltra start
 ```
 
 ### 2. Initialize the first node as Raft leader
@@ -147,8 +147,8 @@ This is implemented in `src/cluster/mod.rs` as `shard_for_key(key, shard_count) 
 
 ## Cluster Security
 
-Set `NEONDB_CLUSTER_SECRET` to a shared secret on all nodes. The secret is injected as the `x-neondb-cluster-secret` header on all inter-node Raft HTTP requests. Requests without the correct secret are rejected.
+Set `VOLTRA_CLUSTER_SECRET` to a shared secret on all nodes. The secret is injected as the `x-voltra-cluster-secret` header on all inter-node Raft HTTP requests. Requests without the correct secret are rejected.
 
 ```bash
-NEONDB_CLUSTER_SECRET=your-shared-secret neondb start
+VOLTRA_CLUSTER_SECRET=your-shared-secret voltra start
 ```

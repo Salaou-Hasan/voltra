@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB websocket.rs — high-throughput rewrite
+// Voltra websocket.rs — high-throughput rewrite
 //
 // Session 7 — TODO-003: pass Arc<TableStore> into subscribe handler so new
 //   clients receive initial_snapshot frames for all existing matching rows.
@@ -29,7 +29,7 @@ use super::rate_limiter::RateLimiterRegistry;
 use super::InlineRegistry;
 use crate::auth::{AuthResult, AuthValidator, IdentityIssuer};
 use crate::config::PermissionsConfig;
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::metrics::Metrics;
 use crate::presence::PresenceManager;
 use crate::tenant::TenantRegistry;
@@ -65,10 +65,10 @@ pub const CLIENT_SEND_BUFFER_CAPACITY: usize = 1024;
 /// `client-output-buffer-limit`). A transient spike drops a few stale frames
 /// and recovers (strike counter resets on the next successful send); only a
 /// client that stays behind for this many deliveries in a row is disconnected.
-/// Tunable via `NEONDB_SLOW_CONSUMER_MAX_STRIKES` (default 64).
+/// Tunable via `VOLTRA_SLOW_CONSUMER_MAX_STRIKES` (default 64).
 pub static SLOW_CONSUMER_MAX_STRIKES: std::sync::LazyLock<u32> =
     std::sync::LazyLock::new(|| {
-        std::env::var("NEONDB_SLOW_CONSUMER_MAX_STRIKES")
+        std::env::var("VOLTRA_SLOW_CONSUMER_MAX_STRIKES")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|&n| n > 0)
@@ -152,7 +152,7 @@ async fn run_accept_loop(
                             log::debug!("Drain active — rejecting new connection from {}", peer_addr);
                             let _ = tokio::io::AsyncWriteExt::write_all(
                                 &mut tokio::io::BufWriter::new(stream),
-                                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 30\r\nX-NeonDB-Draining: true\r\n\r\n",
+                                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 30\r\nX-Voltra-Draining: true\r\n\r\n",
                             ).await;
                             continue;
                         }
@@ -215,7 +215,7 @@ pub struct PendingCall {
     pub call_id: u64,
     pub reducer_name: String,
     pub args: Vec<u8>,
-    /// Identity of the caller (X-NeonDB-Identity header or TCP peer address).
+    /// Identity of the caller (X-Voltra-Identity header or TCP peer address).
     pub caller_id: String,
     /// Role of the caller, parsed from `Bearer <key>:<role>`.
     /// Empty string when no role suffix was provided.
@@ -319,7 +319,7 @@ pub async fn start_listener(
     // SO_REUSEPORT, exactly 1 everywhere else (create_listeners handles this).
     let accept_count = num_cpus::get().clamp(1, 8);
     let listeners = create_listeners(&bind_addr, accept_count)
-        .map_err(|e| crate::error::NeonDBError::network_error(format!("bind {}: {}", bind_addr, e)))?;
+        .map_err(|e| crate::error::VoltraError::network_error(format!("bind {}: {}", bind_addr, e)))?;
 
     if tls_acceptor.is_some() {
         log::info!("WebSocket listener (WSS/TLS) on {} ({} accept queue(s))", bind_addr, listeners.len());
@@ -498,10 +498,10 @@ where
                 }
             }
 
-            // Also check X-NeonDB-Identity header as override for caller_id
+            // Also check X-Voltra-Identity header as override for caller_id
             if let Some(id) = request
                 .headers()
-                .get("x-neondb-identity")
+                .get("x-voltra-identity")
                 .and_then(|v| v.to_str().ok())
             {
                 if let Ok(mut cell) = caller_id_capture.lock() { *cell = id.to_string(); }
@@ -511,7 +511,7 @@ where
         Some(ws_config),
     )
     .await
-    .map_err(|e| NeonDBError::network_error(format!("WebSocket handshake error: {}", e)))?;
+    .map_err(|e| VoltraError::network_error(format!("WebSocket handshake error: {}", e)))?;
 
     let caller_id: String = {
         let g = caller_id_cell.lock().unwrap_or_else(|e| e.into_inner());
@@ -1411,8 +1411,8 @@ mod tests {
         assert_eq!(m.slow_consumer_evictions_total.get(), 1);
         // Both must appear in the Prometheus exposition output.
         let out = m.render();
-        assert!(out.contains("neondb_subscription_frames_dropped_total"));
-        assert!(out.contains("neondb_slow_consumer_evictions_total"));
+        assert!(out.contains("voltra_subscription_frames_dropped_total"));
+        assert!(out.contains("voltra_slow_consumer_evictions_total"));
     }
 
     // ── is_jwt helper tests ──────────────────────────────────────────────────

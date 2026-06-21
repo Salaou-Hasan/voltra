@@ -1,5 +1,5 @@
 use futures::{future::join_all, SinkExt, StreamExt};
-use neondb::network::message::{ClientMessage, ReducerCall, ServerMessage};
+use voltra::network::message::{ClientMessage, ReducerCall, ServerMessage};
 use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -23,9 +23,9 @@ struct IncrementResult {
 fn server_binary_path() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let file_name = if cfg!(windows) {
-        "neondb.exe"
+        "voltra.exe"
     } else {
-        "neondb"
+        "voltra"
     };
     manifest_dir.join("target").join("debug").join(file_name)
 }
@@ -37,7 +37,7 @@ fn server_binary_path() -> PathBuf {
 /// would deadlock because `cargo test` holds the build-directory lock and a
 /// nested `cargo build` call would block forever trying to acquire the same lock.
 ///
-/// The binary is placed at `target/debug/neondb[.exe]` by the same `cargo test`
+/// The binary is placed at `target/debug/voltra[.exe]` by the same `cargo test`
 /// invocation that compiled this integration test harness, so it is guaranteed
 /// to exist by the time any test function runs.
 fn ensure_server_built() {
@@ -57,12 +57,12 @@ fn spawn_server_with_env(port: u16, wal_path: PathBuf, extra_env: &[(&str, &str)
     let binary = server_binary_path();
 
     // Each server gets its own blob dir so parallel tests don't collide.
-    let blob_dir = std::env::temp_dir().join(format!("neondb_blobs_{}", port));
+    let blob_dir = std::env::temp_dir().join(format!("voltra_blobs_{}", port));
 
     // Metrics port must be unique per server instance.
     //
     // Config::from_env() calls find_config_in_cwd() which walks up from the
-    // child process's CWD and may find a neondb.toml that sets metrics_port.
+    // child process's CWD and may find a voltra.toml that sets metrics_port.
     // Without an explicit override, parallel test servers race to bind the
     // same metrics port and all but the first exit before the WebSocket
     // listener starts — causing the "Server did not become ready" timeout.
@@ -72,11 +72,11 @@ fn spawn_server_with_env(port: u16, wal_path: PathBuf, extra_env: &[(&str, &str)
 
     let mut cmd = Command::new(binary);
     cmd.arg("start")
-        .env("NEONDB_HOST", "127.0.0.1")
-        .env("NEONDB_PORT", port.to_string())
-        .env("NEONDB_METRICS_PORT", metrics_port.to_string())
-        .env("NEONDB_WAL_PATH", wal_path)
-        .env("NEONDB_BLOB_PATH", blob_dir)
+        .env("VOLTRA_HOST", "127.0.0.1")
+        .env("VOLTRA_PORT", port.to_string())
+        .env("VOLTRA_METRICS_PORT", metrics_port.to_string())
+        .env("VOLTRA_WAL_PATH", wal_path)
+        .env("VOLTRA_BLOB_PATH", blob_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit()); // inherit so startup errors are visible in test output
 
@@ -84,7 +84,7 @@ fn spawn_server_with_env(port: u16, wal_path: PathBuf, extra_env: &[(&str, &str)
         cmd.env(k, v);
     }
 
-    cmd.spawn().expect("Failed to spawn NeonDB server")
+    cmd.spawn().expect("Failed to spawn Voltra server")
 }
 
 /// Build a proper WebSocket upgrade request with an `Authorization: Bearer` header.
@@ -128,7 +128,7 @@ async fn wait_for_server_ready(url: &str, timeout: Duration) {
 #[tokio::test]
 async fn integration_basic_increment_via_websocket() {
     let port = 18080;
-    let wal_path = std::env::temp_dir().join("neondb_integration_test.wal");
+    let wal_path = std::env::temp_dir().join("voltra_integration_test.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let mut child = spawn_server(port, wal_path.clone());
@@ -138,7 +138,7 @@ async fn integration_basic_increment_via_websocket() {
 
     let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
         .await
-        .expect("Failed to connect to NeonDB server");
+        .expect("Failed to connect to Voltra server");
 
     let args = IncrementArgs {
         name: "score".to_string(),
@@ -148,7 +148,7 @@ async fn integration_basic_increment_via_websocket() {
     let mut args_buf = Vec::new();
     args.serialize(&mut Serializer::new(&mut args_buf)).unwrap();
 
-    let call = neondb::network::message::ReducerCall {
+    let call = voltra::network::message::ReducerCall {
         call_id: 1,
         reducer_name: "increment".to_string(),
         args: args_buf,
@@ -173,7 +173,7 @@ async fn integration_basic_increment_via_websocket() {
         _ => panic!("Unexpected message type"),
     };
 
-    let response: neondb::network::message::ReducerResponse =
+    let response: voltra::network::message::ReducerResponse =
         rmp_serde::from_slice(&response_bytes).expect("Failed to deserialize response");
 
     assert!(
@@ -197,7 +197,7 @@ async fn integration_basic_increment_via_websocket() {
 #[tokio::test]
 async fn integration_invalid_message_returns_error_but_server_stays_alive() {
     let port = 18082;
-    let wal_path = std::env::temp_dir().join("neondb_integration_invalid.wal");
+    let wal_path = std::env::temp_dir().join("voltra_integration_invalid.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let mut child = spawn_server(port, wal_path.clone());
@@ -206,7 +206,7 @@ async fn integration_invalid_message_returns_error_but_server_stays_alive() {
 
     let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
         .await
-        .expect("Failed to connect to NeonDB server");
+        .expect("Failed to connect to Voltra server");
 
     ws_stream
         .send(Message::Binary(vec![0x01, 0x02, 0x03, 0x04]))
@@ -244,7 +244,7 @@ async fn integration_invalid_message_returns_error_but_server_stays_alive() {
     let mut args_buf = Vec::new();
     args.serialize(&mut Serializer::new(&mut args_buf)).unwrap();
 
-    let call = neondb::network::message::ReducerCall {
+    let call = voltra::network::message::ReducerCall {
         call_id: 2,
         reducer_name: "increment".to_string(),
         args: args_buf,
@@ -269,7 +269,7 @@ async fn integration_invalid_message_returns_error_but_server_stays_alive() {
         _ => panic!("Unexpected message type"),
     };
 
-    let response: neondb::network::message::ReducerResponse =
+    let response: voltra::network::message::ReducerResponse =
         rmp_serde::from_slice(&response_bytes).expect("Failed to deserialize response");
 
     assert!(response.success, "Expected success after invalid payload");
@@ -282,7 +282,7 @@ async fn integration_invalid_message_returns_error_but_server_stays_alive() {
 #[tokio::test]
 async fn integration_parallel_clients() {
     let port = 18081;
-    let wal_path = std::env::temp_dir().join("neondb_integration_parallel.wal");
+    let wal_path = std::env::temp_dir().join("voltra_integration_parallel.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let mut child = spawn_server(port, wal_path.clone());
@@ -295,7 +295,7 @@ async fn integration_parallel_clients() {
         async move {
             let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
                 .await
-                .expect("Failed to connect to NeonDB server");
+                .expect("Failed to connect to Voltra server");
 
             let args = IncrementArgs {
                 name: format!("counter_{}", id),
@@ -304,7 +304,7 @@ async fn integration_parallel_clients() {
             let mut args_buf = Vec::new();
             args.serialize(&mut Serializer::new(&mut args_buf)).unwrap();
 
-            let call = neondb::network::message::ReducerCall {
+            let call = voltra::network::message::ReducerCall {
                 call_id: id,
                 reducer_name: "increment".to_string(),
                 args: args_buf,
@@ -329,7 +329,7 @@ async fn integration_parallel_clients() {
                 _ => panic!("Unexpected message type"),
             };
 
-            let response: neondb::network::message::ReducerResponse =
+            let response: voltra::network::message::ReducerResponse =
                 rmp_serde::from_slice(&response_bytes).expect("Failed to deserialize response");
 
             assert!(
@@ -351,7 +351,7 @@ async fn integration_parallel_clients() {
 #[tokio::test]
 async fn integration_subscription_notifications() {
     let port = 18083;
-    let wal_path = std::env::temp_dir().join("neondb_integration_subscription.wal");
+    let wal_path = std::env::temp_dir().join("voltra_integration_subscription.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let mut child = spawn_server(port, wal_path.clone());
@@ -360,7 +360,7 @@ async fn integration_subscription_notifications() {
 
     let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
         .await
-        .expect("Failed to connect to NeonDB server");
+        .expect("Failed to connect to Voltra server");
 
     let subscribe_message = ClientMessage::Subscribe {
         subscription_id: "sub1".to_string(),
@@ -442,16 +442,16 @@ async fn integration_subscription_notifications() {
     let _ = std::fs::remove_file(&wal_path);
 }
 
-/// A server configured with NEONDB_API_KEY must reject connections that do not
+/// A server configured with VOLTRA_API_KEY must reject connections that do not
 /// supply a matching `Authorization: Bearer <key>` header.
 #[tokio::test]
 async fn integration_api_key_rejects_unauthorized() {
     let port = 18084;
-    let wal_path = std::env::temp_dir().join("neondb_integration_auth.wal");
+    let wal_path = std::env::temp_dir().join("voltra_integration_auth.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let mut child =
-        spawn_server_with_env(port, wal_path.clone(), &[("NEONDB_API_KEY", "supersecret")]);
+        spawn_server_with_env(port, wal_path.clone(), &[("VOLTRA_API_KEY", "supersecret")]);
     let ws_url = format!("ws://127.0.0.1:{}", port);
     wait_for_server_ready_with_auth(&ws_url, Duration::from_secs(5), "supersecret").await;
 
@@ -485,7 +485,7 @@ async fn integration_api_key_rejects_unauthorized() {
 #[tokio::test]
 async fn integration_no_api_key_accepts_all() {
     let port = 18085;
-    let wal_path = std::env::temp_dir().join("neondb_integration_noauth.wal");
+    let wal_path = std::env::temp_dir().join("voltra_integration_noauth.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let mut child = spawn_server(port, wal_path.clone());
@@ -520,7 +520,7 @@ async fn integration_e2e_throughput_benchmark() {
     use std::time::Instant;
 
     let port = 18090u16;
-    let wal_path = std::env::temp_dir().join("neondb_e2e_bench_test.wal");
+    let wal_path = std::env::temp_dir().join("voltra_e2e_bench_test.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let mut child = spawn_server(port, wal_path.clone());
@@ -545,7 +545,7 @@ async fn integration_e2e_throughput_benchmark() {
                 let mut ok = 0usize;
                 for i in 0..calls_per_client {
                     let call_id = (id as u64) * 10_000 + i as u64;
-                    let call = neondb::ReducerCall {
+                    let call = voltra::ReducerCall {
                         call_id,
                         reducer_name: "increment".to_string(),
                         args: args.clone(),
@@ -606,11 +606,11 @@ async fn send_call(
     call_id: u64,
     reducer: &str,
     args_bytes: Vec<u8>,
-) -> neondb::network::message::ReducerResponse {
+) -> voltra::network::message::ReducerResponse {
     use rmp_serde::Serializer;
     use serde::Serialize;
 
-    let call = neondb::network::message::ReducerCall {
+    let call = voltra::network::message::ReducerCall {
         call_id,
         reducer_name: reducer.to_string(),
         args: args_bytes,
@@ -638,7 +638,7 @@ async fn send_call(
 #[tokio::test]
 async fn integration_permissions_unauthorized_call_rejected() {
     let port = 18091u16;
-    let wal_path = std::env::temp_dir().join("neondb_perms_reject.wal");
+    let wal_path = std::env::temp_dir().join("voltra_perms_reject.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let perms_json = r#"{"increment":["admin"]}"#;
@@ -646,8 +646,8 @@ async fn integration_permissions_unauthorized_call_rejected() {
         port,
         wal_path.clone(),
         &[
-            ("NEONDB_API_KEY", "perm_key"),
-            ("NEONDB_PERMISSIONS", perms_json),
+            ("VOLTRA_API_KEY", "perm_key"),
+            ("VOLTRA_PERMISSIONS", perms_json),
         ],
     );
     let ws_url = format!("ws://127.0.0.1:{}", port);
@@ -686,7 +686,7 @@ async fn integration_permissions_unauthorized_call_rejected() {
 #[tokio::test]
 async fn integration_permissions_authorized_call_passes() {
     let port = 18092u16;
-    let wal_path = std::env::temp_dir().join("neondb_perms_allow.wal");
+    let wal_path = std::env::temp_dir().join("voltra_perms_allow.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let perms_json = r#"{"increment":["admin"]}"#;
@@ -694,8 +694,8 @@ async fn integration_permissions_authorized_call_passes() {
         port,
         wal_path.clone(),
         &[
-            ("NEONDB_API_KEY", "perm_key2"),
-            ("NEONDB_PERMISSIONS", perms_json),
+            ("VOLTRA_API_KEY", "perm_key2"),
+            ("VOLTRA_PERMISSIONS", perms_json),
         ],
     );
     let ws_url = format!("ws://127.0.0.1:{}", port);
@@ -729,7 +729,7 @@ async fn integration_permissions_authorized_call_passes() {
 #[tokio::test]
 async fn integration_permissions_open_reducer_always_allowed() {
     let port = 18093u16;
-    let wal_path = std::env::temp_dir().join("neondb_perms_open.wal");
+    let wal_path = std::env::temp_dir().join("voltra_perms_open.wal");
     let _ = std::fs::remove_file(&wal_path);
 
     let perms_json = r#"{"delete_user":["admin"]}"#;
@@ -737,8 +737,8 @@ async fn integration_permissions_open_reducer_always_allowed() {
         port,
         wal_path.clone(),
         &[
-            ("NEONDB_API_KEY", "perm_key3"),
-            ("NEONDB_PERMISSIONS", perms_json),
+            ("VOLTRA_API_KEY", "perm_key3"),
+            ("VOLTRA_PERMISSIONS", perms_json),
         ],
     );
     let ws_url = format!("ws://127.0.0.1:{}", port);

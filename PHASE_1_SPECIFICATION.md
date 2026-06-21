@@ -1,4 +1,4 @@
-# NeonDB – Phase 1: Core Engine Skeleton – Technical Specification
+# Voltra – Phase 1: Core Engine Skeleton – Technical Specification
 
 **Document Version**: 1.0  
 **Date**: 2026-06-05  
@@ -31,7 +31,7 @@
 ## Overview & Goals
 
 ### Phase 1 Deliverable
-A **runnable `neondb-server` binary** that:
+A **runnable `voltra-server` binary** that:
 - Listens for WebSocket connections on `0.0.0.0:8000`
 - Accepts one hardcoded reducer: `increment(name: String, delta: i32) -> (new_value: i32, timestamp: i64)`
 - Maintains an in-memory table of counters: `{String -> i32}`
@@ -61,7 +61,7 @@ A **runnable `neondb-server` binary** that:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         NeonDB Server (Rust)                         │
+│                         Voltra Server (Rust)                         │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                       │
 │  main()                                                              │
@@ -489,7 +489,7 @@ Client
 Server starts
   │
   ├─ load config
-  ├─ WAL_PATH = "/data/wal/neondb.wal" (or env var)
+  ├─ WAL_PATH = "/data/wal/voltra.wal" (or env var)
   │
   ├─ TABLES = Arc<Mutex::new(TableStore::new())>
   │
@@ -551,7 +551,7 @@ All errors must be:
 
 ### Unit Tests (Phase 1)
 
-**File: `neondb-server/tests/unit.rs`**
+**File: `voltra-server/tests/unit.rs`**
 
 ```rust
 #[test]
@@ -588,7 +588,7 @@ fn test_wal_recovery() {
 
 ### Integration Tests (Phase 1)
 
-**File: `neondb-server/tests/integration.rs`**
+**File: `voltra-server/tests/integration.rs`**
 
 ```rust
 #[tokio::test]
@@ -669,7 +669,7 @@ async fn test_multiple_concurrent_clients() {
 
 ### Manual Testing
 
-**Provided script: `neondb-server/test_client.py`**
+**Provided script: `voltra-server/test_client.py`**
 
 ```python
 #!/usr/bin/env python3
@@ -699,7 +699,7 @@ if __name__ == "__main__":
 
 ### Performance Baseline (Phase 1)
 
-**Benchmark: `neondb-server/benches/throughput.rs`**
+**Benchmark: `voltra-server/benches/throughput.rs`**
 
 ```rust
 #[bench]
@@ -732,13 +732,13 @@ fn bench_increment_tps(b: &mut Bencher) {
 **CPU Profiling** (Phase 1 post-implementation):
 ```bash
 cargo build --release
-perf record -F 99 ./target/release/neondb-server
+perf record -F 99 ./target/release/voltra-server
 perf report
 ```
 
 **Memory Profiling** (Phase 1 post-implementation):
 ```bash
-valgrind --leak-check=full ./target/release/neondb-server
+valgrind --leak-check=full ./target/release/voltra-server
 ```
 
 **Benchmark harness** (Phase 4+):
@@ -753,8 +753,8 @@ cargo bench --release
 ### Folder Structure (Phase 1)
 
 ```
-NeonDB/
-├── neondb-server/
+Voltra/
+├── voltra-server/
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── main.rs                 # Entry point
@@ -778,7 +778,7 @@ NeonDB/
 │   │   │   ├── websocket.rs        # tokio + tungstenite listener
 │   │   │   ├── protocol.rs         # MessagePack encode/decode
 │   │   │   └── message.rs          # ReducerCall, ReducerResponse
-│   │   └── error.rs                # NeonDBError, Result<T>
+│   │   └── error.rs                # VoltraError, Result<T>
 │   ├── tests/
 │   │   ├── unit.rs
 │   │   ├── integration.rs
@@ -798,7 +798,7 @@ NeonDB/
 
 ```bash
 # Build in debug mode
-cd neondb-server
+cd voltra-server
 cargo build
 
 # Build in release mode (optimized)
@@ -808,7 +808,7 @@ cargo build --release
 cargo test
 
 # Run with custom WAL path
-NEONDB_WAL_PATH=/tmp/wal.bin cargo run --release
+VOLTRA_WAL_PATH=/tmp/wal.bin cargo run --release
 
 # Run benchmarks
 cargo bench --release
@@ -818,24 +818,24 @@ cargo bench --release
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `NEONDB_PORT` | `8000` | WebSocket listen port |
-| `NEONDB_HOST` | `0.0.0.0` | Listen address |
-| `NEONDB_WAL_PATH` | `/tmp/neondb.wal` | Path to WAL file |
-| `NEONDB_FSYNC_INTERVAL_MS` | `0` (per-call) | Batch fsync interval (0 = per-call) |
+| `VOLTRA_PORT` | `8000` | WebSocket listen port |
+| `VOLTRA_HOST` | `0.0.0.0` | Listen address |
+| `VOLTRA_WAL_PATH` | `/tmp/voltra.wal` | Path to WAL file |
+| `VOLTRA_FSYNC_INTERVAL_MS` | `0` (per-call) | Batch fsync interval (0 = per-call) |
 | `RUST_LOG` | `info` | Log level (debug, info, warn, error) |
 
 ### Running Locally
 
 ```bash
 # Terminal 1: Start server
-cd neondb-server
+cd voltra-server
 RUST_LOG=debug cargo run --release
 
 # Terminal 2: Run test script
 python3 test_client.py
 
 # Terminal 3: Monitor WAL growth
-watch -n 1 'ls -lah /tmp/neondb.wal'
+watch -n 1 'ls -lah /tmp/voltra.wal'
 ```
 
 ### Docker Build (Phase 5, but include Dockerfile now for reference)
@@ -845,7 +845,7 @@ watch -n 1 'ls -lah /tmp/neondb.wal'
 FROM rust:1.75 AS builder
 
 WORKDIR /app
-COPY neondb-server /app
+COPY voltra-server /app
 
 RUN cargo build --release
 
@@ -853,11 +853,11 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/neondb-server /usr/local/bin/
+COPY --from=builder /app/target/release/voltra-server /usr/local/bin/
 
 EXPOSE 8000
 
-ENTRYPOINT ["neondb-server"]
+ENTRYPOINT ["voltra-server"]
 ```
 
 ### Example: Manual Test with `websocat`
@@ -879,8 +879,8 @@ echo '{"call_id": 1, "reducer_name": "increment", "args": {"name": "foo", "delta
 
 ### Artifacts
 
-1. ✅ **`neondb-server` binary**: ~10 MB (Rust compiled), runs standalone
-2. ✅ **WAL file** (`/tmp/neondb.wal`): Append-only, MessagePack-encoded entries
+1. ✅ **`voltra-server` binary**: ~10 MB (Rust compiled), runs standalone
+2. ✅ **WAL file** (`/tmp/voltra.wal`): Append-only, MessagePack-encoded entries
 3. ✅ **Unit + integration tests**: >70% code coverage
 4. ✅ **README.md**: Build, run, test instructions
 5. ✅ **Benchmark harness**: TPS & latency baseline

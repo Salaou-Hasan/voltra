@@ -1,4 +1,4 @@
-# NeonDB Production Readiness Report
+# Voltra Production Readiness Report
 
 **Date**: December 2024  
 **Status**: ✅ READY FOR PRODUCTION DEPLOYMENT  
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-NeonDB has been fully optimized with enterprise-grade features and is ready for immediate production deployment to Dokploy. All optimizations are complete, tested, and documented.
+Voltra has been fully optimized with enterprise-grade features and is ready for immediate production deployment to Dokploy. All optimizations are complete, tested, and documented.
 
 ## Completed Optimizations
 
@@ -17,9 +17,9 @@ NeonDB has been fully optimized with enterprise-grade features and is ready for 
 - **Files**: `src/wal/batch_writer.rs` (210 lines)
 - **Performance**: ~10x faster WAL writes
 - **Configuration**:
-  - `NEONDB_WAL_BATCH_SIZE`: 100,000 (configurable 1-500k)
-  - `NEONDB_WAL_BATCH_INTERVAL_MS`: 100 (configurable 10-1000)
-  - `NEONDB_UNSAFE_NO_FSYNC`: false (optional throughput boost)
+  - `VOLTRA_WAL_BATCH_SIZE`: 100,000 (configurable 1-500k)
+  - `VOLTRA_WAL_BATCH_INTERVAL_MS`: 100 (configurable 10-1000)
+  - `VOLTRA_UNSAFE_NO_FSYNC`: false (optional throughput boost)
 - **Test Coverage**: 1 unit test (test_batched_wal_writer)
 
 ### 2. Blob Externalization ✅
@@ -47,8 +47,8 @@ NeonDB has been fully optimized with enterprise-grade features and is ready for 
 - **Feature**: Multi-node deployment with automatic shard routing
 - **Files**: `src/table/mod.rs` (shard_id, shard_count fields)
 - **Configuration**:
-  - `NEONDB_SHARD_ID`: Node identifier (0-999)
-  - `NEONDB_SHARD_COUNT`: Total shards in cluster (1-1000)
+  - `VOLTRA_SHARD_ID`: Node identifier (0-999)
+  - `VOLTRA_SHARD_COUNT`: Total shards in cluster (1-1000)
 - **Automatic Filtering**: Deltas filtered by shard automatically
 - **Test Coverage**: 1 unit test (apply_delta with sharding)
 - **Deployment Modes**:
@@ -58,7 +58,7 @@ NeonDB has been fully optimized with enterprise-grade features and is ready for 
 ### 5. Optional Unsafe Mode ✅
 - **Feature**: fsync bypass for extreme throughput scenarios
 - **Use Case**: Non-critical data, high-throughput use cases
-- **Configuration**: `NEONDB_UNSAFE_NO_FSYNC: true`
+- **Configuration**: `VOLTRA_UNSAFE_NO_FSYNC: true`
 - **Trade-off**: Risk of data loss on crash for ~50% throughput gain
 - **Default**: false (safe durability)
 
@@ -81,7 +81,7 @@ NeonDB has been fully optimized with enterprise-grade features and is ready for 
 
 ✅ src/config.rs
    - 10+ new parameters (WAL, sharding, performance)
-   - Environment variable support (NEONDB_* prefix)
+   - Environment variable support (VOLTRA_* prefix)
    - TOML configuration file support
 
 ✅ src/table/mod.rs (MAJOR REWRITE)
@@ -187,11 +187,11 @@ All other unit tests passing (increments, deletions, utils, etc.)
 
 ### Available Files
 ```
-✅ Binary: target/release/neondb.exe (3.73 MB)
+✅ Binary: target/release/voltra.exe (3.73 MB)
 ✅ Dockerfile: Ready for multi-stage Docker build
 ✅ docker-compose.yml: Production-grade composition
 ✅ Deployment guides: DEPLOYMENT.md, DOKPLOY_DEPLOYMENT.md
-✅ Configuration: neondb.toml (example)
+✅ Configuration: voltra.toml (example)
 ✅ Source code: src/main.rs, all modules
 ```
 
@@ -199,29 +199,29 @@ All other unit tests passing (increments, deletions, utils, etc.)
 
 **WAL Performance (Defaults)**
 ```
-NEONDB_WAL_BATCH_SIZE=100000
-NEONDB_WAL_BATCH_INTERVAL_MS=100
-NEONDB_UNSAFE_NO_FSYNC=false
+VOLTRA_WAL_BATCH_SIZE=100000
+VOLTRA_WAL_BATCH_INTERVAL_MS=100
+VOLTRA_UNSAFE_NO_FSYNC=false
 ```
 
 **Server Configuration**
 ```
-NEONDB_HOST=0.0.0.0
-NEONDB_PORT=8000
-NEONDB_METRICS_PORT=8001
-NEONDB_MAX_CONNECTIONS=200
-NEONDB_REDUCER_TIMEOUT_MS=5000
+VOLTRA_HOST=0.0.0.0
+VOLTRA_PORT=8000
+VOLTRA_METRICS_PORT=8001
+VOLTRA_MAX_CONNECTIONS=200
+VOLTRA_REDUCER_TIMEOUT_MS=5000
 ```
 
 **Sharding Defaults**
 ```
-NEONDB_SHARD_ID=0
-NEONDB_SHARD_COUNT=1
+VOLTRA_SHARD_ID=0
+VOLTRA_SHARD_COUNT=1
 ```
 
 **WAL Location**
 ```
-NEONDB_WAL_PATH=/data/wal/neondb.wal
+VOLTRA_WAL_PATH=/data/wal/voltra.wal
 ```
 
 **Logging**
@@ -294,7 +294,7 @@ Startup: 5 seconds
 ## Dokploy Deployment Options
 
 ### Option 1: Git-Connected Build (Recommended) ✅
-- Connect NeonDB repository to Dokploy
+- Connect Voltra repository to Dokploy
 - Dokploy builds from `Dockerfile` automatically on each push
 - Configure env vars and volume mounts in the dashboard
 - Auto TLS via Traefik when a domain is configured
@@ -317,8 +317,8 @@ cargo build --release      # ✅ Success: 3.73 MB binary
 cargo test --lib           # ✅ Success: 79/79 tests
 
 # 2. Run server
-./target/release/neondb.exe
-# Check logs for: "Starting NeonDB Server"
+./target/release/voltra.exe
+# Check logs for: "Starting Voltra Server"
 
 # 3. Test connectivity
 curl http://localhost:8001/metrics
@@ -326,15 +326,15 @@ curl http://localhost:8001/metrics
 
 ### Docker Testing
 ```bash
-# 1. Build image (in NeonDB directory)
-docker build -t neondb:latest .
+# 1. Build image (in Voltra directory)
+docker build -t voltra:latest .
 
 # 2. Run container
 docker-compose up -d
 
 # 3. Check health
 docker-compose ps                    # Status: healthy
-docker-compose logs neondb -f        # Monitor logs
+docker-compose logs voltra -f        # Monitor logs
 
 # 4. Test endpoints
 curl http://localhost:8000/          # WebSocket upgrade expected
@@ -345,7 +345,7 @@ curl http://localhost:8001/metrics   # Prometheus metrics
 
 ## Security Checklist
 
-- [x] **API Key Support**: Optional authentication via NEONDB_API_KEY
+- [x] **API Key Support**: Optional authentication via VOLTRA_API_KEY
 - [x] **Network Isolation**: Metrics port (8001) can be kept private
 - [x] **Data Durability**: fsync enabled by default
 - [x] **Safe by Default**: All optimizations preserve correctness
@@ -368,13 +368,13 @@ curl http://localhost:8001/metrics   # Prometheus metrics
 ## Scaling Path
 
 ### Phase 1: Single-Node (Current)
-- Deploy single neondb instance
+- Deploy single voltra instance
 - Handles 100-1000 ops/sec
 - Max 200 concurrent connections
 - ~1GB memory footprint
 
 ### Phase 2: Sharded Cluster
-- Deploy 3 neondb instances (SHARD_COUNT=3)
+- Deploy 3 voltra instances (SHARD_COUNT=3)
 - Add load balancer
 - Handles 500-5000 ops/sec per shard
 - 1500 concurrent connections total
@@ -403,7 +403,7 @@ curl http://localhost:8001/metrics   # Prometheus metrics
 ### Monitoring
 - Health endpoint: `http://host:8001/healthz`
 - Metrics: `http://host:8001/metrics` (Prometheus format)
-- Logs: `docker-compose logs neondb` or system journal
+- Logs: `docker-compose logs voltra` or system journal
 
 ---
 
@@ -429,18 +429,18 @@ curl http://localhost:8001/metrics   # Prometheus metrics
    - Navigate to Projects → Add Service → Application
 
 2. **Connect Repository**
-   - Link Git provider and select the NeonDB repository
+   - Link Git provider and select the Voltra repository
    - Set Build Type: Dockerfile
 
 3. **Set Environment Variables**
    - Copy variables from `DOKPLOY_DEPLOYMENT.md`
-   - Set `NEONDB_WAL_PATH=/data/wal/neondb.wal`
-   - Set `NEONDB_SNAPSHOT_DIR=/data/snapshots`
-   - Optionally set `NEONDB_API_KEY` for access control
+   - Set `VOLTRA_WAL_PATH=/data/wal/voltra.wal`
+   - Set `VOLTRA_SNAPSHOT_DIR=/data/snapshots`
+   - Optionally set `VOLTRA_API_KEY` for access control
 
 4. **Configure Storage**
-   - Add volume mount: `neondb-wal` → `/data/wal`
-   - Add volume mount: `neondb-snapshots` → `/data/snapshots`
+   - Add volume mount: `voltra-wal` → `/data/wal`
+   - Add volume mount: `voltra-snapshots` → `/data/snapshots`
 
 5. **Configure Domain (optional)**
    - Add domain in Domains tab for auto-TLS via Traefik

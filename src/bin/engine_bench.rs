@@ -1,4 +1,4 @@
-/// engine_bench — Raw NeonDB engine benchmark (no network, no WAL, no templates)
+/// engine_bench — Raw Voltra engine benchmark (no network, no WAL, no templates)
 ///
 /// Measures:
 ///   • Write TPS  — set_row + commit
@@ -12,7 +12,7 @@
 ///
 /// Each test runs for 3 seconds then prints results.
 
-use neondb::{reducer::ReducerContext, table::TableStore};
+use voltra::{reducer::ReducerContext, table::TableStore};
 use std::{
     sync::{Arc, Barrier},
     thread,
@@ -303,7 +303,7 @@ fn row(label: &str, val: &str) {
 fn main() {
     let cpus = num_cpus::get();
     println!();
-    println!("  NeonDB Raw Engine Benchmark");
+    println!("  Voltra Raw Engine Benchmark");
     println!("  {} logical CPUs | {} threads for parallel tests | {} sec per test",
         cpus, THREAD_COUNT, DURATION.as_secs());
     println!("  Key space: {} distinct rows | No WAL | No network | No templates", KEY_SPACE);

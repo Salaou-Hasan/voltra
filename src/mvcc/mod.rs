@@ -1143,7 +1143,7 @@ mod tests {
 
     #[tokio::test]
     async fn aof_roundtrip_recovers_state() {
-        let dir = std::env::temp_dir().join(format!("neondb_mvcc_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("voltra_mvcc_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         {
@@ -1182,7 +1182,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_snapshot_and_recover() {
-        let dir = std::env::temp_dir().join(format!("neondb_mvcc_snap_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("voltra_mvcc_snap_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         {

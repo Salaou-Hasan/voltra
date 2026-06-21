@@ -6,26 +6,26 @@
 //         { error: "no_such_room" }
 //
 // Usage:
-//   neondb call leave_room '["general", "bob"]'
+//   voltra call leave_room '["general", "bob"]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
   const [rid, uid] = args;
-  const r = __neondb_get("rooms", rid);
+  const r = __voltra_get("rooms", rid);
   if (!r) { return { error: "no_such_room" }; }
   else {
     r.members = r.members.filter((m) => m !== uid);
-    __neondb_set("rooms", rid, r);
+    __voltra_set("rooms", rid, r);
     return { ok: true, members: r.members };
   }
 }

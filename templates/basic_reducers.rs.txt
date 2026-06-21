@@ -6,14 +6,14 @@
 // and auto-registered via the `inventory` crate at startup.
 //
 // Usage after `cargo build --release`:
-//   ./target/release/mygame   # starts the NeonDB server with your reducers
+//   ./target/release/mygame   # starts the Voltra server with your reducers
 //
 // Client calls (same WebSocket API as always):
-//   neondb call register '["alice", "hashed-pw"]'
-//   neondb call login    '["alice", "hashed-pw"]'
+//   voltra call register '["alice", "hashed-pw"]'
+//   voltra call login    '["alice", "hashed-pw"]'
 // ════════════════════════════════════════════════════════════════════════
 
-use neondb::{reducer, ReducerContext, ret};
+use voltra::{reducer, ReducerContext, ret};
 use serde_json::json;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

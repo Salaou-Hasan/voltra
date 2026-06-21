@@ -1,8 +1,8 @@
 // Example client for the game-ready template.
-import { NeonDBClient } from "neondb-client";
+import { VoltraClient } from "voltra-client";
 
 async function main() {
-  const client = new NeonDBClient({ url: "ws://127.0.0.1:3000", auth: "dev-key" });
+  const client = new VoltraClient({ url: "ws://127.0.0.1:3000", auth: "dev-key" });
   await client.connect();
 
   await client.call("spawn", ["player1", 0, 0, "warrior"]);

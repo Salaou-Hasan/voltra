@@ -13,7 +13,7 @@ use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use super::{ClusterBus, NodeInfo};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -55,7 +55,7 @@ pub fn proxy_call(
     };
 
     let body_json = serde_json::to_vec(&req_body).map_err(|e| {
-        NeonDBError::internal(format!("[cluster/proxy] Serialise error: {}", e))
+        VoltraError::internal(format!("[cluster/proxy] Serialise error: {}", e))
     })?;
 
     let mut req = bus.http_client()
@@ -68,27 +68,27 @@ pub fn proxy_call(
     }
 
     let resp = req.send().map_err(|e| {
-        NeonDBError::network_error(format!("[cluster/proxy] shard{} unreachable: {}", peer.shard_id, e))
+        VoltraError::network_error(format!("[cluster/proxy] shard{} unreachable: {}", peer.shard_id, e))
     })?;
 
     if !resp.status().is_success() {
-        return Err(NeonDBError::network_error(format!(
+        return Err(VoltraError::network_error(format!(
             "[cluster/proxy] shard{} returned HTTP {}", peer.shard_id, resp.status()
         )));
     }
 
     let resp_body: ProxyCallResponse = resp.json().map_err(|e| {
-        NeonDBError::internal(format!("[cluster/proxy] Deserialise response: {}", e))
+        VoltraError::internal(format!("[cluster/proxy] Deserialise response: {}", e))
     })?;
 
     if !resp_body.ok {
-        return Err(NeonDBError::internal(
+        return Err(VoltraError::internal(
             resp_body.error.unwrap_or_else(|| "Unknown proxy error".to_string())
         ));
     }
 
     let result_b64 = resp_body.result_b64.unwrap_or_default();
     B64.decode(&result_b64).map_err(|e| {
-        NeonDBError::internal(format!("[cluster/proxy] Base64 decode result: {}", e))
+        VoltraError::internal(format!("[cluster/proxy] Base64 decode result: {}", e))
     })
 }

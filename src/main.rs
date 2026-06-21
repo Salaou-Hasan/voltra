@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB main.rs — Session 32
+// Voltra main.rs — Session 32
 //
 // Fixes:
 //   [BUG-1] cmd_seed dry-run format string produced malformed output.
@@ -41,7 +41,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Method, Request, Response, Server, StatusCode,
 };
-use neondb::{
+use voltra::{
     auth::{AuthValidator, IdentityIssuer},
     config::{Config, ScheduledReducerConfig},
     error::Result,
@@ -76,13 +76,13 @@ const TEMPLATES: &[Template] = &[
     Template { name: "neon/game-ready", category: "Neon Language", description: "Full game in .neon: combat, economy, guilds, quests, leaderboard, chat — compile once, run forever." },
     Template { name: "neon/chat",       category: "Neon Language", description: "Chat rooms, presence, moderation — minimal .neon server you can understand in 5 minutes." },
     // ── Rust (handwritten native reducers) ────────────────────────────────────
-    Template { name: "game/basic", category: "Rust", description: "Spawn, move, despawn, health — the minimal multiplayer foundation. Add modules with `neondb add`." },
+    Template { name: "game/basic", category: "Rust", description: "Spawn, move, despawn, health — the minimal multiplayer foundation. Add modules with `voltra add`." },
     Template { name: "game/full",  category: "Rust", description: "All modules pre-configured: combat, inventory, economy, matchmaking, guilds, quests, leaderboard, chat, world." },
-    Template { name: "game/unity", category: "Unity",       description: "Unity C# SDK + full game server. Copy unity/ into Assets/Scripts/NeonDB/, configure URL, play." },
+    Template { name: "game/unity", category: "Unity",       description: "Unity C# SDK + full game server. Copy unity/ into Assets/Scripts/Voltra/, configure URL, play." },
     Template { name: "game/godot", category: "Godot 4",     description: "Godot GDScript SDK + full game server. Add godot/ as an autoload, configure URL, play." },
 ];
 
-/// Available add-on modules (`neondb add <name>`).
+/// Available add-on modules (`voltra add <name>`).
 const MODULES: &[(&str, &str)] = &[
     ("chat",        "Rooms, messages, per-room presence"),
     ("inventory",   "Items, qty stacking, equip slots"),
@@ -100,8 +100,8 @@ const MODULES: &[(&str, &str)] = &[
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(name = "neondb")]
-#[command(author, version = concat!("v", env!("CARGO_PKG_VERSION")), about = "NeonDB — self-hosted real-time game backend")]
+#[command(name = "voltra")]
+#[command(author, version = concat!("v", env!("CARGO_PKG_VERSION")), about = "Voltra — self-hosted real-time game backend")]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
@@ -110,7 +110,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Scaffold a new NeonDB multiplayer game project
+    /// Scaffold a new Voltra multiplayer game project
     Init {
         #[arg(value_name = "NAME")]
         path: Option<PathBuf>,
@@ -122,21 +122,21 @@ enum Commands {
         #[arg(value_name = "MODULE", help = "chat | inventory | leaderboard | matchmaking | guilds | quests | economy | combat | world")]
         module: String,
     },
-    /// Check for and install updates to all NeonDB binaries
+    /// Check for and install updates to all Voltra binaries
     Update {
         #[arg(long, help = "Only check — do not download")]
         check: bool,
     },
     /// List available project templates
     Templates,
-    /// List available add-on modules (`neondb add <module>`)
+    /// List available add-on modules (`voltra add <module>`)
     Modules,
     /// Compile JS reducers in modules/ to WASM (requires `javy`)
     Build {
         #[arg(short = 'm', long, default_value = "modules")]
         modules_dir: Option<PathBuf>,
     },
-    /// Start the NeonDB server
+    /// Start the Voltra server
     Start {
         #[arg(short = 'a', long)] host: Option<String>,
         #[arg(short = 'p', long)] port: Option<u16>,
@@ -248,8 +248,8 @@ enum Commands {
     /// Generate typed client code from the running server's schema
     ///
     /// Examples:
-    ///   neondb generate --lang typescript --out ./client/src/generated
-    ///   neondb generate --lang gdscript  --out ./godot/addons/neondb/generated
+    ///   voltra generate --lang typescript --out ./client/src/generated
+    ///   voltra generate --lang gdscript  --out ./godot/addons/voltra/generated
     Generate {
         /// Target language: typescript, gdscript
         #[arg(long, default_value = "typescript")]
@@ -273,14 +273,14 @@ async fn main() -> Result<()> {
     let command = match cli.command {
         Some(cmd) => cmd,
         None => {
-            println!("NeonDB {} — self-hosted real-time game backend", concat!("v", env!("CARGO_PKG_VERSION")));
+            println!("Voltra {} — self-hosted real-time game backend", concat!("v", env!("CARGO_PKG_VERSION")));
             println!();
             println!("  Engine is ready.");
             println!();
             println!("  Get started:");
-            println!("    neondb init       scaffold a new game project");
-            println!("    neondb start      start the server");
-            println!("    neondb --help     show all commands");
+            println!("    voltra init       scaffold a new game project");
+            println!("    voltra start      start the server");
+            println!("    voltra --help     show all commands");
             println!();
             return Ok(());
         }
@@ -288,7 +288,7 @@ async fn main() -> Result<()> {
     match command {
         Commands::Init { path, template } => { init_project(path, template)?; Ok(()) }
         Commands::Add { module } => { cmd_add_module(&module, &std::env::current_dir()?)?; Ok(()) }
-        Commands::Update { check } => { neondb::updater::cmd_update(check) }
+        Commands::Update { check } => { voltra::updater::cmd_update(check) }
         Commands::Templates => { cmd_list_templates(); Ok(()) }
         Commands::Modules => { cmd_list_modules(); Ok(()) }
         Commands::Build { modules_dir } => {
@@ -307,31 +307,31 @@ async fn main() -> Result<()> {
                 return cmd_start_project(&cwd, &pkg_name).map_err(Into::into);
             }
             // Non-blocking background version hint — prints one line if behind
-            std::thread::spawn(neondb::updater::check_and_hint);
+            std::thread::spawn(voltra::updater::check_and_hint);
             let mut config = Config::from_env();
             if let Some(h) = host { config.host = h; }
             if let Some(p) = port { config.port = p; }
-            if let Some(d) = data_dir { config.wal_path = d.join("neondb.wal"); }
+            if let Some(d) = data_dir { config.wal_path = d.join("voltra.wal"); }
             if let Some(w) = wal_path { config.wal_path = w; }
             if let Some(f) = fsync_interval_ms { config.fsync_interval_ms = f; }
             run_server(config).await
         }
-        Commands::Status { metrics_url } => neondb::cli::cmd_status(&metrics_url).await,
-        Commands::Tables { metrics_url } => neondb::cli::cmd_tables(&metrics_url).await,
-        Commands::Get { table, key, metrics_url } => neondb::cli::cmd_get(&metrics_url, &table, key.as_deref()).await,
-        Commands::Call { reducer, args, url, api_key } => neondb::cli::cmd_call(&url, &reducer, args.as_deref(), api_key.as_deref()).await,
-        Commands::Watch { query, url, api_key } => neondb::cli::cmd_watch(&url, &query, api_key.as_deref()).await,
+        Commands::Status { metrics_url } => voltra::cli::cmd_status(&metrics_url).await,
+        Commands::Tables { metrics_url } => voltra::cli::cmd_tables(&metrics_url).await,
+        Commands::Get { table, key, metrics_url } => voltra::cli::cmd_get(&metrics_url, &table, key.as_deref()).await,
+        Commands::Call { reducer, args, url, api_key } => voltra::cli::cmd_call(&url, &reducer, args.as_deref(), api_key.as_deref()).await,
+        Commands::Watch { query, url, api_key } => voltra::cli::cmd_watch(&url, &query, api_key.as_deref()).await,
         Commands::ClusterStatus { metrics_url } => cmd_cluster_status(&metrics_url).await,
-        Commands::Seed { file, metrics_url, dry_run } => neondb::cli::cmd_seed(&metrics_url, &file, dry_run).await,
+        Commands::Seed { file, metrics_url, dry_run } => voltra::cli::cmd_seed(&metrics_url, &file, dry_run).await,
         Commands::Drain { metrics_url } => cmd_drain(&metrics_url, true).await,
         Commands::Undrain { metrics_url } => cmd_drain(&metrics_url, false).await,
-        Commands::Migrate { dir, metrics_url, dry_run } => neondb::cli::cmd_migrate(&metrics_url, &dir, dry_run).await,
-        Commands::GenerateNpc { npc_type, context, url, api_key } => neondb::cli::cmd_generate_npc(&url, &npc_type, context.as_deref(), api_key.as_deref()).await,
+        Commands::Migrate { dir, metrics_url, dry_run } => voltra::cli::cmd_migrate(&metrics_url, &dir, dry_run).await,
+        Commands::GenerateNpc { npc_type, context, url, api_key } => voltra::cli::cmd_generate_npc(&url, &npc_type, context.as_deref(), api_key.as_deref()).await,
         Commands::Bench { url, clients, calls, warmup, api_key } => run_cli_bench(&url, clients, calls, warmup, api_key.as_deref()).await,
         Commands::Backup { metrics_url } => cmd_backup(&metrics_url).await,
         Commands::Backups { dir } => { cmd_list_backups(&dir); Ok(()) }
         Commands::Restore { backup, wal_path, snapshot_dir, until_ts } => {
-            let (seq, n) = neondb::backup::restore_to_dirs(&backup, &wal_path, &snapshot_dir, until_ts)?;
+            let (seq, n) = voltra::backup::restore_to_dirs(&backup, &wal_path, &snapshot_dir, until_ts)?;
             println!("Restored snapshot seq={} plus {} WAL entries.", seq, n);
             println!("Start the server with --wal-path {:?} to load the restored data.", wal_path);
             Ok(())
@@ -342,7 +342,7 @@ async fn main() -> Result<()> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// neondb cluster-status
+// voltra cluster-status
 // ─────────────────────────────────────────────────────────────────────────────
 
 async fn cmd_drain(metrics_url: &str, enable: bool) -> Result<()> {
@@ -352,7 +352,7 @@ async fn cmd_drain(metrics_url: &str, enable: bool) -> Result<()> {
         client.post(&url).send().await
     } else {
         client.delete(&url).send().await
-    }.map_err(|e| neondb::error::NeonDBError::network_error(format!("Cannot reach {}: {}", url, e)))?;
+    }.map_err(|e| voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e)))?;
 
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
     let draining = body["draining"].as_bool().unwrap_or(enable);
@@ -363,7 +363,7 @@ async fn cmd_drain(metrics_url: &str, enable: bool) -> Result<()> {
         println!("⚠  Server is DRAINING — {} active connection(s) still live", conns);
         println!("   {}", msg);
         println!("   Poll GET {}/admin/api/drain until active_connections=0,", metrics_url);
-        println!("   then restart / apply fix, then: neondb undrain");
+        println!("   then restart / apply fix, then: voltra undrain");
     } else {
         println!("✓  Drain disabled — server accepting connections normally ({} active)", conns);
         println!("   {}", msg);
@@ -374,7 +374,7 @@ async fn cmd_drain(metrics_url: &str, enable: bool) -> Result<()> {
 async fn cmd_backup(metrics_url: &str) -> Result<()> {
     let url = format!("{}/backup", metrics_url);
     let resp = reqwest::Client::new().post(&url).send().await.map_err(|e| {
-        neondb::error::NeonDBError::network_error(format!("Cannot reach {}: {}", url, e))
+        voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e))
     })?;
     let status = resp.status();
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
@@ -384,20 +384,20 @@ async fn cmd_backup(metrics_url: &str) -> Result<()> {
         println!("  rows: {}", body["row_count"]);
     } else {
         eprintln!("Backup failed (HTTP {}): {}", status, body);
-        return Err(neondb::error::NeonDBError::internal("backup failed"));
+        return Err(voltra::error::VoltraError::internal("backup failed"));
     }
     Ok(())
 }
 
 fn cmd_list_backups(dir: &Path) {
-    let backups = neondb::backup::list_backups(dir);
+    let backups = voltra::backup::list_backups(dir);
     if backups.is_empty() {
         println!("No backups found in {:?}", dir);
         return;
     }
     println!("{:<24} {:>12} {:>10}  PATH", "CREATED", "SEQ", "ROWS");
     for (path, ts, seq) in &backups {
-        let rows = neondb::backup::read_meta(path).map(|m| m.row_count).unwrap_or(0);
+        let rows = voltra::backup::read_meta(path).map(|m| m.row_count).unwrap_or(0);
         let dt = chrono_like_fmt(*ts);
         println!("{:<24} {:>12} {:>10}  {}", dt, seq, rows, path.display());
     }
@@ -433,7 +433,7 @@ fn chrono_like_fmt(unix_secs: u64) -> String {
 async fn cmd_promote(metrics_url: &str) -> Result<()> {
     let url = format!("{}/replication/promote", metrics_url);
     let resp = reqwest::Client::new().post(&url).send().await.map_err(|e| {
-        neondb::error::NeonDBError::network_error(format!("Cannot reach {}: {}", url, e))
+        voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e))
     })?;
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
     println!("{}", serde_json::to_string_pretty(&body).unwrap_or_default());
@@ -446,12 +446,12 @@ async fn cmd_generate(metrics_url: &str, lang: &str, out: &Path) -> Result<()> {
     let schema: serde_json::Value = reqwest::Client::new()
         .get(&url)
         .send().await
-        .map_err(|e| neondb::error::NeonDBError::network_error(format!("Cannot reach {}: {}", url, e)))?
+        .map_err(|e| voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e)))?
         .json().await
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Invalid schema JSON: {}", e)))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Invalid schema JSON: {}", e)))?;
 
     std::fs::create_dir_all(out).map_err(|e| {
-        neondb::error::NeonDBError::internal(format!("Cannot create output dir: {}", e))
+        voltra::error::VoltraError::internal(format!("Cannot create output dir: {}", e))
     })?;
 
     let tables = schema["tables"].as_object().cloned().unwrap_or_default();
@@ -466,7 +466,7 @@ async fn cmd_generate(metrics_url: &str, lang: &str, out: &Path) -> Result<()> {
             generate_gdscript(&tables, &reducers, version, out)?;
         }
         other => {
-            return Err(neondb::error::NeonDBError::invalid_argument(
+            return Err(voltra::error::VoltraError::invalid_argument(
                 format!("Unknown --lang '{}'. Supported: typescript, gdscript", other)
             ));
         }
@@ -514,7 +514,7 @@ fn generate_typescript(
 ) -> Result<()> {
     // ── tables.ts ─────────────────────────────────────────────────────────────
     let mut tables_ts = format!(
-        "// tables.ts — AUTO-GENERATED by `neondb generate` from server v{}\n// DO NOT EDIT — run `neondb generate` to regenerate\n\n",
+        "// tables.ts — AUTO-GENERATED by `voltra generate` from server v{}\n// DO NOT EDIT — run `voltra generate` to regenerate\n\n",
         version
     );
     for (table_name, schema) in tables {
@@ -537,7 +537,7 @@ fn generate_typescript(
 
     // ── reducers.ts ───────────────────────────────────────────────────────────
     let mut reducers_ts = format!(
-        "// reducers.ts — AUTO-GENERATED by `neondb generate` from server v{}\n// DO NOT EDIT — run `neondb generate` to regenerate\n\nimport type {{ NeonDBClient }} from 'neondb-client';\n\nexport const Reducers = {{\n",
+        "// reducers.ts — AUTO-GENERATED by `voltra generate` from server v{}\n// DO NOT EDIT — run `voltra generate` to regenerate\n\nimport type {{ VoltraClient }} from 'voltra-client';\n\nexport const Reducers = {{\n",
         version
     );
     for r in reducers {
@@ -546,7 +546,7 @@ fn generate_typescript(
         let mut camel = snake_to_pascal(name);
         if let Some(f) = camel.get_mut(0..1) { f.make_ascii_lowercase(); }
         reducers_ts.push_str(&format!(
-            "  {}: (db: NeonDBClient, ...args: unknown[]) => db.call('{}', args),\n",
+            "  {}: (db: VoltraClient, ...args: unknown[]) => db.call('{}', args),\n",
             camel, name
         ));
     }
@@ -567,7 +567,7 @@ fn generate_gdscript(
 ) -> Result<()> {
     // ── tables.gd ─────────────────────────────────────────────────────────────
     let mut tables_gd = format!(
-        "# tables.gd — AUTO-GENERATED by `neondb generate` from server v{}\n# DO NOT EDIT — run `neondb generate` to regenerate\n\n",
+        "# tables.gd — AUTO-GENERATED by `voltra generate` from server v{}\n# DO NOT EDIT — run `voltra generate` to regenerate\n\n",
         version
     );
     for (table_name, schema) in tables {
@@ -592,7 +592,7 @@ fn generate_gdscript(
 
     // ── reducers.gd ───────────────────────────────────────────────────────────
     let mut reducers_gd = format!(
-        "# reducers.gd — AUTO-GENERATED by `neondb generate` from server v{}\n# DO NOT EDIT — run `neondb generate` to regenerate\n\nclass_name NeonDBReducers\n\n",
+        "# reducers.gd — AUTO-GENERATED by `voltra generate` from server v{}\n# DO NOT EDIT — run `voltra generate` to regenerate\n\nclass_name VoltraReducers\n\n",
         version
     );
     for r in reducers {
@@ -613,25 +613,25 @@ fn generate_gdscript(
 fn write_generated(out: &Path, filename: &str, content: &str) -> Result<()> {
     let path = out.join(filename);
     std::fs::write(&path, content).map_err(|e| {
-        neondb::error::NeonDBError::internal(format!("Cannot write {}: {}", path.display(), e))
+        voltra::error::VoltraError::internal(format!("Cannot write {}: {}", path.display(), e))
     })
 }
 
 async fn cmd_cluster_status(metrics_url: &str) -> Result<()> {
     let url = format!("{}/cluster/peers", metrics_url);
     let resp = reqwest::get(&url).await.map_err(|e| {
-        neondb::error::NeonDBError::network_error(format!("Cannot reach {}: {}", url, e))
+        voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e))
     })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         eprintln!("Server returned HTTP {}: {}", status, body);
-        return Err(neondb::error::NeonDBError::network_error(format!("HTTP {}", status)));
+        return Err(voltra::error::VoltraError::network_error(format!("HTTP {}", status)));
     }
 
     let data: serde_json::Value = resp.json().await.map_err(|e| {
-        neondb::error::NeonDBError::internal(format!("Invalid JSON response: {}", e))
+        voltra::error::VoltraError::internal(format!("Invalid JSON response: {}", e))
     })?;
 
     let my_shard    = data["my_shard_id"].as_u64().unwrap_or(0);
@@ -643,11 +643,11 @@ async fn cmd_cluster_status(metrics_url: &str) -> Result<()> {
         println!("  Cluster: single-node mode");
         println!("  Shard:   {}/{}", my_shard, shard_count);
         println!();
-        println!("  To enable clustering, set NEONDB_PEERS before starting:");
-        println!("    NEONDB_PEERS=shard1=http://node2:3001,shard2=http://node3:3001");
+        println!("  To enable clustering, set VOLTRA_PEERS before starting:");
+        println!("    VOLTRA_PEERS=shard1=http://node2:3001,shard2=http://node3:3001");
         println!();
         println!("  Or dynamically join a running cluster:");
-        println!("    NEONDB_SEED_NODE=http://existing-node:3001 neondb start");
+        println!("    VOLTRA_SEED_NODE=http://existing-node:3001 voltra start");
         println!();
         return Ok(());
     }
@@ -681,16 +681,16 @@ async fn cmd_cluster_status(metrics_url: &str) -> Result<()> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-// neondb start — project-aware: if CWD is a scaffolded game project, build + run it
+// voltra start — project-aware: if CWD is a scaffolded game project, build + run it
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn is_game_project(cwd: &Path) -> Option<String> {
     let cargo_path = cwd.join("Cargo.toml");
     if !cargo_path.exists() { return None; }
     let content = std::fs::read_to_string(&cargo_path).ok()?;
-    // Must have neondb as a dep but not BE neondb itself
-    if !content.contains("neondb") { return None; }
-    if content.contains("name = \"neondb\"") { return None; }
+    // Must have voltra as a dep but not BE voltra itself
+    if !content.contains("voltra") { return None; }
+    if content.contains("name = \"voltra\"") { return None; }
     // Extract package name
     content.lines()
         .find(|l| l.trim_start().starts_with("name") && l.contains('"'))
@@ -699,16 +699,16 @@ fn is_game_project(cwd: &Path) -> Option<String> {
 }
 
 fn cmd_start_project(cwd: &Path, pkg_name: &str) -> Result<()> {
-    println!("[neondb] Building {} (release)…", pkg_name);
+    println!("[voltra] Building {} (release)…", pkg_name);
     let build = std::process::Command::new("cargo")
         .arg("build")
         .arg("--release")
         .current_dir(cwd)
         .status()
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("cargo build: {e}")))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("cargo build: {e}")))?;
 
     if !build.success() {
-        return Err(neondb::error::NeonDBError::internal("cargo build --release failed"));
+        return Err(voltra::error::VoltraError::internal("cargo build --release failed"));
     }
 
     let bin_name = if cfg!(windows) {
@@ -718,51 +718,51 @@ fn cmd_start_project(cwd: &Path, pkg_name: &str) -> Result<()> {
     };
     let bin = cwd.join("target").join("release").join(&bin_name);
     if !bin.exists() {
-        return Err(neondb::error::NeonDBError::internal(
+        return Err(voltra::error::VoltraError::internal(
             format!("Binary not found at {}", bin.display()),
         ));
     }
 
-    println!("[neondb] Starting {}…", pkg_name);
+    println!("[voltra] Starting {}…", pkg_name);
     let status = std::process::Command::new(&bin)
         .arg("start")
         .current_dir(cwd)
         .status()
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("exec {pkg_name}: {e}")))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("exec {pkg_name}: {e}")))?;
 
     if status.success() {
         Ok(())
     } else {
-        Err(neondb::error::NeonDBError::internal(format!("{pkg_name} exited with non-zero status")))
+        Err(voltra::error::VoltraError::internal(format!("{pkg_name} exited with non-zero status")))
     }
 }
 
-// neondb templates
+// voltra templates
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn cmd_list_templates() {
     println!();
-    println!("  NeonDB Game Templates");
+    println!("  Voltra Game Templates");
     println!();
     for t in TEMPLATES {
         println!("  {:14} — {}", t.name, t.description);
     }
     println!();
     println!("  Usage:");
-    println!("    neondb init my-game --template game/basic");
-    println!("    neondb init my-game --template game/full");
-    println!("    neondb init my-game --template game/unity");
-    println!("    neondb init my-game --template game/godot");
+    println!("    voltra init my-game --template game/basic");
+    println!("    voltra init my-game --template game/full");
+    println!("    voltra init my-game --template game/unity");
+    println!("    voltra init my-game --template game/godot");
     println!();
     println!("  Add modules later:");
-    println!("    cd my-game && neondb add combat");
-    println!("    cd my-game && neondb add leaderboard");
+    println!("    cd my-game && voltra add combat");
+    println!("    cd my-game && voltra add leaderboard");
     println!();
 }
 
 fn cmd_list_modules() {
     println!();
-    println!("  NeonDB Add-on Modules  (run inside your project: neondb add <module>)");
+    println!("  Voltra Add-on Modules  (run inside your project: voltra add <module>)");
     println!();
     for (name, desc) in MODULES {
         println!("  {:14} — {}", name, desc);
@@ -770,13 +770,13 @@ fn cmd_list_modules() {
     println!();
     println!("  Example:");
     println!("    cd my-game");
-    println!("    neondb add combat       # adds attack, respawn, ability reducers + schema");
-    println!("    neondb add leaderboard  # adds lb_submit, lb_reset reducers + schema");
+    println!("    voltra add combat       # adds attack, respawn, ability reducers + schema");
+    println!("    voltra add leaderboard  # adds lb_submit, lb_reset reducers + schema");
     println!();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// neondb init  (interactive when called with no args)
+// voltra init  (interactive when called with no args)
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
@@ -788,7 +788,7 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
             .with_prompt("Project name")
             .default("my-project".to_string())
             .interact_text()
-            .map_err(|e| neondb::error::NeonDBError::internal(format!("Prompt error: {}", e)))?,
+            .map_err(|e| voltra::error::VoltraError::internal(format!("Prompt error: {}", e)))?,
     };
 
     let project_path: PathBuf = match path {
@@ -799,7 +799,7 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
                 .with_prompt("Project path")
                 .default(suggested)
                 .interact_text()
-                .map_err(|e| neondb::error::NeonDBError::internal(format!("Prompt error: {}", e)))?;
+                .map_err(|e| voltra::error::VoltraError::internal(format!("Prompt error: {}", e)))?;
             PathBuf::from(input)
         }
     };
@@ -809,7 +809,7 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
             if !TEMPLATES.iter().any(|tmpl| tmpl.name == t) {
                 let names: Vec<_> = TEMPLATES.iter().map(|tmpl| tmpl.name).collect();
                 eprintln!("Error: unknown template '{}'. Available: {}", t, names.join(", "));
-                return Err(neondb::error::NeonDBError::invalid_argument(format!("unknown template '{}'", t)));
+                return Err(voltra::error::VoltraError::invalid_argument(format!("unknown template '{}'", t)));
             }
             t
         }
@@ -839,7 +839,7 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
                     .default(0)
                     .items(&branch_items)
                     .interact()
-                    .map_err(|e| neondb::error::NeonDBError::internal(format!("Prompt error: {}", e)))?;
+                    .map_err(|e| voltra::error::VoltraError::internal(format!("Prompt error: {}", e)))?;
                 let category = categories[branch];
 
                 let in_branch: Vec<&Template> =
@@ -854,7 +854,7 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
                     .default(0)
                     .items(&leaf_items)
                     .interact()
-                    .map_err(|e| neondb::error::NeonDBError::internal(format!("Prompt error: {}", e)))?;
+                    .map_err(|e| voltra::error::VoltraError::internal(format!("Prompt error: {}", e)))?;
                 if leaf == in_branch.len() {
                     continue; // ← Back
                 }
@@ -864,7 +864,7 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
     };
 
     fs::create_dir_all(&project_path)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot create directory: {}", e)))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Cannot create directory: {}", e)))?;
 
     write_shared_files(&project_path, &project_name, &template_name)?;
 
@@ -877,8 +877,8 @@ fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
         "game/unity"  => scaffold_game_unity(&project_path, &project_name)?,
         "game/godot"  => scaffold_game_godot(&project_path, &project_name)?,
         _ => {
-            eprintln!("Unknown template '{}'. Run `neondb templates` to see options.", template_name);
-            return Err(neondb::error::NeonDBError::invalid_argument(format!("unknown template '{}'", template_name)));
+            eprintln!("Unknown template '{}'. Run `voltra templates` to see options.", template_name);
+            return Err(voltra::error::VoltraError::invalid_argument(format!("unknown template '{}'", template_name)));
         }
     }
     Ok(())
@@ -895,7 +895,7 @@ fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -
             "\n[[scheduler]]\nreducer = \"cleanup_chat\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"world_tick\"\ninterval_ms = 1000\n\n[[scheduler]]\nreducer = \"session_cleanup\"\ninterval_ms = 60000\n\n[[scheduler]]\nreducer = \"mm_match\"\ninterval_ms = 5000\n",
         // No active scheduler by default — referencing a reducer the chosen
         // template doesn't define makes the scheduler error on every tick.
-        // Uncomment after adding a matching reducer (e.g. `neondb add world`).
+        // Uncomment after adding a matching reducer (e.g. `voltra add world`).
         _ => "\n# [[scheduler]]\n# reducer = \"world_tick\"\n# interval_ms = 1000\n",
     };
 
@@ -914,20 +914,20 @@ fn write_shared_files(project_path: &Path, project_name: &str, template: &str) -
         permissions = permissions_example,
     );
 
-    fs::write(project_path.join("neondb.toml"), toml)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Write neondb.toml: {}", e)))?;
+    fs::write(project_path.join("voltra.toml"), toml)
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Write voltra.toml: {}", e)))?;
 
     fs::create_dir_all(project_path.join("migrations"))
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Create migrations/: {}", e)))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Create migrations/: {}", e)))?;
     fs::write(project_path.join("migrations").join("README.md"), MIGRATIONS_README)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Write migrations/README.md: {}", e)))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Write migrations/README.md: {}", e)))?;
 
     fs::create_dir_all(project_path.join("modules"))
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Create modules/: {}", e)))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Create modules/: {}", e)))?;
 
     fs::write(project_path.join(".gitignore"),
         "*.wal\n*.bin\nsnapshots/\n*.tmp\nnode_modules/\ndist/\n.env\n")
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Write .gitignore: {}", e)))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Write .gitignore: {}", e)))?;
 
     Ok(())
 }
@@ -936,10 +936,10 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
     let full = project_path.join(rel);
     if let Some(parent) = full.parent() {
         fs::create_dir_all(parent)
-            .map_err(|e| neondb::error::NeonDBError::internal(format!("mkdir {:?}: {}", parent, e)))?;
+            .map_err(|e| voltra::error::VoltraError::internal(format!("mkdir {:?}: {}", parent, e)))?;
     }
     fs::write(&full, content)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Write {:?}: {}", full, e)))
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Write {:?}: {}", full, e)))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -948,13 +948,13 @@ fn wf(project_path: &Path, rel: &str, content: &str) -> Result<()> {
 
 // ── New game-focused scaffold functions ───────────────────────────────────────
 
-/// Path to the NeonDB source on the machine that compiled this binary.
+/// Path to the Voltra source on the machine that compiled this binary.
 /// Used to add a [patch] section so scaffolded projects build offline.
-const NEONDB_SOURCE_DIR: &str = env!("CARGO_MANIFEST_DIR");
+const VOLTRA_SOURCE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
-/// Generate a Cargo.toml that embeds the NeonDB server as a library.
+/// Generate a Cargo.toml that embeds the Voltra server as a library.
 ///
-/// When the local NeonDB source is reachable on disk (the common case — `neondb`
+/// When the local Voltra source is reachable on disk (the common case — `voltra`
 /// was installed via `cargo install --path .`), the scaffold uses a direct
 /// `path = "..."` dependency. That keeps `cargo build` fully offline:
 /// no git fetch, no crates.io index refresh.
@@ -968,7 +968,7 @@ fn sanitize_package_name(name: &str) -> String {
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect();
     if cleaned.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true) {
-        format!("neondb_{}", cleaned)
+        format!("voltra_{}", cleaned)
     } else {
         cleaned
     }
@@ -976,18 +976,18 @@ fn sanitize_package_name(name: &str) -> String {
 
 fn game_cargo_toml(name: &str) -> String {
     let pkg_name = sanitize_package_name(name);
-    let neondb_dep = if std::path::Path::new(NEONDB_SOURCE_DIR).exists() {
+    let voltra_dep = if std::path::Path::new(VOLTRA_SOURCE_DIR).exists() {
         format!(
-            "neondb     = {{ path = \"{}\" }}",
-            NEONDB_SOURCE_DIR.replace('\\', "/")
+            "voltra     = {{ path = \"{}\" }}",
+            VOLTRA_SOURCE_DIR.replace('\\', "/")
         )
     } else {
-        "neondb     = { git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.7\" }".to_string()
+        "voltra     = { git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"v1.0.7\" }".to_string()
     };
     format!(
         "[workspace]\n\n\
 [package]\nname = \"{pkg_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-[dependencies]\n{neondb_dep}\n\
+[dependencies]\n{voltra_dep}\n\
 serde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n\
 env_logger = \"0.11\"\n"
     )
@@ -1001,19 +1001,19 @@ fn scaffold_all_clients(p: &Path, name: &str) -> Result<()> {
     wf(p, "clients/rust/Cargo.toml",  &client_cargo_toml(name))?;
     wf(p, "clients/rust/src/main.rs", CLIENT_MAIN_RS)?;
     // Pin transitive deps so `cargo run` in clients/rust/ stays offline too.
-    let src_lock = std::path::Path::new(NEONDB_SOURCE_DIR).join("Cargo.lock");
+    let src_lock = std::path::Path::new(VOLTRA_SOURCE_DIR).join("Cargo.lock");
     if src_lock.exists() {
         let _ = fs::copy(&src_lock, p.join("clients/rust/Cargo.lock"));
     }
 
-    // Unity C# client (copy clients/unity/ into Assets/Scripts/NeonDB/)
-    wf(p, "clients/unity/NeonDBClient.cs",    UNITY_CLIENT_CS)?;
-    wf(p, "clients/unity/NeonDBBehaviour.cs", UNITY_BEHAVIOUR_CS)?;
-    wf(p, "clients/unity/NeonDBManager.cs",   UNITY_MANAGER_CS)?;
+    // Unity C# client (copy clients/unity/ into Assets/Scripts/Voltra/)
+    wf(p, "clients/unity/VoltraClient.cs",    UNITY_CLIENT_CS)?;
+    wf(p, "clients/unity/VoltraBehaviour.cs", UNITY_BEHAVIOUR_CS)?;
+    wf(p, "clients/unity/VoltraManager.cs",   UNITY_MANAGER_CS)?;
 
     // Godot 4 GDScript client (add as Autoload in Project Settings)
-    wf(p, "clients/godot/neondb_client.gd",  GODOT_CLIENT_GD)?;
-    wf(p, "clients/godot/NeonDBManager.gd",  GODOT_MANAGER_GD)?;
+    wf(p, "clients/godot/voltra_client.gd",  GODOT_CLIENT_GD)?;
+    wf(p, "clients/godot/VoltraManager.gd",  GODOT_MANAGER_GD)?;
 
     // Wire protocol spec for custom engine implementations (C++, JS, Swift, etc.)
     wf(p, "clients/PROTOCOL.md", CLIENT_PROTOCOL_MD)?;
@@ -1021,10 +1021,10 @@ fn scaffold_all_clients(p: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Copy NeonDB's Cargo.lock into the scaffolded project when available,
+/// Copy Voltra's Cargo.lock into the scaffolded project when available,
 /// so transitive dep versions are pinned and no crates.io index refresh runs.
 fn copy_lockfile_if_available(p: &Path) -> Result<()> {
-    let src_lock = std::path::Path::new(NEONDB_SOURCE_DIR).join("Cargo.lock");
+    let src_lock = std::path::Path::new(VOLTRA_SOURCE_DIR).join("Cargo.lock");
     if src_lock.exists() {
         let _ = fs::copy(&src_lock, p.join("Cargo.lock"));
     }
@@ -1044,12 +1044,12 @@ fn scaffold_game_basic(p: &Path, name: &str, template: &str) -> Result<()> {
     wf(p, "src/reducers/heal.rs",        R_HEAL_RS)?;
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
-    wf(p, "README.md", &format!("# {name}\n\nNeonDB embedded game server.\n\nSee SCALING.md for the scaling guide.\n"))?;
+    wf(p, "README.md", &format!("# {name}\n\nVoltra embedded game server.\n\nSee SCALING.md for the scaling guide.\n"))?;
     scaffold_all_clients(p, name)?;
     // Chat (lobby + proximity) is built-in to every template
     add_module_files(p, "chat")?;
     print_success(name, template, &[
-        ("Cargo.toml",                              "neondb game server (run `neondb start` from this folder)"),
+        ("Cargo.toml",                              "voltra game server (run `voltra start` from this folder)"),
         ("src/reducers/spawn.rs",                   "spawn(player_id, lobby, class)"),
         ("src/reducers/move_player.rs",             "move_player(player_id, x, y)"),
         ("src/reducers/despawn.rs",                 "despawn(player_id)"),
@@ -1060,22 +1060,22 @@ fn scaffold_game_basic(p: &Path, name: &str, template: &str) -> Result<()> {
         ("src/reducers/chat/leave.rs",              "leave_room(room, player_id)"),
         ("schema.toml",                             "players + sessions + chat tables"),
         ("clients/rust/src/main.rs",                "Rust client (Bevy / CLI)"),
-        ("clients/unity/NeonDBClient.cs",           "Unity C# client"),
-        ("clients/godot/neondb_client.gd",         "Godot 4 GDScript client"),
+        ("clients/unity/VoltraClient.cs",           "Unity C# client"),
+        ("clients/godot/voltra_client.gd",         "Godot 4 GDScript client"),
         ("clients/PROTOCOL.md",                    "wire protocol — implement your own client"),
     ]);
     println!("  Next steps:");
     println!("    cd {name}");
-    println!("    neondb start");
+    println!("    voltra start");
     println!("    # Rust client (another terminal):");
     println!("    cd clients/rust && cargo run --release");
-    println!("    # Unity: copy clients/unity/ into Assets/Scripts/NeonDB/");
-    println!("    # Godot: add clients/godot/ files, set neondb_client.gd as Autoload");
+    println!("    # Unity: copy clients/unity/ into Assets/Scripts/Voltra/");
+    println!("    # Godot: add clients/godot/ files, set voltra_client.gd as Autoload");
     println!();
     println!("  Chat is built-in — call send_message(room, player_id, name, text, \"lobby\"|\"proximity\", x, z)");
     println!("  Add more systems:");
-    println!("    neondb add combat    # attack, respawn, abilities");
-    println!("    neondb add inventory # items, equip slots");
+    println!("    voltra add combat    # attack, respawn, abilities");
+    println!("    voltra add inventory # items, equip slots");
     println!();
     Ok(())
 }
@@ -1093,7 +1093,7 @@ fn scaffold_game_full(p: &Path, name: &str, template: &str) -> Result<()> {
     add_module_files(p, "combat")?;
     add_module_files(p, "world")?;
     println!("  All 9 modules included. See src/reducers/ for the full source.");
-    println!("  Add to neondb.toml for scheduled reducers:");
+    println!("  Add to voltra.toml for scheduled reducers:");
     println!("    [[scheduler]]");
     println!("    reducer = \"world_tick\"");
     println!("    interval_ms = 1000");
@@ -1104,13 +1104,13 @@ fn scaffold_game_full(p: &Path, name: &str, template: &str) -> Result<()> {
 
 fn scaffold_game_unity(p: &Path, name: &str) -> Result<()> {
     scaffold_game_full(p, name, "game/unity")?;
-    wf(p, "unity/NeonDBClient.cs",    UNITY_CLIENT_CS)?;
-    wf(p, "unity/NeonDBBehaviour.cs", UNITY_BEHAVIOUR_CS)?;
-    wf(p, "unity/NeonDBManager.cs",   UNITY_MANAGER_CS)?;
+    wf(p, "unity/VoltraClient.cs",    UNITY_CLIENT_CS)?;
+    wf(p, "unity/VoltraBehaviour.cs", UNITY_BEHAVIOUR_CS)?;
+    wf(p, "unity/VoltraManager.cs",   UNITY_MANAGER_CS)?;
     wf(p, "unity/README.md",          UNITY_GAME_README)?;
     println!("  Unity C# SDK → unity/  (also in clients/unity/)");
-    println!("    Copy unity/ into Assets/Scripts/NeonDB/");
-    println!("    Add NeonDBManager to your scene, set Server URL, press Play.");
+    println!("    Copy unity/ into Assets/Scripts/Voltra/");
+    println!("    Add VoltraManager to your scene, set Server URL, press Play.");
     println!("  Rust / Godot / custom engine clients → clients/");
     println!("    See clients/PROTOCOL.md to implement your own client.");
     Ok(())
@@ -1118,11 +1118,11 @@ fn scaffold_game_unity(p: &Path, name: &str) -> Result<()> {
 
 fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
     scaffold_game_full(p, name, "game/godot")?;
-    wf(p, "godot/neondb_client.gd",   GODOT_CLIENT_GD)?;
-    wf(p, "godot/NeonDBManager.gd",   GODOT_MANAGER_GD)?;
+    wf(p, "godot/voltra_client.gd",   GODOT_CLIENT_GD)?;
+    wf(p, "godot/VoltraManager.gd",   GODOT_MANAGER_GD)?;
     wf(p, "godot/README.md",          GODOT_GAME_README)?;
     println!("  Godot 4 GDScript SDK → godot/  (also in clients/godot/)");
-    println!("    Add godot/ files to your project, set neondb_client.gd as Autoload.");
+    println!("    Add godot/ files to your project, set voltra_client.gd as Autoload.");
     println!("  Rust / Unity / custom engine clients → clients/");
     println!("    See clients/PROTOCOL.md to implement your own client.");
     Ok(())
@@ -1140,52 +1140,52 @@ fn build_neon_reducers(project_dir: &std::path::Path) -> Result<()> {
 
     let (combined, display) = if reducers_dir.is_dir() {
         let mut entries: Vec<_> = std::fs::read_dir(&reducers_dir)
-            .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot read reducers/: {e}")))?
+            .map_err(|e| voltra::error::VoltraError::internal(format!("Cannot read reducers/: {e}")))?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map(|x| x == "neon").unwrap_or(false))
             .collect();
         entries.sort_by_key(|e| e.file_name());
         if entries.is_empty() {
-            return Err(neondb::error::NeonDBError::internal("reducers/ exists but contains no .neon files").into());
+            return Err(voltra::error::VoltraError::internal("reducers/ exists but contains no .neon files").into());
         }
         let mut src = String::new();
         for e in &entries {
             src.push_str(&std::fs::read_to_string(e.path())
-                .map_err(|err| neondb::error::NeonDBError::internal(format!("Cannot read {}: {err}", e.path().display())))?);
+                .map_err(|err| voltra::error::VoltraError::internal(format!("Cannot read {}: {err}", e.path().display())))?);
             src.push('\n');
         }
         (src, format!("reducers/ ({} files)", entries.len()))
     } else if reducers_neon.exists() {
         let src = std::fs::read_to_string(&reducers_neon)
-            .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot read reducers.neon: {e}")))?;
+            .map_err(|e| voltra::error::VoltraError::internal(format!("Cannot read reducers.neon: {e}")))?;
         (src, "reducers.neon".to_string())
     } else {
-        return Err(neondb::error::NeonDBError::internal(
-            "No reducers/ directory or reducers.neon found. Run `neondb init` to create a project."
+        return Err(voltra::error::VoltraError::internal(
+            "No reducers/ directory or reducers.neon found. Run `voltra init` to create a project."
         ).into());
     };
 
     println!("  Compiling {}...", display);
-    let rust_code = neondb::dsl::compile(&combined, "reducers")
+    let rust_code = voltra::dsl::compile(&combined, "reducers")
         .map_err(|errors| {
             for e in &errors { eprintln!("  error: {}", e); }
-            neondb::error::NeonDBError::internal("Neon compilation failed")
+            voltra::error::VoltraError::internal("Neon compilation failed")
         })?;
 
     let out_path = project_dir.join("src").join("reducers.rs");
     std::fs::create_dir_all(out_path.parent().unwrap())
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot create src/: {e}")))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Cannot create src/: {e}")))?;
     std::fs::write(&out_path, &rust_code)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("Cannot write src/reducers.rs: {e}")))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("Cannot write src/reducers.rs: {e}")))?;
     println!("  {} → src/reducers.rs", display);
 
     let status = std::process::Command::new("cargo")
         .args(["build", "--release"])
         .current_dir(project_dir)
         .status()
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("cargo build failed: {e}")))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("cargo build failed: {e}")))?;
     if !status.success() {
-        return Err(neondb::error::NeonDBError::internal("cargo build --release failed").into());
+        return Err(voltra::error::VoltraError::internal("cargo build --release failed").into());
     }
     println!("  Native binary ready.");
     Ok(())
@@ -1193,9 +1193,9 @@ fn build_neon_reducers(project_dir: &std::path::Path) -> Result<()> {
 
 /// Compile neon source inline (during scaffold so the project starts without a manual build step).
 fn compile_neon_to_rs(neon_source: &str) -> String {
-    match neondb::dsl::compile(neon_source, "reducers") {
+    match voltra::dsl::compile(neon_source, "reducers") {
         Ok(rs) => rs,
-        Err(_) => "// Auto-generated by neondb build. Run `neondb build` to regenerate.\n".to_owned()
+        Err(_) => "// Auto-generated by voltra build. Run `voltra build` to regenerate.\n".to_owned()
     }
 }
 
@@ -1218,7 +1218,7 @@ fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
     wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
-    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language game server.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/README.md` for the language reference.\n"))?;
+    wf(p, "README.md",                   &format!("# {name}\n\nVoltra Neon-language game server.\n\nEdit files in `reducers/`, run `voltra build`, then `voltra start`.\n\nSee `docs/neon/README.md` for the language reference.\n"))?;
     wf(p, "docs/neon/README.md",         NEON_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/basic", &[
@@ -1230,13 +1230,13 @@ fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
         ("src/reducers.rs",               "auto-generated — do not edit"),
         ("docs/neon/README.md",           "Neon language reference"),
         ("clients/rust/src/main.rs",      "Rust client"),
-        ("clients/unity/NeonDBClient.cs", "Unity C# client"),
-        ("clients/godot/neondb_client.gd","Godot 4 client"),
+        ("clients/unity/VoltraClient.cs", "Unity C# client"),
+        ("clients/godot/voltra_client.gd","Godot 4 client"),
     ]);
     println!("  Neon workflow:");
     println!("    1. Edit any file in reducers/");
-    println!("    2. neondb build    — compile .neon → native Rust");
-    println!("    3. neondb start    — start the server");
+    println!("    2. voltra build    — compile .neon → native Rust");
+    println!("    3. voltra start    — start the server");
     println!();
     Ok(())
 }
@@ -1264,7 +1264,7 @@ fn scaffold_neon_game_ready(p: &Path, name: &str) -> Result<()> {
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
     wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
-    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language game server — full game template.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/README.md` for the language reference.\n"))?;
+    wf(p, "README.md",                   &format!("# {name}\n\nVoltra Neon-language game server — full game template.\n\nEdit files in `reducers/`, run `voltra build`, then `voltra start`.\n\nSee `docs/neon/README.md` for the language reference.\n"))?;
     wf(p, "docs/neon/README.md",         NEON_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/game-ready", &[
@@ -1283,8 +1283,8 @@ fn scaffold_neon_game_ready(p: &Path, name: &str) -> Result<()> {
     ]);
     println!("  Neon workflow:");
     println!("    1. Edit any file in reducers/");
-    println!("    2. neondb build");
-    println!("    3. neondb start");
+    println!("    2. voltra build");
+    println!("    3. voltra start");
     println!();
     Ok(())
 }
@@ -1305,7 +1305,7 @@ fn scaffold_neon_chat(p: &Path, name: &str) -> Result<()> {
     wf(p, "src/reducers.rs",             &compile_neon_to_rs(&all_neon))?;
     wf(p, "schema.toml",                 NEON_CHAT_SCHEMA)?;
     wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
-    wf(p, "README.md",                   &format!("# {name}\n\nNeonDB Neon-language chat server.\n\nEdit files in `reducers/`, run `neondb build`, then `neondb start`.\n\nSee `docs/neon/README.md` for the language reference.\n"))?;
+    wf(p, "README.md",                   &format!("# {name}\n\nVoltra Neon-language chat server.\n\nEdit files in `reducers/`, run `voltra build`, then `voltra start`.\n\nSee `docs/neon/README.md` for the language reference.\n"))?;
     wf(p, "docs/neon/README.md",         NEON_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/chat", &[
@@ -1318,14 +1318,14 @@ fn scaffold_neon_chat(p: &Path, name: &str) -> Result<()> {
     ]);
     println!("  Neon workflow:");
     println!("    1. Edit any file in reducers/");
-    println!("    2. neondb build");
-    println!("    3. neondb start");
+    println!("    2. voltra build");
+    println!("    3. voltra start");
     println!();
     Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// neondb add <module>
+// voltra add <module>
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Write Rust files for a module into src/reducers/<module>/ and register in mod.rs.
@@ -1346,7 +1346,7 @@ fn register_module_in_mod_rs(p: &Path, module: &str) -> Result<()> {
         format!("{existing}\n{line}")
     };
     fs::write(&mod_rs, new_content)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("write mod.rs: {e}")))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("write mod.rs: {e}")))?;
     Ok(())
 }
 
@@ -1425,8 +1425,8 @@ fn add_module_files(p: &Path, module: &str) -> Result<()> {
 
 fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
     if !project_path.join("schema.toml").exists() {
-        eprintln!("No schema.toml found. Run `neondb add` from inside your project directory.");
-        return Err(neondb::error::NeonDBError::invalid_argument("not a NeonDB project directory"));
+        eprintln!("No schema.toml found. Run `voltra add` from inside your project directory.");
+        return Err(voltra::error::VoltraError::invalid_argument("not a Voltra project directory"));
     }
 
     // If this is a Neon-language project, write a .neon file instead of Rust files.
@@ -1449,7 +1449,7 @@ fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
         other => {
             let names: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
             eprintln!("Unknown module '{}'. Available: {}", other, names.join(", "));
-            return Err(neondb::error::NeonDBError::invalid_argument(
+            return Err(voltra::error::VoltraError::invalid_argument(
                 format!("unknown module '{}'", other)));
         }
     }
@@ -1472,7 +1472,7 @@ fn cmd_add_module_neon(module: &str, project_path: &Path) -> Result<()> {
         other => {
             let names: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
             eprintln!("Unknown module '{}'. Available: {}", other, names.join(", "));
-            return Err(neondb::error::NeonDBError::invalid_argument(
+            return Err(voltra::error::VoltraError::invalid_argument(
                 format!("unknown module '{}'", other)));
         }
     };
@@ -1499,25 +1499,25 @@ fn cmd_add_module_neon(module: &str, project_path: &Path) -> Result<()> {
         }
         use std::io::Write as _;
         let mut file = fs::OpenOptions::new().append(true).open(&neon_path)
-            .map_err(|e| neondb::error::NeonDBError::internal(format!("open reducers.neon: {e}")))?;
+            .map_err(|e| voltra::error::VoltraError::internal(format!("open reducers.neon: {e}")))?;
         writeln!(file, "\n{}", neon_snippet.trim())
-            .map_err(|e| neondb::error::NeonDBError::internal(format!("append reducers.neon: {e}")))?;
+            .map_err(|e| voltra::error::VoltraError::internal(format!("append reducers.neon: {e}")))?;
         println!();
         println!("  Added {module} module → reducers.neon");
-        println!("  Rebuild: neondb build");
-        println!("  Restart: neondb start");
+        println!("  Rebuild: voltra build");
+        println!("  Restart: voltra start");
         println!();
         println!("  Recompiling...");
         return build_neon_reducers(project_path);
     };
 
     fs::write(&target_path, neon_snippet.trim())
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("write reducers/{module}.neon: {e}")))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("write reducers/{module}.neon: {e}")))?;
 
     println!();
     println!("  Added {module} module → reducers/{module}.neon");
-    println!("  Rebuild: neondb build");
-    println!("  Restart: neondb start");
+    println!("  Rebuild: voltra build");
+    println!("  Restart: voltra start");
     println!();
 
     println!("  Recompiling...");
@@ -1552,10 +1552,10 @@ fn append_schema(project_path: &Path, extra: &str) -> Result<()> {
         return Ok(());
     }
     let mut file = fs::OpenOptions::new().append(true).open(&schema_path)
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("open schema.toml: {e}")))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("open schema.toml: {e}")))?;
     use std::io::Write as _;
     writeln!(file, "\n{}", new_content.trim())
-        .map_err(|e| neondb::error::NeonDBError::internal(format!("append schema.toml: {e}")))
+        .map_err(|e| voltra::error::VoltraError::internal(format!("append schema.toml: {e}")))
 }
 
 fn print_success(project_name: &str, template: &str, files: &[(&str, &str)]) {
@@ -1595,8 +1595,8 @@ fn concat_strs(parts: &[&str]) -> String {
 
 const NEON_LANG_REFERENCE: &str = r#"# Neon Language Reference
 
-Neon is NeonDB's built-in language for writing game-server logic. Files live in
-`reducers/`, compile to native Rust with `neondb build`, and run at full speed —
+Neon is Voltra's built-in language for writing game-server logic. Files live in
+`reducers/`, compile to native Rust with `voltra build`, and run at full speed —
 no interpreter, no overhead.
 
 ---
@@ -1745,17 +1745,17 @@ let role = caller_role  // string — their role ("admin", "user", etc.)
 
 ```
 1. Edit files in reducers/
-2. neondb build      ← compiles .neon → src/reducers.rs → native binary
-3. neondb start      ← starts the server
+2. voltra build      ← compiles .neon → src/reducers.rs → native binary
+3. voltra start      ← starts the server
 ```
 
-Changes to `.neon` files require `neondb build` before they take effect.
+Changes to `.neon` files require `voltra build` before they take effect.
 "#;
 
 // ── neon/basic per-file constants ────────────────────────────────────────────
 
 const NEON_BASIC_SCHEMA: &str = r#"// schema.neon — table definitions
-// Add fields here, then run: neondb build
+// Add fields here, then run: voltra build
 
 table players {
     hp:    int   = 100,
@@ -1822,7 +1822,7 @@ reducer get_stats() {
     return { online: online, total_players: total, server_time: ts }
 }
 
-// Add to neondb.toml [[scheduler]] to run automatically
+// Add to voltra.toml [[scheduler]] to run automatically
 reducer cleanup_dead() {
     let removed = 0
     for id, p in players {
@@ -2011,7 +2011,7 @@ reducer get_stats() {
     return { total_players: total, total_kills: kills, avg_kills: avg_k, server_time: ts }
 }
 
-// Add to neondb.toml [[scheduler]] to run automatically
+// Add to voltra.toml [[scheduler]] to run automatically
 reducer cleanup_dead() {
     let removed = 0
     for id, p in players {
@@ -2120,7 +2120,7 @@ reducer kick_from_room(room_id: str, target_id: str) {
     return { ok: true, kicked: target_id }
 }
 
-// Add to neondb.toml [[scheduler]] to run automatically
+// Add to voltra.toml [[scheduler]] to run automatically
 reducer cleanup_old_messages() {
     let cutoff = timestamp() - 86400000000000
     let removed = 0
@@ -2139,8 +2139,8 @@ const NEON_BASIC_REDUCERS: &str = r#"// ========================================
 // reducers.neon — basic game template
 //
 // This is your entire game logic. Edit here, then run:
-//   neondb build   → compiles to native Rust
-//   neondb start   → starts the server
+//   voltra build   → compiles to native Rust
+//   voltra start   → starts the server
 //
 // Language reference: docs/neon/README.md
 // ============================================================
@@ -2202,7 +2202,7 @@ reducer get_stats() {
     return { online: online, total_players: total, server_time: ts }
 }
 
-// ── Cleanup (scheduled — add to neondb.toml [[scheduler]]) ──
+// ── Cleanup (scheduled — add to voltra.toml [[scheduler]]) ──
 reducer cleanup_dead() {
     let removed = 0
     for id, p in players {
@@ -2221,7 +2221,7 @@ const NEON_GAME_READY_REDUCERS: &str = r#"// ===================================
 // Covers: spawn/despawn, movement, combat, XP/leveling,
 //         loot boxes, guilds, leaderboard, economy.
 //
-// Edit here → neondb build → neondb start
+// Edit here → voltra build → voltra start
 // Reference: docs/neon/README.md
 // ============================================================
 
@@ -2384,7 +2384,7 @@ reducer get_stats() {
     return { total_players: total, total_kills: kills, avg_kills: avg_k, server_time: ts }
 }
 
-// ── Cleanup (run via [[scheduler]] in neondb.toml) ───────────
+// ── Cleanup (run via [[scheduler]] in voltra.toml) ───────────
 reducer cleanup_dead() {
     let removed = 0
     for id, p in players {
@@ -2402,7 +2402,7 @@ const NEON_CHAT_REDUCERS: &str = r#"// =========================================
 //
 // Covers: rooms, messages, presence, moderation.
 //
-// Edit here → neondb build → neondb start
+// Edit here → voltra build → voltra start
 // Reference: docs/neon/README.md
 // ============================================================
 
@@ -2554,7 +2554,7 @@ name = "ts"
 type = "integer"
 "#;
 
-// ── Neon module snippets (appended to reducers.neon by `neondb add <module>`) ─
+// ── Neon module snippets (appended to reducers.neon by `voltra add <module>`) ─
 const NEON_MOD_CHAT: &str = r#"
 // ── chat module ───────────────────────────────────────────────────────────────
 table chat_messages {
@@ -2946,7 +2946,7 @@ const R_DAMAGE_RS: &str          = include_str!("../templates/r_damage.rs.txt");
 const R_HEAL_RS: &str            = include_str!("../templates/r_heal.rs.txt");
 const R_BASIC_SCHEMA: &str       = include_str!("../templates/r_basic_schema.toml.txt");
 
-// ── module reducers (neondb add <name>) ──────────────────────────────────────
+// ── module reducers (voltra add <name>) ──────────────────────────────────────
 const RM_CHAT_MOD_RS: &str       = include_str!("../templates/rm_chat_mod.rs.txt");
 const RM_CHAT_SEND_RS: &str      = include_str!("../templates/rm_chat_send.rs.txt");
 const RM_CHAT_JOIN_RS: &str      = include_str!("../templates/rm_chat_join.rs.txt");
@@ -2998,13 +2998,13 @@ const RM_WORLD_SCHEMA: &str      = include_str!("../templates/rm_world_schema.to
 // ── Rust client SDK scaffold ──────────────────────────────────────────────────
 
 fn client_cargo_toml(name: &str) -> String {
-    let client_dep = if std::path::Path::new(NEONDB_SOURCE_DIR).exists() {
+    let client_dep = if std::path::Path::new(VOLTRA_SOURCE_DIR).exists() {
         format!(
-            "neondb-client = {{ path = \"{}/neondb-client-rust\", package = \"neondb-client\" }}",
-            NEONDB_SOURCE_DIR.replace('\\', "/")
+            "voltra-client = {{ path = \"{}/voltra-client-rust\", package = \"voltra-client\" }}",
+            VOLTRA_SOURCE_DIR.replace('\\', "/")
         )
     } else {
-        "neondb-client = { git = \"https://github.com/Salaou-Hasan/NeonDB\", tag = \"v1.0.7\", package = \"neondb-client\" }".to_string()
+        "voltra-client = { git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"v1.0.7\", package = \"voltra-client\" }".to_string()
     };
     format!(
         "[workspace]\n\n\
@@ -3015,11 +3015,11 @@ serde_json    = \"1\"\n"
     )
 }
 
-const CLIENT_MAIN_RS: &str = r#"//! Example Rust client for a NeonDB game server.
+const CLIENT_MAIN_RS: &str = r#"//! Example Rust client for a Voltra game server.
 //!
-//! Run the server first:  neondb start
+//! Run the server first:  voltra start
 //! Then in another terminal: cargo run --release
-use neondb_client::{NeonDBClient, ClientOptions};
+use voltra_client::{VoltraClient, ClientOptions};
 
 #[tokio::main]
 async fn main() {
@@ -3030,8 +3030,8 @@ async fn main() {
         reconnect: None,
     };
 
-    let client = NeonDBClient::connect(opts).await
-        .expect("Failed to connect — is the server running? (neondb start)");
+    let client = VoltraClient::connect(opts).await
+        .expect("Failed to connect — is the server running? (voltra start)");
 
     println!("[client] Connected to server");
 
@@ -3070,9 +3070,9 @@ async fn main() {
 }
 "#;
 
-const CLIENT_PROTOCOL_MD: &str = r#"# NeonDB Wire Protocol
+const CLIENT_PROTOCOL_MD: &str = r#"# Voltra Wire Protocol
 
-Implement this to connect **any** game engine or language to NeonDB.
+Implement this to connect **any** game engine or language to Voltra.
 
 ## Transport
 
@@ -3157,17 +3157,17 @@ default (array/positional) mode for struct fields.
 "#;
 
 // ── Unity + Godot SDKs ────────────────────────────────────────────────────────
-const UNITY_CLIENT_CS: &str    = include_str!("engine_templates/unity_NeonDBClient.cs");
-const UNITY_BEHAVIOUR_CS: &str = include_str!("engine_templates/unity_NeonDBBehaviour.cs");
+const UNITY_CLIENT_CS: &str    = include_str!("engine_templates/unity_VoltraClient.cs");
+const UNITY_BEHAVIOUR_CS: &str = include_str!("engine_templates/unity_VoltraBehaviour.cs");
 const UNITY_MANAGER_CS: &str   = include_str!("../templates/g_unity_Manager.cs.txt");
 const UNITY_GAME_README: &str  = include_str!("../templates/g_unity_readme.md.txt");
-const GODOT_CLIENT_GD: &str    = include_str!("engine_templates/godot_neondb_client.gd");
+const GODOT_CLIENT_GD: &str    = include_str!("engine_templates/godot_voltra_client.gd");
 const GODOT_MANAGER_GD: &str   = include_str!("../templates/g_godot_Manager.gd.txt");
 const GODOT_GAME_README: &str  = include_str!("../templates/g_godot_readme.md.txt");
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// neondb build
+// voltra build
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Detect reducer language and invoke the appropriate compiler before the main
@@ -3222,11 +3222,11 @@ fn build_multi_lang_reducers(project_root: &Path, modules_dir: &Path) -> Result<
             .arg("-o").arg(modules_dir)
             .current_dir(&reducers_dir)
             .status()
-            .map_err(|e| neondb::error::NeonDBError::internal(format!("dotnet publish: {}", e)))?;
+            .map_err(|e| voltra::error::VoltraError::internal(format!("dotnet publish: {}", e)))?;
         if status.success() {
             println!("  C# compilation OK — .wasm written to {}", modules_dir.display());
         } else {
-            return Err(neondb::error::NeonDBError::internal(
+            return Err(voltra::error::VoltraError::internal(
                 format!("dotnet publish failed (exit {:?})", status.code())
             ));
         }
@@ -3283,11 +3283,11 @@ fn build_multi_lang_reducers(project_root: &Path, modules_dir: &Path) -> Result<
             .arg(".")
             .current_dir(&reducers_dir)
             .status()
-            .map_err(|e| neondb::error::NeonDBError::internal(format!("tinygo build: {}", e)))?;
+            .map_err(|e| voltra::error::VoltraError::internal(format!("tinygo build: {}", e)))?;
         if status.success() {
             println!("  Go compilation OK — {} written", out_wasm.display());
         } else {
-            return Err(neondb::error::NeonDBError::internal(
+            return Err(voltra::error::VoltraError::internal(
                 format!("tinygo build failed (exit {:?})", status.code())
             ));
         }
@@ -3329,7 +3329,7 @@ fn build_neon_files(neon_dir: &Path) -> Result<()> {
             Err(e) => { println!("FAILED (read: {})", e); failed += 1; continue; }
         };
         let filename = neon_path.display().to_string();
-        match neondb::dsl::compile(&source, &filename) {
+        match voltra::dsl::compile(&source, &filename) {
             Ok(rust_code) => {
                 match std::fs::write(&out_path, &rust_code) {
                     Ok(_) => { println!("ok"); ok += 1; }
@@ -3348,7 +3348,7 @@ fn build_neon_files(neon_dir: &Path) -> Result<()> {
 
     println!("  .neon: {} compiled, {} failed", ok, failed);
     if failed > 0 {
-        Err(neondb::error::NeonDBError::internal(format!("{} .neon file(s) failed to compile", failed)))
+        Err(voltra::error::VoltraError::internal(format!("{} .neon file(s) failed to compile", failed)))
     } else {
         Ok(())
     }
@@ -3370,7 +3370,7 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
         .arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
     if !javy_ok {
         eprintln!("Error: 'javy' not found on PATH.\nDownload: https://github.com/bytecodealliance/javy/releases");
-        return Err(neondb::error::NeonDBError::internal("javy not found on PATH"));
+        return Err(voltra::error::VoltraError::internal("javy not found on PATH"));
     }
     let mut js_files = Vec::new();
     collect_js_files(modules_dir, &mut js_files);
@@ -3407,7 +3407,7 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
         };
         if fresh { aot_skip += 1; continue; }
         print!("  WASM→AOT {} ... ", wasm_path.display());
-        match neondb::reducer::wasm::aot_compile(wasm_path) {
+        match voltra::reducer::wasm::aot_compile(wasm_path) {
             Ok(_) => { println!("ok"); aot_ok += 1; }
             Err(e) => { println!("FAILED ({})", e); }
         }
@@ -3417,7 +3417,7 @@ fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
         println!("Build complete: {} JS→WASM, {} AOT compiled, {} AOT up-to-date.", compiled, aot_ok, aot_skip);
         Ok(())
     } else {
-        Err(neondb::error::NeonDBError::internal(format!("{} files failed", failed)))
+        Err(voltra::error::VoltraError::internal(format!("{} files failed", failed)))
     }
 }
 
@@ -3454,19 +3454,19 @@ async fn run_server(config: Config) -> Result<()> {
     logger.filter_level(config.log_level.parse().unwrap_or(log::LevelFilter::Info));
     let _ = logger.try_init();
 
-    log::info!("Starting NeonDB Server");
+    log::info!("Starting Voltra Server");
 
     // Apply global runtime limits (e.g. max blob size) before any data is written.
     config.apply_global_limits();
 
     let eviction_policy = match config.eviction.policy.trim().to_ascii_lowercase().as_str() {
-        "lru_row_cap" => neondb::table::EvictionPolicy::LruRowCap {
+        "lru_row_cap" => voltra::table::EvictionPolicy::LruRowCap {
             max_rows_per_table: config.eviction.max_rows_per_table.max(1),
         },
-        "lru_byte_cap" => neondb::table::EvictionPolicy::LruByteCap {
+        "lru_byte_cap" => voltra::table::EvictionPolicy::LruByteCap {
             max_bytes_total: config.eviction.max_bytes_total.max(1),
         },
-        _ => neondb::table::EvictionPolicy::None,
+        _ => voltra::table::EvictionPolicy::None,
     };
     let mut ts = TableStore::with_eviction(eviction_policy);
     ts.set_shard(config.shard_id, config.shard_count);
@@ -3502,35 +3502,35 @@ async fn run_server(config: Config) -> Result<()> {
     } else { log::info!("WAL does not exist, starting fresh"); }
 
     let migrations_dir = PathBuf::from("migrations");
-    match neondb::migrations::apply_migrations(&migrations_dir, &tables) {
+    match voltra::migrations::apply_migrations(&migrations_dir, &tables) {
         Ok(0) => {}
         Ok(n) => log::info!("Applied {} migration file(s)", n),
         Err(e) => log::warn!("Migration error: {}", e),
     }
 
     let schema_registry = Arc::new(
-        neondb::schema::SchemaRegistry::load_from_file(Path::new("schema.toml"))
-            .unwrap_or_else(|_| neondb::schema::SchemaRegistry::new())
+        voltra::schema::SchemaRegistry::load_from_file(Path::new("schema.toml"))
+            .unwrap_or_else(|_| voltra::schema::SchemaRegistry::new())
     );
 
     // Tenant registry — hydrated from __tenants table (populated by WAL/snapshot replay above).
-    let tenant_registry = neondb::tenant::TenantRegistry::load(tables.clone());
+    let tenant_registry = voltra::tenant::TenantRegistry::load(tables.clone());
     log::info!("[tenant] {} tenant(s) loaded", tenant_registry.count());
 
     // Redis (RESP) + PostgreSQL (pgwire) protocol listeners over the MVCC engine.
-    neondb::server::spawn_protocol_listeners(&config);
+    voltra::server::spawn_protocol_listeners(&config);
 
     let permissions = Arc::new(config.permissions.clone());
 
     // ── Cluster bus (horizontal scaling) ────────────────────────────────────
-    // Reads NEONDB_PEERS, NEONDB_SHARD_ID, NEONDB_SHARD_COUNT from env.
-    // No-op when NEONDB_PEERS is unset (single-node mode).
-    let my_shard_id: u32 = std::env::var("NEONDB_SHARD_ID")
+    // Reads VOLTRA_PEERS, VOLTRA_SHARD_ID, VOLTRA_SHARD_COUNT from env.
+    // No-op when VOLTRA_PEERS is unset (single-node mode).
+    let my_shard_id: u32 = std::env::var("VOLTRA_SHARD_ID")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let shard_count: u32 = std::env::var("NEONDB_SHARD_COUNT")
+    let shard_count: u32 = std::env::var("VOLTRA_SHARD_COUNT")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-    let cluster_cfg = neondb::cluster::ClusterConfig::from_env(my_shard_id, shard_count);
-    let cluster_bus = neondb::cluster::ClusterBus::new(cluster_cfg);
+    let cluster_cfg = voltra::cluster::ClusterConfig::from_env(my_shard_id, shard_count);
+    let cluster_bus = voltra::cluster::ClusterBus::new(cluster_cfg);
     if cluster_bus.is_active() {
         log::info!(
             "[cluster] Active — shard {}/{}, {} peer(s): {}",
@@ -3541,7 +3541,7 @@ async fn run_server(config: Config) -> Result<()> {
                 .collect::<Vec<_>>().join(", ")
         );
     } else {
-        log::info!("[neondb] single-node mode (set NEONDB_PEERS to enable clustering)");
+        log::info!("[voltra] single-node mode (set VOLTRA_PEERS to enable clustering)");
     }
 
     let (reducer_tx, reducer_rx) = kanal::bounded_async::<PendingCall>(config.reducer_queue_cap);
@@ -3585,7 +3585,7 @@ async fn run_server(config: Config) -> Result<()> {
         log::info!("[identity] Generated new Ed25519 key (kid={})", iss.kid);
         Arc::new(iss)
     };
-    println!("[neondb] Identity public key:\n{}", identity_issuer.public_key_pem());
+    println!("[voltra] Identity public key:\n{}", identity_issuer.public_key_pem());
 
     // ── Persistent relational store (SQLite) ─────────────────────────────────
     // Stored alongside the WAL directory.  Only accessed at handshake / HTTP
@@ -3593,9 +3593,9 @@ async fn run_server(config: Config) -> Result<()> {
     let persistent_db_path = config.wal_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
-        .join("neondb_persistent.db");
-    let persistent_store: Arc<neondb::persistent::PersistentStore> =
-        match neondb::persistent::PersistentStore::open(&persistent_db_path) {
+        .join("voltra_persistent.db");
+    let persistent_store: Arc<voltra::persistent::PersistentStore> =
+        match voltra::persistent::PersistentStore::open(&persistent_db_path) {
             Ok(s) => {
                 log::info!("[persistent] SQLite store opened at {:?}", persistent_db_path);
                 Arc::new(s)
@@ -3603,16 +3603,16 @@ async fn run_server(config: Config) -> Result<()> {
             Err(e) => {
                 log::warn!("[persistent] Could not open SQLite ({}), auth endpoints will be unavailable", e);
                 // Create an in-memory fallback so the server still boots.
-                Arc::new(neondb::persistent::PersistentStore::open(
+                Arc::new(voltra::persistent::PersistentStore::open(
                     std::path::Path::new(":memory:"),
                 ).unwrap_or_else(|_| panic!("SQLite in-memory fallback failed")))
             }
         };
-    let auth_service: Arc<neondb::auth_service::AuthService> = Arc::new(
-        neondb::auth_service::AuthService::new(
+    let auth_service: Arc<voltra::auth_service::AuthService> = Arc::new(
+        voltra::auth_service::AuthService::new(
             persistent_store.clone(),
             identity_issuer.clone(),
-            std::env::var("NEONDB_TOKEN_TTL_SECS")
+            std::env::var("VOLTRA_TOKEN_TTL_SECS")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(86_400),
@@ -3642,7 +3642,7 @@ async fn run_server(config: Config) -> Result<()> {
     let tls_server_config: Option<std::sync::Arc<rustls::ServerConfig>> = if config.tls.enabled {
         match (config.tls.cert_path.as_deref(), config.tls.key_path.as_deref()) {
             (Some(cert), Some(key)) => {
-                match neondb::network::tls::load_tls_config(cert, key) {
+                match voltra::network::tls::load_tls_config(cert, key) {
                     Ok(cfg) => {
                         log::info!("TLS enabled: cert={}, key={}", cert.display(), key.display());
                         Some(cfg)
@@ -3662,7 +3662,7 @@ async fn run_server(config: Config) -> Result<()> {
         None
     };
 
-    let inline_registry = neondb::network::build_inline_registry();
+    let inline_registry = voltra::network::build_inline_registry();
     let drain_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let wal_writer = Arc::new(BatchedWalWriter::open(
@@ -3674,10 +3674,10 @@ async fn run_server(config: Config) -> Result<()> {
 
     // Periodically return allocator-retained memory to the OS so RSS tracks the
     // live working set, not the high-throughput churn peak (see lib.rs).
-    neondb::spawn_memory_reclaimer(15);
+    voltra::spawn_memory_reclaimer(15);
 
     let lobby_router = {
-        let worker_deps = std::sync::Arc::new(neondb::worker_pool::WorkerDeps {
+        let worker_deps = std::sync::Arc::new(voltra::worker_pool::WorkerDeps {
             tables: tables.clone(),
             registry: registry.clone(),
             subscription_manager: subscription_manager.clone(),
@@ -3693,7 +3693,7 @@ async fn run_server(config: Config) -> Result<()> {
             snapshot_dir: config.snapshot_dir.clone(),
         });
         let max_lobbies = config.max_connections / 2;
-        Arc::new(neondb::worker_pool::LobbyRouter::new(
+        Arc::new(voltra::worker_pool::LobbyRouter::new(
             reducer_tx.clone(),
             config.reducer_queue_cap.max(256),
             max_lobbies.max(64),
@@ -3749,33 +3749,33 @@ async fn run_server(config: Config) -> Result<()> {
         let qprobe_c = queue_probe.clone();
 
         // ── Multi-region infrastructure ──────────────────────────────────────
-        // Override NEONDB_REGION / NEONDB_REGIONS via config fields so the
+        // Override VOLTRA_REGION / VOLTRA_REGIONS via config fields so the
         // same env-var-based construction works whether started from binary
         // or from run_server().
         if !config.region.is_empty() && config.region != "default" {
-            std::env::set_var("NEONDB_REGION", &config.region);
+            std::env::set_var("VOLTRA_REGION", &config.region);
         }
         if !config.regions.is_empty() {
-            std::env::set_var("NEONDB_REGIONS", &config.regions);
+            std::env::set_var("VOLTRA_REGIONS", &config.regions);
         }
-        let region_registry = Arc::new(neondb::cluster::RegionRegistry::from_env());
+        let region_registry = Arc::new(voltra::cluster::RegionRegistry::from_env());
         if region_registry.is_multi_region() {
             log::info!("[regions] Multi-region mode: region='{}', peers={}",
                 region_registry.my_region, region_registry.peer_regions().len());
         }
 
-        let lobby_routes = neondb::cluster::LobbyRouteRegistry::new(tables.clone());
+        let lobby_routes = voltra::cluster::LobbyRouteRegistry::new(tables.clone());
 
-        let leaderboard = Arc::new(neondb::leaderboard::LeaderboardEngine::new());
+        let leaderboard = Arc::new(voltra::leaderboard::LeaderboardEngine::new());
         // Register the default leaderboard board.
-        leaderboard.create_board(neondb::leaderboard::LeaderboardConfig {
+        leaderboard.create_board(voltra::leaderboard::LeaderboardConfig {
             name: config.leaderboard_board.clone(),
-            sort_order: neondb::leaderboard::SortOrder::HighestFirst,
-            time_window: neondb::leaderboard::TimeWindow::AllTime,
+            sort_order: voltra::leaderboard::SortOrder::HighestFirst,
+            time_window: voltra::leaderboard::TimeWindow::AllTime,
             max_entries: config.leaderboard_top_n,
         });
         // Start cross-region aggregation if multi-region.
-        neondb::leaderboard::LeaderboardAggregator::new(
+        voltra::leaderboard::LeaderboardAggregator::new(
             leaderboard.clone(),
             region_registry.clone(),
             config.leaderboard_board.clone(),
@@ -3783,7 +3783,7 @@ async fn run_server(config: Config) -> Result<()> {
             config.leaderboard_top_n,
         ).start(shutdown_rx.clone());
 
-        let stat_sync = neondb::stat_sync::StatSyncQueue::new(
+        let stat_sync = voltra::stat_sync::StatSyncQueue::new(
             tables.clone(),
             region_registry.clone(),
             config.stat_sync_flush_ms,
@@ -3820,9 +3820,9 @@ async fn run_server(config: Config) -> Result<()> {
     if config.role.eq_ignore_ascii_case("replica") {
         match config.primary_url.clone() {
             Some(primary) => {
-                neondb::replication::set_replica(true);
+                voltra::replication::set_replica(true);
                 // Resume from the highest locally recovered sequence.
-                neondb::replication::init_replica_from_local_wal(initial_seq.saturating_sub(1));
+                voltra::replication::init_replica_from_local_wal(initial_seq.saturating_sub(1));
                 let tables_r = tables.clone();
                 let subs_r = subscription_manager.clone();
                 let wal_r = wal_writer.clone();
@@ -3832,7 +3832,7 @@ async fn run_server(config: Config) -> Result<()> {
                 let miss_count = config.failover_miss_count;
                 let shut_r = shutdown_rx.clone();
                 tokio::spawn(async move {
-                    neondb::replication::run_replica_loop(
+                    voltra::replication::run_replica_loop(
                         primary, tables_r, subs_r, wal_r, seq_r, poll,
                         auto_failover, miss_count, shut_r,
                     ).await;
@@ -3841,7 +3841,7 @@ async fn run_server(config: Config) -> Result<()> {
             }
             None => {
                 log::error!(
-                    "[replication] NEONDB_ROLE=replica but NEONDB_PRIMARY_URL is not set — \
+                    "[replication] VOLTRA_ROLE=replica but VOLTRA_PRIMARY_URL is not set — \
                      starting as primary instead"
                 );
             }
@@ -3868,9 +3868,9 @@ async fn run_server(config: Config) -> Result<()> {
                         let dir = backup_dir.clone();
                         let seq = seq_b.load(std::sync::atomic::Ordering::Relaxed);
                         let res = tokio::task::spawn_blocking(move || {
-                            let p = neondb::backup::backup_now(&tbl, &wal, &dir, seq)?;
-                            let removed = neondb::backup::rotate_backups(&dir, keep)?;
-                            Ok::<_, neondb::error::NeonDBError>((p, removed))
+                            let p = voltra::backup::backup_now(&tbl, &wal, &dir, seq)?;
+                            let removed = voltra::backup::rotate_backups(&dir, keep)?;
+                            Ok::<_, voltra::error::VoltraError>((p, removed))
                         }).await;
                         match res {
                             Ok(Ok((path, removed))) => log::info!(
@@ -3888,8 +3888,8 @@ async fn run_server(config: Config) -> Result<()> {
     }
 
     // ── Cluster gossip + fan-out retry tasks ─────────────────────────────────
-    neondb::cluster::gossip::start_gossip(cluster_bus.clone(), shutdown_rx.clone());
-    neondb::cluster::fanout::start_fanout_retry(cluster_bus.clone(), shutdown_rx.clone());
+    voltra::cluster::gossip::start_gossip(cluster_bus.clone(), shutdown_rx.clone());
+    voltra::cluster::fanout::start_fanout_retry(cluster_bus.clone(), shutdown_rx.clone());
 
     // Guards against overlapping snapshot tasks: save_snapshot() clones every
     // row into memory before serializing. If a snapshot takes longer than the
@@ -3921,7 +3921,7 @@ async fn run_server(config: Config) -> Result<()> {
                 let call_id     = call.call_id;
 
                 // Replicas are read-only: reject reducer calls until promoted.
-                if neondb::replication::is_replica() {
+                if voltra::replication::is_replica() {
                     let resp = ReducerResponse::error(
                         call_id,
                         "This node is a read-only replica. Write to the primary, or promote this node via POST /replication/promote.".to_string(),
@@ -3948,7 +3948,7 @@ async fn run_server(config: Config) -> Result<()> {
                 // commit aborts and we re-execute against fresh state (max 5).
                 // Zero silent lost updates in read-modify-write reducers.
                 enum Outcome {
-                    Done(Vec<u8>, Vec<neondb::table::RowDelta>),
+                    Done(Vec<u8>, Vec<voltra::table::RowDelta>),
                     ReducerErr(String),
                     Panicked,
                     CommitErr(String),
@@ -3975,7 +3975,7 @@ async fn run_server(config: Config) -> Result<()> {
                             break match exec {
                                 Ok(Ok(result_bytes)) => match ctx.commit() {
                                     Ok(deltas) => Outcome::Done(result_bytes, deltas),
-                                    Err(neondb::error::NeonDBError::TxnConflict(_))
+                                    Err(voltra::error::VoltraError::TxnConflict(_))
                                         if attempt < MAX_CONFLICT_RETRIES =>
                                     {
                                         ctx.reset_for_retry();
@@ -4045,7 +4045,7 @@ async fn run_server(config: Config) -> Result<()> {
                                                 for entry in entries.flatten() {
                                                     let name = entry.file_name();
                                                     let name = name.to_string_lossy();
-                                                    if let Some(seq_str) = name.strip_prefix("neondb_snapshot_").and_then(|s| s.strip_suffix(".bin")) {
+                                                    if let Some(seq_str) = name.strip_prefix("voltra_snapshot_").and_then(|s| s.strip_suffix(".bin")) {
                                                         if seq_str.parse::<u64>().map(|s| s < seq_num).unwrap_or(false) {
                                                             let _ = std::fs::remove_file(entry.path());
                                                         }
@@ -4238,7 +4238,7 @@ async fn run_server(config: Config) -> Result<()> {
     };
 
     tokio::signal::ctrl_c().await.ok();
-    eprintln!("\n[neondb] Shutdown signal — draining...");
+    eprintln!("\n[voltra] Shutdown signal — draining...");
     log::info!("Shutdown signal received");
 
     // 1. Stop accepting new connections and signal all background tasks.
@@ -4256,7 +4256,7 @@ async fn run_server(config: Config) -> Result<()> {
         }
     ).await;
     if drain_result.is_err() {
-        log::warn!("[neondb] Worker drain timed out after 30s — some in-flight reducers may be incomplete");
+        log::warn!("[voltra] Worker drain timed out after 30s — some in-flight reducers may be incomplete");
     }
 
     // 4. Flush any buffered WAL entries to disk before shutting down the writer.
@@ -4274,7 +4274,7 @@ async fn run_server(config: Config) -> Result<()> {
     let _ = ttl_handle.await;
     let _ = gauge_handle.await;
 
-    eprintln!("[neondb] Shutdown complete.");
+    eprintln!("[voltra] Shutdown complete.");
     log::info!("Shutdown complete");
     Ok(())
 }
@@ -4295,7 +4295,7 @@ async fn run_cli_bench(ws_url: &str, num_clients: usize, calls_per_client: usize
     #[derive(serde::Serialize)] struct IncrArgs { name: String, delta: i32 }
     #[derive(serde::Serialize)] struct CallW { #[serde(rename = "ReducerCall")] rc: (u64, String, Vec<u8>) }
 
-    println!("=== NeonDB Bench ===");
+    println!("=== Voltra Bench ===");
     println!("  Server  : {}", ws_url);
     println!("  Clients : {}  Calls/client: {}  Warmup: {}", num_clients, calls_per_client, warmup_per_client);
 
@@ -4347,20 +4347,20 @@ struct AdminState {
     wal_path: PathBuf,
     backup_dir: Option<PathBuf>,
     backup_keep: usize,
-    tenant_registry: Arc<neondb::tenant::TenantRegistry>,
-    cluster_bus: Arc<neondb::cluster::ClusterBus>,
+    tenant_registry: Arc<voltra::tenant::TenantRegistry>,
+    cluster_bus: Arc<voltra::cluster::ClusterBus>,
     drain_flag: Arc<std::sync::atomic::AtomicBool>,
     active_connections: Arc<std::sync::atomic::AtomicUsize>,
-    region_registry: Arc<neondb::cluster::RegionRegistry>,
-    lobby_routes: Arc<neondb::cluster::LobbyRouteRegistry>,
-    leaderboard: Arc<neondb::leaderboard::LeaderboardEngine>,
-    stat_sync: Arc<neondb::stat_sync::StatSyncQueue>,
+    region_registry: Arc<voltra::cluster::RegionRegistry>,
+    lobby_routes: Arc<voltra::cluster::LobbyRouteRegistry>,
+    leaderboard: Arc<voltra::leaderboard::LeaderboardEngine>,
+    stat_sync: Arc<voltra::stat_sync::StatSyncQueue>,
     /// Per-lobby worker router — exposes queue depths and call stats.
-    lobby_router: Arc<neondb::worker_pool::LobbyRouter>,
+    lobby_router: Arc<voltra::worker_pool::LobbyRouter>,
     /// SQLite-backed relational tier (auth users, characters, catalog).
-    persistent: Arc<neondb::persistent::PersistentStore>,
+    persistent: Arc<voltra::persistent::PersistentStore>,
     /// Authentication service (register / login / verify token).
-    auth_service: Arc<neondb::auth_service::AuthService>,
+    auth_service: Arc<voltra::auth_service::AuthService>,
 }
 
 async fn start_metrics_server(
@@ -4378,11 +4378,11 @@ async fn start_metrics_server(
     identity_issuer: Arc<IdentityIssuer>,
     queue_probe: kanal::AsyncSender<PendingCall>,
     admin: Arc<AdminState>,
-    schema_registry: Arc<neondb::schema::SchemaRegistry>,
+    schema_registry: Arc<voltra::schema::SchemaRegistry>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse()
-        .map_err(|e| neondb::error::NeonDBError::invalid_argument(format!("Invalid metrics address: {}", e)))?;
+        .map_err(|e| voltra::error::VoltraError::invalid_argument(format!("Invalid metrics address: {}", e)))?;
 
     let make_service = make_service_fn(move |_| {
         let subs  = subscription_manager.clone();
@@ -4418,7 +4418,7 @@ async fn start_metrics_server(
     log::info!("Admin/metrics on http://{}", addr);
     println!("  Admin console: http://{}/admin", addr);
     server.with_graceful_shutdown(async move { let _ = shutdown.changed().await; }).await
-        .map_err(|e| neondb::error::NeonDBError::network_error(format!("Metrics server: {}", e)))
+        .map_err(|e| voltra::error::VoltraError::network_error(format!("Metrics server: {}", e)))
 }
 
 fn json_response(value: serde_json::Value) -> Response<Body> {
@@ -4460,9 +4460,9 @@ fn url_decode(s: &str) -> String {
 }
 
 /// Gate mutating admin endpoints behind the API key when one is configured.
-/// With no NEONDB_API_KEY set (dev mode), all requests pass.
+/// With no VOLTRA_API_KEY set (dev mode), all requests pass.
 fn admin_auth_check(req: &Request<Body>) -> Option<Response<Body>> {
-    let configured = std::env::var("NEONDB_API_KEY").unwrap_or_default();
+    let configured = std::env::var("VOLTRA_API_KEY").unwrap_or_default();
     if configured.is_empty() { return None; }
     let provided = req.headers()
         .get(hyper::header::AUTHORIZATION)
@@ -4492,7 +4492,7 @@ async fn handle_metrics_request(
     identity_issuer: Arc<IdentityIssuer>,
     queue_probe: kanal::AsyncSender<PendingCall>,
     admin: Arc<AdminState>,
-    schema_registry: Arc<neondb::schema::SchemaRegistry>,
+    schema_registry: Arc<voltra::schema::SchemaRegistry>,
 ) -> Result<Response<Body>> {
     let path = req.uri().path().to_string();
 
@@ -4558,7 +4558,7 @@ async fn handle_metrics_request(
         (&Method::POST, "/admin/api/call") => {
             if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(format!("Read body: {}", e)))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
@@ -4569,7 +4569,7 @@ async fn handle_metrics_request(
             };
             let args_val = payload.get("args").cloned().unwrap_or(serde_json::json!([]));
             let args_bytes = rmp_serde::to_vec(&args_val)
-                .map_err(|e| neondb::error::NeonDBError::reducer_error(format!("Args encode: {}", e)))?;
+                .map_err(|e| voltra::error::VoltraError::reducer_error(format!("Args encode: {}", e)))?;
 
             // Dispatch through the real reducer queue so the call gets the
             // identical execution path as a WebSocket client (permissions
@@ -4607,7 +4607,7 @@ async fn handle_metrics_request(
         (&Method::POST, "/admin/api/sql") => {
             if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(format!("Read body: {}", e)))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
@@ -4618,8 +4618,8 @@ async fn handle_metrics_request(
             };
             let tbl = tables.clone();
             let result = tokio::task::spawn_blocking(move || -> std::result::Result<_, String> {
-                let stmt = neondb::sql::parser::parse(&query).map_err(|e| format!("Parse error: {}", e))?;
-                let exec = neondb::SqlExecutor::new(tbl);
+                let stmt = voltra::sql::parser::parse(&query).map_err(|e| format!("Parse error: {}", e))?;
+                let exec = voltra::SqlExecutor::new(tbl);
                 exec.execute_statement(&stmt).map_err(|e| format!("Execution error: {}", e))
             }).await;
             match result {
@@ -4640,7 +4640,7 @@ async fn handle_metrics_request(
         (&Method::POST, "/admin/api/row") => {
             if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(format!("Read body: {}", e)))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
@@ -4661,7 +4661,7 @@ async fn handle_metrics_request(
                     let deltas = vec![delta];
                     subscription_manager.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let entry = neondb::WalEntry::new(
+                    let entry = voltra::WalEntry::new(
                         current_timestamp_nanos(), seq,
                         "__admin_set_row".to_string(), vec![], deltas,
                     );
@@ -4694,7 +4694,7 @@ async fn handle_metrics_request(
                     let deltas = vec![delta];
                     subscription_manager.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let entry = neondb::WalEntry::new(
+                    let entry = voltra::WalEntry::new(
                         current_timestamp_nanos(), seq,
                         "__admin_delete_row".to_string(), vec![], deltas,
                     );
@@ -4721,7 +4721,7 @@ async fn handle_metrics_request(
         (&Method::POST, "/admin/api/tenants") => {
             if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(format!("Read body: {}", e)))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
@@ -4739,7 +4739,7 @@ async fn handle_metrics_request(
                     let deltas = vec![delta];
                     subscription_manager.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let entry = neondb::WalEntry::new(
+                    let entry = voltra::WalEntry::new(
                         current_timestamp_nanos(), seq,
                         "__admin_create_tenant".to_string(), vec![], deltas,
                     );
@@ -4772,7 +4772,7 @@ async fn handle_metrics_request(
                 Ok(deltas) => {
                     subscription_manager.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let entry = neondb::WalEntry::new(
+                    let entry = voltra::WalEntry::new(
                         current_timestamp_nanos(), seq,
                         "__admin_delete_tenant".to_string(), vec![], deltas,
                     );
@@ -4814,11 +4814,11 @@ async fn handle_metrics_request(
             }
             let wal_path = admin.wal_path.clone();
             let result = tokio::task::spawn_blocking(move || {
-                neondb::replication::serve_wal_entries(&wal_path, from_seq, max)
+                voltra::replication::serve_wal_entries(&wal_path, from_seq, max)
             }).await;
             match result {
                 Ok(Ok((entries, last_seq))) => Ok(json_response(serde_json::json!({
-                    "entries": neondb::replication::encode_entries(&entries),
+                    "entries": voltra::replication::encode_entries(&entries),
                     "last_seq": last_seq,
                 }))),
                 Ok(Err(e)) => {
@@ -4833,19 +4833,19 @@ async fn handle_metrics_request(
         }
 
         (&Method::GET, "/replication/status") => {
-            Ok(json_response(neondb::replication::status_json()))
+            Ok(json_response(voltra::replication::status_json()))
         }
 
         (&Method::POST, "/replication/promote") => {
-            let was_replica = neondb::replication::is_replica();
-            neondb::replication::set_replica(false);
+            let was_replica = voltra::replication::is_replica();
+            voltra::replication::set_replica(false);
             if was_replica {
                 log::warn!("[replication] PROMOTED to primary via /replication/promote");
             }
             Ok(json_response(serde_json::json!({
                 "promoted": was_replica,
                 "role": "primary",
-                "last_applied_seq": neondb::replication::last_applied_seq(),
+                "last_applied_seq": voltra::replication::last_applied_seq(),
             })))
         }
 
@@ -4874,7 +4874,7 @@ async fn handle_metrics_request(
         }
 
         (&Method::POST, "/cluster/deltas") => {
-            let secret = req.headers().get("x-neondb-cluster-secret")
+            let secret = req.headers().get("x-voltra-cluster-secret")
                 .and_then(|v| v.to_str().ok());
             if !admin.cluster_bus.validate_secret(secret) {
                 let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
@@ -4882,13 +4882,13 @@ async fn handle_metrics_request(
                 return Ok(r);
             }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
-            match neondb::cluster::fanout::parse_delta_payload(&body_bytes) {
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+            match voltra::cluster::fanout::parse_delta_payload(&body_bytes) {
                 Err(e) => Ok(bad_request(e.to_string())),
                 Ok(payload) => {
-                    let row_deltas = neondb::cluster::fanout::wire_to_row_deltas(payload.deltas);
+                    let row_deltas = voltra::cluster::fanout::wire_to_row_deltas(payload.deltas);
                     let applied = row_deltas.len();
-                    match neondb::cluster::ClusterBus::apply_peer_deltas(&row_deltas, &tables, &subscription_manager) {
+                    match voltra::cluster::ClusterBus::apply_peer_deltas(&row_deltas, &tables, &subscription_manager) {
                         Ok(()) => Ok(json_response(serde_json::json!({ "ok": true, "applied": applied }))),
                         Err(e) => Ok(server_error(e.to_string())),
                     }
@@ -4897,7 +4897,7 @@ async fn handle_metrics_request(
         }
 
         (&Method::POST, "/cluster/call") => {
-            let secret = req.headers().get("x-neondb-cluster-secret")
+            let secret = req.headers().get("x-voltra-cluster-secret")
                 .and_then(|v| v.to_str().ok());
             if !admin.cluster_bus.validate_secret(secret) {
                 let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
@@ -4905,8 +4905,8 @@ async fn handle_metrics_request(
                 return Ok(r);
             }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
-            let pr: neondb::cluster::proxy::ProxyCallRequest = match serde_json::from_slice(&body_bytes) {
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+            let pr: voltra::cluster::proxy::ProxyCallRequest = match serde_json::from_slice(&body_bytes) {
                 Ok(r) => r,
                 Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
             };
@@ -4950,7 +4950,7 @@ async fn handle_metrics_request(
         }
 
         (&Method::POST, "/cluster/join") => {
-            let secret = req.headers().get("x-neondb-cluster-secret")
+            let secret = req.headers().get("x-voltra-cluster-secret")
                 .and_then(|v| v.to_str().ok());
             if !admin.cluster_bus.validate_secret(secret) {
                 let mut r = json_response(serde_json::json!({ "error": "Unauthorized" }));
@@ -4958,8 +4958,8 @@ async fn handle_metrics_request(
                 return Ok(r);
             }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
-            let node: neondb::cluster::NodeInfo = match serde_json::from_slice(&body_bytes) {
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+            let node: voltra::cluster::NodeInfo = match serde_json::from_slice(&body_bytes) {
                 Ok(n) => n,
                 Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
             };
@@ -5017,7 +5017,7 @@ async fn handle_metrics_request(
         // Called by game code after a lobby is created.
         (&Method::POST, "/cluster/register-lobby") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
             let v: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
@@ -5060,7 +5060,7 @@ async fn handle_metrics_request(
                 .and_then(|s| s.strip_prefix("n="))
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(100);
-            let result = neondb::leaderboard::http_top_entries(&admin.leaderboard, board, n);
+            let result = voltra::leaderboard::http_top_entries(&admin.leaderboard, board, n);
             Ok(json_response(result))
         }
 
@@ -5069,8 +5069,8 @@ async fn handle_metrics_request(
         // POST /cluster/stat-sync — receive stat write-back jobs from other regions
         (&Method::POST, "/cluster/stat-sync") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
-            let result = neondb::stat_sync::handle_stat_sync(&tables, &body_bytes);
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+            let result = voltra::stat_sync::handle_stat_sync(&tables, &body_bytes);
             Ok(json_response(result))
         }
 
@@ -5078,7 +5078,7 @@ async fn handle_metrics_request(
         (&Method::POST, "/backup") => {
             let Some(backup_dir) = admin.backup_dir.clone() else {
                 let mut r = json_response(serde_json::json!({
-                    "error": "No backup directory configured. Set NEONDB_BACKUP_DIR or [server] backup_dir."
+                    "error": "No backup directory configured. Set VOLTRA_BACKUP_DIR or [server] backup_dir."
                 }));
                 *r.status_mut() = StatusCode::BAD_REQUEST;
                 return Ok(r);
@@ -5088,13 +5088,13 @@ async fn handle_metrics_request(
             let keep = admin.backup_keep;
             let last_seq = global_seq.load(std::sync::atomic::Ordering::Relaxed);
             let result = tokio::task::spawn_blocking(move || {
-                let path = neondb::backup::backup_now(&tbl, &wal_path, &backup_dir, last_seq)?;
-                let _ = neondb::backup::rotate_backups(&backup_dir, keep);
-                Ok::<_, neondb::error::NeonDBError>(path)
+                let path = voltra::backup::backup_now(&tbl, &wal_path, &backup_dir, last_seq)?;
+                let _ = voltra::backup::rotate_backups(&backup_dir, keep);
+                Ok::<_, voltra::error::VoltraError>(path)
             }).await;
             match result {
                 Ok(Ok(path)) => {
-                    let meta = neondb::backup::read_meta(&path);
+                    let meta = voltra::backup::read_meta(&path);
                     Ok(json_response(serde_json::json!({
                         "path": path.to_string_lossy(),
                         "last_seq": last_seq,
@@ -5125,8 +5125,8 @@ async fn handle_metrics_request(
 
         (&Method::GET, "/healthz") => Ok(json_response(serde_json::json!({
             "status": "ok",
-            "role": if neondb::replication::is_replica() { "replica" } else { "primary" },
-            "replication_lag_entries": neondb::replication::replication_lag(),
+            "role": if voltra::replication::is_replica() { "replica" } else { "primary" },
+            "replication_lag_entries": voltra::replication::replication_lag(),
             "total_rows": tables.total_row_count(),
             "active_connections": subscription_manager.active_connections(),
             "active_subscriptions": subscription_manager.active_subscriptions(),
@@ -5164,7 +5164,7 @@ async fn handle_metrics_request(
 
         (&Method::POST, "/seed") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(format!("Read body: {}", e)))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => {
@@ -5204,7 +5204,7 @@ async fn handle_metrics_request(
             // Accepts: {"migrations": [{"filename": "001_add_score.toml", "content": "<toml>"}]}
             // Applies each migration via apply_migrations_inline(); returns applied/skipped/errors.
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(format!("Read body: {}", e)))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => {
@@ -5233,7 +5233,7 @@ async fn handle_metrics_request(
                     Some(c) => c.to_string(),
                     None => { errors.push(format!("{}: missing content field", filename)); skipped += 1; continue; }
                 };
-                match neondb::migrations::apply_migration_str(&filename, &content, &tables) {
+                match voltra::migrations::apply_migration_str(&filename, &content, &tables) {
                     Ok(true)  => applied += 1,
                     Ok(false) => skipped += 1,
                     Err(e)    => { errors.push(format!("{}: {}", filename, e)); skipped += 1; }
@@ -5247,7 +5247,7 @@ async fn handle_metrics_request(
         }
 
         (&Method::GET, "/schema") => {
-            // Full machine-readable schema — used by `neondb generate`.
+            // Full machine-readable schema — used by `voltra generate`.
             // Tables: from SchemaRegistry (column defs) merged with live table list.
             let mut table_map = serde_json::Map::new();
             // First include all registered schemas with full column info.
@@ -5329,9 +5329,9 @@ async fn handle_metrics_request(
                 return Ok(r);
             }
             // Accept any non-empty token as an API key; the operator controls
-            // access by keeping the NEONDB_API_KEY secret.
+            // access by keeping the VOLTRA_API_KEY secret.
             let provided_key = auth_header.trim_start_matches("Bearer ").trim();
-            let api_key_configured = std::env::var("NEONDB_API_KEY").unwrap_or_default();
+            let api_key_configured = std::env::var("VOLTRA_API_KEY").unwrap_or_default();
             if !api_key_configured.is_empty() && provided_key != api_key_configured {
                 let mut r = json_response(serde_json::json!({ "error": "Unauthorized: invalid API key" }));
                 *r.status_mut() = StatusCode::UNAUTHORIZED;
@@ -5339,7 +5339,7 @@ async fn handle_metrics_request(
             }
 
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(format!("Read body: {}", e)))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(format!("Read body: {}", e)))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => {
@@ -5396,7 +5396,7 @@ async fn handle_metrics_request(
         // POST /auth/register   { "email": "...", "password": "...", "role"?: "..." }
         (&Method::POST, "/auth/register") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -5419,7 +5419,7 @@ async fn handle_metrics_request(
         // Returns JWT token for use in Authorization: Bearer <token>
         (&Method::POST, "/auth/login") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -5473,7 +5473,7 @@ async fn handle_metrics_request(
         // POST /auth/change-password   { "user_id": "...", "old_password": "...", "new_password": "..." }
         (&Method::POST, "/auth/change-password") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -5493,7 +5493,7 @@ async fn handle_metrics_request(
         // POST /player/save   { "character_id": "...", "user_id": "...", "name": "...", "data": {...} }
         (&Method::POST, "/player/save") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -5553,7 +5553,7 @@ async fn handle_metrics_request(
         // POST /catalog   { "id": "...", "name": "...", "type": "...", "stats": {...}, "price": 0 }
         (&Method::POST, "/catalog") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -5580,7 +5580,7 @@ async fn handle_metrics_request(
         (&Method::POST, "/persistent/sql") => {
             if let Some(r) = admin_auth_check(&req) { return Ok(r); }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| neondb::error::NeonDBError::network_error(e.to_string()))?;
+                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -5607,7 +5607,7 @@ async fn handle_metrics_request(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn current_timestamp_nanos() -> u64 {
-    neondb::now_nanos()
+    voltra::now_nanos()
 }
 
 /// Best-effort memory usage query (WorkingSetSize on Windows, /proc/self/statm on Linux).

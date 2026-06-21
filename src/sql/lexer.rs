@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB SQL Lexer
+// Voltra SQL Lexer
 //
 // Tokenises a SQL string into a flat Vec<Token> for the parser to consume.
 // Handles:
@@ -17,7 +17,7 @@
 //   - Comments: -- line comment (stripped)
 // ============================================================================
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -233,7 +233,7 @@ impl<'a> Lexer<'a> {
         let mut s = String::new();
         loop {
             match self.advance() {
-                None => return Err(NeonDBError::invalid_argument("Unterminated string literal")),
+                None => return Err(VoltraError::invalid_argument("Unterminated string literal")),
                 Some(ch) if ch == quote => {
                     // Doubled quote = escape
                     if self.peek() == Some(quote) {
@@ -250,7 +250,7 @@ impl<'a> Lexer<'a> {
                         Some(b'r')  => s.push('\r'),
                         Some(b'\\') => s.push('\\'),
                         Some(c)     => { s.push('\\'); s.push(c as char); }
-                        None => return Err(NeonDBError::invalid_argument("Unterminated escape")),
+                        None => return Err(VoltraError::invalid_argument("Unterminated escape")),
                     }
                 }
                 Some(ch) => s.push(ch as char),
@@ -263,7 +263,7 @@ impl<'a> Lexer<'a> {
         let mut s = String::new();
         loop {
             match self.advance() {
-                None => return Err(NeonDBError::invalid_argument("Unterminated quoted identifier")),
+                None => return Err(VoltraError::invalid_argument("Unterminated quoted identifier")),
                 Some(b'`') | Some(b'"') => break,
                 Some(ch) => s.push(ch as char),
             }
@@ -354,7 +354,7 @@ impl<'a> Lexer<'a> {
                 b'='  => Token::Eq,
                 b'!'  => {
                     if self.peek() == Some(b'=') { self.pos += 1; Token::Ne }
-                    else { return Err(NeonDBError::invalid_argument("Unexpected char '!'".to_string())) }
+                    else { return Err(VoltraError::invalid_argument("Unexpected char '!'".to_string())) }
                 }
                 b'<'  => {
                     if self.peek() == Some(b'=') { self.pos += 1; Token::Le }
@@ -367,11 +367,11 @@ impl<'a> Lexer<'a> {
                 }
                 b'|'  => {
                     if self.peek() == Some(b'|') { self.pos += 1; Token::Concat2 }
-                    else { return Err(NeonDBError::invalid_argument("Expected '||'")); }
+                    else { return Err(VoltraError::invalid_argument("Expected '||'")); }
                 }
                 c if c.is_ascii_digit() => self.read_number(c),
                 c if c.is_ascii_alphabetic() || c == b'_' => self.read_ident(c),
-                other => return Err(NeonDBError::invalid_argument(
+                other => return Err(VoltraError::invalid_argument(
                     format!("Unexpected character: '{}'", other as char)
                 )),
             };

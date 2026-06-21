@@ -1,9 +1,9 @@
 [workspace]
-members  = ["neondb-macros", "neondb-client-rust"]
+members  = ["voltra-macros", "voltra-client-rust"]
 resolver = "2"
 
 [package]
-name = "neondb"
+name = "voltra"
 version = "2.0.1"
 edition = "2021"
 description = "Voltra — high-throughput in-memory game backend (WebSocket, Redis & Postgres wire, WAL-durable)"
@@ -56,7 +56,7 @@ sqlparser     = "0.45"                                     # PostgreSQL-dialect 
 
 # Macro support: auto-registration of #[reducer]-annotated functions
 inventory    = "0.3"
-neondb-macros = { path = "neondb-macros" }
+voltra-macros = { path = "voltra-macros" }
 
 flate2 = "1.0"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
@@ -95,27 +95,27 @@ tempfile = "3"
 
 # ── Raw engine benchmark (no network, no WAL, no templates) ──────────────────
 [[bin]]
-name = "neondb-engine-bench"
+name = "voltra-engine-bench"
 path = "src/bin/engine_bench.rs"
 
 # ── WebSocket round-trip latency benchmark ────────────────────────────────────
 [[bin]]
-name = "neondb-latency-bench"
+name = "voltra-latency-bench"
 path = "src/bin/latency_bench.rs"
 
 # ── Standalone benchmark binary ──────────────────────────────────────────────
 [[bin]]
-name = "neondb-bench"
-path = "src/bin/neondb_bench.rs"
+name = "voltra-bench"
+path = "src/bin/voltra_bench.rs"
 
 # ── Sustained-load soak test binary ──────────────────────────────────────────
 [[bin]]
-name = "neondb-soak"
+name = "voltra-soak"
 path = "src/bin/soak.rs"
 
 # ── High-end simulation / stress test ────────────────────────────────────────
 [[bin]]
-name = "neondb-sim"
+name = "voltra-sim"
 path = "src/bin/sim.rs"
 
 # ── Existing benchmarks ───────────────────────────────────────────────────────

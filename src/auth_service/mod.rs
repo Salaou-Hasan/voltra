@@ -10,7 +10,7 @@
 // ============================================================================
 
 use crate::auth::IdentityIssuer;
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::persistent::{PersistentStore, UserRow};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,21 +55,21 @@ impl AuthService {
         // Normalise
         let email = email.trim().to_lowercase();
         if email.is_empty() || !email.contains('@') {
-            return Err(NeonDBError::invalid_argument("invalid email address"));
+            return Err(VoltraError::invalid_argument("invalid email address"));
         }
         if password.len() < 8 {
-            return Err(NeonDBError::invalid_argument(
+            return Err(VoltraError::invalid_argument(
                 "password must be at least 8 characters",
             ));
         }
         let role = if role.is_empty() { "player" } else { role };
 
         if self.store.user_by_email(&email)?.is_some() {
-            return Err(NeonDBError::invalid_argument("email already registered"));
+            return Err(VoltraError::invalid_argument("email already registered"));
         }
 
         let hash = bcrypt::hash(password, 10)
-            .map_err(|e| NeonDBError::internal(format!("bcrypt hash: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("bcrypt hash: {e}")))?;
 
         let id = generate_id();
         let now = now_secs();
@@ -85,18 +85,18 @@ impl AuthService {
         let row = self
             .store
             .user_by_email(&email)?
-            .ok_or_else(|| NeonDBError::invalid_argument("invalid email or password"))?;
+            .ok_or_else(|| VoltraError::invalid_argument("invalid email or password"))?;
 
         let ok = bcrypt::verify(password, &row.password_hash)
-            .map_err(|e| NeonDBError::internal(format!("bcrypt verify: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("bcrypt verify: {e}")))?;
         if !ok {
-            return Err(NeonDBError::invalid_argument("invalid email or password"));
+            return Err(VoltraError::invalid_argument("invalid email or password"));
         }
 
         let token = self
             .issuer
             .issue(&row.id, vec![row.role.clone()], self.token_ttl_secs)
-            .map_err(|e| NeonDBError::internal(format!("JWT issue: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("JWT issue: {e}")))?;
 
         self.store.log_audit(Some(&row.id), "login", None)?;
         Ok((User::from(row), token))
@@ -107,11 +107,11 @@ impl AuthService {
         let claims = self
             .issuer
             .verify(token)
-            .map_err(|e| NeonDBError::invalid_argument(format!("invalid token: {e}")))?;
+            .map_err(|e| VoltraError::invalid_argument(format!("invalid token: {e}")))?;
         let row = self
             .store
             .user_by_id(&claims.sub)?
-            .ok_or_else(|| NeonDBError::invalid_argument("token references unknown user"))?;
+            .ok_or_else(|| VoltraError::invalid_argument("token references unknown user"))?;
         Ok(User::from(row))
     }
 
@@ -124,21 +124,21 @@ impl AuthService {
         &self, user_id: &str, old_password: &str, new_password: &str,
     ) -> Result<()> {
         if new_password.len() < 8 {
-            return Err(NeonDBError::invalid_argument(
+            return Err(VoltraError::invalid_argument(
                 "password must be at least 8 characters",
             ));
         }
         let row = self
             .store
             .user_by_id(user_id)?
-            .ok_or_else(|| NeonDBError::invalid_argument("user not found"))?;
+            .ok_or_else(|| VoltraError::invalid_argument("user not found"))?;
         let ok = bcrypt::verify(old_password, &row.password_hash)
-            .map_err(|e| NeonDBError::internal(format!("bcrypt verify: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("bcrypt verify: {e}")))?;
         if !ok {
-            return Err(NeonDBError::invalid_argument("incorrect current password"));
+            return Err(VoltraError::invalid_argument("incorrect current password"));
         }
         let hash = bcrypt::hash(new_password, 10)
-            .map_err(|e| NeonDBError::internal(format!("bcrypt hash: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("bcrypt hash: {e}")))?;
         self.store.update_password_hash(user_id, &hash, now_secs())?;
         self.store.log_audit(Some(user_id), "change_password", None)?;
         Ok(())

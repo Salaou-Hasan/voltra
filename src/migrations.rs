@@ -1,6 +1,6 @@
-//! Schema migration support for NeonDB.
+//! Schema migration support for Voltra.
 //!
-//! On startup (after WAL replay), NeonDB scans the `migrations/` directory
+//! On startup (after WAL replay), Voltra scans the `migrations/` directory
 //! for `*.toml` files sorted lexicographically and applies each migration
 //! to the in-memory `TableStore`.
 //!
@@ -43,7 +43,7 @@
 //! - `remove_field` skips rows that don't have the field.
 //! - `rename_field` skips rows where `old_field` is absent.
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::table::TableStore;
 use serde::Deserialize;
 use serde_json::Value;
@@ -115,7 +115,7 @@ pub fn apply_migrations(migrations_dir: &Path, tables: &Arc<TableStore>) -> Resu
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| {
-                NeonDBError::internal(format!("Migration path has no filename: {:?}", path))
+                VoltraError::internal(format!("Migration path has no filename: {:?}", path))
             })?
             .to_string();
 
@@ -126,10 +126,10 @@ pub fn apply_migrations(migrations_dir: &Path, tables: &Arc<TableStore>) -> Resu
         }
 
         let contents = std::fs::read_to_string(path).map_err(|e| {
-            NeonDBError::internal(format!("Failed to read migration {:?}: {}", path, e))
+            VoltraError::internal(format!("Failed to read migration {:?}: {}", path, e))
         })?;
         let mig: MigrationFile = toml::from_str(&contents).map_err(|e| {
-            NeonDBError::internal(format!("Failed to parse migration {:?}: {}", path, e))
+            VoltraError::internal(format!("Failed to parse migration {:?}: {}", path, e))
         })?;
         apply_migration(&mig, tables, path)?;
 
@@ -171,7 +171,7 @@ pub fn apply_migration_str(
     }
 
     let mig: MigrationFile = toml::from_str(content).map_err(|e| {
-        NeonDBError::internal(format!("Failed to parse migration '{}': {}", filename, e))
+        VoltraError::internal(format!("Failed to parse migration '{}': {}", filename, e))
     })?;
 
     // Use a synthetic path for log messages.
@@ -210,30 +210,30 @@ fn apply_migration(mig: &MigrationFile, tables: &Arc<TableStore>, path: &Path) -
                 let field = step
                     .field
                     .as_deref()
-                    .ok_or_else(|| NeonDBError::invalid_argument("add_field requires 'field'"))?;
+                    .ok_or_else(|| VoltraError::invalid_argument("add_field requires 'field'"))?;
                 let default_val = step
                     .default
                     .clone()
-                    .ok_or_else(|| NeonDBError::invalid_argument("add_field requires 'default'"))?;
+                    .ok_or_else(|| VoltraError::invalid_argument("add_field requires 'default'"))?;
                 add_field(tables, &step.table, field, default_val)?;
             }
             "remove_field" => {
                 let field = step.field.as_deref().ok_or_else(|| {
-                    NeonDBError::invalid_argument("remove_field requires 'field'")
+                    VoltraError::invalid_argument("remove_field requires 'field'")
                 })?;
                 remove_field(tables, &step.table, field)?;
             }
             "rename_field" => {
                 let old_field = step.old_field.as_deref().ok_or_else(|| {
-                    NeonDBError::invalid_argument("rename_field requires 'old_field'")
+                    VoltraError::invalid_argument("rename_field requires 'old_field'")
                 })?;
                 let new_field = step.new_field.as_deref().ok_or_else(|| {
-                    NeonDBError::invalid_argument("rename_field requires 'new_field'")
+                    VoltraError::invalid_argument("rename_field requires 'new_field'")
                 })?;
                 rename_field(tables, &step.table, old_field, new_field)?;
             }
             other => {
-                return Err(NeonDBError::invalid_argument(format!(
+                return Err(VoltraError::invalid_argument(format!(
                     "Unknown migration op '{}' in {:?}",
                     other, path
                 )));
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn test_apply_migrations_empty_dir() {
         let ts = store();
-        let tmp = std::env::temp_dir().join("neondb_mig_empty_test");
+        let tmp = std::env::temp_dir().join("voltra_mig_empty_test");
         let _ = std::fs::create_dir_all(&tmp);
         let result = apply_migrations(&tmp, &ts);
         assert!(result.is_ok());
@@ -419,7 +419,7 @@ mod tests {
         .unwrap();
 
         // Write a migration file
-        let tmp = std::env::temp_dir().join("neondb_mig_toml_test");
+        let tmp = std::env::temp_dir().join("voltra_mig_toml_test");
         let _ = std::fs::create_dir_all(&tmp);
         let mig_content = r#"
 version = 1
@@ -453,7 +453,7 @@ default = 0
     #[test]
     fn test_apply_migrations_records_in_system_table() {
         let ts = store();
-        let tmp = std::env::temp_dir().join("neondb_mig_idempotent_record_test");
+        let tmp = std::env::temp_dir().join("voltra_mig_idempotent_record_test");
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::create_dir_all(&tmp);
 
@@ -496,7 +496,7 @@ default = 0
         )
         .unwrap();
 
-        let tmp = std::env::temp_dir().join("neondb_mig_idempotent_skip_test");
+        let tmp = std::env::temp_dir().join("voltra_mig_idempotent_skip_test");
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::create_dir_all(&tmp);
 

@@ -1,6 +1,6 @@
-//! neondb-sim — High-end real-world simulation benchmark
+//! voltra-sim — High-end real-world simulation benchmark
 //!
-//! Starts its own embedded NeonDB server with all reducers built-in, then
+//! Starts its own embedded Voltra server with all reducers built-in, then
 //! drives it with N concurrent virtual users following realistic behavioral
 //! state machines that mirror actual game + chat application workloads.
 //!
@@ -14,7 +14,7 @@
 //!         thread replies, typing indicators (very high frequency),
 //!         presence heartbeats — thousands of users simultaneously.
 //!
-//!  mixed  Game players + chat users hitting the same NeonDB instance at
+//!  mixed  Game players + chat users hitting the same Voltra instance at
 //!         the same time. Measures contention between the two workloads.
 //!
 //!  scale  Ramps concurrency from --min to --max clients (doubling each
@@ -22,10 +22,10 @@
 //!
 //! Usage
 //! ─────
-//!  cargo run --release --bin neondb-sim -- game  --players 500 --duration 120
-//!  cargo run --release --bin neondb-sim -- chat  --users 1000 --duration 60
-//!  cargo run --release --bin neondb-sim -- mixed --players 250 --users 250 --duration 120
-//!  cargo run --release --bin neondb-sim -- scale --profile game --max 5000
+//!  cargo run --release --bin voltra-sim -- game  --players 500 --duration 120
+//!  cargo run --release --bin voltra-sim -- chat  --users 1000 --duration 60
+//!  cargo run --release --bin voltra-sim -- mixed --players 250 --users 250 --duration 120
+//!  cargo run --release --bin voltra-sim -- scale --profile game --max 5000
 
 #![allow(clippy::needless_range_loop)]
 
@@ -43,11 +43,11 @@ use hdrhistogram::Histogram;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use neondb::network::message::{ClientMessage, ReducerCall};
-use neondb::reducer::context::ReducerContext;
-use neondb::reducer::native::NativeReducerBackend;
-use neondb::reducer::registry::NativeReducerItem;
-use neondb::ServerHandle;
+use voltra::network::message::{ClientMessage, ReducerCall};
+use voltra::reducer::context::ReducerContext;
+use voltra::reducer::native::NativeReducerBackend;
+use voltra::reducer::registry::NativeReducerItem;
+use voltra::ServerHandle;
 use serde_json::json;
 use std::collections::VecDeque;
 
@@ -72,7 +72,7 @@ fn args_to_vec(args: &[u8]) -> Vec<serde_json::Value> {
 }
 
 // ── Game: player spawn ──────────────────────────────────────────────────────
-fn sim_spawn(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_spawn(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("p");
     let x = a.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -94,7 +94,7 @@ fn sim_spawn(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec
 inventory::submit! { NativeReducerItem { name: "sim_spawn", make: || Box::new(NativeReducerBackend::new(sim_spawn)) } }
 
 // ── Game: position update ───────────────────────────────────────────────────
-fn sim_move(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_move(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("p");
     let x = a.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -112,7 +112,7 @@ fn sim_move(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<
 inventory::submit! { NativeReducerItem { name: "sim_move", make: || Box::new(NativeReducerBackend::new(sim_move)) } }
 
 // ── Game: combat — attack NPC ───────────────────────────────────────────────
-fn sim_attack(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_attack(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let aid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let tid = a.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -139,7 +139,7 @@ fn sim_attack(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Ve
 inventory::submit! { NativeReducerItem { name: "sim_attack", make: || Box::new(NativeReducerBackend::new(sim_attack)) } }
 
 // ── Game: ability use ───────────────────────────────────────────────────────
-fn sim_ability(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_ability(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let ability = a.get(1).and_then(|v| v.as_str()).unwrap_or("fireball");
@@ -164,7 +164,7 @@ fn sim_ability(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<V
 inventory::submit! { NativeReducerItem { name: "sim_ability", make: || Box::new(NativeReducerBackend::new(sim_ability)) } }
 
 // ── Game: apply damage ──────────────────────────────────────────────────────
-fn sim_damage(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_damage(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let amount = a.get(1).and_then(|v| v.as_i64()).unwrap_or(10);
@@ -180,7 +180,7 @@ fn sim_damage(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Ve
 inventory::submit! { NativeReducerItem { name: "sim_damage", make: || Box::new(NativeReducerBackend::new(sim_damage)) } }
 
 // ── Game: respawn ───────────────────────────────────────────────────────────
-fn sim_respawn(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_respawn(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let mut p = ctx.get_row("sim_players", pid)?.unwrap_or(json!({}));
@@ -193,7 +193,7 @@ fn sim_respawn(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<V
 inventory::submit! { NativeReducerItem { name: "sim_respawn", make: || Box::new(NativeReducerBackend::new(sim_respawn)) } }
 
 // ── Game: spawn NPC ─────────────────────────────────────────────────────────
-fn sim_spawn_npc(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_spawn_npc(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let nid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let x = a.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -208,7 +208,7 @@ fn sim_spawn_npc(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result
 inventory::submit! { NativeReducerItem { name: "sim_spawn_npc", make: || Box::new(NativeReducerBackend::new(sim_spawn_npc)) } }
 
 // ── Game: world tick (scheduled) ────────────────────────────────────────────
-fn sim_world_tick(ctx: &mut ReducerContext, _args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_world_tick(ctx: &mut ReducerContext, _args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let players = ctx.tables.list_rows("sim_players").unwrap_or_default();
     for p in &players {
         if p["alive"].as_bool().unwrap_or(false) {
@@ -240,7 +240,7 @@ fn sim_world_tick(ctx: &mut ReducerContext, _args: &[u8]) -> neondb::error::Resu
 inventory::submit! { NativeReducerItem { name: "sim_world_tick", make: || Box::new(NativeReducerBackend::new(sim_world_tick)) } }
 
 // ── Game: buy item ──────────────────────────────────────────────────────────
-fn sim_buy(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_buy(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let item = a.get(1).and_then(|v| v.as_str()).unwrap_or("item");
@@ -263,7 +263,7 @@ fn sim_buy(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u
 inventory::submit! { NativeReducerItem { name: "sim_buy", make: || Box::new(NativeReducerBackend::new(sim_buy)) } }
 
 // ── Game: sell item ─────────────────────────────────────────────────────────
-fn sim_sell(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_sell(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let item = a.get(1).and_then(|v| v.as_str()).unwrap_or("item");
@@ -289,7 +289,7 @@ fn sim_sell(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<
 inventory::submit! { NativeReducerItem { name: "sim_sell", make: || Box::new(NativeReducerBackend::new(sim_sell)) } }
 
 // ── Game: loot box ──────────────────────────────────────────────────────────
-fn sim_loot(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_loot(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let rarity = a.get(2).and_then(|v| v.as_str()).unwrap_or("common");
@@ -308,7 +308,7 @@ fn sim_loot(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<
 inventory::submit! { NativeReducerItem { name: "sim_loot", make: || Box::new(NativeReducerBackend::new(sim_loot)) } }
 
 // ── Game: transfer currency ─────────────────────────────────────────────────
-fn sim_transfer(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_transfer(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let from = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let to = a.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -325,7 +325,7 @@ fn sim_transfer(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<
 inventory::submit! { NativeReducerItem { name: "sim_transfer", make: || Box::new(NativeReducerBackend::new(sim_transfer)) } }
 
 // ── Game: quest accept ──────────────────────────────────────────────────────
-fn sim_quest_accept(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_quest_accept(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let qid = a.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -335,7 +335,7 @@ fn sim_quest_accept(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Res
 inventory::submit! { NativeReducerItem { name: "sim_quest_accept", make: || Box::new(NativeReducerBackend::new(sim_quest_accept)) } }
 
 // ── Game: quest progress ────────────────────────────────────────────────────
-fn sim_quest_progress(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_quest_progress(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let qid = a.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -361,7 +361,7 @@ fn sim_quest_progress(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::R
 inventory::submit! { NativeReducerItem { name: "sim_quest_progress", make: || Box::new(NativeReducerBackend::new(sim_quest_progress)) } }
 
 // ── Game: matchmaking queue/dequeue ─────────────────────────────────────────
-fn sim_queue(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_queue(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let mode = a.get(1).and_then(|v| v.as_str()).unwrap_or("deathmatch");
@@ -370,7 +370,7 @@ fn sim_queue(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec
 }
 inventory::submit! { NativeReducerItem { name: "sim_queue", make: || Box::new(NativeReducerBackend::new(sim_queue)) } }
 
-fn sim_dequeue(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_dequeue(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     ctx.delete_row("sim_queue".into(), pid.to_string())?;
@@ -379,7 +379,7 @@ fn sim_dequeue(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<V
 inventory::submit! { NativeReducerItem { name: "sim_dequeue", make: || Box::new(NativeReducerBackend::new(sim_dequeue)) } }
 
 // ── Game: leaderboard ───────────────────────────────────────────────────────
-fn sim_score(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_score(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let pid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let score = a.get(1).and_then(|v| v.as_i64()).unwrap_or(0);
@@ -395,7 +395,7 @@ fn sim_score(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec
 inventory::submit! { NativeReducerItem { name: "sim_score", make: || Box::new(NativeReducerBackend::new(sim_score)) } }
 
 // ── Chat: create room ───────────────────────────────────────────────────────
-fn sim_create_room(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_create_room(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let rid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let name = a.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -407,7 +407,7 @@ fn sim_create_room(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Resu
 inventory::submit! { NativeReducerItem { name: "sim_create_room", make: || Box::new(NativeReducerBackend::new(sim_create_room)) } }
 
 // ── Chat: join room ─────────────────────────────────────────────────────────
-fn sim_join_room(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_join_room(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let rid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let uid = a.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -420,7 +420,7 @@ fn sim_join_room(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result
 inventory::submit! { NativeReducerItem { name: "sim_join_room", make: || Box::new(NativeReducerBackend::new(sim_join_room)) } }
 
 // ── Chat: send message (ring buffer) ────────────────────────────────────────
-fn sim_send_msg(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_send_msg(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let rid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let uid = a.get(2).and_then(|v| v.as_str()).unwrap_or("");
@@ -437,7 +437,7 @@ fn sim_send_msg(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<
 inventory::submit! { NativeReducerItem { name: "sim_send_msg", make: || Box::new(NativeReducerBackend::new(sim_send_msg)) } }
 
 // ── Chat: react ─────────────────────────────────────────────────────────────
-fn sim_react(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_react(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let mid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let uid = a.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -449,7 +449,7 @@ fn sim_react(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec
 inventory::submit! { NativeReducerItem { name: "sim_react", make: || Box::new(NativeReducerBackend::new(sim_react)) } }
 
 // ── Chat: typing indicator ──────────────────────────────────────────────────
-fn sim_typing(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_typing(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let uid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let rid = a.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -462,7 +462,7 @@ fn sim_typing(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Ve
 inventory::submit! { NativeReducerItem { name: "sim_typing", make: || Box::new(NativeReducerBackend::new(sim_typing)) } }
 
 // ── Chat: presence ──────────────────────────────────────────────────────────
-fn sim_presence(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn sim_presence(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a = args_to_vec(args);
     let uid = a.first().and_then(|v| v.as_str()).unwrap_or("");
     let status = a.get(1).and_then(|v| v.as_str()).unwrap_or("online");
@@ -474,7 +474,7 @@ inventory::submit! { NativeReducerItem { name: "sim_presence", make: || Box::new
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "neondb-sim", about = "NeonDB high-end real-world simulation benchmark")]
+#[command(name = "voltra-sim", about = "Voltra high-end real-world simulation benchmark")]
 struct Args {
     /// WebSocket URL (default: auto-started embedded server)
     #[arg(long, default_value = "ws://127.0.0.1:3777")]
@@ -496,7 +496,7 @@ struct Args {
     #[arg(long, default_value = "1.0")]
     max_error_pct: f64,
 
-    /// Connect to an external `neondb-sim serve` server instead of starting
+    /// Connect to an external `voltra-sim serve` server instead of starting
     /// an embedded one. Server stats are sampled over HTTP (--metrics-url).
     #[arg(long)]
     external: bool,
@@ -597,8 +597,8 @@ enum ScenarioCmd {
     /// Maximum-throughput stress test using native reducers + pipelining
     ///
     /// Target: 250K-400K TPS using pipelined native writes, unsafe WAL, disabled rate limiter.
-    /// Run:  neondb-sim stress
-    ///       neondb-sim stress --clients 20 --pipeline 512 --reducer stress_ping
+    /// Run:  voltra-sim stress
+    ///       voltra-sim stress --clients 20 --pipeline 512 --reducer stress_ping
     Stress {
         /// Concurrent clients — sweet spot is 20-50 for inline reducers
         #[arg(short, long, default_value = "20")]
@@ -765,7 +765,7 @@ fn sample_health(handle: &ServerHandle, elapsed: u64) -> Health {
 }
 
 /// Where benchmark stats come from: the in-process server handle, or an
-/// external `neondb-sim serve` process sampled over HTTP.
+/// external `voltra-sim serve` process sampled over HTTP.
 enum StatsSource {
     Local(ServerHandle),
     Remote(String), // metrics base URL, e.g. http://127.0.0.1:3778
@@ -811,7 +811,7 @@ async fn fetch_health(base: &str, elapsed: u64) -> Health {
     }
 }
 
-/// Minimal /healthz HTTP responder for `neondb-sim serve` mode.
+/// Minimal /healthz HTTP responder for `voltra-sim serve` mode.
 fn spawn_health_server(handle: ServerHandle, port: u16) {
     use std::sync::atomic::Ordering;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -856,8 +856,8 @@ const SIM_REDUCERS: &[(&str, &str)] = &[
 // ── Game: player spawn ──────────────────────────────────────────────────────
 ("sim_spawn", r#"function reducer(args) {
   const [pid, x, y, cls] = args;
-  if (__neondb_get("sim_players", pid)) return { ok: true, exists: true };
-  __neondb_set("sim_players", pid, {
+  if (__voltra_get("sim_players", pid)) return { ok: true, exists: true };
+  __voltra_set("sim_players", pid, {
     pid, x: x||0, y: y||0, class: cls||"warrior",
     hp: 100, max_hp: 100, mp: 100, max_mp: 100,
     xp: 0, level: 1, currency: 500, alive: true, kills: 0
@@ -867,26 +867,26 @@ const SIM_REDUCERS: &[(&str, &str)] = &[
 // ── Game: position update (most frequent write) ─────────────────────────────
 ("sim_move", r#"function reducer(args) {
   const [pid, x, y] = args;
-  const p = __neondb_get("sim_players", pid);
+  const p = __voltra_get("sim_players", pid);
   if (!p) return { error: "no_player" };
   p.x = x; p.y = y;
   p.zone = "z_" + Math.floor(x/100) + "_" + Math.floor(y/100);
-  __neondb_set("sim_players", pid, p);
+  __voltra_set("sim_players", pid, p);
   return { ok: true, x, y, zone: p.zone };
 }"#),
 // ── Game: combat — attack an NPC (read attacker + read NPC + 2 writes) ──────
 ("sim_attack", r#"function reducer(args) {
   const [aid, tid, weapon, dmg] = args;
-  const npc = __neondb_get("sim_npcs", tid);
+  const npc = __voltra_get("sim_npcs", tid);
   if (!npc) return { ok: true, skipped: true };
   npc.hp = Math.max(0, (npc.hp || 50) - (dmg || 15));
   npc.alive = npc.hp > 0;
-  __neondb_set("sim_npcs", tid, npc);
-  const p = __neondb_get("sim_players", aid);
+  __voltra_set("sim_npcs", tid, npc);
+  const p = __voltra_get("sim_players", aid);
   if (p) {
     if (!npc.alive) { p.kills = (p.kills||0)+1; p.xp = (p.xp||0)+50; p.currency=(p.currency||0)+20; }
     p.hp = Math.max(1, (p.hp||100) - Math.floor((dmg||15)*0.3));
-    __neondb_set("sim_players", aid, p);
+    __voltra_set("sim_players", aid, p);
   }
   return { ok: true, npc_hp: npc.hp, dead: !npc.alive };
 }"#),
@@ -894,38 +894,38 @@ const SIM_REDUCERS: &[(&str, &str)] = &[
 ("sim_ability", r#"function reducer(args) {
   const [pid, ability, tid] = args;
   const costs = { fireball: 20, heal: -25, shield: 15, lightning: 30, dash: 10 };
-  const p = __neondb_get("sim_players", pid);
+  const p = __voltra_get("sim_players", pid);
   if (!p) return { error: "no_player" };
   const cost = costs[ability] || 10;
   if (cost > 0 && (p.mp||0) < cost) return { error: "no_mp" };
   p.mp = Math.max(0, Math.min(p.max_mp||100, (p.mp||100) - cost));
   if (ability === "heal") p.hp = Math.min(p.max_hp||100, (p.hp||100)+25);
-  __neondb_set("sim_players", pid, p);
+  __voltra_set("sim_players", pid, p);
   return { ok: true, ability, mp: p.mp, hp: p.hp };
 }"#),
 // ── Game: apply damage to player (from NPC counter-attack) ──────────────────
 ("sim_damage", r#"function reducer(args) {
   const [pid, amount, src] = args;
-  const p = __neondb_get("sim_players", pid);
+  const p = __voltra_get("sim_players", pid);
   if (!p || !p.alive) return { ok: true, skipped: true };
   p.hp = Math.max(0, (p.hp||100) - (amount||10));
   p.alive = p.hp > 0;
-  __neondb_set("sim_players", pid, p);
+  __voltra_set("sim_players", pid, p);
   return { ok: true, hp: p.hp, alive: p.alive };
 }"#),
 // ── Game: respawn dead player ────────────────────────────────────────────────
 ("sim_respawn", r#"function reducer(args) {
   const [pid] = args;
-  const p = __neondb_get("sim_players", pid) || {};
+  const p = __voltra_get("sim_players", pid) || {};
   p.hp = p.max_hp||100; p.mp = p.max_mp||100;
   p.alive = true; p.x = 0; p.y = 0;
-  __neondb_set("sim_players", pid, p);
+  __voltra_set("sim_players", pid, p);
   return { ok: true };
 }"#),
 // ── Game: spawn NPC (world entity) ──────────────────────────────────────────
 ("sim_spawn_npc", r#"function reducer(args) {
   const [nid, x, y, kind] = args;
-  __neondb_set("sim_npcs", nid, {
+  __voltra_set("sim_npcs", nid, {
     nid, x: x||0, y: y||0,
     kind: kind||"goblin", hp: 50, max_hp: 50, alive: true, patrol_x: x||0, patrol_y: y||0
   });
@@ -933,20 +933,20 @@ const SIM_REDUCERS: &[(&str, &str)] = &[
 }"#),
 // ── Game: world tick (scheduled — respawns dead NPCs, regenerates MP) ───────
 ("sim_world_tick", r#"function reducer(args) {
-  const players = __neondb_get_all("sim_players") || [];
+  const players = __voltra_get_all("sim_players") || [];
   for (const p of players) {
     if (p.alive && (p.mp||100) < (p.max_mp||100)) {
       p.mp = Math.min(p.max_mp||100, (p.mp||100)+5);
-      __neondb_set("sim_players", p.pid||p.row_key, p);
+      __voltra_set("sim_players", p.pid||p.row_key, p);
     }
   }
-  const npcs = __neondb_get_all("sim_npcs") || [];
+  const npcs = __voltra_get_all("sim_npcs") || [];
   let respawned = 0;
   for (const n of npcs) {
     if (!n.alive) {
       n.hp = n.max_hp||50; n.alive = true;
       n.x = n.patrol_x||0; n.y = n.patrol_y||0;
-      __neondb_set("sim_npcs", n.nid||n.row_key, n);
+      __voltra_set("sim_npcs", n.nid||n.row_key, n);
       respawned++;
     }
   }
@@ -955,30 +955,30 @@ const SIM_REDUCERS: &[(&str, &str)] = &[
 // ── Game: economy — buy item ─────────────────────────────────────────────────
 ("sim_buy", r#"function reducer(args) {
   const [pid, item, qty, price] = args;
-  const p = __neondb_get("sim_players", pid);
+  const p = __voltra_get("sim_players", pid);
   if (!p) return { error: "no_player" };
   const cost = (price||10)*(qty||1);
   if ((p.currency||0) < cost) return { error: "insufficient" };
   p.currency -= cost;
-  __neondb_set("sim_players", pid, p);
+  __voltra_set("sim_players", pid, p);
   const key = pid+":"+item;
-  const inv = __neondb_get("sim_inventory", key) || { pid, item, qty: 0 };
+  const inv = __voltra_get("sim_inventory", key) || { pid, item, qty: 0 };
   inv.qty += (qty||1);
-  __neondb_set("sim_inventory", key, inv);
+  __voltra_set("sim_inventory", key, inv);
   return { ok: true, currency: p.currency, qty: inv.qty };
 }"#),
 // ── Game: economy — sell item ────────────────────────────────────────────────
 ("sim_sell", r#"function reducer(args) {
   const [pid, item, qty, price] = args;
   const key = pid+":"+item;
-  const inv = __neondb_get("sim_inventory", key);
+  const inv = __voltra_get("sim_inventory", key);
   if (!inv || inv.qty < (qty||1)) return { error: "not_enough" };
   inv.qty -= (qty||1);
-  if (inv.qty <= 0) __neondb_delete("sim_inventory", key);
-  else __neondb_set("sim_inventory", key, inv);
-  const p = __neondb_get("sim_players", pid) || {};
+  if (inv.qty <= 0) __voltra_delete("sim_inventory", key);
+  else __voltra_set("sim_inventory", key, inv);
+  const p = __voltra_get("sim_players", pid) || {};
   p.currency = (p.currency||0) + (price||8)*(qty||1);
-  __neondb_set("sim_players", pid, p);
+  __voltra_set("sim_players", pid, p);
   return { ok: true, currency: p.currency };
 }"#),
 // ── Game: economy — open loot box ────────────────────────────────────────────
@@ -988,72 +988,72 @@ const SIM_REDUCERS: &[(&str, &str)] = &[
   const pool = pools[rarity||"common"];
   const item = pool[Math.floor(Math.random()*pool.length)];
   const key = pid+":"+item;
-  const inv = __neondb_get("sim_inventory", key)||{pid,item,qty:0};
+  const inv = __voltra_get("sim_inventory", key)||{pid,item,qty:0};
   inv.qty += 1;
-  __neondb_set("sim_inventory", key, inv);
+  __voltra_set("sim_inventory", key, inv);
   return { ok: true, item, qty: inv.qty, rarity };
 }"#),
 // ── Game: economy — transfer currency (cross-player, 2 reads + 2 writes) ────
 ("sim_transfer", r#"function reducer(args) {
   const [from, to, amount] = args;
-  const pf = __neondb_get("sim_players", from);
-  const pt = __neondb_get("sim_players", to);
+  const pf = __voltra_get("sim_players", from);
+  const pt = __voltra_get("sim_players", to);
   if (!pf || !pt) return { error: "missing_player" };
   if ((pf.currency||0) < (amount||10)) return { error: "insufficient" };
   pf.currency -= (amount||10);
   pt.currency = (pt.currency||0) + (amount||10);
-  __neondb_set("sim_players", from, pf);
-  __neondb_set("sim_players", to, pt);
+  __voltra_set("sim_players", from, pf);
+  __voltra_set("sim_players", to, pt);
   return { ok: true };
 }"#),
 // ── Game: quests — accept, progress, complete ────────────────────────────────
 ("sim_quest_accept", r#"function reducer(args) {
   const [pid, qid] = args;
-  __neondb_set("sim_quests", pid+":"+qid, { pid, qid, progress: 0, done: false });
+  __voltra_set("sim_quests", pid+":"+qid, { pid, qid, progress: 0, done: false });
   return { ok: true };
 }"#),
 ("sim_quest_progress", r#"function reducer(args) {
   const [pid, qid, delta] = args;
   const key = pid+":"+qid;
-  const q = __neondb_get("sim_quests", key);
+  const q = __voltra_get("sim_quests", key);
   if (!q) return { error: "no_quest" };
   q.progress = (q.progress||0) + (delta||1);
-  if (q.progress >= 10) { q.done = true; const p = __neondb_get("sim_players", pid); if (p) { p.xp=(p.xp||0)+200; p.level=Math.floor((p.xp||0)/1000)+1; __neondb_set("sim_players",pid,p); } }
-  __neondb_set("sim_quests", key, q);
+  if (q.progress >= 10) { q.done = true; const p = __voltra_get("sim_players", pid); if (p) { p.xp=(p.xp||0)+200; p.level=Math.floor((p.xp||0)/1000)+1; __voltra_set("sim_players",pid,p); } }
+  __voltra_set("sim_quests", key, q);
   return { ok: true, progress: q.progress, done: q.done };
 }"#),
 // ── Game: matchmaking ────────────────────────────────────────────────────────
 ("sim_queue", r#"function reducer(args) {
   const [pid, mode] = args;
-  __neondb_set("sim_queue", pid, { pid, mode: mode||"deathmatch", ts: 0 });
+  __voltra_set("sim_queue", pid, { pid, mode: mode||"deathmatch", ts: 0 });
   return { ok: true };
 }"#),
 ("sim_dequeue", r#"function reducer(args) {
   const [pid] = args;
-  __neondb_delete("sim_queue", pid);
+  __voltra_delete("sim_queue", pid);
   return { ok: true };
 }"#),
 // ── Game: leaderboard ────────────────────────────────────────────────────────
 ("sim_score", r#"function reducer(args) {
   const [pid, score] = args;
-  const cur = __neondb_get("sim_leaderboard", pid) || { pid, score: 0 };
+  const cur = __voltra_get("sim_leaderboard", pid) || { pid, score: 0 };
   const better = score > cur.score;
-  if (better) { cur.score = score; __neondb_set("sim_leaderboard", pid, cur); }
+  if (better) { cur.score = score; __voltra_set("sim_leaderboard", pid, cur); }
   return { ok: true, new_best: better, score: cur.score };
 }"#),
 // ── Chat: room management ────────────────────────────────────────────────────
 ("sim_create_room", r#"function reducer(args) {
   const [rid, name, uid] = args;
-  if (__neondb_get("sim_rooms", rid)) return { ok: true, exists: true };
-  __neondb_set("sim_rooms", rid, { rid, name, creator: uid, members: [uid], msg_count: 0 });
+  if (__voltra_get("sim_rooms", rid)) return { ok: true, exists: true };
+  __voltra_set("sim_rooms", rid, { rid, name, creator: uid, members: [uid], msg_count: 0 });
   return { ok: true };
 }"#),
 ("sim_join_room", r#"function reducer(args) {
   const [rid, uid] = args;
-  const r = __neondb_get("sim_rooms", rid);
+  const r = __voltra_get("sim_rooms", rid);
   if (!r) return { error: "no_room" };
   if (!r.members.includes(uid)) r.members.push(uid);
-  __neondb_set("sim_rooms", rid, r);
+  __voltra_set("sim_rooms", rid, r);
   return { ok: true, members: r.members.length };
 }"#),
 // ── Chat: messaging (main write + fan-out driver) ────────────────────────────
@@ -1062,41 +1062,41 @@ const SIM_REDUCERS: &[(&str, &str)] = &[
 ("sim_send_msg", r#"function reducer(args) {
   const [rid, _mid, uid, text] = args;
   const MAX_MSGS = 200;
-  const r = __neondb_get("sim_rooms", rid);
+  const r = __voltra_get("sim_rooms", rid);
   if (!r) return { ok: false, error: "room not found" };
   const idx = (r.next_idx || 0);
   const slot = idx % MAX_MSGS;
   const mid = rid + ":" + slot;
-  __neondb_set("sim_messages", mid, { mid, rid, uid, text, idx, edited: false });
+  __voltra_set("sim_messages", mid, { mid, rid, uid, text, idx, edited: false });
   r.next_idx = idx + 1;
   r.msg_count = Math.min((r.msg_count||0) + 1, MAX_MSGS);
-  __neondb_set("sim_rooms", rid, r);
+  __voltra_set("sim_rooms", rid, r);
   return { ok: true, mid };
 }"#),
 // ── Chat: reactions ──────────────────────────────────────────────────────────
 ("sim_react", r#"function reducer(args) {
   const [mid, uid, emoji] = args;
-  __neondb_set("sim_reactions", mid+":"+uid+":"+emoji, { mid, uid, emoji });
+  __voltra_set("sim_reactions", mid+":"+uid+":"+emoji, { mid, uid, emoji });
   return { ok: true };
 }"#),
 // ── Chat: typing indicator (highest frequency — ephemeral writes) ────────────
 ("sim_typing", r#"function reducer(args) {
   const [uid, rid, typing] = args;
   const k = uid+":"+rid;
-  if (typing) __neondb_set("sim_typing", k, { uid, rid, ts: 0 });
-  else __neondb_delete("sim_typing", k);
+  if (typing) __voltra_set("sim_typing", k, { uid, rid, ts: 0 });
+  else __voltra_delete("sim_typing", k);
   return { ok: true };
 }"#),
 // ── Chat: presence heartbeat ─────────────────────────────────────────────────
 ("sim_presence", r#"function reducer(args) {
   const [uid, status] = args;
-  __neondb_set("sim_presence", uid, { uid, status: status||"online", ts: 0 });
+  __voltra_set("sim_presence", uid, { uid, status: status||"online", ts: 0 });
   return { ok: true };
 }"#),
 // ── Chat: thread replies (keyed by tid so they overwrite, not accumulate) ────
 ("sim_thread_reply", r#"function reducer(args) {
   const [tid, _rid, uid, text] = args;
-  __neondb_set("sim_thread_replies", tid, { tid, uid, text });
+  __voltra_set("sim_thread_replies", tid, { tid, uid, text });
   return { ok: true };
 }"#),
 ];
@@ -1105,7 +1105,7 @@ const SIM_REDUCERS: &[(&str, &str)] = &[
 
 async fn start_embedded_server(ws_port: u16, metrics_port: u16) -> ServerHandle {
     use std::fs;
-    let dir = std::env::temp_dir().join(format!("neondb_sim_{}_{}", ws_port, std::process::id()));
+    let dir = std::env::temp_dir().join(format!("voltra_sim_{}_{}", ws_port, std::process::id()));
     let modules_dir = dir.join("modules");
     fs::create_dir_all(&modules_dir).unwrap();
 
@@ -1121,10 +1121,10 @@ async fn start_embedded_server(ws_port: u16, metrics_port: u16) -> ServerHandle 
         wal  = dir.join("wal").display().to_string().replace('\\', "/"),
         snap = dir.join("snaps").display().to_string().replace('\\', "/"),
     );
-    fs::write(dir.join("neondb.toml"), toml).unwrap();
+    fs::write(dir.join("voltra.toml"), toml).unwrap();
 
     std::env::set_current_dir(&dir).ok();
-    let mut config = neondb::config::Config::from_env();
+    let mut config = voltra::config::Config::from_env();
     config.port              = ws_port;
     config.metrics_port      = metrics_port;
     config.wal_path          = dir.join("wal");
@@ -1151,7 +1151,7 @@ async fn start_embedded_server(ws_port: u16, metrics_port: u16) -> ServerHandle 
     // guard in server.rs additionally prevents overlapping snapshot tasks.
     config.snapshot_interval = 2_000_000;
 
-    match neondb::run_server_with_handle(config).await {
+    match voltra::run_server_with_handle(config).await {
         Ok((handle, server_fut)) => {
             tokio::spawn(async move {
                 if let Err(e) = server_fut.await {
@@ -1213,14 +1213,14 @@ impl WsConn {
         loop {
             match tokio::time::timeout(Duration::from_secs(5), self.inner.next()).await {
                 Ok(Some(Ok(Message::Binary(b)))) => {
-                    match rmp_serde::from_slice::<neondb::network::message::ServerMessage>(&b) {
-                        Ok(neondb::network::message::ServerMessage::SubscriptionAck { success, .. }) => {
+                    match rmp_serde::from_slice::<voltra::network::message::ServerMessage>(&b) {
+                        Ok(voltra::network::message::ServerMessage::SubscriptionAck { success, .. }) => {
                             return success;
                         }
                         Ok(
-                            neondb::network::message::ServerMessage::SubscriptionDiff(_)
-                            | neondb::network::message::ServerMessage::SubscriptionRoute(_)
-                            | neondb::network::message::ServerMessage::SubscriptionBody(_),
+                            voltra::network::message::ServerMessage::SubscriptionDiff(_)
+                            | voltra::network::message::ServerMessage::SubscriptionRoute(_)
+                            | voltra::network::message::ServerMessage::SubscriptionBody(_),
                         ) => {
                             SUB_FRAMES.fetch_add(1, Ordering::Relaxed);
                         }
@@ -1255,7 +1255,7 @@ impl WsConn {
         loop {
             match tokio::time::timeout(Duration::from_secs(5), self.inner.next()).await {
                 Ok(Some(Ok(Message::Binary(b)))) => {
-                    use neondb::network::message::ServerMessage as SM;
+                    use voltra::network::message::ServerMessage as SM;
                     match rmp_serde::from_slice::<SM>(&b) {
                         Ok(SM::ReducerResponse(r)) => {
                             return (r.success, t0.elapsed().as_micros() as u64);
@@ -1651,12 +1651,12 @@ async fn chat_user(
 /// - No scheduler (world tick not needed here)
 async fn start_stress_server(ws_port: u16, metrics_port: u16, extra_workers: usize) -> ServerHandle {
     let dir = std::env::temp_dir().join(format!(
-        "neondb_stress_{}_{}", ws_port, std::process::id()
+        "voltra_stress_{}_{}", ws_port, std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
 
     // No scheduler, no module files — native reducers already registered.
-    let mut config = neondb::config::Config::from_env();
+    let mut config = voltra::config::Config::from_env();
     config.port               = ws_port;
     config.metrics_port       = metrics_port;
     config.wal_path           = dir.join("wal");
@@ -1668,16 +1668,16 @@ async fn start_stress_server(ws_port: u16, metrics_port: u16, extra_workers: usi
     config.scheduled_reducers  = Vec::new();  // no world tick
     config.redis_port          = 0;           // stress test exercises the WS path only
     config.pg_port             = 0;
-    // workers: num_cpus is set inside server.rs; we use NEONDB_WORKERS env to override
+    // workers: num_cpus is set inside server.rs; we use VOLTRA_WORKERS env to override
     if extra_workers > 0 {
-        // server.rs reads NEONDB_WORKERS if present
-        std::env::set_var("NEONDB_WORKERS", (num_cpus::get() + extra_workers).to_string());
+        // server.rs reads VOLTRA_WORKERS if present
+        std::env::set_var("VOLTRA_WORKERS", (num_cpus::get() + extra_workers).to_string());
     } else {
         // Default: 2× num_cpus so both physical + logical cores are used
-        std::env::set_var("NEONDB_WORKERS", (num_cpus::get() * 2).to_string());
+        std::env::set_var("VOLTRA_WORKERS", (num_cpus::get() * 2).to_string());
     }
 
-    match neondb::run_server_with_handle(config).await {
+    match voltra::run_server_with_handle(config).await {
         Ok((handle, server_fut)) => {
             tokio::spawn(async move {
                 if let Err(e) = server_fut.await { eprintln!("[stress-server] error: {e}"); }
@@ -1864,7 +1864,7 @@ async fn run_stress(
     let mem_growth = if mem_first > 0.0 { 100.0 * (mem_last - mem_first) / mem_first } else { 0.0 };
 
     println!("\n╔══════════════════════════════════════════════════════════════════════╗");
-    println!("║  NeonDB STRESS REPORT — {reducer:<47}");
+    println!("║  Voltra STRESS REPORT — {reducer:<47}");
     println!("╠══════════════════════════════════════════════════════════════════════╣");
     println!("║  Duration: {duration}s   Clients: {clients}   Pipeline: {pipeline}   Total calls: {total}");
     println!("║  Avg TPS:  {avg_tps:>10.0}   Error rate: {err_pct:.3}%");
@@ -2002,7 +2002,7 @@ fn print_report(label: &str, metrics: &Metrics, samples: &[Health], elapsed_secs
     let err_pct = if total + errors > 0 { 100.0 * errors as f64 / (total + errors) as f64 } else { 0.0 };
 
     println!("\n╔══════════════════════════════════════════════════════════════════════╗");
-    println!("║  NeonDB Simulation Report — {}",
+    println!("║  Voltra Simulation Report — {}",
         format!("{:<41}", label).chars().take(41).collect::<String>());
     println!("╠══════════════════════════════════════════════════════════════════════╣");
     println!("║  Duration: {elapsed_secs:.0}s   Total calls: {total}   Avg TPS: {avg_tps:.0}   Error rate: {err_pct:.3}%");
@@ -2143,7 +2143,7 @@ async fn main() {
 
     // Stress scenario gets its own lean server config
     if let ScenarioCmd::Stress { clients, duration, ramp, pipeline, reducer, extra_workers } = &args.scenario {
-        println!("┌─ NeonDB STRESS BENCHMARK ──────────────────────────────────────────┐");
+        println!("┌─ Voltra STRESS BENCHMARK ──────────────────────────────────────────┐");
         println!("│  Starting stress server on :{ws_port} (native reducers, no fsync) ...");
         let server = start_stress_server(ws_port, metrics_port, *extra_workers).await;
         wait_for_server(ws_port).await;
@@ -2159,12 +2159,12 @@ async fn main() {
 
     // Serve mode: run the benchmark server and park (clients use --external).
     if let ScenarioCmd::Serve { ws_port, metrics_port } = &args.scenario {
-        println!("┌─ NeonDB Benchmark Server ─────────────────────────────────────────┐");
+        println!("┌─ Voltra Benchmark Server ─────────────────────────────────────────┐");
         println!("│  WebSocket :{ws_port}   health http://127.0.0.1:{metrics_port}/healthz");
         let server = start_embedded_server(*ws_port, *metrics_port).await;
         wait_for_server(*ws_port).await;
         spawn_health_server(server, *metrics_port);
-        println!("│  Ready. Run clients with:  neondb-sim --external game --players N");
+        println!("│  Ready. Run clients with:  voltra-sim --external game --players N");
         println!("└────────────────────────────────────────────────────────────────────┘");
         futures::future::pending::<()>().await;
         return;
@@ -2172,13 +2172,13 @@ async fn main() {
 
     // External mode: clients only — server stats sampled over HTTP.
     let stats = if args.external {
-        println!("┌─ NeonDB Simulation Benchmark (external server) ───────────────────┐");
+        println!("┌─ Voltra Simulation Benchmark (external server) ───────────────────┐");
         println!("│  Connecting to {}   stats from {}", args.url, args.metrics_url);
         println!("└────────────────────────────────────────────────────────────────────┘\n");
         StatsSource::Remote(args.metrics_url.clone())
     } else {
-        println!("┌─ NeonDB Simulation Benchmark ─────────────────────────────────────┐");
-        println!("│  Starting embedded NeonDB server on :{ws_port} ...");
+        println!("┌─ Voltra Simulation Benchmark ─────────────────────────────────────┐");
+        println!("│  Starting embedded Voltra server on :{ws_port} ...");
         let server = start_embedded_server(ws_port, metrics_port).await;
         wait_for_server(ws_port).await;
         println!("│  Server ready. {} reducers loaded.", SIM_REDUCERS.len());

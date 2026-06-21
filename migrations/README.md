@@ -1,4 +1,4 @@
-# NeonDB Migrations
+# Voltra Migrations
 
 Place `.toml` migration files here. They are applied at startup (after WAL replay),
 sorted lexicographically, so use numeric prefixes:

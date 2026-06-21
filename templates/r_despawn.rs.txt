@@ -1,4 +1,4 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 
 #[reducer]
 fn despawn(ctx: Ctx, player_id: String) {

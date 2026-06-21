@@ -1,1 +1,1 @@
-Run `neondb start` from the project root to start the native NeonDB server.
+Run `voltra start` from the project root to start the native Voltra server.

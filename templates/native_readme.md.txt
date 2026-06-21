@@ -1,7 +1,7 @@
-# NeonDB — Native Rust Reducers (WASM)
+# Voltra — Native Rust Reducers (WASM)
 
 Write your game logic in **Rust**, compile to **WebAssembly**, and drop the
-`.wasm` files into `modules/`. NeonDB loads them at startup and executes them
+`.wasm` files into `modules/`. Voltra loads them at startup and executes them
 via [Wasmtime](https://wasmtime.dev/) with Cranelift JIT — performance within
 5–10% of native Rust for CPU-bound logic, with zero V8/Node.js dependency.
 
@@ -29,7 +29,7 @@ better for rapid prototyping and server-side scripting.
 ```
 my-game/
 ├── Cargo.toml              ← Workspace manifest (lists all reducer crates)
-├── neondb-reducer/         ← Helper library (Context, reducer! macro)
+├── voltra-reducer/         ← Helper library (Context, reducer! macro)
 │   ├── Cargo.toml
 │   └── src/lib.rs
 ├── reducers/
@@ -40,7 +40,7 @@ my-game/
 │   ├── buy_item/
 │   └── ...
 ├── modules/                ← Built .wasm files land here (gitignored)
-├── neondb.toml             ← Server config
+├── voltra.toml             ← Server config
 ├── build.ps1               ← Windows build script
 └── build.sh                ← Linux/macOS build script
 ```
@@ -63,7 +63,7 @@ Each reducer is its own tiny `cdylib` crate. Keeping them separate means:
    rustup target add wasm32-unknown-unknown
    ```
 
-3. **NeonDB server binary** — built from this repo or downloaded from releases.
+3. **Voltra server binary** — built from this repo or downloaded from releases.
 
 ---
 
@@ -97,14 +97,14 @@ The scripts:
 ## Running
 
 ```bash
-# Start the NeonDB server (reads neondb.toml, loads modules/*.wasm)
-neondb start
+# Start the Voltra server (reads voltra.toml, loads modules/*.wasm)
+voltra start
 
 # In another terminal — call a reducer
-neondb call spawn '["alice", 0, 0, "warrior"]'
+voltra call spawn '["alice", 0, 0, "warrior"]'
 
 # Watch live updates
-neondb watch "players WHERE alive = true"
+voltra watch "players WHERE alive = true"
 ```
 
 ---
@@ -129,7 +129,7 @@ neondb watch "players WHERE alive = true"
    crate-type = ["cdylib"]
 
    [dependencies]
-   neondb-reducer = { path = "../../neondb-reducer" }
+   voltra-reducer = { path = "../../voltra-reducer" }
    serde_json = "1"
    rmp-serde = "1"
    ```
@@ -137,7 +137,7 @@ neondb watch "players WHERE alive = true"
 3. **Write `reducers/my_reducer/src/lib.rs`:**
 
    ```rust
-   use neondb_reducer::{Context, Result};
+   use voltra_reducer::{Context, Result};
    use serde_json::{json, Value};
 
    pub fn my_reducer(ctx: &mut Context, args: Value) -> Result<Value> {
@@ -146,7 +146,7 @@ neondb watch "players WHERE alive = true"
        Ok(json!({ "ok": true }))
    }
 
-   neondb_reducer::reducer!(my_reducer);
+   voltra_reducer::reducer!(my_reducer);
    ```
 
 4. **Register the crate in `Cargo.toml`** (workspace members list):
@@ -165,8 +165,8 @@ neondb watch "players WHERE alive = true"
 
    ```bash
    ./build.sh --release
-   neondb start
-   neondb call my_reducer '["alice"]'
+   voltra start
+   voltra call my_reducer '["alice"]'
    ```
 
 ---
@@ -247,7 +247,7 @@ if ctx.caller_role() != "admin" {
 
 ## Scheduler Integration
 
-Reducers run automatically by adding entries to `neondb.toml`:
+Reducers run automatically by adding entries to `voltra.toml`:
 
 ```toml
 [[scheduler]]
@@ -287,19 +287,19 @@ The `caller_id()` for scheduled calls is `"scheduler"` and `caller_role()` is
 Run `rustup target add wasm32-unknown-unknown`.
 
 **"module has no exported memory"**
-The `neondb-reducer` crate does not declare a WASM memory — the `cdylib` linker
+The `voltra-reducer` crate does not declare a WASM memory — the `cdylib` linker
 creates one automatically. If you see this error, ensure you are using
 `crate-type = ["cdylib"]` (not `["lib"]`) in the reducer's `Cargo.toml`.
 
-**"Import env::neondb_get_row not found"**
-This means the `.wasm` module was loaded outside of NeonDB (e.g. in a generic
-WASM runner). It is expected outside the server. Inside NeonDB, the host ABI is
+**"Import env::voltra_get_row not found"**
+This means the `.wasm` module was loaded outside of Voltra (e.g. in a generic
+WASM runner). It is expected outside the server. Inside Voltra, the host ABI is
 always present.
 
 **"reducer export not found"**
 The `reducer!` macro generates the `reducer` export. Make sure you have
-`neondb_reducer::reducer!(your_function_name);` at the bottom of `lib.rs`.
+`voltra_reducer::reducer!(your_function_name);` at the bottom of `lib.rs`.
 
 **Build succeeds but server says "no module named X"**
 Check that the `.wasm` file was copied to `modules/` and that the module name
-in `neondb.toml` matches the filename without the `.wasm` extension.
+in `voltra.toml` matches the filename without the `.wasm` extension.

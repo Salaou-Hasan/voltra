@@ -1,5 +1,5 @@
 // ============================================================================
-// persistent/mod.rs — SQLite-backed relational tier for NeonDB
+// persistent/mod.rs — SQLite-backed relational tier for Voltra
 //
 // Performance contract:
 //   - The game hot path (DashMap → kanal → WAL) NEVER calls into this module.
@@ -11,7 +11,7 @@
 //     At 1000 logins/sec this is well within capacity; game reducers never wait.
 // ============================================================================
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ impl PersistentStore {
     /// Sets WAL journal mode and initialises the schema on first run.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
-            .map_err(|e| NeonDBError::internal(format!("SQLite open: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("SQLite open: {e}")))?;
 
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -38,7 +38,7 @@ impl PersistentStore {
              PRAGMA cache_size   = -16000;
              PRAGMA temp_store   = MEMORY;",
         )
-        .map_err(|e| NeonDBError::internal(format!("SQLite pragmas: {e}")))?;
+        .map_err(|e| VoltraError::internal(format!("SQLite pragmas: {e}")))?;
 
         let store = PersistentStore {
             conn: Mutex::new(conn),
@@ -90,7 +90,7 @@ impl PersistentStore {
             );
             CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);",
         )
-        .map_err(|e| NeonDBError::internal(format!("SQLite schema init: {e}")))?;
+        .map_err(|e| VoltraError::internal(format!("SQLite schema init: {e}")))?;
         Ok(())
     }
 
@@ -105,7 +105,7 @@ impl PersistentStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
             params![id, email, hash, role, now],
         )
-        .map_err(|e| NeonDBError::internal(format!("create_user: {e}")))?;
+        .map_err(|e| VoltraError::internal(format!("create_user: {e}")))?;
         Ok(())
     }
 
@@ -117,20 +117,20 @@ impl PersistentStore {
                 "SELECT id, email, role, password_hash, created_at
                  FROM users WHERE email = ?1",
             )
-            .map_err(|e| NeonDBError::internal(format!("prepare: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("prepare: {e}")))?;
         let mut rows = stmt
             .query(params![email])
-            .map_err(|e| NeonDBError::internal(format!("query: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("query: {e}")))?;
         if let Some(row) = rows
             .next()
-            .map_err(|e| NeonDBError::internal(e.to_string()))?
+            .map_err(|e| VoltraError::internal(e.to_string()))?
         {
             Ok(Some(UserRow {
-                id: row.get(0).map_err(|e| NeonDBError::internal(e.to_string()))?,
-                email: row.get(1).map_err(|e| NeonDBError::internal(e.to_string()))?,
-                role: row.get(2).map_err(|e| NeonDBError::internal(e.to_string()))?,
-                password_hash: row.get(3).map_err(|e| NeonDBError::internal(e.to_string()))?,
-                created_at: row.get(4).map_err(|e| NeonDBError::internal(e.to_string()))?,
+                id: row.get(0).map_err(|e| VoltraError::internal(e.to_string()))?,
+                email: row.get(1).map_err(|e| VoltraError::internal(e.to_string()))?,
+                role: row.get(2).map_err(|e| VoltraError::internal(e.to_string()))?,
+                password_hash: row.get(3).map_err(|e| VoltraError::internal(e.to_string()))?,
+                created_at: row.get(4).map_err(|e| VoltraError::internal(e.to_string()))?,
             }))
         } else {
             Ok(None)
@@ -145,20 +145,20 @@ impl PersistentStore {
                 "SELECT id, email, role, password_hash, created_at
                  FROM users WHERE id = ?1",
             )
-            .map_err(|e| NeonDBError::internal(format!("prepare: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("prepare: {e}")))?;
         let mut rows = stmt
             .query(params![id])
-            .map_err(|e| NeonDBError::internal(format!("query: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("query: {e}")))?;
         if let Some(row) = rows
             .next()
-            .map_err(|e| NeonDBError::internal(e.to_string()))?
+            .map_err(|e| VoltraError::internal(e.to_string()))?
         {
             Ok(Some(UserRow {
-                id: row.get(0).map_err(|e| NeonDBError::internal(e.to_string()))?,
-                email: row.get(1).map_err(|e| NeonDBError::internal(e.to_string()))?,
-                role: row.get(2).map_err(|e| NeonDBError::internal(e.to_string()))?,
-                password_hash: row.get(3).map_err(|e| NeonDBError::internal(e.to_string()))?,
-                created_at: row.get(4).map_err(|e| NeonDBError::internal(e.to_string()))?,
+                id: row.get(0).map_err(|e| VoltraError::internal(e.to_string()))?,
+                email: row.get(1).map_err(|e| VoltraError::internal(e.to_string()))?,
+                role: row.get(2).map_err(|e| VoltraError::internal(e.to_string()))?,
+                password_hash: row.get(3).map_err(|e| VoltraError::internal(e.to_string()))?,
+                created_at: row.get(4).map_err(|e| VoltraError::internal(e.to_string()))?,
             }))
         } else {
             Ok(None)
@@ -171,7 +171,7 @@ impl PersistentStore {
             "UPDATE users SET password_hash = ?1, updated_at = ?2 WHERE id = ?3",
             params![hash, now, user_id],
         )
-        .map_err(|e| NeonDBError::internal(format!("update_password: {e}")))?;
+        .map_err(|e| VoltraError::internal(format!("update_password: {e}")))?;
         Ok(())
     }
 
@@ -192,7 +192,7 @@ impl PersistentStore {
                updated_at = excluded.updated_at",
             params![id, user_id, name, data_str, now],
         )
-        .map_err(|e| NeonDBError::internal(format!("save_character: {e}")))?;
+        .map_err(|e| VoltraError::internal(format!("save_character: {e}")))?;
         Ok(())
     }
 
@@ -200,15 +200,15 @@ impl PersistentStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare("SELECT data FROM characters WHERE id = ?1")
-            .map_err(|e| NeonDBError::internal(format!("prepare: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("prepare: {e}")))?;
         let mut rows = stmt
             .query(params![id])
-            .map_err(|e| NeonDBError::internal(format!("query: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("query: {e}")))?;
         if let Some(row) = rows
             .next()
-            .map_err(|e| NeonDBError::internal(e.to_string()))?
+            .map_err(|e| VoltraError::internal(e.to_string()))?
         {
-            let s: String = row.get(0).map_err(|e| NeonDBError::internal(e.to_string()))?;
+            let s: String = row.get(0).map_err(|e| VoltraError::internal(e.to_string()))?;
             Ok(Some(serde_json::from_str(&s).unwrap_or(Value::Object(Default::default()))))
         } else {
             Ok(None)
@@ -224,7 +224,7 @@ impl PersistentStore {
                 "SELECT id, name, updated_at FROM characters
                  WHERE user_id = ?1 ORDER BY updated_at DESC",
             )
-            .map_err(|e| NeonDBError::internal(format!("prepare: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("prepare: {e}")))?;
         let rows = stmt
             .query_map(params![user_id], |row| {
                 Ok(CharacterSummary {
@@ -233,10 +233,10 @@ impl PersistentStore {
                     updated_at: row.get(2)?,
                 })
             })
-            .map_err(|e| NeonDBError::internal(format!("query: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("query: {e}")))?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r.map_err(|e| NeonDBError::internal(e.to_string()))?);
+            out.push(r.map_err(|e| VoltraError::internal(e.to_string()))?);
         }
         Ok(out)
     }
@@ -259,7 +259,7 @@ impl PersistentStore {
                updated_at = excluded.updated_at",
             params![id, name, item_type, stats_str, price, now],
         )
-        .map_err(|e| NeonDBError::internal(format!("upsert_catalog_item: {e}")))?;
+        .map_err(|e| VoltraError::internal(format!("upsert_catalog_item: {e}")))?;
         Ok(())
     }
 
@@ -269,26 +269,26 @@ impl PersistentStore {
             .prepare(
                 "SELECT id, name, item_type, stats, price FROM item_catalog WHERE id = ?1",
             )
-            .map_err(|e| NeonDBError::internal(format!("prepare: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("prepare: {e}")))?;
         let mut rows = stmt
             .query(params![id])
-            .map_err(|e| NeonDBError::internal(format!("query: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("query: {e}")))?;
         if let Some(row) = rows
             .next()
-            .map_err(|e| NeonDBError::internal(e.to_string()))?
+            .map_err(|e| VoltraError::internal(e.to_string()))?
         {
             let stats_str: String =
-                row.get(3).map_err(|e| NeonDBError::internal(e.to_string()))?;
+                row.get(3).map_err(|e| VoltraError::internal(e.to_string()))?;
             let stats: Value =
                 serde_json::from_str(&stats_str).unwrap_or(Value::Object(Default::default()));
             let id_val: String =
-                row.get(0).map_err(|e| NeonDBError::internal(e.to_string()))?;
+                row.get(0).map_err(|e| VoltraError::internal(e.to_string()))?;
             let name: String =
-                row.get(1).map_err(|e| NeonDBError::internal(e.to_string()))?;
+                row.get(1).map_err(|e| VoltraError::internal(e.to_string()))?;
             let itype: String =
-                row.get(2).map_err(|e| NeonDBError::internal(e.to_string()))?;
+                row.get(2).map_err(|e| VoltraError::internal(e.to_string()))?;
             let price: i64 =
-                row.get(4).map_err(|e| NeonDBError::internal(e.to_string()))?;
+                row.get(4).map_err(|e| VoltraError::internal(e.to_string()))?;
             Ok(Some(serde_json::json!({
                 "id": id_val, "name": name, "type": itype, "stats": stats, "price": price
             })))
@@ -305,13 +305,13 @@ impl PersistentStore {
             .prepare(
                 "SELECT id, name, item_type, stats, price FROM item_catalog ORDER BY name",
             )
-            .map_err(|e| NeonDBError::internal(format!("prepare: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("prepare: {e}")))?;
         let raw: Vec<(String, String, String, String, i64)> =
             match stmt.query_map([], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             }) {
                 Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
-                Err(e) => return Err(NeonDBError::internal(e.to_string())),
+                Err(e) => return Err(VoltraError::internal(e.to_string())),
             };
         let itype_filter = item_type.map(|s| s.to_owned());
         let tuples: Vec<(String, String, String, String, i64)> = raw
@@ -343,7 +343,7 @@ impl PersistentStore {
             "INSERT INTO audit_log (user_id, action, data, ts) VALUES (?1, ?2, ?3, ?4)",
             params![user_id, action, data_str, now],
         )
-        .map_err(|e| NeonDBError::internal(format!("log_audit: {e}")))?;
+        .map_err(|e| VoltraError::internal(format!("log_audit: {e}")))?;
         Ok(())
     }
 
@@ -353,7 +353,7 @@ impl PersistentStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(sql)
-            .map_err(|e| NeonDBError::internal(format!("SQL prepare: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("SQL prepare: {e}")))?;
         let col_names: Vec<String> = stmt
             .column_names()
             .into_iter()
@@ -382,10 +382,10 @@ impl PersistentStore {
                 }
                 Ok(Value::Object(obj))
             })
-            .map_err(|e| NeonDBError::internal(format!("SQL query: {e}")))?;
+            .map_err(|e| VoltraError::internal(format!("SQL query: {e}")))?;
         let mut result = Vec::new();
         for r in rows {
-            result.push(r.map_err(|e| NeonDBError::internal(e.to_string()))?);
+            result.push(r.map_err(|e| VoltraError::internal(e.to_string()))?);
         }
         Ok(result)
     }

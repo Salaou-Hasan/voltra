@@ -1,4 +1,4 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 use serde_json::json;
 
 const REWARD_XP: i64 = 100;
@@ -7,7 +7,7 @@ const REWARD_XP: i64 = 100;
 fn complete_quest(ctx: Ctx, player_id: String, quest_id: String) {
     let key = format!("{}:{}", player_id, quest_id);
     let quest = ctx.get("player_quests", &key)?
-        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Quest not found"))?;
+        .ok_or_else(|| voltra::error::VoltraError::reducer_error("Quest not found"))?;
 
     if quest["status"].as_str().unwrap_or("") != "active" {
         ret!({ "ok": false, "error": "Quest is not active" })
@@ -24,7 +24,7 @@ fn complete_quest(ctx: Ctx, player_id: String, quest_id: String) {
 
     // Award XP to the player
     let player = ctx.get("players", &player_id)?
-        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Player not found"))?;
+        .ok_or_else(|| voltra::error::VoltraError::reducer_error("Player not found"))?;
     let current_xp = player["xp"].as_i64().unwrap_or(0);
     let mut updated_player = player.clone();
     updated_player["xp"] = json!(current_xp + REWARD_XP);

@@ -1,4 +1,4 @@
-//! neondb-soak — Sustained-load soak test for NeonDB
+//! voltra-soak — Sustained-load soak test for Voltra
 //!
 //! Runs N WebSocket clients against a live server for a configurable DURATION
 //! (minutes to days), at a target per-client call rate.  While loading, it
@@ -7,10 +7,10 @@
 //! which short benchmarks never catch.
 //!
 //! Usage:
-//!   cargo run --release --bin neondb-soak -- --duration-secs 3600 --clients 50
+//!   cargo run --release --bin voltra-soak -- --duration-secs 3600 --clients 50
 //!
 //!   # Week-long soak with periodic CSV samples:
-//!   cargo run --release --bin neondb-soak -- \
+//!   cargo run --release --bin voltra-soak -- \
 //!       --duration-secs 604800 --clients 100 --rate-per-client 10 \
 //!       --csv soak_samples.csv
 //!
@@ -20,7 +20,7 @@
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use hdrhistogram::Histogram;
-use neondb::network::message::{ClientMessage, ReducerCall};
+use voltra::network::message::{ClientMessage, ReducerCall};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,7 +29,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "neondb-soak", about = "NeonDB sustained-load soak test")]
+#[command(name = "voltra-soak", about = "Voltra sustained-load soak test")]
 struct Args {
     /// WebSocket URL of the server under test
     #[arg(long, default_value = "ws://127.0.0.1:3000")]
@@ -207,7 +207,7 @@ async fn main() {
     let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
     let start = Instant::now();
 
-    println!("neondb-soak: {} clients × {} calls/s for {}s against {}",
+    println!("voltra-soak: {} clients × {} calls/s for {}s against {}",
         args.clients, args.rate_per_client, args.duration_secs, args.url);
 
     let success = Arc::new(AtomicU64::new(0));

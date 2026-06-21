@@ -14,7 +14,7 @@
 //! { "ok": true, "item_id": "sword", "quantity": 1, "refund": 12, "currency": 87 }
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// Sell an item from the player's inventory.
@@ -77,4 +77,4 @@ pub fn sell_item(ctx: &mut Context, args: Value) -> Result<Value> {
     }))
 }
 
-neondb_reducer::reducer!(sell_item);
+voltra_reducer::reducer!(sell_item);

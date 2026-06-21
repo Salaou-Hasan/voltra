@@ -1,5 +1,5 @@
 // ============================================================================
-// FPS Scale Benchmark — NeonDB per-lobby isolation proof
+// FPS Scale Benchmark — Voltra per-lobby isolation proof
 //
 // Validates that the LobbyDispatcher (transparent l{N}_ routing in TableStore)
 // adds negligible overhead and that concurrent lobby writes don't contend.
@@ -30,7 +30,7 @@
 // ============================================================================
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use neondb::{reducer::ReducerContext, table::TableStore};
+use voltra::{reducer::ReducerContext, table::TableStore};
 use std::sync::Arc;
 use std::time::Duration;
 

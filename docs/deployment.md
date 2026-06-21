@@ -10,11 +10,11 @@ Build a release binary:
 cargo build --release
 ```
 
-The binary is at `target/release/neondb` (or `neondb.exe` on Windows). It has no runtime dependencies — copy it to any server and run it.
+The binary is at `target/release/voltra` (or `voltra.exe` on Windows). It has no runtime dependencies — copy it to any server and run it.
 
 ```bash
-scp target/release/neondb user@server:/usr/local/bin/
-ssh user@server "neondb start --host 0.0.0.0"
+scp target/release/voltra user@server:/usr/local/bin/
+ssh user@server "voltra start --host 0.0.0.0"
 ```
 
 ---
@@ -37,14 +37,14 @@ The compose file starts one Voltra container with WebSocket on port 3000 and the
 # docker-compose.cluster.yml (example)
 services:
   node1:
-    image: neondb
+    image: voltra
     environment:
-      NEONDB_HOST: 0.0.0.0
-      NEONDB_PORT: 3000
-      NEONDB_METRICS_PORT: 3001
-      NEONDB_API_KEY: changeme
-      NEONDB_WAL_PATH: /data/neondb.wal
-      NEONDB_SNAPSHOT_DIR: /data/snapshots
+      VOLTRA_HOST: 0.0.0.0
+      VOLTRA_PORT: 3000
+      VOLTRA_METRICS_PORT: 3001
+      VOLTRA_API_KEY: changeme
+      VOLTRA_WAL_PATH: /data/voltra.wal
+      VOLTRA_SNAPSHOT_DIR: /data/snapshots
     volumes:
       - node1_data:/data
     ports:
@@ -52,12 +52,12 @@ services:
       - "3001:3001"
 
   node2:
-    image: neondb
+    image: voltra
     environment:
-      NEONDB_PORT: 3000
-      NEONDB_METRICS_PORT: 3001
-      NEONDB_API_KEY: changeme
-      NEONDB_WAL_PATH: /data/neondb.wal
+      VOLTRA_PORT: 3000
+      VOLTRA_METRICS_PORT: 3001
+      VOLTRA_API_KEY: changeme
+      VOLTRA_WAL_PATH: /data/voltra.wal
     volumes:
       - node2_data:/data
     ports:
@@ -65,12 +65,12 @@ services:
       - "3011:3001"
 
   node3:
-    image: neondb
+    image: voltra
     environment:
-      NEONDB_PORT: 3000
-      NEONDB_METRICS_PORT: 3001
-      NEONDB_API_KEY: changeme
-      NEONDB_WAL_PATH: /data/neondb.wal
+      VOLTRA_PORT: 3000
+      VOLTRA_METRICS_PORT: 3001
+      VOLTRA_API_KEY: changeme
+      VOLTRA_WAL_PATH: /data/voltra.wal
     volumes:
       - node3_data:/data
     ports:
@@ -85,10 +85,10 @@ After starting all three nodes, bootstrap the Raft cluster (see [docs/cluster.md
 ## Systemd (Linux bare-metal)
 
 ```bash
-sudo cp target/release/neondb /usr/local/bin/neondb
-sudo mkdir -p /var/lib/neondb/snapshots
+sudo cp target/release/voltra /usr/local/bin/voltra
+sudo mkdir -p /var/lib/voltra/snapshots
 
-sudo tee /etc/systemd/system/neondb.service > /dev/null << 'EOF'
+sudo tee /etc/systemd/system/voltra.service > /dev/null << 'EOF'
 [Unit]
 Description=Voltra Game Backend
 After=network.target
@@ -96,14 +96,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=neondb
-Group=neondb
-ExecStart=/usr/local/bin/neondb start --host 0.0.0.0
-Environment=NEONDB_API_KEY=REPLACE_WITH_STRONG_KEY
-Environment=NEONDB_WAL_PATH=/var/lib/neondb/neondb.wal
-Environment=NEONDB_SNAPSHOT_DIR=/var/lib/neondb/snapshots
-Environment=NEONDB_FSYNC_INTERVAL_MS=100
-Environment=NEONDB_METRICS_PORT=3001
+User=voltra
+Group=voltra
+ExecStart=/usr/local/bin/voltra start --host 0.0.0.0
+Environment=VOLTRA_API_KEY=REPLACE_WITH_STRONG_KEY
+Environment=VOLTRA_WAL_PATH=/var/lib/voltra/voltra.wal
+Environment=VOLTRA_SNAPSHOT_DIR=/var/lib/voltra/snapshots
+Environment=VOLTRA_FSYNC_INTERVAL_MS=100
+Environment=VOLTRA_METRICS_PORT=3001
 Restart=always
 RestartSec=5
 LimitNOFILE=65536
@@ -113,12 +113,12 @@ WantedBy=multi-user.target
 EOF
 
 # Create a dedicated system user
-sudo useradd -r -s /bin/false neondb
-sudo chown -R neondb:neondb /var/lib/neondb
+sudo useradd -r -s /bin/false voltra
+sudo chown -R voltra:voltra /var/lib/voltra
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now neondb
-sudo systemctl status neondb
+sudo systemctl enable --now voltra
+sudo systemctl status voltra
 ```
 
 ---
@@ -165,27 +165,27 @@ Clients connect to `wss://game.example.com` and the proxy upgrades to WebSocket 
 
 ## Production Checklist
 
-- [ ] Set a strong `NEONDB_API_KEY` (at least 32 random characters).
-- [ ] Set `NEONDB_WAL_PATH` to a persistent, fsync-capable disk path (not OS temp).
-- [ ] Set `NEONDB_SNAPSHOT_DIR` to a persistent disk path.
-- [ ] Set `NEONDB_FSYNC_INTERVAL_MS=100` (or lower if you need stronger durability).
+- [ ] Set a strong `VOLTRA_API_KEY` (at least 32 random characters).
+- [ ] Set `VOLTRA_WAL_PATH` to a persistent, fsync-capable disk path (not OS temp).
+- [ ] Set `VOLTRA_SNAPSHOT_DIR` to a persistent disk path.
+- [ ] Set `VOLTRA_FSYNC_INTERVAL_MS=100` (or lower if you need stronger durability).
 - [ ] Configure TLS via a reverse proxy (Caddy or nginx).
-- [ ] Set `NEONDB_MAX_CONNECTIONS` to a value that reflects your server RAM.
-- [ ] Configure `NEONDB_REDUCER_TIMEOUT_MS` to prevent runaway reducers.
+- [ ] Set `VOLTRA_MAX_CONNECTIONS` to a value that reflects your server RAM.
+- [ ] Configure `VOLTRA_REDUCER_TIMEOUT_MS` to prevent runaway reducers.
 - [ ] Add at least one `[[scheduler]]` entry for session cleanup if you track sessions.
 - [ ] Back up the WAL directory and snapshot directory on a schedule.
 - [ ] Monitor `/health` and `/metrics` from an external health checker.
-- [ ] For clusters: set `NEONDB_CLUSTER_SECRET` to prevent unauthorized peer joins.
-- [ ] Run `neondb seed seed.json` to pre-populate initial game data.
+- [ ] For clusters: set `VOLTRA_CLUSTER_SECRET` to prevent unauthorized peer joins.
+- [ ] Run `voltra seed seed.json` to pre-populate initial game data.
 - [ ] Set `RUST_LOG=warn` in production to reduce log volume.
 
 ### WAL Backup
 
-The WAL is a plain binary file at `$NEONDB_WAL_PATH`. Snapshots are in `$NEONDB_SNAPSHOT_DIR`. To back up:
+The WAL is a plain binary file at `$VOLTRA_WAL_PATH`. Snapshots are in `$VOLTRA_SNAPSHOT_DIR`. To back up:
 
 ```bash
 # Stop or pause writes briefly, then copy both directories
-rsync -a /var/lib/neondb/ backup-host:/backups/neondb/$(date +%Y%m%d)/
+rsync -a /var/lib/voltra/ backup-host:/backups/voltra/$(date +%Y%m%d)/
 ```
 
 To restore: copy the WAL and snapshot files back, then start the server. Startup replays the WAL automatically.

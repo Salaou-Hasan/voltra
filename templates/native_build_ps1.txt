@@ -1,4 +1,4 @@
-# build.ps1 — Build all NeonDB reducers and copy .wasm files to modules/
+# build.ps1 — Build all Voltra reducers and copy .wasm files to modules/
 #
 # Usage:
 #   .\build.ps1              # debug build (faster iteration)
@@ -85,4 +85,4 @@ if ($failed -gt 0) {
 
 Write-Host ""
 Write-Host "All reducers built. Start the server with:" -ForegroundColor Green
-Write-Host "  neondb start" -ForegroundColor White
+Write-Host "  voltra start" -ForegroundColor White

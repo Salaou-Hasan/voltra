@@ -1,6 +1,6 @@
 # Neon Language
 
-**Neon** is the purpose-built language for NeonDB game backends. You write simple, readable game logic in `.neon` files. `neondb build` compiles them to native Rust — zero interpreter, zero overhead, full performance.
+**Neon** is the purpose-built language for Voltra game backends. You write simple, readable game logic in `.neon` files. `voltra build` compiles them to native Rust — zero interpreter, zero overhead, full performance.
 
 ---
 
@@ -9,13 +9,13 @@
 ```
 reducers.neon
       │
-      │  neondb build
+      │  voltra build
       ▼
 src/reducers.rs   ← generated Rust source (never edit this)
       │
       │  cargo build  (runs automatically)
       ▼
-neondb binary     ← your game server, running at native speed
+voltra binary     ← your game server, running at native speed
 ```
 
 There is no JavaScript. There is no interpreter. Every `.neon` file becomes native machine code.
@@ -52,10 +52,10 @@ reducer damage(player_id: str, amount: int) {
 Build and run:
 
 ```
-neondb build
-neondb start
-neondb call spawn '["alice", "Alice", 0.0, 0.0]'
-neondb call damage '["alice", 30]'
+voltra build
+voltra start
+voltra call spawn '["alice", "Alice", 0.0, 0.0]'
+voltra call damage '["alice", 30]'
 ```
 
 That's it. Your multiplayer game backend is live.
@@ -86,8 +86,8 @@ That's it. Your multiplayer game backend is live.
 
 | Pain with other backends | Neon solution |
 |---|---|
-| Configure a database, write ORM models, write API handlers, deploy — for every feature | One `.neon` file. `neondb build`. Done. |
+| Configure a database, write ORM models, write API handlers, deploy — for every feature | One `.neon` file. `voltra build`. Done. |
 | Runtime scripting is slow | Neon compiles to native Rust — same speed as hand-written Rust |
 | Atomic transactions are hard | Every reducer is atomic by default. Error halfway? Nothing was written. |
-| Real-time subscriptions need extra infrastructure | Built in. `neondb watch "players WHERE zone = 'lobby'"` |
+| Real-time subscriptions need extra infrastructure | Built in. `voltra watch "players WHERE zone = 'lobby'"` |
 | Scaling requires rewrites | Add cluster builtins. Same `.neon` file, distributed. |

@@ -349,7 +349,7 @@ async fn drop_and_truncate() {
 
 #[tokio::test]
 async fn catalog_survives_restart() {
-    let dir = std::env::temp_dir().join(format!("neondb_pg_persist_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("voltra_pg_persist_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     {
         let store = MvccStore::open(crate::mvcc::MvccConfig {
@@ -410,7 +410,7 @@ mod wire {
         let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let mut body = Vec::new();
         body.extend_from_slice(&196608i32.to_be_bytes());
-        for (k, v) in [("user", "test"), ("database", "neondb")] {
+        for (k, v) in [("user", "test"), ("database", "voltra")] {
             body.extend_from_slice(k.as_bytes());
             body.push(0);
             body.extend_from_slice(v.as_bytes());

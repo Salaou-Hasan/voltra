@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use neondb::config::{Config, PermissionsConfig, PermissionsPolicy};
+use voltra::config::{Config, PermissionsConfig, PermissionsPolicy};
 
 // ── PermissionsConfig ────────────────────────────────────────────────────────
 

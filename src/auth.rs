@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Claims extracted from a valid JWT.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NeonDBClaims {
+pub struct VoltraClaims {
     /// Subject — the user ID.
     pub sub: String,
     /// Role (e.g., "admin", "player", "spectator").
@@ -51,7 +51,7 @@ pub enum AuthResult {
     Authenticated {
         user_id: String,
         role: String,
-        claims: NeonDBClaims,
+        claims: VoltraClaims,
     },
     /// Authentication failed with reason.
     Denied(String),
@@ -96,7 +96,7 @@ impl AuthValidator {
                         AuthResult::Authenticated {
                             user_id: "api_key_user".into(),
                             role: role_part.to_string(),
-                            claims: NeonDBClaims {
+                            claims: VoltraClaims {
                                 sub: "api_key_user".into(),
                                 role: role_part.to_string(),
                                 iat: 0,
@@ -111,7 +111,7 @@ impl AuthValidator {
                     AuthResult::Authenticated {
                         user_id: "api_key_user".into(),
                         role: "default".into(),
-                        claims: NeonDBClaims {
+                        claims: VoltraClaims {
                             sub: "api_key_user".into(),
                             role: "default".into(),
                             iat: 0,
@@ -130,7 +130,7 @@ impl AuthValidator {
                 // We handle exp validation ourselves to support exp=0 meaning no expiry
                 validation.validate_exp = false;
 
-                match decode::<NeonDBClaims>(
+                match decode::<VoltraClaims>(
                     token,
                     &DecodingKey::from_secret(secret.as_bytes()),
                     &validation,
@@ -175,7 +175,7 @@ impl AuthValidator {
                     }
                 };
 
-                match decode::<NeonDBClaims>(token, &decoding_key, &validation) {
+                match decode::<VoltraClaims>(token, &decoding_key, &validation) {
                     Ok(token_data) => {
                         let claims = token_data.claims;
                         // Check expiration manually: exp=0 means no expiry
@@ -224,7 +224,7 @@ impl AuthValidator {
                     now + ttl_seconds
                 };
 
-                let claims = NeonDBClaims {
+                let claims = VoltraClaims {
                     sub: user_id.to_string(),
                     role: role.to_string(),
                     iat: now,
@@ -265,7 +265,7 @@ impl AuthValidator {
                     now + ttl_seconds
                 };
 
-                let claims = NeonDBClaims {
+                let claims = VoltraClaims {
                     sub: user_id.to_string(),
                     role: role.to_string(),
                     iat: now,
@@ -286,13 +286,13 @@ impl AuthValidator {
 
     /// Determine auth mode from environment variables.
     /// Priority:
-    ///   1. NEONDB_JWT_SECRET -> JwtHmac (HS256)
-    ///   2. NEONDB_JWT_PUBLIC_KEY or NEONDB_JWT_PUBLIC_KEY_FILE -> JwtRsa (RS256)
-    ///   3. NEONDB_API_KEY -> ApiKey
+    ///   1. VOLTRA_JWT_SECRET -> JwtHmac (HS256)
+    ///   2. VOLTRA_JWT_PUBLIC_KEY or VOLTRA_JWT_PUBLIC_KEY_FILE -> JwtRsa (RS256)
+    ///   3. VOLTRA_API_KEY -> ApiKey
     ///   4. None -> AuthMode::None (dev mode)
     pub fn from_env() -> Self {
         // 1. Check for JWT HMAC secret
-        if let Ok(secret) = std::env::var("NEONDB_JWT_SECRET") {
+        if let Ok(secret) = std::env::var("VOLTRA_JWT_SECRET") {
             if !secret.is_empty() {
                 return AuthValidator {
                     mode: AuthMode::JwtHmac {
@@ -304,7 +304,7 @@ impl AuthValidator {
         }
 
         // 2. Check for JWT RSA public key (inline PEM)
-        if let Ok(pem) = std::env::var("NEONDB_JWT_PUBLIC_KEY") {
+        if let Ok(pem) = std::env::var("VOLTRA_JWT_PUBLIC_KEY") {
             if !pem.is_empty() {
                 return AuthValidator {
                     mode: AuthMode::JwtRsa {
@@ -316,7 +316,7 @@ impl AuthValidator {
         }
 
         // 2b. Check for JWT RSA public key file path
-        if let Ok(path) = std::env::var("NEONDB_JWT_PUBLIC_KEY_FILE") {
+        if let Ok(path) = std::env::var("VOLTRA_JWT_PUBLIC_KEY_FILE") {
             if !path.is_empty() {
                 match std::fs::read_to_string(&path) {
                     Ok(pem) => {
@@ -339,7 +339,7 @@ impl AuthValidator {
         }
 
         // 3. Check for static API key
-        if let Ok(key) = std::env::var("NEONDB_API_KEY") {
+        if let Ok(key) = std::env::var("VOLTRA_API_KEY") {
             if !key.is_empty() {
                 return AuthValidator {
                     mode: AuthMode::ApiKey(key),
@@ -365,7 +365,7 @@ impl AuthValidator {
 
 /// JWT claims for the Ed25519 identity system.
 ///
-/// Unlike `NeonDBClaims` (which is for backwards-compat HMAC/RSA tokens),
+/// Unlike `VoltraClaims` (which is for backwards-compat HMAC/RSA tokens),
 /// `NeonClaims` carries a `roles` *list* so a single token can hold multiple
 /// roles simultaneously.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -404,7 +404,7 @@ impl IdentityIssuer {
     /// Load from a PKCS8 PEM-encoded private key string.
     pub fn from_pkcs8_pem(pem: &str) -> crate::error::Result<Self> {
         let signing_key = SigningKey::from_pkcs8_pem(pem)
-            .map_err(|e| crate::error::NeonDBError::internal(format!("Ed25519 key parse error: {}", e)))?;
+            .map_err(|e| crate::error::VoltraError::internal(format!("Ed25519 key parse error: {}", e)))?;
         let kid = Self::compute_kid(&signing_key);
         Ok(IdentityIssuer { signing_key, kid })
     }
@@ -437,12 +437,12 @@ impl IdentityIssuer {
         let pem = self
             .signing_key
             .to_pkcs8_pem(LineEnding::LF)
-            .map_err(|e| crate::error::NeonDBError::internal(format!("PKCS8 encode error: {}", e)))?;
+            .map_err(|e| crate::error::VoltraError::internal(format!("PKCS8 encode error: {}", e)))?;
         let key = EncodingKey::from_ed_pem(pem.as_bytes())
-            .map_err(|e| crate::error::NeonDBError::internal(format!("JWT encoding key error: {}", e)))?;
+            .map_err(|e| crate::error::VoltraError::internal(format!("JWT encoding key error: {}", e)))?;
 
         encode(&Header::new(Algorithm::EdDSA), &claims, &key)
-            .map_err(|e| crate::error::NeonDBError::internal(format!("JWT sign error: {}", e)))
+            .map_err(|e| crate::error::VoltraError::internal(format!("JWT sign error: {}", e)))
     }
 
     /// Verify a JWT, return the claims if valid.
@@ -452,7 +452,7 @@ impl IdentityIssuer {
     pub fn verify(&self, token: &str) -> crate::error::Result<NeonClaims> {
         let pub_pem = self.public_key_pem();
         let key = DecodingKey::from_ed_pem(pub_pem.as_bytes())
-            .map_err(|e| crate::error::NeonDBError::internal(format!("JWT decoding key error: {}", e)))?;
+            .map_err(|e| crate::error::VoltraError::internal(format!("JWT decoding key error: {}", e)))?;
 
         let mut validation = Validation::new(Algorithm::EdDSA);
         validation.validate_aud = false;
@@ -464,7 +464,7 @@ impl IdentityIssuer {
 
         decode::<NeonClaims>(token, &key, &validation)
             .map(|data| data.claims)
-            .map_err(|e| crate::error::NeonDBError::internal(format!("JWT verify error: {}", e)))
+            .map_err(|e| crate::error::VoltraError::internal(format!("JWT verify error: {}", e)))
     }
 
     /// Save the private key to a PKCS8 PEM file.
@@ -472,16 +472,16 @@ impl IdentityIssuer {
         let pem = self
             .signing_key
             .to_pkcs8_pem(LineEnding::LF)
-            .map_err(|e| crate::error::NeonDBError::internal(format!("PKCS8 encode error: {}", e)))?;
+            .map_err(|e| crate::error::VoltraError::internal(format!("PKCS8 encode error: {}", e)))?;
         std::fs::write(path, pem.as_bytes())
-            .map_err(|e| crate::error::NeonDBError::internal(format!("Write key file: {}", e)))?;
+            .map_err(|e| crate::error::VoltraError::internal(format!("Write key file: {}", e)))?;
         Ok(())
     }
 
     /// Load from a PKCS8 PEM file.
     pub fn load_from_file(path: &std::path::Path) -> crate::error::Result<Self> {
         let pem = std::fs::read_to_string(path)
-            .map_err(|e| crate::error::NeonDBError::internal(format!("Read key file: {}", e)))?;
+            .map_err(|e| crate::error::VoltraError::internal(format!("Read key file: {}", e)))?;
         Self::from_pkcs8_pem(&pem)
     }
 
@@ -605,7 +605,7 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let claims = NeonDBClaims {
+        let claims = VoltraClaims {
             sub: "expired_user".into(),
             role: "player".into(),
             iat: now - 7200,  // issued 2 hours ago
@@ -750,14 +750,14 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap();
 
         // Set both env vars — JWT should win
-        std::env::set_var("NEONDB_JWT_SECRET", "jwt-wins-secret");
-        std::env::set_var("NEONDB_API_KEY", "api-key-value");
+        std::env::set_var("VOLTRA_JWT_SECRET", "jwt-wins-secret");
+        std::env::set_var("VOLTRA_API_KEY", "api-key-value");
 
         let validator = AuthValidator::from_env();
 
         // Clean up immediately
-        std::env::remove_var("NEONDB_JWT_SECRET");
-        std::env::remove_var("NEONDB_API_KEY");
+        std::env::remove_var("VOLTRA_JWT_SECRET");
+        std::env::remove_var("VOLTRA_API_KEY");
 
         match validator.mode() {
             AuthMode::JwtHmac { secret, algorithm } => {
@@ -773,15 +773,15 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap();
 
         // Only set API key, no JWT secret
-        std::env::remove_var("NEONDB_JWT_SECRET");
-        std::env::remove_var("NEONDB_JWT_PUBLIC_KEY");
-        std::env::remove_var("NEONDB_JWT_PUBLIC_KEY_FILE");
-        std::env::set_var("NEONDB_API_KEY", "my-fallback-key");
+        std::env::remove_var("VOLTRA_JWT_SECRET");
+        std::env::remove_var("VOLTRA_JWT_PUBLIC_KEY");
+        std::env::remove_var("VOLTRA_JWT_PUBLIC_KEY_FILE");
+        std::env::set_var("VOLTRA_API_KEY", "my-fallback-key");
 
         let validator = AuthValidator::from_env();
 
         // Clean up
-        std::env::remove_var("NEONDB_API_KEY");
+        std::env::remove_var("VOLTRA_API_KEY");
 
         match validator.mode() {
             AuthMode::ApiKey(key) => {
@@ -795,7 +795,7 @@ mod tests {
     fn test_claims_deserialize_with_defaults() {
         // Only sub is truly required; everything else has defaults
         let json = r#"{"sub": "minimal_user"}"#;
-        let claims: NeonDBClaims = serde_json::from_str(json).unwrap();
+        let claims: VoltraClaims = serde_json::from_str(json).unwrap();
         assert_eq!(claims.sub, "minimal_user");
         assert_eq!(claims.role, ""); // default empty string
         assert_eq!(claims.iat, 0);
@@ -955,7 +955,7 @@ mod tests {
     fn test_identity_issuer_save_and_load_from_file() {
         let issuer = super::IdentityIssuer::generate();
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("neondb_test_key_{}.pem", issuer.kid));
+        let path = dir.join(format!("voltra_test_key_{}.pem", issuer.kid));
 
         issuer.save_to_file(&path).expect("save_to_file failed");
         let loaded = super::IdentityIssuer::load_from_file(&path).expect("load_from_file failed");

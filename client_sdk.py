@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NeonDB Python client SDK.
+"""Voltra Python client SDK.
 
 Requires:
     pip install websocket-client msgpack
@@ -11,7 +11,7 @@ import websocket
 from typing import Any, Callable, Dict, Optional
 
 
-class NeonDBClient:
+class VoltraClient:
     def __init__(self, url: str = "ws://localhost:3000", api_key: Optional[str] = None):
         self.url = url
         self.api_key = api_key
@@ -78,4 +78,4 @@ class NeonDBClient:
 
 
 if __name__ == "__main__":
-    print("This module provides a NeonDB Python client SDK.")
+    print("This module provides a Voltra Python client SDK.")

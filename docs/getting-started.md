@@ -22,20 +22,20 @@ cargo install --path .
 Expected output (last few lines):
 
 ```
-   Compiling neondb v0.1.0
+   Compiling voltra v0.1.0
     Finished release [optimized] target(s)
-     Installing ~/.cargo/bin/neondb
-      Installed package `neondb`
+     Installing ~/.cargo/bin/voltra
+      Installed package `voltra`
 ```
 
-If you want to skip installing and just run from source, replace every `neondb` command below with `cargo run --release --`.
+If you want to skip installing and just run from source, replace every `voltra` command below with `cargo run --release --`.
 
 ---
 
 ## Step 2: Scaffold a project
 
 ```bash
-neondb init my-game --template rust/game-ready
+voltra init my-game --template rust/game-ready
 cd my-game
 ```
 
@@ -43,7 +43,7 @@ This creates:
 
 ```
 my-game/
-  neondb.toml       server config
+  voltra.toml       server config
   modules/          JS reducer scripts
   migrations/       schema migration files
   seed.json         sample data
@@ -52,7 +52,7 @@ my-game/
 To see all available templates:
 
 ```bash
-neondb templates
+voltra templates
 ```
 
 ---
@@ -60,7 +60,7 @@ neondb templates
 ## Step 3: Start the server
 
 ```bash
-neondb start
+voltra start
 ```
 
 Expected output:
@@ -82,12 +82,12 @@ The server is now accepting WebSocket connections on port 3000 and HTTP on port 
 Another process owns port 3000. Either stop that process, or start Voltra on a different port:
 
 ```bash
-neondb start --port 3001
+voltra start --port 3001
 ```
 
-**Error: Could not find neondb.toml**
+**Error: Could not find voltra.toml**
 
-Run `neondb start` from inside the project directory, or pass `--wal-path` explicitly.
+Run `voltra start` from inside the project directory, or pass `--wal-path` explicitly.
 
 ---
 
@@ -96,7 +96,7 @@ Run `neondb start` from inside the project directory, or pass `--wal-path` expli
 Open a second terminal:
 
 ```bash
-neondb call increment '["score", 1]'
+voltra call increment '["score", 1]'
 ```
 
 Expected output:
@@ -108,14 +108,14 @@ Reducer 'increment' succeeded.
 Call it a few more times:
 
 ```bash
-neondb call increment '["score", 5]'
-neondb call increment '["score", 10]'
+voltra call increment '["score", 5]'
+voltra call increment '["score", 10]'
 ```
 
 Read the counter back:
 
 ```bash
-neondb get counters score
+voltra get counters score
 ```
 
 Expected output:
@@ -133,7 +133,7 @@ Expected output:
 In a third terminal, subscribe to the counters table:
 
 ```bash
-neondb watch counters
+voltra watch counters
 ```
 
 Expected output (initial snapshot):
@@ -147,7 +147,7 @@ Watching counters ... (Ctrl-C to stop)
 Now go back to the second terminal and call increment again:
 
 ```bash
-neondb call increment '["score", 1]'
+voltra call increment '["score", 1]'
 ```
 
 The watch terminal immediately prints:
@@ -164,7 +164,7 @@ Press Ctrl-C to stop watching.
 ## Step 6: Try a filtered subscription
 
 ```bash
-neondb watch "counters WHERE value > 10"
+voltra watch "counters WHERE value > 10"
 ```
 
 Only rows where `value > 10` are delivered. Rows that do not match the predicate are silently skipped.

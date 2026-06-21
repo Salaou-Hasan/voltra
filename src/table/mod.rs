@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB Table Engine — High-throughput rewrite
+// Voltra Table Engine — High-throughput rewrite
 //
 // Session 4  — CPU-aware DashMap shard count
 // Session 7  — Serializable isolation (TODO-001) + atomicity on panic (TODO-002)
@@ -60,7 +60,7 @@ pub fn parse_lobby_key(physical_table: &str) -> Option<(String, String)> {
     None
 }
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use bytes::Bytes;
 use dashmap::DashMap;
 use parking_lot::RwLock;
@@ -206,7 +206,7 @@ impl BlobStore {
     fn store_blob(&mut self, payload: &[u8]) -> Result<u64> {
         let max = MAX_BLOB_SIZE_BYTES.load(Ordering::Relaxed);
         if payload.len() > max {
-            return Err(NeonDBError::invalid_argument(format!(
+            return Err(VoltraError::invalid_argument(format!(
                 "Blob size {} exceeds max {}",
                 payload.len(),
                 max
@@ -341,7 +341,7 @@ const ZSTD_THRESHOLD: usize = 256;
 
 fn encode_row(value: &Value) -> Result<Bytes> {
     let mp = rmp_serde::to_vec_named(value)
-        .map_err(|e| NeonDBError::SerializationError(format!("Row encode: {}", e)))?;
+        .map_err(|e| VoltraError::SerializationError(format!("Row encode: {}", e)))?;
     if mp.len() < ZSTD_THRESHOLD {
         // Small row: tag 0x00 + raw MsgPack
         let mut buf = Vec::with_capacity(1 + mp.len());
@@ -351,7 +351,7 @@ fn encode_row(value: &Value) -> Result<Bytes> {
     } else {
         // Large row: tag 0x01 + zstd-compressed MsgPack
         let compressed = zstd::encode_all(mp.as_slice(), 1)
-            .map_err(|e| NeonDBError::SerializationError(format!("Row compress: {}", e)))?;
+            .map_err(|e| VoltraError::SerializationError(format!("Row compress: {}", e)))?;
         let mut buf = Vec::with_capacity(1 + compressed.len());
         buf.push(0x01);
         buf.extend_from_slice(&compressed);
@@ -362,22 +362,22 @@ fn encode_row(value: &Value) -> Result<Bytes> {
 /// Decode tagged MsgPack bytes back to a `serde_json::Value`.
 fn decode_row_bytes(data: &[u8]) -> Result<Value> {
     let (tag, payload) = data.split_first().ok_or_else(|| {
-        NeonDBError::SerializationError("Row decode: empty data".to_string())
+        VoltraError::SerializationError("Row decode: empty data".to_string())
     })?;
     match tag {
         0x00 => {
             // Raw MsgPack
             rmp_serde::from_slice(payload)
-                .map_err(|e| NeonDBError::SerializationError(format!("Row decode: {}", e)))
+                .map_err(|e| VoltraError::SerializationError(format!("Row decode: {}", e)))
         }
         0x01 => {
             // zstd-compressed MsgPack
             let decompressed = zstd::decode_all(payload)
-                .map_err(|e| NeonDBError::SerializationError(format!("Row decompress: {}", e)))?;
+                .map_err(|e| VoltraError::SerializationError(format!("Row decompress: {}", e)))?;
             rmp_serde::from_slice(&decompressed)
-                .map_err(|e| NeonDBError::SerializationError(format!("Row decode: {}", e)))
+                .map_err(|e| VoltraError::SerializationError(format!("Row decode: {}", e)))
         }
-        _ => Err(NeonDBError::SerializationError(format!(
+        _ => Err(VoltraError::SerializationError(format!(
             "Row decode: unknown tag 0x{:02x}", tag
         ))),
     }
@@ -417,9 +417,9 @@ impl TableStore {
     /// Use `EvictionPolicy::LruByteCap { max_bytes_total }` to evict based on
     /// estimated total byte usage.
     pub fn with_eviction(policy: EvictionPolicy) -> Self {
-        let data_dir = std::env::var("NEONDB_BLOB_PATH")
+        let data_dir = std::env::var("VOLTRA_BLOB_PATH")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir().join("neondb_blobs"));
+            .unwrap_or_else(|_| std::env::temp_dir().join("voltra_blobs"));
         let blob_path = data_dir.join("blobs.bin");
         let blob_store = BlobStore::open(blob_path).expect("Failed to open blob store");
 
@@ -442,9 +442,9 @@ impl TableStore {
 
     /// Create a lobby sub-store (no further lobby routing — prevents recursion).
     fn for_lobby() -> Self {
-        let data_dir = std::env::var("NEONDB_BLOB_PATH")
+        let data_dir = std::env::var("VOLTRA_BLOB_PATH")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir().join("neondb_blobs"));
+            .unwrap_or_else(|_| std::env::temp_dir().join("voltra_blobs"));
         let blob_path = data_dir.join("blobs.bin");
         let blob_store = BlobStore::open(blob_path).expect("Failed to open blob store");
         TableStore {
@@ -743,7 +743,7 @@ impl TableStore {
     pub fn set_row(&self, table_name: String, key: String, value: Value) -> Result<RowDelta> {
         if let Some((lid, logical)) = parse_lobby_key(&table_name) {
             return self.get_lobby_store(&lid)
-                .ok_or_else(|| NeonDBError::table_error("lobby store unavailable"))?
+                .ok_or_else(|| VoltraError::table_error("lobby store unavailable"))?
                 .set_row(logical, key, value);
         }
         self.write_row_unlocked(&table_name, &key, value)
@@ -752,7 +752,7 @@ impl TableStore {
     pub fn delete_row(&self, table_name: &str, key: &str) -> Result<RowDelta> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
             return self.get_lobby_store(&lid)
-                .ok_or_else(|| NeonDBError::table_error("lobby store unavailable"))?
+                .ok_or_else(|| VoltraError::table_error("lobby store unavailable"))?
                 .delete_row(&logical, key);
         }
         self.delete_row_unlocked(table_name, key)
@@ -817,7 +817,7 @@ impl TableStore {
             let mut results = self.apply_delta_batch_inner(&global_deltas, &global_rv)?;
             for (lid, ld) in lobby_deltas {
                 let store = self.get_lobby_store(&lid)
-                    .ok_or_else(|| NeonDBError::table_error("lobby store unavailable"))?;
+                    .ok_or_else(|| VoltraError::table_error("lobby store unavailable"))?;
                 let rv = lobby_rv.remove(&lid).unwrap_or_default();
                 results.extend(store.apply_delta_batch_inner(&ld, &rv)?);
             }
@@ -881,7 +881,7 @@ impl TableStore {
             if written {
                 let current = self.row_version(t, k);
                 if current != *seen {
-                    return Err(NeonDBError::TxnConflict(format!(
+                    return Err(VoltraError::TxnConflict(format!(
                         "{t}/{k}: read v{seen}, now v{current}"
                     )));
                 }
@@ -900,7 +900,7 @@ impl TableStore {
             let result: Result<RowDelta> = match delta.operation.as_str() {
                 "insert" | "update" => {
                     let value = delta.row_data_value().ok_or_else(|| {
-                        NeonDBError::table_error("insert/update delta missing row_data")
+                        VoltraError::table_error("insert/update delta missing row_data")
                     })?;
                     let old = self
                         .tables
@@ -941,7 +941,7 @@ impl TableStore {
                         last_modified: delta.counter_add_timestamp,
                     };
                     let value = serde_json::to_value(counter)
-                        .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+                        .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
                     let old = self
                         .tables
@@ -950,7 +950,7 @@ impl TableStore {
                     applied.push((delta.table_name.clone(), delta.row_key.clone(), old));
                     self.write_row_unlocked(&delta.table_name, name, value)
                 }
-                other => Err(NeonDBError::table_error(format!(
+                other => Err(VoltraError::table_error(format!(
                     "Unknown operation: {}",
                     other
                 ))),
@@ -1132,7 +1132,7 @@ impl TableStore {
     pub fn get_counter_in(&self, table: &str, name: &str) -> Result<Option<Counter>> {
         match self.get_row(table, name)? {
             Some(value) => Ok(Some(serde_json::from_value(value).map_err(|e| {
-                NeonDBError::SerializationError(format!("Counter decode: {}", e))
+                VoltraError::SerializationError(format!("Counter decode: {}", e))
             })?)),
             None => Ok(None),
         }
@@ -1144,7 +1144,7 @@ impl TableStore {
             .into_iter()
             .map(|v| {
                 serde_json::from_value(v)
-                    .map_err(|e| NeonDBError::SerializationError(format!("Counter decode: {}", e)))
+                    .map_err(|e| VoltraError::SerializationError(format!("Counter decode: {}", e)))
             })
             .collect()
     }

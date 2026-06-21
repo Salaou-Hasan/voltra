@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# NeonDB idempotent installer for Linux
+# Voltra idempotent installer for Linux
 
 # Detect OS
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -9,49 +9,49 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 1
 fi
 
-INSTALL_BIN="/usr/local/bin/neondb"
-DATA_DIR="/var/lib/neondb"
-SERVICE_FILE="/etc/systemd/system/neondb.service"
+INSTALL_BIN="/usr/local/bin/voltra"
+DATA_DIR="/var/lib/voltra"
+SERVICE_FILE="/etc/systemd/system/voltra.service"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "==> Installing NeonDB..."
+echo "==> Installing Voltra..."
 
 # Download latest release binary
-REPO="Salaou-Hasan/NeonDB"
+REPO="Salaou-Hasan/Voltra"
 LATEST_TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')"
-BINARY_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/neondb-linux-x86_64"
+BINARY_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/voltra-linux-x86_64"
 
-echo "==> Downloading NeonDB ${LATEST_TAG} from ${BINARY_URL}..."
+echo "==> Downloading Voltra ${LATEST_TAG} from ${BINARY_URL}..."
 curl -fsSL "$BINARY_URL" -o "$INSTALL_BIN"
 chmod +x "$INSTALL_BIN"
 echo "==> Binary installed to ${INSTALL_BIN}"
 
-# Create neondb system user if not exists
-if ! id -u neondb &>/dev/null; then
-  echo "==> Creating neondb system user..."
-  useradd --system --no-create-home --shell /usr/sbin/nologin neondb
+# Create voltra system user if not exists
+if ! id -u voltra &>/dev/null; then
+  echo "==> Creating voltra system user..."
+  useradd --system --no-create-home --shell /usr/sbin/nologin voltra
 else
-  echo "==> neondb user already exists, skipping."
+  echo "==> voltra user already exists, skipping."
 fi
 
 # Create data directory
 echo "==> Creating data directory ${DATA_DIR}..."
 mkdir -p "$DATA_DIR"
-chown neondb:neondb "$DATA_DIR"
+chown voltra:voltra "$DATA_DIR"
 
 # Install systemd service
 echo "==> Installing systemd service..."
-cp "${SCRIPT_DIR}/neondb.service" "$SERVICE_FILE"
+cp "${SCRIPT_DIR}/voltra.service" "$SERVICE_FILE"
 
 # Enable and start service
-echo "==> Enabling and starting neondb service..."
+echo "==> Enabling and starting voltra service..."
 systemctl daemon-reload
-systemctl enable --now neondb
+systemctl enable --now voltra
 
 echo ""
-echo "NeonDB is installed and running."
+echo "Voltra is installed and running."
 echo "  WebSocket port : 3000"
 echo "  Metrics port   : 3001"
 echo ""
-echo "Check status : systemctl status neondb"
-echo "View logs    : journalctl -u neondb -f"
+echo "Check status : systemctl status voltra"
+echo "View logs    : journalctl -u voltra -f"

@@ -1,10 +1,10 @@
 // ============================================================================
-// src/cluster/mod.rs — Horizontal-scaling cluster bus for NeonDB
+// src/cluster/mod.rs — Horizontal-scaling cluster bus for Voltra
 //
-// Each NeonDB node owns one or more logical shards. Nodes discover each
+// Each Voltra node owns one or more logical shards. Nodes discover each
 // other via a static peer list supplied through environment variables:
 //
-//   NEONDB_PEERS=shard1=http://10.0.0.2:3001,shard2=http://10.0.0.3:3001
+//   VOLTRA_PEERS=shard1=http://10.0.0.2:3001,shard2=http://10.0.0.3:3001
 //
 // After a reducer commit on this node:
 //   1. Committed RowDeltas are fanned out to ALL peer nodes via
@@ -19,14 +19,14 @@
 //
 // Gossip / heartbeat (gossip.rs):
 //   A background task pings each peer's GET /cluster/health endpoint every
-//   NEONDB_GOSSIP_INTERVAL_MS (default 5 000 ms). Dead peers are marked
+//   VOLTRA_GOSSIP_INTERVAL_MS (default 5 000 ms). Dead peers are marked
 //   unhealthy and skipped in fan-out until they recover.
 //
 // Security:
 //   All cluster-to-cluster HTTP requests carry the header
-//     x-neondb-cluster-secret: <NEONDB_CLUSTER_SECRET>
+//     x-voltra-cluster-secret: <VOLTRA_CLUSTER_SECRET>
 //   The receiving node validates it before processing the request.
-//   If NEONDB_CLUSTER_SECRET is not set, no secret is checked (dev mode).
+//   If VOLTRA_CLUSTER_SECRET is not set, no secret is checked (dev mode).
 // ============================================================================
 
 pub mod fanout;
@@ -52,7 +52,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::subscriptions::SubscriptionManager;
 use crate::table::{RowDelta, TableStore};
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lazy global HTTP client
@@ -151,13 +151,13 @@ pub struct ClusterConfig {
 
 impl ClusterConfig {
     pub fn from_env(my_shard_id: u32, shard_count: u32) -> Self {
-        let cluster_secret = env::var("NEONDB_CLUSTER_SECRET").ok();
-        let gossip_interval_ms = env::var("NEONDB_GOSSIP_INTERVAL_MS")
+        let cluster_secret = env::var("VOLTRA_CLUSTER_SECRET").ok();
+        let gossip_interval_ms = env::var("VOLTRA_GOSSIP_INTERVAL_MS")
             .ok().and_then(|v| v.parse().ok()).unwrap_or(5_000);
-        let http_timeout_ms = env::var("NEONDB_CLUSTER_HTTP_TIMEOUT_MS")
+        let http_timeout_ms = env::var("VOLTRA_CLUSTER_HTTP_TIMEOUT_MS")
             .ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
 
-        let peers_raw = env::var("NEONDB_PEERS").unwrap_or_default();
+        let peers_raw = env::var("VOLTRA_PEERS").unwrap_or_default();
         let peers_raw = peers_raw.trim().to_string();
 
         if peers_raw.is_empty() {
@@ -172,8 +172,8 @@ impl ClusterConfig {
 
         if enabled && cluster_secret.is_none() {
             log::warn!(
-                "SECURITY WARNING: clustering is enabled but NEONDB_CLUSTER_SECRET is not set — \
-                 peer endpoints are unauthenticated. Set NEONDB_CLUSTER_SECRET before deploying."
+                "SECURITY WARNING: clustering is enabled but VOLTRA_CLUSTER_SECRET is not set — \
+                 peer endpoints are unauthenticated. Set VOLTRA_CLUSTER_SECRET before deploying."
             );
         }
 
@@ -241,7 +241,7 @@ impl ClusterBus {
     }
 
     pub fn secret_header(&self) -> Option<(&'static str, String)> {
-        self.config.cluster_secret.as_ref().map(|s| ("x-neondb-cluster-secret", s.clone()))
+        self.config.cluster_secret.as_ref().map(|s| ("x-voltra-cluster-secret", s.clone()))
     }
 
     pub fn mark_healthy(&self, shard_id: u32) {
@@ -298,7 +298,7 @@ impl ClusterBus {
         let entry = self.peers.get(&target_shard_id);
         let node = match entry {
             Some(ref e) => e.value().node.clone(),
-            None => return Err(NeonDBError::internal(format!(
+            None => return Err(VoltraError::internal(format!(
                 "[cluster] No peer found for shard {}", target_shard_id
             ))),
         };
@@ -373,7 +373,7 @@ pub fn cluster_shard_for_key(key: &str) -> u32 {
         }
     }
     // Fallback to modulo shard routing.
-    let shard_count: u32 = env::var("NEONDB_SHARD_COUNT")
+    let shard_count: u32 = env::var("VOLTRA_SHARD_COUNT")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
     shard_for_key(key, shard_count)
 }

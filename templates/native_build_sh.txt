@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — Build all NeonDB reducers and copy .wasm files to modules/
+# build.sh — Build all Voltra reducers and copy .wasm files to modules/
 #
 # Usage:
 #   ./build.sh            # debug build (faster iteration)
@@ -91,4 +91,4 @@ fi
 
 echo ""
 echo "All reducers built. Start the server with:"
-echo "  neondb start"
+echo "  voltra start"

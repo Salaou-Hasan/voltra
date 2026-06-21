@@ -18,12 +18,12 @@
 //   QuickJS (native C JSON implementation).
 //
 //   Raw fns (Rust)         Wrapper (JS preamble)       User reducer sees
-//   __neondb_get_raw   →   __neondb_get(t,k)           object | null
-//   __neondb_get_all_raw → __neondb_get_all(t)         array  | null
-//   __neondb_set_raw   →   __neondb_set(t,k,v)         void
-//   __neondb_delete    →   (direct, no wrapper needed) void
-//   __neondb_ai_generate→  __neondb_ai_generate(p)     string | null
-//   globals: __neondb_caller_id, __neondb_caller_role  string
+//   __voltra_get_raw   →   __voltra_get(t,k)           object | null
+//   __voltra_get_all_raw → __voltra_get_all(t)         array  | null
+//   __voltra_set_raw   →   __voltra_set(t,k,v)         void
+//   __voltra_delete    →   (direct, no wrapper needed) void
+//   __voltra_ai_generate→  __voltra_ai_generate(p)     string | null
+//   globals: __voltra_caller_id, __voltra_caller_role  string
 //
 // SANDBOX:
 //   Memory limit: 64 MiB per runtime (enforced by QuickJS).
@@ -33,7 +33,7 @@
 //   Args/result byte caps enforced here.
 // ============================================================================
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::reducer::backend::ReducerBackend;
 use crate::reducer::context::ReducerContext;
 use rquickjs::{context::EvalOptions, function::Func, Context, Ctx, Function, Object, Runtime};
@@ -48,32 +48,32 @@ use std::time::Instant;
 // reducers receive and return real JS objects.
 
 const JS_PREAMBLE: &str = r#"
-var __neondb_get = function(t, k) {
-    var r = __neondb_get_raw(t, k);
+var __voltra_get = function(t, k) {
+    var r = __voltra_get_raw(t, k);
     return (r != null && r !== undefined) ? JSON.parse(r) : null;
 };
-var __neondb_get_all = function(t) {
-    var r = __neondb_get_all_raw(t);
+var __voltra_get_all = function(t) {
+    var r = __voltra_get_all_raw(t);
     return (r != null && r !== undefined) ? JSON.parse(r) : [];
 };
-var __neondb_set = function(t, k, v) {
-    __neondb_set_raw(t, k, JSON.stringify(v));
+var __voltra_set = function(t, k, v) {
+    __voltra_set_raw(t, k, JSON.stringify(v));
 };
-var __neondb_ai_generate = function(p) {
-    var r = __neondb_ai_generate_raw(p);
+var __voltra_ai_generate = function(p) {
+    var r = __voltra_ai_generate_raw(p);
     if (r == null || r === undefined) return null;
     try { return JSON.parse(r); } catch(e) { return r; }
 };
 // Ergonomic aliases for template reducers
 var db = {
-    get:    function(t, k) { return __neondb_get(t, k); },
-    set:    function(t, k, v) { __neondb_set(t, k, v); },
-    delete: function(t, k) { __neondb_delete(t, k); },
-    all:    function(t) { return __neondb_get_all(t); }
+    get:    function(t, k) { return __voltra_get(t, k); },
+    set:    function(t, k, v) { __voltra_set(t, k, v); },
+    delete: function(t, k) { __voltra_delete(t, k); },
+    all:    function(t) { return __voltra_get_all(t); }
 };
 var caller = {
-    get id()   { return __neondb_caller_id; },
-    get role() { return __neondb_caller_role; }
+    get id()   { return __voltra_caller_id; },
+    get role() { return __voltra_caller_role; }
 };
 "#;
 
@@ -124,7 +124,7 @@ fn ensure_runtime() -> Result<()> {
         let mut rt = cell.borrow_mut();
         if rt.is_none() {
             let new_rt = Runtime::new()
-                .map_err(|e| NeonDBError::reducer_error(format!("QJS runtime: {}", e)))?;
+                .map_err(|e| VoltraError::reducer_error(format!("QJS runtime: {}", e)))?;
             new_rt.set_memory_limit(64 * 1024 * 1024);
             // CPU watchdog: QuickJS invokes this periodically mid-execution.
             // Returning `true` aborts the running script.  No deadline armed
@@ -219,38 +219,38 @@ fn host_ai_generate_raw(_ctx: Ctx<'_>, prompt: String) -> rquickjs::Result<Optio
 
 fn build_context(rt: &Runtime, script: &str) -> Result<Context> {
     let ctx = Context::full(rt)
-        .map_err(|e| NeonDBError::reducer_error(format!("QJS context: {}", e)))?;
+        .map_err(|e| VoltraError::reducer_error(format!("QJS context: {}", e)))?;
 
     ctx.with(|c| -> Result<()> {
         let globals = c.globals();
 
         // Register raw host functions.
-        globals.set("__neondb_get_raw",        Func::from(host_get_raw))
-            .map_err(|e| NeonDBError::reducer_error(format!("reg get_raw: {}", e)))?;
-        globals.set("__neondb_get_all_raw",    Func::from(host_get_all_raw))
-            .map_err(|e| NeonDBError::reducer_error(format!("reg get_all_raw: {}", e)))?;
-        globals.set("__neondb_set_raw",        Func::from(host_set_raw))
-            .map_err(|e| NeonDBError::reducer_error(format!("reg set_raw: {}", e)))?;
-        globals.set("__neondb_delete",         Func::from(host_delete))
-            .map_err(|e| NeonDBError::reducer_error(format!("reg delete: {}", e)))?;
-        globals.set("__neondb_ai_generate_raw",Func::from(host_ai_generate_raw))
-            .map_err(|e| NeonDBError::reducer_error(format!("reg ai_raw: {}", e)))?;
+        globals.set("__voltra_get_raw",        Func::from(host_get_raw))
+            .map_err(|e| VoltraError::reducer_error(format!("reg get_raw: {}", e)))?;
+        globals.set("__voltra_get_all_raw",    Func::from(host_get_all_raw))
+            .map_err(|e| VoltraError::reducer_error(format!("reg get_all_raw: {}", e)))?;
+        globals.set("__voltra_set_raw",        Func::from(host_set_raw))
+            .map_err(|e| VoltraError::reducer_error(format!("reg set_raw: {}", e)))?;
+        globals.set("__voltra_delete",         Func::from(host_delete))
+            .map_err(|e| VoltraError::reducer_error(format!("reg delete: {}", e)))?;
+        globals.set("__voltra_ai_generate_raw",Func::from(host_ai_generate_raw))
+            .map_err(|e| VoltraError::reducer_error(format!("reg ai_raw: {}", e)))?;
 
         // Seed identity globals.
-        globals.set("__neondb_caller_id",   "")
-            .map_err(|e| NeonDBError::reducer_error(format!("seed caller_id: {}", e)))?;
-        globals.set("__neondb_caller_role", "")
-            .map_err(|e| NeonDBError::reducer_error(format!("seed caller_role: {}", e)))?;
+        globals.set("__voltra_caller_id",   "")
+            .map_err(|e| VoltraError::reducer_error(format!("seed caller_id: {}", e)))?;
+        globals.set("__voltra_caller_role", "")
+            .map_err(|e| VoltraError::reducer_error(format!("seed caller_role: {}", e)))?;
 
         // Load preamble (JSON bridge wrappers) then user script.
         let mut opts = EvalOptions::default();
         opts.global = true;
         c.eval_with_options::<(), _>(JS_PREAMBLE, opts)
-            .map_err(|e| NeonDBError::reducer_error(format!("Preamble load: {}", e)))?;
+            .map_err(|e| VoltraError::reducer_error(format!("Preamble load: {}", e)))?;
         let mut opts2 = EvalOptions::default();
         opts2.global = true;
         c.eval_with_options::<(), _>(script, opts2)
-            .map_err(|e| NeonDBError::reducer_error(format!("Script load: {}", e)))?;
+            .map_err(|e| VoltraError::reducer_error(format!("Script load: {}", e)))?;
 
         Ok(())
     })?;
@@ -285,7 +285,7 @@ impl V8ReducerBackend {
                 let qjs_ctx = QJS_RT.with(|rt_cell| -> Result<Context> {
                     let borrow = rt_cell.borrow();
                     let rt = borrow.as_ref()
-                        .ok_or_else(|| NeonDBError::reducer_error("QJS runtime missing"))?;
+                        .ok_or_else(|| VoltraError::reducer_error("QJS runtime missing"))?;
                     build_context(rt, &self.script)
                 })?;
                 map.insert(self.script_key.clone(), qjs_ctx);
@@ -296,14 +296,14 @@ impl V8ReducerBackend {
             qjs_ctx.with(|c| -> Result<Value> {
                 // Update per-call identity globals.
                 let globals = c.globals();
-                globals.set("__neondb_caller_id",   ctx.caller_id.as_str())
-                    .map_err(|e| NeonDBError::reducer_error(format!("set caller_id: {}", e)))?;
-                globals.set("__neondb_caller_role", ctx.caller_role.as_str())
-                    .map_err(|e| NeonDBError::reducer_error(format!("set caller_role: {}", e)))?;
+                globals.set("__voltra_caller_id",   ctx.caller_id.as_str())
+                    .map_err(|e| VoltraError::reducer_error(format!("set caller_id: {}", e)))?;
+                globals.set("__voltra_caller_role", ctx.caller_role.as_str())
+                    .map_err(|e| VoltraError::reducer_error(format!("set caller_role: {}", e)))?;
 
                 // Get the `reducer` function.
                 let reducer_fn: Function = globals.get("reducer")
-                    .map_err(|_| NeonDBError::reducer_error(
+                    .map_err(|_| VoltraError::reducer_error(
                         "No `reducer` function found — JS must define `function reducer(args) { ... }`"
                     ))?;
 
@@ -312,7 +312,7 @@ impl V8ReducerBackend {
                 let json_obj: Object = c.globals().get("JSON")?;
                 let parse_fn: Function = json_obj.get("parse")?;
                 let args_qjs = parse_fn.call::<_, rquickjs::Value>((args_json_str,))
-                    .map_err(|e| NeonDBError::reducer_error(format!("Args parse: {}", e)))?;
+                    .map_err(|e| VoltraError::reducer_error(format!("Args parse: {}", e)))?;
 
                 // Call reducer(args) under a wall-clock deadline.  The
                 // interrupt handler kills the script if it runs past
@@ -322,11 +322,11 @@ impl V8ReducerBackend {
                 let result_qjs = reducer_fn.call::<_, rquickjs::Value>((args_qjs,))
                     .map_err(|e| {
                         if DeadlineGuard::expired() {
-                            NeonDBError::reducer_error(format!(
+                            VoltraError::reducer_error(format!(
                                 "Reducer timeout: exceeded {} ms CPU budget", self.timeout_ms
                             ))
                         } else {
-                            NeonDBError::reducer_error(format!("Reducer call: {}", e))
+                            VoltraError::reducer_error(format!("Reducer call: {}", e))
                         }
                     })?;
                 drop(_deadline);
@@ -334,11 +334,11 @@ impl V8ReducerBackend {
                 // Stringify result back to JSON then parse as serde_json::Value.
                 let stringify_fn: Function = json_obj.get("stringify")?;
                 let result_str: rquickjs::String = stringify_fn.call((result_qjs,))
-                    .map_err(|e| NeonDBError::reducer_error(format!("Result stringify: {}", e)))?;
+                    .map_err(|e| VoltraError::reducer_error(format!("Result stringify: {}", e)))?;
                 let raw = result_str.to_string()
-                    .map_err(|e| NeonDBError::reducer_error(format!("Result to str: {}", e)))?;
+                    .map_err(|e| VoltraError::reducer_error(format!("Result to str: {}", e)))?;
                 serde_json::from_str(&raw)
-                    .map_err(|e| NeonDBError::reducer_error(format!("Result JSON parse: {}", e)))
+                    .map_err(|e| VoltraError::reducer_error(format!("Result JSON parse: {}", e)))
             })
         });
 
@@ -364,7 +364,7 @@ impl ReducerBackend for V8ReducerBackend {
     fn execute(&self, ctx: &mut ReducerContext, args: &[u8]) -> Result<Vec<u8>> {
         let max_io = crate::reducer::max_io_bytes();
         if args.len() > max_io {
-            return Err(NeonDBError::reducer_error(format!(
+            return Err(VoltraError::reducer_error(format!(
                 "Reducer args too large: {} bytes (limit {})", args.len(), max_io
             )));
         }
@@ -379,7 +379,7 @@ impl ReducerBackend for V8ReducerBackend {
         let encoded = rmp_serde::to_vec(&result)?;
 
         if encoded.len() > max_io {
-            return Err(NeonDBError::reducer_error(format!(
+            return Err(VoltraError::reducer_error(format!(
                 "Reducer result too large: {} bytes (limit {})", encoded.len(), max_io
             )));
         }
@@ -410,9 +410,9 @@ mod tests {
     fn test_v8_counter_set_numeric() {
         let path = write_tmp("test_qjs_counter.js", r#"
 function reducer(args) {
-    var cur = __neondb_get("counters", args[0]);
+    var cur = __voltra_get("counters", args[0]);
     var val = (cur ? cur.value : 0) + (args[1] || 1);
-    __neondb_set("counters", args[0], val);
+    __voltra_set("counters", args[0], val);
     return { ok: true, value: val };
 }
 "#);
@@ -429,8 +429,8 @@ function reducer(args) {
     fn test_v8_set_and_get_json_object() {
         let path = write_tmp("test_qjs_obj.js", r#"
 function reducer(args) {
-    __neondb_set("players", args[0], { hp: 200, status: "alive" });
-    var p = __neondb_get("players", args[0]);
+    __voltra_set("players", args[0], { hp: 200, status: "alive" });
+    var p = __voltra_get("players", args[0]);
     return { ok: true, hp: p ? p.hp : -1, status: p ? p.status : "none" };
 }
 "#);
@@ -448,9 +448,9 @@ function reducer(args) {
     fn test_v8_empty_args_does_not_crash() {
         let path = write_tmp("test_qjs_empty.js", r#"
 function reducer(args) {
-    var tick = __neondb_get("world_state", "tick") || { count: 0 };
+    var tick = __voltra_get("world_state", "tick") || { count: 0 };
     tick.count = (tick.count || 0) + 1;
-    __neondb_set("world_state", "tick", tick);
+    __voltra_set("world_state", "tick", tick);
     return { ok: true, tick: tick.count };
 }
 "#);
@@ -466,9 +466,9 @@ function reducer(args) {
     fn test_v8_delete_row() {
         let path = write_tmp("test_qjs_del.js", r#"
 function reducer(args) {
-    __neondb_set("items", "sword", { name: "sword" });
-    __neondb_delete("items", "sword");
-    var after = __neondb_get("items", "sword");
+    __voltra_set("items", "sword", { name: "sword" });
+    __voltra_delete("items", "sword");
+    var after = __voltra_get("items", "sword");
     return { deleted: after === null };
 }
 "#);
@@ -485,7 +485,7 @@ function reducer(args) {
     fn test_v8_caller_identity_accessible() {
         let path = write_tmp("test_qjs_caller.js", r#"
 function reducer(args) {
-    return { caller_id: __neondb_caller_id, caller_role: __neondb_caller_role };
+    return { caller_id: __voltra_caller_id, caller_role: __voltra_caller_role };
 }
 "#);
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
@@ -518,9 +518,9 @@ function reducer(args) {
     fn test_v8_world_tick_pattern() {
         let path = write_tmp("test_qjs_tick.js", r#"
 function reducer(args) {
-    var tick = __neondb_get("world_state", "tick") || { count: 0 };
+    var tick = __voltra_get("world_state", "tick") || { count: 0 };
     tick.count += 1;
-    __neondb_set("world_state", "tick", tick);
+    __voltra_set("world_state", "tick", tick);
     return { ok: true, tick: tick.count };
 }
 "#);
@@ -568,7 +568,7 @@ function reducer(args) { for(;;) {} }
         // 2. Same thread, same runtime: a healthy reducer must still work.
         let good_path = write_tmp("test_qjs_good_after.js", r#"
 function reducer(args) {
-    __neondb_set("recovery", "check", { alive: true });
+    __voltra_set("recovery", "check", { alive: true });
     return { ok: true };
 }
 "#);
@@ -594,7 +594,7 @@ function reducer(args) {
         // because the error path skips commit.
         let path = write_tmp("test_qjs_partial.js", r#"
 function reducer(args) {
-    __neondb_set("partial", "row1", { x: 1 });
+    __voltra_set("partial", "row1", { x: 1 });
     while (true) { }
 }
 "#);
@@ -630,7 +630,7 @@ function reducer(args) {
     fn test_v8_caller_identity_updates_between_calls() {
         let path = write_tmp("test_qjs_caller2.js", r#"
 function reducer(args) {
-    return { caller_id: __neondb_caller_id, caller_role: __neondb_caller_role };
+    return { caller_id: __voltra_caller_id, caller_role: __voltra_caller_role };
 }
 "#);
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();

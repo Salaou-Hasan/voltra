@@ -1,4 +1,4 @@
-# NeonDB Basic Template
+# Voltra Basic Template
 
 A minimal starter project with user accounts, sessions, and an inventory.
 
@@ -16,15 +16,15 @@ client/              example TypeScript client
 ## Run
 
 ```bash
-neondb start
+voltra start
 ```
 
 Then in another shell:
 
 ```bash
-neondb call register '["alice", "hashed-pw"]'
-neondb call login    '["alice", "hashed-pw"]'
-neondb get users
+voltra call register '["alice", "hashed-pw"]'
+voltra call login    '["alice", "hashed-pw"]'
+voltra get users
 ```
 
 ## Next steps
@@ -41,8 +41,8 @@ Reducers in this template run on the **Boa JS engine** (no JIT, ~50 k calls/s).
 Before any real load test, compile them to WASM with one command:
 
 ```bash
-neondb build   # .js → .wasm via Javy; server auto-picks WASM on next start
-neondb start
+voltra build   # .js → .wasm via Javy; server auto-picks WASM on next start
+voltra start
 ```
 
 WASM runs on Wasmtime/Cranelift and delivers ~500 k calls/s — a 10–50× uplift
@@ -62,9 +62,9 @@ These globals are available in every `.js` reducer file:
 |--------|-------------|
 | `args` | Array of positional arguments passed by the client |
 | `result` | Assign the return value here before the file ends |
-| `__neondb_get(table, key)` | Read one row → `object \| null` |
-| `__neondb_set(table, key, val)` | Write/upsert one row |
-| `__neondb_delete(table, key)` | Delete one row |
-| `__neondb_get_all(table)` | Read all rows → `object[]` |
-| `__neondb_caller_id` | Identity string of the calling client |
-| `__neondb_caller_role` | Role string (e.g. `"admin"`, `"player"`) |
+| `__voltra_get(table, key)` | Read one row → `object \| null` |
+| `__voltra_set(table, key, val)` | Write/upsert one row |
+| `__voltra_delete(table, key)` | Delete one row |
+| `__voltra_get_all(table)` | Read all rows → `object[]` |
+| `__voltra_caller_id` | Identity string of the calling client |
+| `__voltra_caller_role` | Role string (e.g. `"admin"`, `"player"`) |

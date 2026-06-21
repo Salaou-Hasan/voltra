@@ -39,13 +39,13 @@ Neon has four types:
 | `str` | Text string | `""`, `"Alice"`, `"zone_3"` |
 | `bool` | True or false | `true`, `false` |
 
-Arrays and nested objects can also be stored in rows — they are written as JSON values and NeonDB stores them as-is. Field type declarations only cover the top-level fields.
+Arrays and nested objects can also be stored in rows — they are written as JSON values and Voltra stores them as-is. Field type declarations only cover the top-level fields.
 
 ---
 
 ## What a Table Actually Is
 
-Under the hood, a NeonDB table is a **key-value store** where:
+Under the hood, a Voltra table is a **key-value store** where:
 - Each **row key** is a string you choose (like a player ID or item ID)
 - Each **row value** is a JSON object
 
@@ -54,7 +54,7 @@ When you write:
 players["alice"] = { hp: 100, alive: true, x: 0.0, name: "Alice" }
 ```
 
-NeonDB stores the string `"alice"` as the key and the object as the value, in a DashMap-backed in-memory store backed by a write-ahead log (WAL) on disk.
+Voltra stores the string `"alice"` as the key and the object as the value, in a DashMap-backed in-memory store backed by a write-ahead log (WAL) on disk.
 
 Row keys are always strings, even if the keys look like numbers. `players["1"]` and `players[1]` are the same — the integer `1` is automatically converted to the string `"1"` when used as a row key.
 
@@ -68,7 +68,7 @@ Every write to a table is logged to the WAL before the response is sent to the c
 
 ## Table Declarations are Documentation
 
-The table declaration in `reducers.neon` tells NeonDB the intended structure of your rows. The server uses it for:
+The table declaration in `reducers.neon` tells Voltra the intended structure of your rows. The server uses it for:
 - Editor tooling and autocomplete
 - Default value filling when a row is written with missing fields
 - Documentation for other developers

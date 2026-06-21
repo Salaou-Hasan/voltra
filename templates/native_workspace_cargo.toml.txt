@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "neondb-reducer",
+    "voltra-reducer",
     "spawn",
     "despawn",
     "move_player",

@@ -18,7 +18,7 @@
 //! { "error": "player_id is required" }
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// Spawn a new player at the given position with class-dependent stats.
@@ -61,4 +61,4 @@ pub fn spawn(ctx: &mut Context, args: Value) -> Result<Value> {
     Ok(json!({ "ok": true, "player_id": player_id }))
 }
 
-neondb_reducer::reducer!(spawn);
+voltra_reducer::reducer!(spawn);

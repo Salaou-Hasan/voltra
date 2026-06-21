@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 pub type RowMap = im::HashMap<String, Scalar>;
 
-pub const PG_VERSION: &str = "PostgreSQL 16.4 (NeonDB)";
+pub const PG_VERSION: &str = "PostgreSQL 16.4 (Voltra)";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Session / transactions
@@ -1073,7 +1073,7 @@ impl PgEngine {
             "information_schema.tables" => {
                 let tables = self.catalog.list();
                 Some(make(vec![
-                    ("table_catalog", tables.iter().map(|_| t("neondb")).collect()),
+                    ("table_catalog", tables.iter().map(|_| t("voltra")).collect()),
                     ("table_schema", tables.iter().map(|_| t("public")).collect()),
                     ("table_name", tables.iter().map(|d| t(&d.name)).collect()),
                     ("table_type", tables.iter().map(|_| t("BASE TABLE")).collect()),
@@ -1112,7 +1112,7 @@ impl PgEngine {
                 Some(make(vec![
                     ("schemaname", tables.iter().map(|_| t("public")).collect()),
                     ("tablename", tables.iter().map(|d| t(&d.name)).collect()),
-                    ("tableowner", tables.iter().map(|_| t("neondb")).collect()),
+                    ("tableowner", tables.iter().map(|_| t("voltra")).collect()),
                 ]))
             }
             _ => None,
@@ -1672,9 +1672,9 @@ fn eval_function(
             Ok(Scalar::Text(format_epoch(secs)))
         }
         "VERSION" => Ok(Scalar::Text(PG_VERSION.to_string())),
-        "CURRENT_DATABASE" | "CURRENT_CATALOG" => Ok(Scalar::Text("neondb".into())),
+        "CURRENT_DATABASE" | "CURRENT_CATALOG" => Ok(Scalar::Text("voltra".into())),
         "CURRENT_SCHEMA" => Ok(Scalar::Text("public".into())),
-        "CURRENT_USER" | "SESSION_USER" | "USER" => Ok(Scalar::Text("neondb".into())),
+        "CURRENT_USER" | "SESSION_USER" | "USER" => Ok(Scalar::Text("voltra".into())),
         "PG_BACKEND_PID" => Ok(Scalar::Int(std::process::id() as i64)),
         other => Err(format!("function {other}() is not supported")),
     }

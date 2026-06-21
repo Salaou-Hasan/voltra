@@ -10,13 +10,13 @@ fn main() {
         .format_timestamp_secs()
         .init();
 
-    let config = neondb::config::Config::from_env();
-    println!("[neondb] Listening on ws://{}:{} — press Ctrl+C to stop.",
+    let config = voltra::config::Config::from_env();
+    println!("[voltra] Listening on ws://{}:{} — press Ctrl+C to stop.",
         config.host, config.port);
-    println!("[neondb] Metrics + admin: http://{}:{}/healthz",
+    println!("[voltra] Metrics + admin: http://{}:{}/healthz",
         config.host, config.metrics_port);
     println!();
 
-    neondb::run_server_blocking(config)
-        .expect("NeonDB server exited with error");
+    voltra::run_server_blocking(config)
+        .expect("Voltra server exited with error");
 }

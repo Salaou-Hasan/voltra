@@ -1,6 +1,6 @@
-# NeonDB Performance Guide
+# Voltra Performance Guide
 
-NeonDB reducers run in one of three runtime tiers. Choose the tier that matches
+Voltra reducers run in one of three runtime tiers. Choose the tier that matches
 your stage of development and throughput requirements.
 
 ---
@@ -21,8 +21,8 @@ fan-out) will be lower in all tiers.
 
 ## Tier 1 — JavaScript (Development)
 
-NeonDB embeds [Boa](https://github.com/boa-dev/boa), a pure-Rust JS interpreter.
-No V8, no Node, no native binaries — it works on every platform NeonDB supports.
+Voltra embeds [Boa](https://github.com/boa-dev/boa), a pure-Rust JS interpreter.
+No V8, no Node, no native binaries — it works on every platform Voltra supports.
 
 **When to use:**
 - Writing and testing new game logic
@@ -35,19 +35,19 @@ No V8, no Node, no native binaries — it works on every platform NeonDB support
 - Do not use JS tier under real player load
 
 **How it works:** Drop a `.js` file in `modules/`. The server loads it
-automatically on start. No `neondb build` step required.
+automatically on start. No `voltra build` step required.
 
 ---
 
 ## Tier 2 — WASM (Production)
 
-`neondb build` compiles every `.js` reducer in `modules/` to `.wasm` using
+`voltra build` compiles every `.js` reducer in `modules/` to `.wasm` using
 [Javy](https://github.com/bytecodealliance/javy) (QuickJS → WASM). The WASM
 module is then executed by [Wasmtime](https://wasmtime.dev/) with the
 [Cranelift](https://cranelift.dev/) JIT backend — a full native-code compiler.
 
 **WASM-first auto-upgrade:** If a `.wasm` file exists alongside a `.js` file,
-NeonDB automatically uses the WASM version. The log line
+Voltra automatically uses the WASM version. The log line
 `"Using pre-compiled WASM for JS reducer"` confirms this is active.
 
 **No code changes required** — the same JS source that runs in tier 1 becomes
@@ -60,8 +60,8 @@ a near-native WASM module. Zero rewrite cost.
 
 **Quick upgrade:**
 ```bash
-neondb build    # compile all .js → .wasm
-neondb start    # server auto-picks .wasm over .js
+voltra build    # compile all .js → .wasm
+voltra start    # server auto-picks .wasm over .js
 ```
 
 Typical throughput: **~500 k calls/s** per core for a simple move reducer.
@@ -70,13 +70,13 @@ Typical throughput: **~500 k calls/s** per core for a simple move reducer.
 
 ## Tier 3 — Native Rust (Maximum Throughput)
 
-Native reducers are compiled directly INTO the NeonDB server binary. There is
+Native reducers are compiled directly INTO the Voltra server binary. There is
 no interpreter, no JIT warmup, and no cross-language ABI — just a Rust function
 call from the worker thread.
 
 **Function signature:**
 ```rust
-fn my_reducer(ctx: &mut ReducerContext, args: &[u8]) -> neondb::Result<Vec<u8>> {
+fn my_reducer(ctx: &mut ReducerContext, args: &[u8]) -> voltra::Result<Vec<u8>> {
     // args is a MessagePack-encoded array
     // use ctx.get_row / ctx.set_row / ctx.stage_delta
     // return MessagePack-encoded result
@@ -89,7 +89,7 @@ registry.register_native("my_reducer", NativeReducerBackend::new(my_reducer));
 ```
 
 **Requirements:**
-- Clone the NeonDB source repository
+- Clone the Voltra source repository
 - Add your reducer in `src/reducer/` or a new module
 - Register it in `registry.rs`
 - Recompile: `cargo build --release`
@@ -106,7 +106,7 @@ Typical throughput: **~2 M+ calls/s** per core.
 
 ## Approximate Benchmarks
 
-These numbers are from a single NeonDB node on a 4-core machine running a
+These numbers are from a single Voltra node on a 4-core machine running a
 read-modify-write player-move reducer. They are illustrative, not guarantees.
 
 | Scenario | Tier | Calls/s |
@@ -137,9 +137,9 @@ thousands of concurrent players.
 ## Quick Commands
 
 ```bash
-neondb build            # compile .js reducers → .wasm
-neondb start            # start server (auto-selects .wasm when present)
-neondb call <name> '[]' # invoke a reducer from the CLI
-neondb watch "<query>"  # subscribe to a table
-neondb seed seed.json   # bulk-load initial data (dev/test only)
+voltra build            # compile .js reducers → .wasm
+voltra start            # start server (auto-selects .wasm when present)
+voltra call <name> '[]' # invoke a reducer from the CLI
+voltra watch "<query>"  # subscribe to a table
+voltra seed seed.json   # bulk-load initial data (dev/test only)
 ```

@@ -5,7 +5,7 @@
 //   <backup_dir>/
 //     backup_<unix_secs>_<seq>/
 //       snapshot_<seq>.bin      (full TableStore snapshot via save_snapshot)
-//       neondb.wal              (copy of the live WAL at backup time)
+//       voltra.wal              (copy of the live WAL at backup time)
 //       backup.json             (metadata: timestamp, seq, row_count)
 //
 // OPERATIONS:
@@ -18,10 +18,10 @@
 //                        at or before the given unix-nanos timestamp (PITR)
 //
 // The background task in main.rs calls backup_now + rotate_backups every
-// NEONDB_BACKUP_INTERVAL_SECS when NEONDB_BACKUP_DIR is configured.
+// VOLTRA_BACKUP_INTERVAL_SECS when VOLTRA_BACKUP_DIR is configured.
 // ============================================================================
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::table::TableStore;
 use crate::wal::{
     snapshot::{find_latest_snapshot, save_snapshot},
@@ -38,7 +38,7 @@ pub struct BackupMeta {
     pub last_seq: u64,
     pub row_count: usize,
     pub wal_bytes: u64,
-    pub neondb_version: String,
+    pub voltra_version: String,
 }
 
 /// Take a full backup: snapshot the TableStore + copy the WAL file.
@@ -68,7 +68,7 @@ pub fn backup_now(
     //    to the exact backup moment, and PITR can cut within them).
     let mut wal_bytes = 0u64;
     if wal_path.exists() {
-        let wal_dest = dest.join("neondb.wal");
+        let wal_dest = dest.join("voltra.wal");
         fs::copy(wal_path, &wal_dest)?;
         wal_bytes = fs::metadata(&wal_dest).map(|m| m.len()).unwrap_or(0);
     }
@@ -79,7 +79,7 @@ pub fn backup_now(
         last_seq,
         row_count: tables.total_row_count(),
         wal_bytes,
-        neondb_version: env!("CARGO_PKG_VERSION").to_string(),
+        voltra_version: env!("CARGO_PKG_VERSION").to_string(),
     };
     fs::write(dest.join("backup.json"), serde_json::to_string_pretty(&meta)?)?;
 
@@ -139,26 +139,26 @@ pub fn restore_to_dirs(
     until_ts_nanos: Option<u64>,
 ) -> Result<(u64, usize)> {
     if !backup_path.is_dir() {
-        return Err(NeonDBError::StorageError(format!(
+        return Err(VoltraError::StorageError(format!(
             "Backup directory not found: {:?}", backup_path
         )));
     }
 
     // 1. Locate the snapshot inside the backup.
     let (snap_src, snap_seq) = find_latest_snapshot(backup_path)
-        .ok_or_else(|| NeonDBError::StorageError(format!(
+        .ok_or_else(|| VoltraError::StorageError(format!(
             "No snapshot file inside backup {:?}", backup_path
         )))?;
 
     // 2. Copy snapshot into the live snapshot dir.
     fs::create_dir_all(snapshot_dir)?;
     let snap_dest = snapshot_dir.join(
-        snap_src.file_name().ok_or_else(|| NeonDBError::StorageError("Bad snapshot filename".into()))?
+        snap_src.file_name().ok_or_else(|| VoltraError::StorageError("Bad snapshot filename".into()))?
     );
     fs::copy(&snap_src, &snap_dest)?;
 
     // 3. Restore the WAL — full copy, or PITR-filtered rewrite.
-    let wal_src = backup_path.join("neondb.wal");
+    let wal_src = backup_path.join("voltra.wal");
     let mut restored_entries = 0usize;
     if let Some(parent) = wal_path.parent() {
         fs::create_dir_all(parent)?;
@@ -246,10 +246,10 @@ mod tests {
 
         let dest = backup_now(&tables, &wal_path, &backup_dir, 9).unwrap();
         assert!(dest.join("backup.json").exists());
-        assert!(dest.join("neondb.wal").exists());
+        assert!(dest.join("voltra.wal").exists());
 
         // Restore into fresh dirs.
-        let new_wal  = restore_dir.join("neondb.wal");
+        let new_wal  = restore_dir.join("voltra.wal");
         let new_snap = restore_dir.join("snapshots");
         let (seq, wal_n) = restore_to_dirs(&dest, &new_wal, &new_snap, None).unwrap();
         assert_eq!(seq, 9);
@@ -283,7 +283,7 @@ mod tests {
         }
 
         let dest = backup_now(&tables, &wal_path, &backup_dir, 3).unwrap();
-        let new_wal  = restore_dir.join("neondb.wal");
+        let new_wal  = restore_dir.join("voltra.wal");
         let new_snap = restore_dir.join("snapshots");
 
         // Cut at ts=2000: entries 1 and 2 survive, 3 is dropped.

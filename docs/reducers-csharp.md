@@ -17,11 +17,11 @@ dotnet workload install wasi-experimental
 ## Quick Start
 
 ```sh
-neondb init my-game --template csharp-reducers
+voltra init my-game --template csharp-reducers
 cd my-game
-neondb build   # dotnet publish -r wasi-wasm
-neondb start
-neondb call attack '["player1", "enemy1", 25]'
+voltra build   # dotnet publish -r wasi-wasm
+voltra start
+voltra call attack '["player1", "enemy1", 25]'
 ```
 
 ## Project structure
@@ -32,7 +32,7 @@ reducers/
 ├── Voltra.cs           ← host-function bindings
 └── Combat.cs           ← your reducers
 modules/
-└── *.wasm              ← compiled output (written by neondb build)
+└── *.wasm              ← compiled output (written by voltra build)
 ```
 
 ## Writing a Reducer
@@ -116,5 +116,5 @@ Use `ReducerContext.Return(byte[])` — it handles the encoding automatically.
 |-------|-----|
 | `dotnet workload install wasi-experimental` fails | Update .NET SDK to 8.x |
 | `.wasm` size > 10 MB | Add `<PublishTrimmed>true</PublishTrimmed>` |
-| `neondb build` skips C# step | Ensure `reducers/*.csproj` exists |
-| Host function not found at runtime | Check `[DllImport("env", EntryPoint = "neondb_...")]` spelling |
+| `voltra build` skips C# step | Ensure `reducers/*.csproj` exists |
+| Host function not found at runtime | Check `[DllImport("env", EntryPoint = "voltra_...")]` spelling |

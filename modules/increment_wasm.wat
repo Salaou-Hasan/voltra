@@ -1,8 +1,8 @@
-;; increment_wasm.wat — NeonDB WASM reducer module
+;; increment_wasm.wat — Voltra WASM reducer module
 ;;
-;; Host imports (provided by NeonDB at runtime):
-;;   env.neondb_get_counter(name_ptr: i32, name_len: i32) -> i32
-;;   env.neondb_set_counter(name_ptr: i32, name_len: i32, value: i32)
+;; Host imports (provided by Voltra at runtime):
+;;   env.voltra_get_counter(name_ptr: i32, name_len: i32) -> i32
+;;   env.voltra_set_counter(name_ptr: i32, name_len: i32, value: i32)
 ;;
 ;; Exported entry-point:
 ;;   reducer(args_ptr: i32, args_len: i32) -> (result_ptr: i32, result_len: i32)
@@ -20,8 +20,8 @@
 
 (module
   ;; Host imports MUST come first — before memory and func definitions.
-  (import "env" "neondb_get_counter" (func $get_counter (param i32 i32) (result i32)))
-  (import "env" "neondb_set_counter" (func $set_counter (param i32 i32 i32)))
+  (import "env" "voltra_get_counter" (func $get_counter (param i32 i32) (result i32)))
+  (import "env" "voltra_set_counter" (func $set_counter (param i32 i32 i32)))
 
   (memory (export "memory") 1)
 

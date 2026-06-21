@@ -1,4 +1,4 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 
 const SESSION_TIMEOUT_MS: i64 = 60_000;
 

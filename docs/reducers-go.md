@@ -13,11 +13,11 @@ tinygo version   # verify: should print "tinygo version 0.28+" or later
 ## Quick Start
 
 ```sh
-neondb init my-game --template go-reducers
+voltra init my-game --template go-reducers
 cd my-game
-neondb build   # tinygo build -target wasi
-neondb start
-neondb call attack '["player1", "enemy1", 25]'
+voltra build   # tinygo build -target wasi
+voltra start
+voltra call attack '["player1", "enemy1", 25]'
 ```
 
 ## Project Structure
@@ -25,11 +25,11 @@ neondb call attack '["player1", "enemy1", 25]'
 ```
 reducers/
 ├── go.mod              ← Go module definition
-├── neondb/
-│   └── neondb.go       ← host-function bindings
+├── voltra/
+│   └── voltra.go       ← host-function bindings
 └── combat.go           ← your reducers
 modules/
-└── *.wasm              ← compiled output (written by neondb build)
+└── *.wasm              ← compiled output (written by voltra build)
 ```
 
 ## Writing a Reducer
@@ -41,7 +41,7 @@ import (
     "encoding/json"
     "math"
     "unsafe"
-    "neondb"
+    "voltra"
 )
 
 //export attack
@@ -56,10 +56,10 @@ func attack(argsPtr int32, argsLen int32) (int32, int32) {
     json.Unmarshal(params[1], &targetID)
     json.Unmarshal(params[2], &damage)
 
-    rowBytes := neondb.Get("players", targetID)
+    rowBytes := voltra.Get("players", targetID)
     if rowBytes == nil {
         b, _ := json.Marshal(map[string]interface{}{"error": "not found"})
-        return neondb.WriteResult(b)
+        return voltra.WriteResult(b)
     }
 
     var row map[string]interface{}
@@ -70,10 +70,10 @@ func attack(argsPtr int32, argsLen int32) (int32, int32) {
     row["alive"] = newHP > 0
 
     updated, _ := json.Marshal(row)
-    neondb.Set("players", targetID, updated)
+    voltra.Set("players", targetID, updated)
 
     result, _ := json.Marshal(map[string]interface{}{"ok": true, "new_hp": newHP})
-    return neondb.WriteResult(result)
+    return voltra.WriteResult(result)
 }
 
 func main() {} // required by TinyGo wasi target
@@ -82,19 +82,19 @@ func main() {} // required by TinyGo wasi target
 ## Return Convention
 
 TinyGo correctly exports multi-value WASM returns. The Voltra backend
-expects `(result_ptr i32, result_len i32)`. Use `neondb.WriteResult([]byte)`
+expects `(result_ptr i32, result_len i32)`. Use `voltra.WriteResult([]byte)`
 which writes data to a static buffer and returns the correct (ptr, len) pair.
 
 ## Host API Reference
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `neondb.Get(table, key string)` | `[]byte` | Returns row JSON or nil |
-| `neondb.Set(table, key string, val []byte)` | — | Write row JSON |
-| `neondb.Delete(table, key string)` | — | Delete row |
-| `neondb.CallerID()` | `string` | Client ID |
-| `neondb.CallerRole()` | `string` | Client role |
-| `neondb.WriteResult([]byte)` | `(int32, int32)` | Pack result for WASM return |
+| `voltra.Get(table, key string)` | `[]byte` | Returns row JSON or nil |
+| `voltra.Set(table, key string, val []byte)` | — | Write row JSON |
+| `voltra.Delete(table, key string)` | — | Delete row |
+| `voltra.CallerID()` | `string` | Client ID |
+| `voltra.CallerRole()` | `string` | Client role |
+| `voltra.WriteResult([]byte)` | `(int32, int32)` | Pack result for WASM return |
 
 ## TinyGo Limitations
 
@@ -111,5 +111,5 @@ which writes data to a static buffer and returns the correct (ptr, len) pair.
 |-------|-----|
 | `tinygo: command not found` | Install TinyGo from https://tinygo.org |
 | Build output missing exported function | Check `//export funcname` comment is correct |
-| `go.mod` not found | Run `neondb build` from the project root (where `reducers/` lives) |
+| `go.mod` not found | Run `voltra build` from the project root (where `reducers/` lives) |
 | Segfault in `ptrToSlice` | Ensure `argsLen <= actual slice capacity` |

@@ -16,7 +16,7 @@
 //! { "ok": true, "npc_id": "goblin_42", "npc_type": "goblin", "level": 3 }
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// Scale factor for NPC stats per level above 1.
@@ -66,4 +66,4 @@ pub fn spawn_npc(ctx: &mut Context, args: Value) -> Result<Value> {
     Ok(json!({ "ok": true, "npc_id": npc_id, "npc_type": npc_type, "level": level }))
 }
 
-neondb_reducer::reducer!(spawn_npc);
+voltra_reducer::reducer!(spawn_npc);

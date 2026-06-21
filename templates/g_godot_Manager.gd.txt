@@ -1,6 +1,6 @@
-## NeonDBManager — Godot 4 autoload
-## Add via Project → Project Settings → Autoloads as "NeonDB"
-## Usage: await NeonDB.spawn_player(...)  |  NeonDB.player_updated.connect(cb)
+## VoltraManager — Godot 4 autoload
+## Add via Project → Project Settings → Autoloads as "Voltra"
+## Usage: await Voltra.spawn_player(...)  |  Voltra.player_updated.connect(cb)
 
 extends Node
 
@@ -11,12 +11,12 @@ extends Node
 ## Emitted on the main thread whenever a subscribed player row changes.
 signal player_updated(player_data: Dictionary)
 
-var _client  # NeonDBClient instance (neondb_client.gd)
+var _client  # VoltraClient instance (voltra_client.gd)
 
 # ---------------------------------------------------------------------------
 
 func _ready() -> void:
-	_client = preload("res://addons/neondb/neondb_client.gd").new()
+	_client = preload("res://addons/voltra/voltra_client.gd").new()
 	add_child(_client)
 
 	# Forward row_update signal from the low-level client
@@ -59,8 +59,8 @@ func heal_player(player_id: String, amount: int) -> Dictionary:
 # ---------------------------------------------------------------------------
 #
 # func _ready():
-#     NeonDB.player_updated.connect(_on_player_updated)
-#     await NeonDB.spawn_player(my_player_id, NeonDB.lobby_id, "warrior")
+#     Voltra.player_updated.connect(_on_player_updated)
+#     await Voltra.spawn_player(my_player_id, Voltra.lobby_id, "warrior")
 #
 # func _on_player_updated(data: Dictionary) -> void:
 #     if data["player_id"] == my_player_id:
@@ -70,4 +70,4 @@ func heal_player(player_id: String, amount: int) -> Dictionary:
 #     if event is InputEventKey and event.pressed:
 #         var new_x = position.x + Input.get_axis("ui_left", "ui_right") * 10.0
 #         var new_y = position.y + Input.get_axis("ui_up",   "ui_down")  * 10.0
-#         await NeonDB.move_player(my_player_id, new_x, new_y)
+#         await Voltra.move_player(my_player_id, new_x, new_y)

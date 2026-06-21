@@ -6,29 +6,29 @@
 //         { error: "missing_player" | "insufficient_funds" }
 //
 // Usage:
-//   neondb call transfer_currency '["player1", "player2", 100]'
+//   voltra call transfer_currency '["player1", "player2", 100]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
   const [from, to, amount] = args;
-  const a = __neondb_get("players", from);
-  const b = __neondb_get("players", to);
+  const a = __voltra_get("players", from);
+  const b = __voltra_get("players", to);
   if (!a || !b) { return { error: "missing_player" }; }
   else if (a.currency < amount) { return { error: "insufficient_funds" }; }
   else {
     a.currency -= amount; b.currency += amount;
-    __neondb_set("players", from, a);
-    __neondb_set("players", to, b);
+    __voltra_set("players", from, a);
+    __voltra_set("players", to, b);
     return { ok: true, from_balance: a.currency, to_balance: b.currency };
   }
 }

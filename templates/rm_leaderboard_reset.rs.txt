@@ -1,4 +1,4 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 
 #[reducer]
 fn reset_leaderboard(ctx: Ctx, board: String) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple WebSocket test client for NeonDB Phase 1.
+Simple WebSocket test client for Voltra Phase 1.
 
 Sends increment reducer calls and verifies responses.
 
@@ -18,14 +18,14 @@ import sys
 import time
 from typing import Dict, Any
 
-class NeonDBClient:
+class VoltraClient:
     def __init__(self, url: str = "ws://localhost:8000"):
         self.url = url
         self.ws = None
         self.call_id = 0
     
     def connect(self):
-        """Connect to the NeonDB server."""
+        """Connect to the Voltra server."""
         try:
             self.ws = websocket.create_connection(self.url)
             print(f"✓ Connected to {self.url}")
@@ -116,7 +116,7 @@ class NeonDBClient:
 def test_basic_increment():
     """Test basic increment operations."""
     print("\n=== Test 1: Basic Increment ===")
-    client = NeonDBClient()
+    client = VoltraClient()
     client.connect()
     
     try:
@@ -137,7 +137,7 @@ def test_basic_increment():
 def test_multiple_counters():
     """Test incrementing multiple counters."""
     print("\n=== Test 2: Multiple Counters ===")
-    client = NeonDBClient()
+    client = VoltraClient()
     client.connect()
     
     try:
@@ -159,7 +159,7 @@ def test_multiple_counters():
 def test_concurrent_calls():
     """Test multiple calls in sequence."""
     print("\n=== Test 3: Sequential Calls (100x) ===")
-    client = NeonDBClient()
+    client = VoltraClient()
     client.connect()
     
     try:
@@ -182,7 +182,7 @@ def test_concurrent_calls():
 
 def main():
     """Run all tests."""
-    print("NeonDB Phase 1 Test Client")
+    print("Voltra Phase 1 Test Client")
     print("===========================")
     
     results = []

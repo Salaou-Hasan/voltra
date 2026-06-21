@@ -12,7 +12,7 @@ A reducer is an **atomic function** that runs on the server. "Atomic" means:
 - If you call `error()` halfway through, nothing that ran before it gets saved
 - Two players calling the same reducer at the same time cannot corrupt each other's data
 
-This is the core safety guarantee of NeonDB. You never need to think about locks, transactions, or race conditions. Just write the logic.
+This is the core safety guarantee of Voltra. You never need to think about locks, transactions, or race conditions. Just write the logic.
 
 ---
 
@@ -65,7 +65,7 @@ reducer many_args(player_id: str, x: float, y: float, speed: int, sprint: bool) 
 Parameters are passed by clients as a JSON array, in order:
 
 ```
-neondb call many_args '["alice", 3.5, 7.2, 5, true]'
+voltra call many_args '["alice", 3.5, 7.2, 5, true]'
 ```
 
 ---
@@ -225,14 +225,14 @@ reducer buy_item(player_id: str, item_name: str) { ... }
 Each reducer is registered by name. Clients call them by name:
 
 ```
-neondb call attack '["alice", "bob", 25]'
+voltra call attack '["alice", "bob", 25]'
 ```
 
 ---
 
 ## Scheduled Reducers
 
-Reducers can be run on a timer by the server without any client calling them. Configure them in `neondb.toml`:
+Reducers can be run on a timer by the server without any client calling them. Configure them in `voltra.toml`:
 
 ```toml
 [schedulers]
@@ -259,7 +259,7 @@ reducer cleanup_sessions() {
 
 From the CLI:
 ```
-neondb call <reducer_name> '[arg1, arg2, ...]'
+voltra call <reducer_name> '[arg1, arg2, ...]'
 ```
 
 From TypeScript:
@@ -274,5 +274,5 @@ var result = await db.Call("attack", new object[] { "alice", "bob", 25 });
 
 From Godot:
 ```gdscript
-var result = await NeonDB.call_reducer("attack", ["alice", "bob", 25])
+var result = await Voltra.call_reducer("attack", ["alice", "bob", 25])
 ```

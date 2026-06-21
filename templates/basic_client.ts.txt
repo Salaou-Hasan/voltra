@@ -1,9 +1,9 @@
-// Minimal NeonDB client for the basic template.
-// Run `npm install neondb-client` or copy from neondb-client-ts/.
-import { NeonDBClient } from "neondb-client";
+// Minimal Voltra client for the basic template.
+// Run `npm install voltra-client` or copy from voltra-client-ts/.
+import { VoltraClient } from "voltra-client";
 
 async function main() {
-  const client = new NeonDBClient({
+  const client = new VoltraClient({
     url: "ws://127.0.0.1:3000",
     auth: "dev-key",
   });

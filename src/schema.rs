@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB Schema System — TODO-018
+// Voltra Schema System — TODO-018
 //
 // Provides typed table schemas loaded from `schema.toml` at startup.
 //
@@ -36,7 +36,7 @@
 //   (arrays and nested objects are accepted as-is — type = "any")
 // ============================================================================
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -297,12 +297,12 @@ impl TableSchema {
                         // whether the field was absent or explicitly null.
                         let was_present = obj.contains_key(&col.name);
                         if was_present {
-                            return Err(NeonDBError::table_error(format!(
+                            return Err(VoltraError::table_error(format!(
                                 "Schema violation on table '{}': required column '{}' must not be null",
                                 self.name, col.name
                             )));
                         } else {
-                            return Err(NeonDBError::table_error(format!(
+                            return Err(VoltraError::table_error(format!(
                                 "Schema violation on table '{}': required column '{}' ({}) is missing and has no default",
                                 self.name, col.name, col.col_type().display()
                             )));
@@ -315,7 +315,7 @@ impl TableSchema {
         // 2. Type-check all present columns that have schema definitions.
         if let Some(obj) = value.as_object_mut() {
             for (key, val) in obj.iter_mut() {
-                // Skip internal NeonDB fields injected by the table engine.
+                // Skip internal Voltra fields injected by the table engine.
                 if key == "row_key" || key == "shard_id" { continue; }
 
                 if let Some(col) = col_map.get(key.as_str()) {
@@ -330,7 +330,7 @@ impl TableSchema {
                         if let Some(coerced) = col_type.coerce(val.clone()) {
                             *val = coerced;
                         } else {
-                            return Err(NeonDBError::table_error(format!(
+                            return Err(VoltraError::table_error(format!(
                                 "Schema violation on table '{}': column '{}' expects {} but got {}",
                                 self.name,
                                 key,
@@ -382,11 +382,11 @@ impl SchemaRegistry {
         }
 
         let content = std::fs::read_to_string(path).map_err(|e| {
-            NeonDBError::internal(format!("Failed to read schema.toml: {}", e))
+            VoltraError::internal(format!("Failed to read schema.toml: {}", e))
         })?;
 
         let raw: RawSchemaFile = toml::from_str(&content).map_err(|e| {
-            NeonDBError::invalid_argument(format!(
+            VoltraError::invalid_argument(format!(
                 "schema.toml parse error: {}",
                 e
             ))

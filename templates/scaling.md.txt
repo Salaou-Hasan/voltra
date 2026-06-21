@@ -1,16 +1,16 @@
 # Scaling Guide
 
-NeonDB scales in three tiers. You start at Tier 1 and only move up when you
+Voltra scales in three tiers. You start at Tier 1 and only move up when you
 need to. Each tier is additive — you do not rewrite your game logic.
 
 ---
 
 ## Tier 1 — Single Node (indie default)
 
-Everything runs on one machine. Zero config beyond `neondb start`.
+Everything runs on one machine. Zero config beyond `voltra start`.
 
 ```
-Players ──► [ NeonDB node ] ──► in-memory tables
+Players ──► [ Voltra node ] ──► in-memory tables
                                 WAL on disk
 ```
 
@@ -28,17 +28,17 @@ _"CCU" = concurrent players. "TPS" = total reducer calls/s across all players._
 **env vars (all optional at Tier 1):**
 
 ```bash
-NEONDB_PORT=3000           # WebSocket port (default 3000)
-NEONDB_METRICS_PORT=3001   # Admin/metrics port (default 3001)
-NEONDB_API_KEY=secret      # Auth key (leave blank for open dev)
-NEONDB_WAL_DIR=/var/neondb # Where WAL + snapshots live
+VOLTRA_PORT=3000           # WebSocket port (default 3000)
+VOLTRA_METRICS_PORT=3001   # Admin/metrics port (default 3001)
+VOLTRA_API_KEY=secret      # Auth key (leave blank for open dev)
+VOLTRA_WAL_DIR=/var/voltra # Where WAL + snapshots live
 ```
 
 ---
 
 ## Tier 2 — Cluster of N Nodes (8–12 node cluster)
 
-When one machine is not enough, you add nodes. NeonDB shards lobbies across
+When one machine is not enough, you add nodes. Voltra shards lobbies across
 nodes using a consistent hash. Each lobby still runs entirely on one node —
 no cross-node coordination during gameplay.
 
@@ -58,18 +58,18 @@ Players ──► load balancer (nginx / HAProxy / Cloudflare)
 
 ```bash
 # NODE 0
-NEONDB_SHARD_ID=0
-NEONDB_SHARD_COUNT=8
-NEONDB_REGION=europe
-NEONDB_PEERS=shard1=http://10.0.0.2:3001,shard2=http://10.0.0.3:3001,...
-NEONDB_CLUSTER_SECRET=change-me
+VOLTRA_SHARD_ID=0
+VOLTRA_SHARD_COUNT=8
+VOLTRA_REGION=europe
+VOLTRA_PEERS=shard1=http://10.0.0.2:3001,shard2=http://10.0.0.3:3001,...
+VOLTRA_CLUSTER_SECRET=change-me
 
 # NODE 1
-NEONDB_SHARD_ID=1
-NEONDB_SHARD_COUNT=8
-NEONDB_REGION=europe
-NEONDB_PEERS=shard0=http://10.0.0.1:3001,shard2=http://10.0.0.3:3001,...
-NEONDB_CLUSTER_SECRET=change-me
+VOLTRA_SHARD_ID=1
+VOLTRA_SHARD_COUNT=8
+VOLTRA_REGION=europe
+VOLTRA_PEERS=shard0=http://10.0.0.1:3001,shard2=http://10.0.0.3:3001,...
+VOLTRA_CLUSTER_SECRET=change-me
 
 # … repeat for nodes 2–7 with matching SHARD_ID
 ```
@@ -102,7 +102,7 @@ POST http://any-node:3001/cluster/register-lobby
 ## Tier 3 — Cluster-of-Clusters (multi-region, near-infinite)
 
 Once you have more than one geographic region, each region runs its own
-Tier-2 cluster. A "region" is just a URL — NeonDB does not care whether it
+Tier-2 cluster. A "region" is just a URL — Voltra does not care whether it
 is one node or fifty.
 
 ```
@@ -121,14 +121,14 @@ europe-cluster  asia-cluster  africa-cluster
 **Config on every node in the europe cluster:**
 
 ```bash
-NEONDB_REGION=europe
-NEONDB_REGIONS=europe=ws://eu-lb:3000|http://eu-lb:3001,\
+VOLTRA_REGION=europe
+VOLTRA_REGIONS=europe=ws://eu-lb:3000|http://eu-lb:3001,\
                asia=ws://as-lb:3000|http://as-lb:3001,\
                africa=ws://af-lb:3000|http://af-lb:3001
-NEONDB_LEADERBOARD_BOARD=leaderboard
-NEONDB_LEADERBOARD_INTERVAL_SECS=60   # how often to merge from all regions
-NEONDB_LEADERBOARD_TOP_N=1000
-NEONDB_STAT_SYNC_FLUSH_MS=500         # post-match stat write-back delay
+VOLTRA_LEADERBOARD_BOARD=leaderboard
+VOLTRA_LEADERBOARD_INTERVAL_SECS=60   # how often to merge from all regions
+VOLTRA_LEADERBOARD_TOP_N=1000
+VOLTRA_STAT_SYNC_FLUSH_MS=500         # post-match stat write-back delay
 ```
 
 _`eu-lb`, `as-lb`, `af-lb` are your load balancer addresses.
@@ -154,13 +154,13 @@ you enqueue a stat-sync job from your match-end reducer:
 ```js
 // modules/matchmaking/create_match.js  (after match ends)
 const result = { kills: 12, xp: 350, rank_change: +2 };
-__neondb_stat_sync("africa", "players", player_id, result);
+__voltra_stat_sync("africa", "players", player_id, result);
 // Fire-and-forget: queued, batched, retried — your reducer returns immediately
 ```
 
 **Global leaderboard:**
 
-Each region's node with `NEONDB_LEADERBOARD_INTERVAL_SECS > 0` runs a
+Each region's node with `VOLTRA_LEADERBOARD_INTERVAL_SECS > 0` runs a
 background job every N seconds:
 
 1. Fetches top-1000 from every peer region via `GET /leaderboard/top`.
@@ -168,7 +168,7 @@ background job every N seconds:
 3. Writes result to the `leaderboard_global` table locally.
 
 Clients subscribe to `leaderboard_global` for the merged global board.
-Staleness = up to `NEONDB_LEADERBOARD_INTERVAL_SECS` (default 60s).
+Staleness = up to `VOLTRA_LEADERBOARD_INTERVAL_SECS` (default 60s).
 That is the industry standard — no real game has a real-time global leaderboard.
 
 **Capacity at Tier 3 (3 regions × 8 nodes × 32-core):**
@@ -181,9 +181,9 @@ That is the industry standard — no real game has a real-time global leaderboar
 
 | Players          | Tier         | What to do                          |
 |-----------------|-------------|-------------------------------------|
-| < 10 K CCU       | 1 — Single   | `neondb start`, done                |
-| 10 K – 400 K CCU | 2 — Cluster  | Set `NEONDB_SHARD_*` + `NEONDB_PEERS` |
-| 400 K+ CCU       | 3 — Regions  | Set `NEONDB_REGION` + `NEONDB_REGIONS` |
+| < 10 K CCU       | 1 — Single   | `voltra start`, done                |
+| 10 K – 400 K CCU | 2 — Cluster  | Set `VOLTRA_SHARD_*` + `VOLTRA_PEERS` |
+| 400 K+ CCU       | 3 — Regions  | Set `VOLTRA_REGION` + `VOLTRA_REGIONS` |
 
 You do not rewrite any reducer. The scaling is entirely in environment variables
 and your lobby-creation / match-routing logic.
@@ -192,7 +192,7 @@ and your lobby-creation / match-routing logic.
 
 ## Why this scales near-linearly
 
-NeonDB's key architectural property is **share-nothing per lobby**:
+Voltra's key architectural property is **share-nothing per lobby**:
 
 - All row keys for lobby 42 are prefixed `l42_*`.
 - No two lobbies ever touch the same rows.

@@ -1,4 +1,4 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 use serde_json::json;
 
 #[reducer]

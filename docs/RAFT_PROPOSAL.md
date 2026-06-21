@@ -38,19 +38,19 @@ immediately after calling `fanout_deltas()`.
 
 ### 1.3 Cluster Membership -- PROTOTYPE
 
-Node discovery exists via `NEONDB_PEERS` env var and `NEONDB_SEED_NODE`
+Node discovery exists via `VOLTRA_PEERS` env var and `VOLTRA_SEED_NODE`
 dynamic join. However, membership changes are static (restart required for
-`NEONDB_PEERS`) or uncoordinated (seed join adds to a local DashMap without
+`VOLTRA_PEERS`) or uncoordinated (seed join adds to a local DashMap without
 cluster-wide agreement).
 
-**Evidence:** `ClusterConfig::from_env()` (mod.rs:186) reads `NEONDB_PEERS`
+**Evidence:** `ClusterConfig::from_env()` (mod.rs:186) reads `VOLTRA_PEERS`
 once at startup. `cluster_seed()` (main.rs:763) adds peers locally via HTTP
 but there is no two-phase membership change.
 
 ### 1.4 Heartbeats -- COMPLETE
 
 The gossip system (`src/cluster/gossip.rs`) pings each peer's
-`GET /cluster/health` endpoint every `NEONDB_GOSSIP_INTERVAL_MS` (default
+`GET /cluster/health` endpoint every `VOLTRA_GOSSIP_INTERVAL_MS` (default
 5000ms). After 3 consecutive failures, a peer is marked unhealthy and
 excluded from fan-out. Recovery is automatic when a ping succeeds.
 
@@ -391,7 +391,7 @@ The Raft state machine IS `TableStore` (`src/table/mod.rs`).
 ```rust
 // New type: src/raft/log_entry.rs
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct NeonDBLogEntry {
+pub struct VoltraLogEntry {
     /// Reducer that produced these deltas.
     pub reducer_name: String,
     /// The committed row deltas.
@@ -434,7 +434,7 @@ already serialize the full `TableStore` state. Under Raft:
 
 ### 2.4 Membership Changes
 
-**Current state:** Static `NEONDB_PEERS` env var + dynamic `NEONDB_SEED_NODE`.
+**Current state:** Static `VOLTRA_PEERS` env var + dynamic `VOLTRA_SEED_NODE`.
 
 **Under Raft:** Membership changes are Raft log entries, committed through
 consensus like any other write. This prevents split-brain during
@@ -443,7 +443,7 @@ membership transitions.
 ```
 Operator wants to add Node D to a 3-node cluster (A, B, C):
 
-1. Operator starts Node D with NEONDB_SEED_NODE=http://A:3001
+1. Operator starts Node D with VOLTRA_SEED_NODE=http://A:3001
 2. Node D contacts Node A's /raft/join endpoint
 3. Node A (if leader) proposes a membership change:
    AddLearner(D)  -- D receives log entries but cannot vote
@@ -466,8 +466,8 @@ Removing a node works similarly:
 | Current Endpoint      | Raft Equivalent         | Notes                          |
 |-----------------------|-------------------------|--------------------------------|
 | `POST /cluster/join`  | `POST /raft/join`       | Proposes AddLearner + Change   |
-| `NEONDB_PEERS`        | Initial cluster config  | Used only for first bootstrap  |
-| `NEONDB_SEED_NODE`    | Discovery mechanism     | Points to any existing member  |
+| `VOLTRA_PEERS`        | Initial cluster config  | Used only for first bootstrap  |
+| `VOLTRA_SEED_NODE`    | Discovery mechanism     | Points to any existing member  |
 
 **Bootstrap:** The very first node starts with a single-node Raft group
 (itself as the only voter). Subsequent nodes join via `/raft/join`.
@@ -701,7 +701,7 @@ node returns the same data.
 ### 4.7 New Node Joins -> Snapshot Transfer
 
 **Setup:** 3-node cluster with 100k rows.
-**Action:** Start a 4th node with `NEONDB_SEED_NODE`.
+**Action:** Start a 4th node with `VOLTRA_SEED_NODE`.
 **Expected:**
 - Node 4 joins as a learner.
 - Leader detects Node 4 has no log and initiates snapshot transfer.
@@ -752,7 +752,7 @@ go through the existing local-commit path.
 - `src/raft/storage.rs` -- `RaftLogStorage` impl backed by `BatchedWalWriter`.
 - `src/raft/state_machine.rs` -- `RaftStateMachine` impl wrapping `TableStore`.
 - `src/raft/network.rs` -- `RaftNetwork` impl using existing cluster HTTP bus.
-- `src/raft/types.rs` -- `NeonDBLogEntry`, `NeonDBNodeId`, type aliases.
+- `src/raft/types.rs` -- `VoltraLogEntry`, `VoltraNodeId`, type aliases.
 
 **Files to modify:**
 - `src/cluster/mod.rs` -- Add `RaftNode` to `ClusterBus`.
@@ -779,7 +779,7 @@ go through the existing local-commit path.
 quorum acknowledgment.
 
 **Files to create:**
-- `src/raft/log_entry.rs` -- `NeonDBLogEntry` serialization.
+- `src/raft/log_entry.rs` -- `VoltraLogEntry` serialization.
 
 **Files to modify:**
 - `src/network/websocket.rs` -- Worker loop changes: instead of
@@ -838,7 +838,7 @@ quorum acknowledgment.
 - `src/raft/network.rs` -- Wire `openraft::Raft::change_membership()`.
 - `src/main.rs` -- Replace `/cluster/join` with `/raft/join` that
   proposes a membership change.
-- `src/config.rs` -- `NEONDB_PEERS` becomes bootstrap-only (not
+- `src/config.rs` -- `VOLTRA_PEERS` becomes bootstrap-only (not
   ongoing membership source).
 
 **Estimated effort:** 1 engineer-week.
@@ -864,7 +864,7 @@ quorum acknowledgment.
 - `src/network/websocket.rs` -- Add `ReadConsistency` to subscription
   queries. Follower reads bypass Raft for `eventual` consistency.
 - `src/subscriptions.rs` -- Add `read_consistency` to `SubscriptionFilter`.
-- SDK files (`neondb-client-ts/`, `neondb-client-rust/`) -- Add
+- SDK files (`voltra-client-ts/`, `voltra-client-rust/`) -- Add
   `readConsistency` option to `subscribe()`.
 
 **Estimated effort:** 2-3 engineer-weeks.
@@ -988,4 +988,4 @@ raft_snapshot_threshold = 100000
 raft_max_in_flight = 4
 ```
 
-Corresponding env vars: `NEONDB_RAFT_ENABLED`, `NEONDB_RAFT_ELECTION_TIMEOUT_MIN_MS`, etc.
+Corresponding env vars: `VOLTRA_RAFT_ENABLED`, `VOLTRA_RAFT_ELECTION_TIMEOUT_MIN_MS`, etc.

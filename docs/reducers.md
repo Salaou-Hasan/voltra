@@ -34,19 +34,19 @@ Create a `.js` file in the `modules/` directory. It is loaded automatically when
 
 ```js
 function deal_damage(args) {
-  const attacker = __neondb_get("players", args.attacker_id);
-  const defender = __neondb_get("players", args.defender_id);
+  const attacker = __voltra_get("players", args.attacker_id);
+  const defender = __voltra_get("players", args.defender_id);
 
   if (!defender) {
     throw new Error("Target not found");
   }
 
-  const weapon = __neondb_get("items", args.weapon_id);
+  const weapon = __voltra_get("items", args.weapon_id);
   const power = attacker.attack + (weapon ? weapon.bonus : 0);
   const newHp = Math.max(0, defender.hp - power);
 
-  __neondb_set("players", args.defender_id, { ...defender, hp: newHp });
-  __neondb_set("combat_log", Date.now().toString(), {
+  __voltra_set("players", args.defender_id, { ...defender, hp: newHp });
+  __voltra_set("combat_log", Date.now().toString(), {
     attacker: args.attacker_id,
     defender: args.defender_id,
     damage: power,
@@ -61,12 +61,12 @@ JS reducers access the database through these global functions:
 
 | Function | Description |
 |---|---|
-| `__neondb_get(table, key)` | Read a row. Returns the row object or `null` if not found. Includes read-your-own-writes: a `__neondb_set` in the same call is visible to subsequent `__neondb_get` calls. |
-| `__neondb_set(table, key, value)` | Write a row. For the `"counters"` table with a plain number, calls the counter increment path. For any other value, writes the full object. |
-| `__neondb_delete(table, key)` | Delete a row. |
-| `__neondb_get_all(table)` | Returns all rows in a table as an array of `[key, value]` pairs. |
-| `__neondb_caller_id` | String: the identity of the client that called this reducer (from `X-Voltra-Identity` header or TCP peer address). |
-| `__neondb_caller_role` | String: the role extracted from `Bearer <key>:<role>`, or `""` if no role was provided. |
+| `__voltra_get(table, key)` | Read a row. Returns the row object or `null` if not found. Includes read-your-own-writes: a `__voltra_set` in the same call is visible to subsequent `__voltra_get` calls. |
+| `__voltra_set(table, key, value)` | Write a row. For the `"counters"` table with a plain number, calls the counter increment path. For any other value, writes the full object. |
+| `__voltra_delete(table, key)` | Delete a row. |
+| `__voltra_get_all(table)` | Returns all rows in a table as an array of `[key, value]` pairs. |
+| `__voltra_caller_id` | String: the identity of the client that called this reducer (from `X-Voltra-Identity` header or TCP peer address). |
+| `__voltra_caller_role` | String: the role extracted from `Bearer <key>:<role>`, or `""` if no role was provided. |
 
 ### Performance
 
@@ -75,8 +75,8 @@ The Boa JS engine is an interpreter. For compute-heavy reducers, compile to WASM
 ```bash
 # Download javy from https://github.com/bytecodealliance/javy/releases
 # Do NOT use cargo install javy — that installs a library crate, not the CLI.
-neondb build   # compiles modules/*.js → modules/*.wasm
-neondb start   # automatically prefers the .wasm version
+voltra build   # compiles modules/*.js → modules/*.wasm
+voltra start   # automatically prefers the .wasm version
 ```
 
 ### Security note
@@ -94,10 +94,10 @@ Drop a `.wasm` or `.wat` file into `modules/`. Wasmtime uses Cranelift JIT compi
 A WASM reducer module must import the following functions from the `"env"` namespace:
 
 ```wat
-(import "env" "neondb_get"     (func $get     (param i32 i32 i32 i32) (result i32)))
-(import "env" "neondb_set"     (func $set     (param i32 i32 i32 i32 i32 i32)))
-(import "env" "neondb_delete"  (func $delete  (param i32 i32 i32 i32)))
-(import "env" "neondb_get_all" (func $get_all (param i32 i32) (result i32)))
+(import "env" "voltra_get"     (func $get     (param i32 i32 i32 i32) (result i32)))
+(import "env" "voltra_set"     (func $set     (param i32 i32 i32 i32 i32 i32)))
+(import "env" "voltra_delete"  (func $delete  (param i32 i32 i32 i32)))
+(import "env" "voltra_get_all" (func $get_all (param i32 i32) (result i32)))
 ```
 
 All strings are passed as `(pointer, length)` pairs into linear memory. Return values are written into memory provided by the caller.
@@ -108,18 +108,18 @@ The recommended WASM build path is via javy:
 
 ```bash
 # Write a standard JS reducer in modules/my_reducer.js
-neondb build   # runs: javy build modules/my_reducer.js -o modules/my_reducer.wasm
+voltra build   # runs: javy build modules/my_reducer.js -o modules/my_reducer.wasm
 ```
 
 The resulting `.wasm` file is automatically preferred over the `.js` file on the next server start.
 
 ### Building from Rust
 
-Use the `neondb-reducer` crate as a dependency:
+Use the `voltra-reducer` crate as a dependency:
 
 ```toml
 [dependencies]
-neondb-reducer = { path = "../neondb-reducer" }
+voltra-reducer = { path = "../voltra-reducer" }
 ```
 
 See the `native/game-ready` template for a full example of a workspace with multiple Rust reducer crates compiled to WASM.
@@ -128,7 +128,7 @@ See the `native/game-ready` template for a full example of a workspace with mult
 
 ## Scheduler Reducers
 
-Reducers can be called automatically on a recurring schedule by adding a `[[scheduler]]` block to `neondb.toml`:
+Reducers can be called automatically on a recurring schedule by adding a `[[scheduler]]` block to `voltra.toml`:
 
 ```toml
 [[scheduler]]
@@ -151,7 +151,7 @@ The reducer name must exactly match the name registered in the `ReducerRegistry`
 
 ## Permissions
 
-Restrict which roles can call a reducer by adding a `[permissions]` section to `neondb.toml`:
+Restrict which roles can call a reducer by adding a `[permissions]` section to `voltra.toml`:
 
 ```toml
 [server]

@@ -22,7 +22,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::table::RowDelta;
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use super::ClusterBus;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -163,7 +163,7 @@ pub fn wire_to_row_deltas(wire: Vec<WireDelta>) -> Vec<RowDelta> {
 
 pub fn parse_delta_payload(body: &[u8]) -> Result<DeltaPayload> {
     serde_json::from_slice(body).map_err(|e| {
-        NeonDBError::invalid_argument(format!("Delta payload JSON parse error: {}", e))
+        VoltraError::invalid_argument(format!("Delta payload JSON parse error: {}", e))
     })
 }
 

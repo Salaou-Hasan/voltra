@@ -1,13 +1,13 @@
-# ── NeonDB — single-node deployment for Dokploy ──────────────────────────────
+# ── Voltra — single-node deployment for Dokploy ──────────────────────────────
 #
 # In Dokploy: create a "Compose" service, point it at this repo, and set the
-# compose path to `docker-compose.dokploy.yml`. Set NEONDB_API_KEY (and any
+# compose path to `docker-compose.dokploy.yml`. Set VOLTRA_API_KEY (and any
 # other secrets) in the Dokploy Environment tab — do NOT hard-code them here.
 #
-# Persistence: the `neondb-data` named volume holds WAL + snapshots + backups,
+# Persistence: the `voltra-data` named volume holds WAL + snapshots + backups,
 # so data survives container restarts and redeploys.
 services:
-  neondb:
+  voltra:
     build:
       context: .
       dockerfile: Dockerfile
@@ -16,32 +16,32 @@ services:
       # ── Networking ──────────────────────────────────────────────────────────
       # 0.0.0.0 is REQUIRED inside a container (the default 127.0.0.1 would only
       # be reachable from inside the container itself).
-      NEONDB_HOST: "0.0.0.0"
-      NEONDB_PORT: "3000"            # WebSocket / MessagePack game protocol
-      NEONDB_METRICS_PORT: "3001"    # metrics + admin console + /healthz
-      NEONDB_REDIS_PORT: "6379"      # Redis (RESP) — set to 0 to disable
-      NEONDB_PG_PORT: "5432"         # PostgreSQL wire — set to 0 to disable
+      VOLTRA_HOST: "0.0.0.0"
+      VOLTRA_PORT: "3000"            # WebSocket / MessagePack game protocol
+      VOLTRA_METRICS_PORT: "3001"    # metrics + admin console + /healthz
+      VOLTRA_REDIS_PORT: "6379"      # Redis (RESP) — set to 0 to disable
+      VOLTRA_PG_PORT: "5432"         # PostgreSQL wire — set to 0 to disable
 
       # ── Auth (REQUIRED when the port is reachable from the network) ─────────
       # Set this as a secret in Dokploy's Environment tab.
-      NEONDB_API_KEY: "${NEONDB_API_KEY}"
+      VOLTRA_API_KEY: "${VOLTRA_API_KEY}"
 
       # ── Durable storage on the mounted volume ───────────────────────────────
-      NEONDB_WAL_PATH: "/var/lib/neondb/data/neondb.wal"
-      NEONDB_SNAPSHOT_DIR: "/var/lib/neondb/data/snapshots"
-      NEONDB_BACKUP_DIR: "/var/lib/neondb/data/backups"
-      NEONDB_BACKUP_INTERVAL_SECS: "3600"   # hourly backups
-      NEONDB_BACKUP_KEEP: "24"              # keep 24 (one day's worth)
+      VOLTRA_WAL_PATH: "/var/lib/voltra/data/voltra.wal"
+      VOLTRA_SNAPSHOT_DIR: "/var/lib/voltra/data/snapshots"
+      VOLTRA_BACKUP_DIR: "/var/lib/voltra/data/backups"
+      VOLTRA_BACKUP_INTERVAL_SECS: "3600"   # hourly backups
+      VOLTRA_BACKUP_KEEP: "24"              # keep 24 (one day's worth)
 
       # ── Performance tuning (safe single-node defaults) ──────────────────────
-      NEONDB_SUB_TICK_MS: "50"        # 20Hz subscription coalescing
-      NEONDB_MAX_CONNECTIONS: "50000"
+      VOLTRA_SUB_TICK_MS: "50"        # 20Hz subscription coalescing
+      VOLTRA_MAX_CONNECTIONS: "50000"
 
       # ── Optional: Redis / PG passwords (set as secrets if you expose them) ──
-      # NEONDB_REDIS_PASSWORD: "${NEONDB_REDIS_PASSWORD}"
-      # NEONDB_PG_PASSWORD: "${NEONDB_PG_PASSWORD}"
+      # VOLTRA_REDIS_PASSWORD: "${VOLTRA_REDIS_PASSWORD}"
+      # VOLTRA_PG_PASSWORD: "${VOLTRA_PG_PASSWORD}"
     volumes:
-      - neondb-data:/var/lib/neondb/data
+      - voltra-data:/var/lib/voltra/data
     ports:
       # Dokploy can also route these through Traefik with a domain (see DEPLOY).
       - "3000:3000"   # game clients connect here
@@ -56,4 +56,4 @@ services:
       start_period: 20s
 
 volumes:
-  neondb-data:
+  voltra-data:

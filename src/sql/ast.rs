@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB SQL AST
+// Voltra SQL AST
 //
 // Abstract syntax tree produced by the parser and consumed by the executor.
 // Supports full SELECT (projections, aliases, JOINs, WHERE, GROUP BY, HAVING,

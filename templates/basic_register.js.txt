@@ -6,25 +6,25 @@
 //         { error: "missing_fields" | "user_exists" }
 //
 // Usage:
-//   neondb call register '["alice", "hashed-pw"]'
+//   voltra call register '["alice", "hashed-pw"]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
   const [username, password_hash] = args;
   if (!username || !password_hash) { return { error: "missing_fields" }; }
-  else if (__neondb_get("users", username)) { return { error: "user_exists" }; }
+  else if (__voltra_get("users", username)) { return { error: "user_exists" }; }
   else {
-    __neondb_set("users", username, {
+    __voltra_set("users", username, {
       username,
       password_hash,
       role: "player",

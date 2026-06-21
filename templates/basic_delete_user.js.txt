@@ -6,28 +6,28 @@
 //         { error: "forbidden" | "no_such_user" }
 //
 // Usage:
-//   neondb call delete_user '["alice"]'
+//   voltra call delete_user '["alice"]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
   const [username] = args;
-  if (__neondb_caller_id !== username && __neondb_caller_role !== "admin") {
+  if (__voltra_caller_id !== username && __voltra_caller_role !== "admin") {
     return { error: "forbidden" };
-  } else if (!__neondb_get("users", username)) {
+  } else if (!__voltra_get("users", username)) {
     return { error: "no_such_user" };
   } else {
-    __neondb_delete("users", username);
-    __neondb_delete("sessions", username);
+    __voltra_delete("users", username);
+    __voltra_delete("sessions", username);
     return { ok: true };
   }
 }

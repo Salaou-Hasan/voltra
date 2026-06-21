@@ -5,12 +5,12 @@ using UnityEngine;
 using Newtonsoft.Json.Linq;
 
 /// <summary>
-/// High-level NeonDB game API. Add this to a persistent GameManager GameObject.
-/// Requires NeonDBBehaviour on the same GameObject.
+/// High-level Voltra game API. Add this to a persistent GameManager GameObject.
+/// Requires VoltraBehaviour on the same GameObject.
 /// </summary>
-public class NeonDBManager : MonoBehaviour
+public class VoltraManager : MonoBehaviour
 {
-    public static NeonDBManager Instance { get; private set; }
+    public static VoltraManager Instance { get; private set; }
 
     [Header("Connection")]
     public string serverUrl = "ws://localhost:3000";
@@ -19,7 +19,7 @@ public class NeonDBManager : MonoBehaviour
     [Header("Lobby")]
     public string lobbyId = "lobby_1";
 
-    [SerializeField] private NeonDBBehaviour _db;
+    [SerializeField] private VoltraBehaviour _db;
 
     /// <summary>Fired on the main thread whenever a subscribed player row changes.</summary>
     public event Action<JObject> OnPlayerUpdate;
@@ -74,12 +74,12 @@ public class NeonDBManager : MonoBehaviour
 
     /// <summary>
     /// Example: wire to Unity's Update loop to flush main-thread callbacks.
-    /// NeonDBBehaviour.Update() handles this automatically when attached to the
+    /// VoltraBehaviour.Update() handles this automatically when attached to the
     /// same GameObject. No manual call needed.
     /// </summary>
     private void Update()
     {
-        // NeonDBBehaviour pumps its MainThreadQueue in its own Update().
+        // VoltraBehaviour pumps its MainThreadQueue in its own Update().
         // Put any per-frame game logic here (interpolation, camera, etc.)
     }
 }

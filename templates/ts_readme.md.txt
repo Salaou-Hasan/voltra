@@ -1,19 +1,19 @@
-A NeonDB TypeScript starter with React hooks and a Vite-powered client.
+A Voltra TypeScript starter with React hooks and a Vite-powered client.
 
 ## Layout
 
 ```
 modules/        hello, set_value, delete_value  (JS reducers)
 client/         TypeScript + React app
-  src/client.ts   NeonDBClient bootstrap
-  src/hooks.tsx   useNeonDBQuery, useNeonDBReducer, NeonDBProvider
+  src/client.ts   VoltraClient bootstrap
+  src/hooks.tsx   useVoltraQuery, useVoltraReducer, VoltraProvider
   src/example/App.tsx   minimal example
 ```
 
 ## Run the database
 
 ```bash
-neondb start
+voltra start
 ```
 
 ## Run the client
@@ -29,7 +29,7 @@ to `ws://127.0.0.1:3000`.
 
 ## Customize
 
-- Add new reducers in `modules/` — they auto-register on `neondb start`.
+- Add new reducers in `modules/` — they auto-register on `voltra start`.
 - Edit `client/src/example/App.tsx` for your own UI.
-- Use `useNeonDBQuery("table WHERE …")` for live data; `useNeonDBReducer("name")`
+- Use `useVoltraQuery("table WHERE …")` for live data; `useVoltraReducer("name")`
   to invoke reducers with optimistic updates.

@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB LRU Eviction Tracker
+// Voltra LRU Eviction Tracker
 //
 // Provides per-table LRU tracking for the TableStore eviction system.
 // Two policies are supported:

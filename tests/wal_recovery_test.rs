@@ -17,8 +17,8 @@
 // real-server integration tests are owned by Session 37/38 work).
 // ============================================================================
 
-use neondb::table::{RowDelta, TableStore};
-use neondb::wal::{
+use voltra::table::{RowDelta, TableStore};
+use voltra::wal::{
     snapshot::{load_snapshot, save_snapshot, snapshot_path},
     WalEntry, WalReader, WalWriter,
 };
@@ -38,7 +38,7 @@ fn unique_tmp(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("neondb_wal_recovery_{}_{}_{}", label, pid, ns))
+    std::env::temp_dir().join(format!("voltra_wal_recovery_{}_{}_{}", label, pid, ns))
 }
 
 fn delta_for(table: &str, key: &str, value: serde_json::Value) -> RowDelta {
@@ -81,7 +81,7 @@ fn write_entries(path: &PathBuf, count: u64) {
 fn write_then_read_all_entries_roundtrip() {
     let dir = unique_tmp("roundtrip");
     fs::create_dir_all(&dir).unwrap();
-    let wal = dir.join("neondb.wal");
+    let wal = dir.join("voltra.wal");
 
     write_entries(&wal, 10);
 
@@ -107,7 +107,7 @@ fn write_then_read_all_entries_roundtrip() {
 fn corrupted_last_entry_checksum_fails_verification() {
     let dir = unique_tmp("corrupt");
     fs::create_dir_all(&dir).unwrap();
-    let wal = dir.join("neondb.wal");
+    let wal = dir.join("voltra.wal");
 
     write_entries(&wal, 10);
 
@@ -170,7 +170,7 @@ fn corrupted_last_entry_checksum_fails_verification() {
 fn truncated_mid_entry_recovers_completed_entries() {
     let dir = unique_tmp("truncate");
     fs::create_dir_all(&dir).unwrap();
-    let wal = dir.join("neondb.wal");
+    let wal = dir.join("voltra.wal");
 
     write_entries(&wal, 5);
 
@@ -223,7 +223,7 @@ fn snapshot_plus_wal_replay_applies_only_postsnapshot_entries() {
 
     // Now write a WAL containing entries 1..=15 — we expect replay to skip
     // 1..=5 (already in the snapshot) and apply only 6..=15.
-    let wal = dir.join("neondb.wal");
+    let wal = dir.join("voltra.wal");
     write_entries(&wal, 15);
 
     // Recovery: fresh store, load snapshot, then replay WAL entries with

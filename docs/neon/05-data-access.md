@@ -109,7 +109,7 @@ players[player_id].gold /= 2     // gold = gold / 2
 players[player_id].kills %= 10   // kills = kills % 10
 ```
 
-These are **read-modify-write** operations. NeonDB reads the current value, applies the operation, and writes it back. Because reducers are atomic, you never get a lost update even if multiple clients call the same reducer simultaneously.
+These are **read-modify-write** operations. Voltra reads the current value, applies the operation, and writes it back. Because reducers are atomic, you never get a lost update even if multiple clients call the same reducer simultaneously.
 
 ```neon
 reducer gain_xp(player_id: str, amount: int) {

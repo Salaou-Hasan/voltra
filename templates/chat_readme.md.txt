@@ -1,4 +1,4 @@
-# NeonDB Chat Template
+# Voltra Chat Template
 
 A realtime chat starter: rooms, messages, threads, reactions, presence,
 typing indicators, and moderation.
@@ -17,10 +17,10 @@ schema.toml           all tables
 ## Run
 
 ```bash
-neondb start
-neondb call create_room  '["general", "General", "alice"]'
-neondb call send_message '["general", "m1", "alice", "Hello!"]'
-neondb watch "messages WHERE room_id = 'general' ORDER BY created_at DESC LIMIT 100"
+voltra start
+voltra call create_room  '["general", "General", "alice"]'
+voltra call send_message '["general", "m1", "alice", "Hello!"]'
+voltra watch "messages WHERE room_id = 'general' ORDER BY created_at DESC LIMIT 100"
 ```
 
 Moderator/admin actions require `Authorization: Bearer <key>:moderator`
@@ -35,8 +35,8 @@ High-frequency reducers like `send_message` and `set_typing` see the largest
 gains from compiling to WASM before any real load test.
 
 ```bash
-neondb build   # .js → .wasm via Javy; server auto-picks WASM on next start
-neondb start
+voltra build   # .js → .wasm via Javy; server auto-picks WASM on next start
+voltra start
 ```
 
 WASM runs on Wasmtime/Cranelift (~500 k calls/s, 10–50× faster).
@@ -58,9 +58,9 @@ These globals are available in every `.js` reducer file:
 |--------|-------------|
 | `args` | Array of positional arguments passed by the client |
 | `result` | Assign the return value here before the file ends |
-| `__neondb_get(table, key)` | Read one row → `object \| null` |
-| `__neondb_set(table, key, val)` | Write/upsert one row |
-| `__neondb_delete(table, key)` | Delete one row |
-| `__neondb_get_all(table)` | Read all rows → `object[]` |
-| `__neondb_caller_id` | Identity string of the calling client |
-| `__neondb_caller_role` | Role string (e.g. `"moderator"`, `"admin"`) |
+| `__voltra_get(table, key)` | Read one row → `object \| null` |
+| `__voltra_set(table, key, val)` | Write/upsert one row |
+| `__voltra_delete(table, key)` | Delete one row |
+| `__voltra_get_all(table)` | Read all rows → `object[]` |
+| `__voltra_caller_id` | Identity string of the calling client |
+| `__voltra_caller_role` | Role string (e.g. `"moderator"`, `"admin"`) |

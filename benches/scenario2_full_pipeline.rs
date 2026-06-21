@@ -27,7 +27,7 @@
 // ============================================================================
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use neondb::{
+use voltra::{
     reducer::{increment_reducer, ReducerContext},
     subscriptions::{OutboundFrames, SubscriptionManager},
     table::TableStore,
@@ -116,7 +116,7 @@ fn bench_full_pipeline_with_wal(c: &mut Criterion) {
 
         // WAL with no-fsync so we measure batching overhead, not SSD latency.
         let wal_path = std::env::temp_dir()
-            .join(format!("neondb_bench_s2_{}.wal", n_subs));
+            .join(format!("voltra_bench_s2_{}.wal", n_subs));
         let _ = std::fs::remove_file(&wal_path);
         let wal = Arc::new(
             BatchedWalWriter::open(&wal_path, 10, 512, /*unsafe_no_fsync=*/true).unwrap(),
@@ -138,7 +138,7 @@ fn bench_full_pipeline_with_wal(c: &mut Criterion) {
                     let deltas = ctx.commit().unwrap();
 
                     let s = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let entry = neondb::wal::WalEntry::new(
+                    let entry = voltra::wal::WalEntry::new(
                         1_000,
                         s,
                         "increment".to_string(),

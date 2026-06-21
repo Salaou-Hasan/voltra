@@ -554,14 +554,14 @@ async function poll() {
     document.getElementById("conn-dot").className = "ok";
     document.getElementById("conn-text").textContent = location.host;
 
-    const calls  = parseProm(prom, "neondb_reducer_calls_total")[0] ?? 0;
-    const errors = parseProm(prom, "neondb_reducer_errors_total")[0] ?? 0;
+    const calls  = parseProm(prom, "voltra_reducer_calls_total")[0] ?? 0;
+    const errors = parseProm(prom, "voltra_reducer_errors_total")[0] ?? 0;
     const now = performance.now();
     let tps = 0;
     if (S.lastCalls !== null && now > S.lastT) tps = Math.max(0, (calls - S.lastCalls) / ((now - S.lastT)/1000));
     S.lastCalls = calls; S.lastT = now; S.lastErrors = errors;
 
-    const p99s = promQuantile(prom, "neondb_reducer_duration_seconds", 0.99);
+    const p99s = promQuantile(prom, "voltra_reducer_duration_seconds", 0.99);
     const memMB = (hz.memory_usage_bytes||0)/1e6, walMB = (hz.wal_file_size_bytes||0)/1e6;
 
     setText("ov-tps", fmt(Math.round(tps)));
@@ -907,7 +907,7 @@ async function loadCluster() {
     const peers = d.peers || [];
     if (!d.cluster_enabled) {
       sum.innerHTML = `<span class="badge blue">Standalone</span> <span class="muted">This node is running as a single node (shard ${d.my_shard_id} of ${d.shard_count}). No peers configured.</span>`;
-      peersEl.innerHTML = `<div class="muted" style="margin-top:6px">To form a cluster, set <code>NEONDB_PEERS</code>, <code>NEONDB_SHARD_ID</code> and <code>NEONDB_SHARD_COUNT</code> on each node.</div>`;
+      peersEl.innerHTML = `<div class="muted" style="margin-top:6px">To form a cluster, set <code>VOLTRA_PEERS</code>, <code>VOLTRA_SHARD_ID</code> and <code>VOLTRA_SHARD_COUNT</code> on each node.</div>`;
       return;
     }
     const healthy = peers.filter(p => p.healthy !== false).length;

@@ -6,31 +6,31 @@
 //         { error: "not_found" }
 //
 // Usage:
-//   neondb call open_loot_box '["player1", "box_001", 42]'
+//   voltra call open_loot_box '["player1", "box_001", 42]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
   const [pid, box_id, seed] = args;
-  const p = __neondb_get("players", pid);
+  const p = __voltra_get("players", pid);
   if (!p) { return { error: "not_found" }; }
   else {
     const items = ["sword", "potion", "shield", "gold"];
     const idx = ((seed || 0) % items.length + items.length) % items.length;
     const reward = items[idx];
     const k = pid + ":" + reward;
-    const inv = __neondb_get("inventory", k) || { player_id: pid, item_id: reward, qty: 0 };
+    const inv = __voltra_get("inventory", k) || { player_id: pid, item_id: reward, qty: 0 };
     inv.qty += 1;
-    __neondb_set("inventory", k, inv);
+    __voltra_set("inventory", k, inv);
     return { ok: true, reward, qty: inv.qty };
   }
 }

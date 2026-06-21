@@ -25,7 +25,7 @@
 //! }
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// Resolve one round of combat between attacker and target.
@@ -99,4 +99,4 @@ pub fn attack(ctx: &mut Context, args: Value) -> Result<Value> {
     }))
 }
 
-neondb_reducer::reducer!(attack);
+voltra_reducer::reducer!(attack);

@@ -5,18 +5,18 @@
 // Return: { ok: true, npc: object }
 //
 // Usage:
-//   neondb call spawn_npc '["goblin_1", 50, 50, "goblin"]'
+//   voltra call spawn_npc '["goblin_1", 50, 50, "goblin"]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
   const [npc_id, x, y, kind] = args;
@@ -24,6 +24,6 @@ function reducer(args) {
     npc_id, x: x || 0, y: y || 0, kind: kind || "goblin",
     hp: 50, max_hp: 50, aggressive: true,
   };
-  __neondb_set("npcs", npc_id, npc);
+  __voltra_set("npcs", npc_id, npc);
   return { ok: true, npc };
 }

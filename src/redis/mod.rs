@@ -1,4 +1,4 @@
-//! Redis protocol server for NeonDB.
+//! Redis protocol server for Voltra.
 //!
 //! A full RESP2/RESP3 server backed by the MVCC engine:
 //! * Read commands run lock-free on MVCC snapshots — parallel across all cores.
@@ -641,7 +641,7 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
             }
         }
         "SHUTDOWN" => {
-            reply_frames.push(Resp::err("ERR SHUTDOWN is disabled — NeonDB manages this process lifecycle"));
+            reply_frames.push(Resp::err("ERR SHUTDOWN is disabled — Voltra manages this process lifecycle"));
         }
         "SLOWLOG" => {
             let sub = rest.first().map(upper).unwrap_or_default();
@@ -662,10 +662,10 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
             }
         }
         "REPLICAOF" | "SLAVEOF" => {
-            reply_frames.push(Resp::err("ERR REPLICAOF is not supported — use NeonDB replication (NEONDB_ROLE/NEONDB_PRIMARY_URL)"));
+            reply_frames.push(Resp::err("ERR REPLICAOF is not supported — use Voltra replication (VOLTRA_ROLE/VOLTRA_PRIMARY_URL)"));
         }
         "SCRIPT" | "EVAL" | "EVALSHA" | "FUNCTION" | "FCALL" => {
-            reply_frames.push(Resp::err("ERR Lua scripting is not supported — use NeonDB reducers (JS/WASM/native) for server-side logic"));
+            reply_frames.push(Resp::err("ERR Lua scripting is not supported — use Voltra reducers (JS/WASM/native) for server-side logic"));
         }
         // ── data plane ───────────────────────────────────────────────────────
         _ if is_data_command(&cmd) => {
@@ -816,8 +816,8 @@ fn info_reply(ctx: &Arc<RedisCtx>, args: &[Bytes]) -> Resp {
     if want("SERVER") {
         s.push_str(&format!(
             "# Server\r\nredis_version:{REDIS_VERSION}\r\nredis_git_sha1:0\r\nredis_mode:standalone\r\n\
-             os:NeonDB\r\narch_bits:64\r\nprocess_id:{}\r\ntcp_port:6379\r\nuptime_in_seconds:{uptime}\r\n\
-             uptime_in_days:{}\r\nexecutable:neondb\r\nconfig_file:\r\n\r\n",
+             os:Voltra\r\narch_bits:64\r\nprocess_id:{}\r\ntcp_port:6379\r\nuptime_in_seconds:{uptime}\r\n\
+             uptime_in_days:{}\r\nexecutable:voltra\r\nconfig_file:\r\n\r\n",
             std::process::id(),
             uptime / 86400
         ));
@@ -847,7 +847,7 @@ fn info_reply(ctx: &Arc<RedisCtx>, args: &[Bytes]) -> Resp {
         ));
     }
     if want("REPLICATION") {
-        s.push_str("# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_replid:neondb000000000000000000000000000000000000\r\nmaster_repl_offset:0\r\n\r\n");
+        s.push_str("# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_replid:voltra000000000000000000000000000000000000\r\nmaster_repl_offset:0\r\n\r\n");
     }
     if want("CPU") {
         s.push_str("# CPU\r\nused_cpu_sys:0.0\r\nused_cpu_user:0.0\r\n\r\n");
@@ -892,7 +892,7 @@ fn config_reply(args: &[Bytes]) -> Resp {
             }
             Resp::Map(pairs)
         }
-        "SET" => Resp::ok(),       // accepted and ignored — NeonDB config governs
+        "SET" => Resp::ok(),       // accepted and ignored — Voltra config governs
         "RESETSTAT" => Resp::ok(),
         "REWRITE" => Resp::ok(),
         _ => Resp::err(format!("ERR Unknown CONFIG subcommand '{sub}'")),

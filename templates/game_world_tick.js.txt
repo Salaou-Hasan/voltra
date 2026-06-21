@@ -5,27 +5,27 @@
 // Return: { ok: true, ticked: number, healed: number }
 //
 // Usage:
-//   neondb call world_tick '[]'
+//   voltra call world_tick '[]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 //   For large player counts (1000+) this is a good native-tier candidate.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
-  const players = __neondb_get_all("players") || [];
+  const players = __voltra_get_all("players") || [];
   let healed = 0;
   for (const p of players) {
     if (p.hp < p.max_hp) { p.hp = Math.min(p.max_hp, p.hp + 1); healed++; }
     if (p.mp < p.max_mp) p.mp = Math.min(p.max_mp, p.mp + 1);
-    __neondb_set("players", p.player_id, p);
+    __voltra_set("players", p.player_id, p);
   }
   return { ok: true, ticked: players.length, healed };
 }

@@ -1,6 +1,6 @@
-# game/godot — NeonDB + Godot 4 Multiplayer Template
+# game/godot — Voltra + Godot 4 Multiplayer Template
 
-A full-stack multiplayer template: a NeonDB game server with native reducers and a Godot 4 GDScript client ready to use as an autoload.
+A full-stack multiplayer template: a Voltra game server with native reducers and a Godot 4 GDScript client ready to use as an autoload.
 
 ## What You Get
 
@@ -8,22 +8,22 @@ A full-stack multiplayer template: a NeonDB game server with native reducers and
 reducers/           — server-side game logic (spawn, move, damage, heal, despawn)
 schema.toml         — players + sessions table definitions
 godot/
-  neondb_client.gd      — WebSocketPeer client with MessagePack framing
-  NeonDBManager.gd      — autoload: spawn, move, row_update signal
+  voltra_client.gd      — WebSocketPeer client with MessagePack framing
+  VoltraManager.gd      — autoload: spawn, move, row_update signal
 ```
 
 ## Setup
 
-1. Start the NeonDB server:
+1. Start the Voltra server:
    ```bash
-   neondb start
+   voltra start
    ```
 
-2. Copy the `godot/` folder into your Godot project (e.g. `res://addons/neondb/`).
+2. Copy the `godot/` folder into your Godot project (e.g. `res://addons/voltra/`).
 
-3. Add `NeonDBManager.gd` as an Autoload in **Project → Project Settings → Autoloads**:
-   - Path: `res://addons/neondb/NeonDBManager.gd`
-   - Name: `NeonDB`
+3. Add `VoltraManager.gd` as an Autoload in **Project → Project Settings → Autoloads**:
+   - Path: `res://addons/voltra/VoltraManager.gd`
+   - Name: `Voltra`
 
 4. In the Inspector (or directly in the script), set:
    - `server_url`: `ws://localhost:3000`
@@ -33,17 +33,17 @@ godot/
 5. Call reducers from any Node:
    ```gdscript
    # Spawn player and wait for result
-   var res = await NeonDB.spawn_player("player1", "lobby_1", "warrior")
+   var res = await Voltra.spawn_player("player1", "lobby_1", "warrior")
    print(res)   # { ok: true, player: { ... } }
 
    # Move on input
-   await NeonDB.move_player("player1", position.x, position.z)
+   await Voltra.move_player("player1", position.x, position.z)
    ```
 
 6. React to live player updates via the signal:
    ```gdscript
    func _ready():
-       NeonDB.player_updated.connect(_on_player_updated)
+       Voltra.player_updated.connect(_on_player_updated)
 
    func _on_player_updated(data: Dictionary):
        $Sprite2D.position = Vector2(data["x"], data["y"])
@@ -51,7 +51,7 @@ godot/
 
 ## Scaling
 
-NeonDB handles thousands of concurrent players on a single node. For multi-region or 30K+ CCU, see `SCALING.md`.
+Voltra handles thousands of concurrent players on a single node. For multi-region or 30K+ CCU, see `SCALING.md`.
 
 ## Add Modules
 

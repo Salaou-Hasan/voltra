@@ -1,4 +1,4 @@
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::reducer::backend::ReducerBackend;
 use crate::reducer::native::NativeReducerBackend;
 use crate::reducer::v8::V8ReducerBackend;
@@ -156,7 +156,7 @@ impl ReducerRegistry {
         }
 
         // TODO-005: WASM-first — if a pre-compiled .wasm companion exists for this
-        // .js file, prefer it.  The .wasm is produced by `neondb build` via javy.
+        // .js file, prefer it.  The .wasm is produced by `voltra build` via javy.
         // This transparently upgrades JS reducers to Wasmtime JIT when available,
         // with no changes needed to the reducer source code.
         let ext = if ext == "js" {
@@ -173,7 +173,7 @@ impl ReducerRegistry {
         let name = path
             .file_stem()
             .and_then(|s| s.to_str())
-            .ok_or_else(|| NeonDBError::invalid_argument("Invalid module file name"))?
+            .ok_or_else(|| VoltraError::invalid_argument("Invalid module file name"))?
             .to_string();
 
         if self.reducers.contains_key(&name) {
@@ -199,7 +199,7 @@ impl ReducerRegistry {
     fn load_metadata(&self, path: &Path) -> Result<Option<ModuleMetadata>> {
         let contents = std::fs::read_to_string(path)?;
         let metadata: ModuleMetadata = serde_json::from_str(&contents).map_err(|e| {
-            NeonDBError::invalid_argument(format!("Invalid module metadata: {}", e))
+            VoltraError::invalid_argument(format!("Invalid module metadata: {}", e))
         })?;
         Ok(Some(metadata))
     }
@@ -211,7 +211,7 @@ impl ReducerRegistry {
     ) -> Result<()> {
         let module_file = metadata
             .file
-            .ok_or_else(|| NeonDBError::invalid_argument("Module metadata missing 'file' field"))?;
+            .ok_or_else(|| VoltraError::invalid_argument("Module metadata missing 'file' field"))?;
         let module_path = sidecar_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -264,9 +264,9 @@ impl ReducerRegistry {
         entrypoint: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> Result<ReducerDefinition> {
-        // Per-module timeout > NEONDB_REDUCER_TIMEOUT_MS env > 5 s default.
+        // Per-module timeout > VOLTRA_REDUCER_TIMEOUT_MS env > 5 s default.
         let timeout = timeout_ms.unwrap_or_else(|| {
-            std::env::var("NEONDB_REDUCER_TIMEOUT_MS")
+            std::env::var("VOLTRA_REDUCER_TIMEOUT_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5_000)
@@ -276,7 +276,7 @@ impl ReducerRegistry {
             "js" => {
                 let backend =
                     V8ReducerBackend::from_file(path.to_path_buf(), timeout).map_err(|e| {
-                        NeonDBError::reducer_error(format!(
+                        VoltraError::reducer_error(format!(
                             "Failed to load JS module '{}': {}",
                             path.display(),
                             e
@@ -292,7 +292,7 @@ impl ReducerRegistry {
                 let fn_name = entrypoint.unwrap_or("reducer");
                 let backend =
                     WasmReducerBackend::from_file(path.to_path_buf(), fn_name).map_err(|e| {
-                        NeonDBError::reducer_error(format!(
+                        VoltraError::reducer_error(format!(
                             "Failed to load WASM module '{}': {}",
                             path.display(),
                             e
@@ -304,7 +304,7 @@ impl ReducerRegistry {
                     backend: Box::new(backend),
                 })
             }
-            other => Err(NeonDBError::invalid_argument(format!(
+            other => Err(VoltraError::invalid_argument(format!(
                 "Unsupported module extension: '{}'",
                 other
             ))),
@@ -329,7 +329,7 @@ impl ReducerRegistry {
         args: &[u8],
     ) -> Result<Vec<u8>> {
         let definition = self.reducers.get(reducer_name).ok_or_else(|| {
-            NeonDBError::reducer_error(format!("Unknown reducer: '{}'", reducer_name))
+            VoltraError::reducer_error(format!("Unknown reducer: '{}'", reducer_name))
         })?;
         definition.backend.execute(ctx, args)
     }
@@ -375,7 +375,7 @@ mod tests {
         let err = registry
             .execute("does_not_exist", &mut ctx, b"")
             .unwrap_err();
-        assert!(matches!(err, NeonDBError::ReducerError(_)));
+        assert!(matches!(err, VoltraError::ReducerError(_)));
     }
 
     #[test]
@@ -413,8 +413,8 @@ mod tests {
         std::fs::write(
             &path,
             r#"function reducer(args) {
-  var v = ((__neondb_get("counters", args.name) || {}).value || 0) + args.delta;
-  __neondb_set("counters", args.name, v);
+  var v = ((__voltra_get("counters", args.name) || {}).value || 0) + args.delta;
+  __voltra_set("counters", args.name, v);
   return { new_value: v, timestamp: 0 };
 }"#,
         )
@@ -475,8 +475,8 @@ mod tests {
         // Directly insert a NativeReducerItem-style backend to verify the
         // register_native_backend code path works.  The proc macro does the
         // same thing via inventory::submit! — we test the plumbing here
-        // without invoking the macro (which generates ::neondb:: paths and
-        // therefore can't be used inside the neondb crate itself).
+        // without invoking the macro (which generates ::voltra:: paths and
+        // therefore can't be used inside the voltra crate itself).
         struct PongReducer;
         impl ReducerBackend for PongReducer {
             fn execute(
@@ -510,7 +510,7 @@ mod tests {
         // Verify that inventory::iter compiles and runs without panic.
         // No external crates contribute items in this test build, so the
         // iterator is empty — that's fine.  The real auto-registration is
-        // exercised by users of the neondb crate via #[reducer].
+        // exercised by users of the voltra crate via #[reducer].
         let collected: Vec<&NativeReducerItem> = inventory::iter::<NativeReducerItem>().collect();
         // collected may be empty here; no assertion needed — just verify it
         // doesn't panic.

@@ -1,10 +1,10 @@
 // src/cluster/regions.rs — Regional cluster registry
 //
-// Each NeonDB deployment can span multiple named regions (e.g. "europe",
+// Each Voltra deployment can span multiple named regions (e.g. "europe",
 // "asia", "africa").  This module tracks:
-//   - Which region THIS node belongs to  (NEONDB_REGION)
+//   - Which region THIS node belongs to  (VOLTRA_REGION)
 //   - The WebSocket + metrics URLs for every peer region
-//     (NEONDB_REGIONS=europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001)
+//     (VOLTRA_REGIONS=europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001)
 //
 // Clients use GET /cluster/lobby-route?lobby_id=X to discover which region
 // hosts a given lobby, then reconnect directly to that region's ws_url.
@@ -35,17 +35,17 @@ pub struct RegionRegistry {
 impl RegionRegistry {
     /// Build from environment variables.
     ///
-    /// `NEONDB_REGION`  — this node's region ID (default "default").
-    /// `NEONDB_REGIONS` — comma-separated list of `id=ws_url|metrics_url` pairs.
+    /// `VOLTRA_REGION`  — this node's region ID (default "default").
+    /// `VOLTRA_REGIONS` — comma-separated list of `id=ws_url|metrics_url` pairs.
     ///
     /// Example:
-    ///   NEONDB_REGION=europe
-    ///   NEONDB_REGIONS=europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001
+    ///   VOLTRA_REGION=europe
+    ///   VOLTRA_REGIONS=europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001
     pub fn from_env() -> Self {
-        let my_region = env::var("NEONDB_REGION").unwrap_or_else(|_| "default".to_string());
+        let my_region = env::var("VOLTRA_REGION").unwrap_or_else(|_| "default".to_string());
         let regions: DashMap<String, ClusterRegion> = DashMap::new();
 
-        if let Ok(raw) = env::var("NEONDB_REGIONS") {
+        if let Ok(raw) = env::var("VOLTRA_REGIONS") {
             for entry in raw.split(',') {
                 let entry = entry.trim();
                 if entry.is_empty() { continue; }

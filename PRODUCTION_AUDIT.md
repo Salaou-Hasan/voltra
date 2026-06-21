@@ -1,4 +1,4 @@
-# NeonDB Production Readiness Audit & Roadmap
+# Voltra Production Readiness Audit & Roadmap
 
 **Date:** 2026-06-07  
 **Codebase:** commit `2ac06ba` (307 tests passing)  
@@ -59,7 +59,7 @@
 | Clustering | **PARTIAL** | FNV-1a shard routing, gossip heartbeat, dynamic peer join, proxy calls, fan-out retry queue (backoff). No leader election, no auto-rebalance |
 | Node communication | **COMPLETE** | HTTP-based cluster bus with shared secret auth, health endpoint, peers endpoint |
 | Metrics endpoint | **PARTIAL** | `/metrics` (Prometheus-ish text), `/healthz` (JSON), `/stats` (tables). No histogram, no per-reducer latency, no queue depth |
-| Benchmark tooling | **COMPLETE** | criterion benches (3 scenarios) + inline `neondb bench` CLI command with HDR histogram latency reporting |
+| Benchmark tooling | **COMPLETE** | criterion benches (3 scenarios) + inline `voltra bench` CLI command with HDR histogram latency reporting |
 
 ---
 
@@ -129,9 +129,9 @@
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Node discovery | **PARTIAL** | Static `NEONDB_PEERS` env var + dynamic `POST /cluster/join`. No mDNS, no service registry |
+| Node discovery | **PARTIAL** | Static `VOLTRA_PEERS` env var + dynamic `POST /cluster/join`. No mDNS, no service registry |
 | Membership tracking | **COMPLETE** | `DashMap<shard_id, PeerEntry>` with health state |
-| Heartbeats | **COMPLETE** | Gossip task pings `/cluster/health` every `NEONDB_GOSSIP_INTERVAL_MS` (default 5s) |
+| Heartbeats | **COMPLETE** | Gossip task pings `/cluster/health` every `VOLTRA_GOSSIP_INTERVAL_MS` (default 5s) |
 | Leader election | **MISSING** | No Raft, no Paxos, no epoch-based leader. Every node is peer-equal |
 | Quorum writes | **MISSING** | Writes commit locally then fan-out async. No write acknowledgment from peers |
 
@@ -183,7 +183,7 @@
 | World migration | **MISSING** |
 | Match migration | **MISSING** |
 
-**Can NeonDB automatically respond to overloaded nodes?** No. There is no feedback mechanism between load metrics and cluster topology.
+**Can Voltra automatically respond to overloaded nodes?** No. There is no feedback mechanism between load metrics and cluster topology.
 
 **Can workload move between nodes without downtime?** No. Shard assignment is static (hash of key mod shard_count). Moving data between nodes would require: (1) pausing writes to affected keys, (2) streaming rows to new owner, (3) updating routing table, (4) resuming writes. None of this exists.
 
@@ -221,7 +221,7 @@ Key components needed:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| API key auth | **COMPLETE** | Bearer token validated at WebSocket upgrade. Configurable via `NEONDB_API_KEY` or TOML |
+| API key auth | **COMPLETE** | Bearer token validated at WebSocket upgrade. Configurable via `VOLTRA_API_KEY` or TOML |
 | Role parsing | **COMPLETE** | `Bearer <key>:<role>` — role extracted, validated (`^[a-zA-Z0-9_-]{1,32}$`) |
 | User accounts | **MISSING** | No user registration, login, password hashing. Auth is key-based only |
 | Sessions | **MISSING** | No session tokens, no session expiry, no session revocation |
@@ -269,7 +269,7 @@ Key components needed:
 
 ## 8. Redis Replacement Analysis
 
-| Redis Feature | NeonDB Equivalent | Gap |
+| Redis Feature | Voltra Equivalent | Gap |
 |---------------|-------------------|-----|
 | Cache (GET/SET) | `TableStore.get_row` / `set_row` | No TTL, no eviction policy |
 | Pub/Sub | Live subscriptions with predicate filtering | More powerful than Redis pub/sub (server-side filtering). But no channel-pattern wildcards |
@@ -283,13 +283,13 @@ Key components needed:
 | Geospatial | **MISSING** | No GEOADD/GEORADIUS |
 | Lua scripting | Reducers (JS/WASM) | More powerful — full execution context with state access |
 
-**Verdict:** NeonDB replaces ~60% of common Redis use cases (cache, pub/sub, counters, leaderboards, scripting) but lacks TTL, queues, streams, and geospatial.
+**Verdict:** Voltra replaces ~60% of common Redis use cases (cache, pub/sub, counters, leaderboards, scripting) but lacks TTL, queues, streams, and geospatial.
 
 ---
 
 ## 9. PostgreSQL Replacement Analysis
 
-| PostgreSQL Feature | NeonDB Equivalent | Gap |
+| PostgreSQL Feature | Voltra Equivalent | Gap |
 |-------------------|-------------------|-----|
 | Durable storage | WAL + snapshots | Complete for the data model (key-value + JSON). Not relational |
 | Transactions (ACID) | Single-reducer atomicity | No multi-statement transactions, no isolation levels, no savepoints |
@@ -304,7 +304,7 @@ Key components needed:
 | Full-text search | **MISSING** | No tsvector, no trigram, no search ranking |
 | Partitioning | Shard-based | Horizontal only. No declarative partitioning |
 
-**Verdict:** NeonDB replaces ~40% of PostgreSQL functionality. It's a JSON document store with SQL query capability, not a relational database. Missing: foreign keys, UNIQUE, multi-row transactions, PITR, full-text search, views, CTEs.
+**Verdict:** Voltra replaces ~40% of PostgreSQL functionality. It's a JSON document store with SQL query capability, not a relational database. Missing: foreign keys, UNIQUE, multi-row transactions, PITR, full-text search, views, CTEs.
 
 ---
 
@@ -433,7 +433,7 @@ Key components needed:
 | 1 | T0-1 (TLS docs), T0-2 (backpressure), T0-3 (WAL rotation), T0-6 (health) | None — all independent |
 | 2 | T0-4 (rate limiting), T0-5 (graceful shutdown), T1-6 (TTL), T1-8 (OpenTelemetry) | T0-6 provides metrics for T0-4 |
 
-**Deliverable:** A single NeonDB node that can run 24/7 without OOM, without disk exhaustion, with basic observability.
+**Deliverable:** A single Voltra node that can run 24/7 without OOM, without disk exhaustion, with basic observability.
 
 ### Phase 2 — Security & Multi-tenancy (Weeks 3-4)
 
@@ -512,7 +512,7 @@ Differentiated Product (spatial, AI, analytics, physics, replay)
 
 ## 15. Final Assessment
 
-NeonDB is an **impressive prototype** with genuinely innovative architecture (zero-copy fan-out, multi-runtime reducers, integrated SQL, predicate subscriptions). The core engine is solid — 307 tests pass, the code is well-structured, performance characteristics are strong.
+Voltra is an **impressive prototype** with genuinely innovative architecture (zero-copy fan-out, multi-runtime reducers, integrated SQL, predicate subscriptions). The core engine is solid — 307 tests pass, the code is well-structured, performance characteristics are strong.
 
 **What it IS today:** A high-performance single-node real-time data engine suitable for development, demos, and low-stakes production use (hobby games, internal tools, prototypes).
 
@@ -520,4 +520,4 @@ NeonDB is an **impressive prototype** with genuinely innovative architecture (ze
 
 **What makes it special:** The architecture is fundamentally sound. The hardest part (high-performance concurrent engine with zero-copy fan-out) is already solved. The remaining work is mostly "well-known distributed systems problems" (Raft, consistent hashing, backpressure) — hard to implement correctly but well-documented in literature.
 
-**Positioning:** NeonDB is the only open-source, single-binary platform offering: real-time subscriptions + SQL + reducers + clustering + game services in one deployment. Its architecture is designed to replace multiple purpose-built tools (Supabase Realtime, Nakama, Redis, Postgres) with a single self-hosted binary.
+**Positioning:** Voltra is the only open-source, single-binary platform offering: real-time subscriptions + SQL + reducers + clustering + game services in one deployment. Its architecture is designed to replace multiple purpose-built tools (Supabase Realtime, Nakama, Redis, Postgres) with a single self-hosted binary.

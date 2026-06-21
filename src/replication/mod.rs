@@ -5,7 +5,7 @@
 //   - The PRIMARY serves committed WAL entries over HTTP:
 //       GET <metrics_port>/replication/wal?from_seq=N&max=M
 //     Response: { "entries": ["<base64(rmp(WalEntry))>", ...], "last_seq": N }
-//   - A REPLICA starts with NEONDB_ROLE=replica + NEONDB_PRIMARY_URL set.
+//   - A REPLICA starts with VOLTRA_ROLE=replica + VOLTRA_PRIMARY_URL set.
 //     It polls the primary every `poll_ms`, applies each entry's deltas to its
 //     local TableStore, fans out to its own subscribers, and appends the entry
 //     to its own WAL (so a replica crash recovers locally without re-syncing

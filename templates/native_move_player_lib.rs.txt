@@ -14,7 +14,7 @@
 //! { "ok": true, "x": 150.0, "y": 200.0, "zone": "zone_1_2" }
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// Move a player to a new position and update their zone.
@@ -47,4 +47,4 @@ pub fn move_player(ctx: &mut Context, args: Value) -> Result<Value> {
     Ok(json!({ "ok": true, "x": x, "y": y, "zone": zone }))
 }
 
-neondb_reducer::reducer!(move_player);
+voltra_reducer::reducer!(move_player);

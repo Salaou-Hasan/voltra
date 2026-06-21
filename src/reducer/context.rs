@@ -28,7 +28,7 @@
 //  3. set_row builds Arc<Bytes> payload once and reuses it.
 // ============================================================================
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::schema::SchemaRegistry;
 use crate::table::{Counter, RowDelta, TableStore};
 use crate::tenant::{physical_table, TenantRegistry};
@@ -40,7 +40,7 @@ use std::sync::Arc;
 pub struct ReducerContext {
     pub tables: Arc<TableStore>,
     pub timestamp: u64,
-    /// Identity of the calling client (X-NeonDB-Identity header or TCP peer address).
+    /// Identity of the calling client (X-Voltra-Identity header or TCP peer address).
     pub caller_id: String,
     /// Role of the calling client, parsed from the Bearer token suffix.
     /// Format: `Bearer <api_key>:<role>` → role = the part after the colon.
@@ -206,7 +206,7 @@ impl ReducerContext {
         let operation = if existing.is_some() { "update" } else { "insert" }.to_string();
 
         let encoded = serde_json::to_vec(&row_value)
-            .map_err(|e| NeonDBError::SerializationError(format!("Row encode: {}", e)))?;
+            .map_err(|e| VoltraError::SerializationError(format!("Row encode: {}", e)))?;
         let payload_arc = Arc::new(Bytes::from(encoded));
 
         let delta = RowDelta {
@@ -309,7 +309,7 @@ impl ReducerContext {
                 let current_count = reg.tenant_row_count(tid);
                 if current_count + pending_inserts > quota {
                     self.pending_deltas.clear();
-                    return Err(NeonDBError::invalid_argument(format!(
+                    return Err(VoltraError::invalid_argument(format!(
                         "Tenant row quota exceeded ({}/{} rows)",
                         current_count, quota
                     )));
@@ -360,7 +360,7 @@ impl ReducerContext {
 
             if !denied_keys.is_empty() {
                 self.pending_deltas.clear();
-                return Err(NeonDBError::PermissionDenied(format!(
+                return Err(VoltraError::PermissionDenied(format!(
                     "Access denied to rows: {:?}",
                     denied_keys
                 )));
@@ -501,7 +501,7 @@ mod tests {
         ctx_b.set_row("players".into(), "p1".into(), serde_json::json!({"hp": hp_b - 20})).unwrap();
         let err = ctx_b.commit().unwrap_err();
         assert!(
-            matches!(err, NeonDBError::TxnConflict(_)),
+            matches!(err, VoltraError::TxnConflict(_)),
             "expected TxnConflict, got: {err}"
         );
 
@@ -555,7 +555,7 @@ mod tests {
 
         ctx_b.set_row("items".into(), "sword#1".into(), serde_json::json!({"owner": "bob"})).unwrap();
         let err = ctx_b.commit().unwrap_err();
-        assert!(matches!(err, NeonDBError::TxnConflict(_)));
+        assert!(matches!(err, VoltraError::TxnConflict(_)));
 
         let owner = tables.get_row("items", "sword#1").unwrap().unwrap()["owner"].clone();
         assert_eq!(owner, "alice");

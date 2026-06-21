@@ -1,22 +1,22 @@
-# NeonDB + Unity
+# Voltra + Unity
 
-Single-file C# client for NeonDB — no packages, no DLLs.
+Single-file C# client for Voltra — no packages, no DLLs.
 
 ## Setup (60 seconds)
 
-1. Start your NeonDB server: `neondb start` (templates: `neondb init --template rust/game-ready`).
-2. Copy `NeonDBClient.cs` and `NeonDBBehaviour.cs` into `Assets/Scripts/NeonDB/`.
-3. Add the **NeonDBBehaviour** component to a GameObject and set the URL
+1. Start your Voltra server: `voltra start` (templates: `voltra init --template rust/game-ready`).
+2. Copy `VoltraClient.cs` and `VoltraBehaviour.cs` into `Assets/Scripts/Voltra/`.
+3. Add the **VoltraBehaviour** component to a GameObject and set the URL
    (default `ws://127.0.0.1:3000`).
 
 ## Calling reducers
 
 ```csharp
-using NeonDB;
+using Voltra;
 
 public class Player : MonoBehaviour
 {
-    public NeonDBBehaviour neon;
+    public VoltraBehaviour neon;
 
     async void Start()
     {
@@ -48,14 +48,14 @@ neon.Client.Subscribe("players WHERE lobby = 'l42'", diff =>
 });
 ```
 
-The server coalesces updates at 20Hz by default (`NEONDB_SUB_TICK_MS`),
+The server coalesces updates at 20Hz by default (`VOLTRA_SUB_TICK_MS`),
 so one busy row costs each subscriber at most 20 frames/second.
 
 ## Notes
 
-- **Auth**: set the `apiKey` field on NeonDBBehaviour (sent as `Bearer`).
+- **Auth**: set the `apiKey` field on VoltraBehaviour (sent as `Bearer`).
 - **WebGL**: `System.Net.WebSockets` is unavailable in WebGL builds; use a
   JS bridge plugin (e.g. unity-webgl-websocket) and swap the transport in
-  `NeonDBClient.Connect/SendRaw/ReadLoop`.
+  `VoltraClient.Connect/SendRaw/ReadLoop`.
 - **Reconnect**: `OnDisconnected` fires on drop; call `Connect()` again and
   re-issue your subscriptions.

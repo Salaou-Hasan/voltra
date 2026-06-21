@@ -15,8 +15,8 @@
 // (blocking the match-end flow) is worse for player experience.
 //
 // Config:
-//   NEONDB_STAT_SYNC_WORKERS â€” parallel flush workers (default 4)
-//   NEONDB_STAT_SYNC_FLUSH_MS â€” how often to flush the queue (default 500)
+//   VOLTRA_STAT_SYNC_WORKERS â€” parallel flush workers (default 4)
+//   VOLTRA_STAT_SYNC_FLUSH_MS â€” how often to flush the queue (default 500)
 
 use std::sync::Arc;
 use std::time::Duration;

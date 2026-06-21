@@ -1,4 +1,4 @@
-//! PostgreSQL wire protocol (v3) server for NeonDB.
+//! PostgreSQL wire protocol (v3) server for Voltra.
 //!
 //! Speaks the protocol every PostgreSQL client uses: psql, pgAdmin, DBeaver,
 //! psycopg, node-postgres, JDBC, tokio-postgres, …

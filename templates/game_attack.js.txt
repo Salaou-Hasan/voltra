@@ -6,29 +6,29 @@
 //         { error: "Attacker not found" | "Target not found" }
 //
 // Usage:
-//   neondb call attack '["player1", "goblin_1", "sword", 25]'
+//   voltra call attack '["player1", "goblin_1", "sword", 25]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
   const [att, tgt, weapon, dmg] = args;
-  const attacker = __neondb_get("players", att);
-  let target = __neondb_get("players", tgt) || __neondb_get("npcs", tgt);
+  const attacker = __voltra_get("players", att);
+  let target = __voltra_get("players", tgt) || __voltra_get("npcs", tgt);
   if (!attacker) { return { error: "Attacker not found" }; }
   else if (!target) { return { error: "Target not found" }; }
   else {
     target.hp = Math.max(0, target.hp - (dmg || 10));
-    const table = __neondb_get("players", tgt) ? "players" : "npcs";
-    __neondb_set(table, tgt, target);
+    const table = __voltra_get("players", tgt) ? "players" : "npcs";
+    __voltra_set(table, tgt, target);
     return { ok: true, target_id: tgt, hp: target.hp, dead: target.hp === 0 };
   }
 }

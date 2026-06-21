@@ -1,9 +1,9 @@
-# Deploying NeonDB on your own hardware with Dokploy
+# Deploying Voltra on your own hardware with Dokploy
 
 [Dokploy](https://dokploy.com) is a self-hostable PaaS (an open-source Heroku/Vercel)
 that runs on your own server and deploys apps from Git via Docker. This guide
 takes you from a bare Linux box to a running, persistent, auto-restarting,
-backed-up NeonDB node.
+backed-up Voltra node.
 
 Everything here is single-node (the right call until you've measured past ~15K
 CCU on one machine — see the benchmark notes in `CLAUDE.md`).
@@ -31,7 +31,7 @@ curl -sSL https://dokploy.com/install.sh | sh
 When it finishes it prints a URL like `http://<your-server-ip>:3000`.
 
 > **Port note:** Dokploy's own UI defaults to port **3000**, which is also
-> NeonDB's default WebSocket port. We move NeonDB off 3000 in step 4 to avoid
+> Voltra's default WebSocket port. We move Voltra off 3000 in step 4 to avoid
 > the clash (or change Dokploy's port during install). Pick one — don't let
 > both want 3000.
 
@@ -54,11 +54,11 @@ Either way, Dokploy needs the repo containing `Dockerfile` and
 
 ---
 
-## 3. Create the NeonDB service in Dokploy
+## 3. Create the Voltra service in Dokploy
 
-1. **Projects → Create Project** → name it `neondb`.
+1. **Projects → Create Project** → name it `voltra`.
 2. Inside the project: **Create Service → Compose**.
-3. **Provider:** select your Git provider and the NeonDB repo + branch.
+3. **Provider:** select your Git provider and the Voltra repo + branch.
 4. **Compose Path:** `docker-compose.dokploy.yml`
 5. Leave the build to Dokploy — the compose file builds the image from
    `Dockerfile` automatically.
@@ -71,15 +71,15 @@ Paste this, replacing the API key with a long random secret
 (`openssl rand -hex 32` makes a good one):
 
 ```env
-NEONDB_API_KEY=replace-with-openssl-rand-hex-32
+VOLTRA_API_KEY=replace-with-openssl-rand-hex-32
 ```
 
 The compose file already sets everything else (host `0.0.0.0`, ports, durable
 paths on the volume, hourly backups). If Dokploy's UI is on 3000, also add:
 
 ```env
-# Move NeonDB's WebSocket port off 3000 so it doesn't fight Dokploy's UI.
-NEONDB_PORT=8080
+# Move Voltra's WebSocket port off 3000 so it doesn't fight Dokploy's UI.
+VOLTRA_PORT=8080
 ```
 
 …and change the published port in `docker-compose.dokploy.yml` from
@@ -88,10 +88,10 @@ NEONDB_PORT=8080
 **Optional protocol toggles** (set to `0` to turn a listener off entirely):
 
 ```env
-NEONDB_REDIS_PORT=6379     # 0 disables the Redis-compatible port
-NEONDB_PG_PORT=5432        # 0 disables the PostgreSQL-compatible port
-NEONDB_REDIS_PASSWORD=...   # if you expose Redis to the network
-NEONDB_PG_PASSWORD=...      # if you expose PostgreSQL to the network
+VOLTRA_REDIS_PORT=6379     # 0 disables the Redis-compatible port
+VOLTRA_PG_PORT=5432        # 0 disables the PostgreSQL-compatible port
+VOLTRA_REDIS_PASSWORD=...   # if you expose Redis to the network
+VOLTRA_PG_PASSWORD=...      # if you expose PostgreSQL to the network
 ```
 
 ---
@@ -104,7 +104,7 @@ wasmtime + rquickjs from source). Watch the build logs in Dokploy.
 When it's up, **Logs** should show:
 
 ```
-[neondb] Listening on 0.0.0.0:8080
+[voltra] Listening on 0.0.0.0:8080
 [redis] RESP listener on 0.0.0.0:6379
 [pg] PostgreSQL wire listener on 0.0.0.0:5432
 ```
@@ -124,7 +124,7 @@ curl http://<server-ip>:3001/healthz
 redis-cli -h <server-ip> -p 6379 PING        # → PONG
 
 # PostgreSQL works
-psql "host=<server-ip> port=5432 user=you dbname=neondb" -c "SELECT version();"
+psql "host=<server-ip> port=5432 user=you dbname=voltra" -c "SELECT version();"
 ```
 
 The container's own `HEALTHCHECK` hits `/healthz` too, so Dokploy will show the
@@ -143,7 +143,7 @@ service as healthy and auto-restart it if it ever goes down.
    ufw deny  3001      # admin — local only
    ufw enable
    ```
-2. **Keep `NEONDB_API_KEY` set.** Without it, anyone who can reach the WS port can
+2. **Keep `VOLTRA_API_KEY` set.** Without it, anyone who can reach the WS port can
    call reducers. The server logs a SECURITY WARNING at boot if it's missing on a
    non-loopback bind — don't ignore it.
 3. **TLS via Traefik (recommended).** Point a domain at the server, then in
@@ -156,14 +156,14 @@ service as healthy and auto-restart it if it ever goes down.
 
 ## 8. Backups & data
 
-- Backups run hourly into the `neondb-data` volume
-  (`/var/lib/neondb/data/backups`, keeping the last 24). Change the cadence with
-  `NEONDB_BACKUP_INTERVAL_SECS` / `NEONDB_BACKUP_KEEP`.
+- Backups run hourly into the `voltra-data` volume
+  (`/var/lib/voltra/data/backups`, keeping the last 24). Change the cadence with
+  `VOLTRA_BACKUP_INTERVAL_SECS` / `VOLTRA_BACKUP_KEEP`.
 - To copy a backup off the box:
   ```bash
-  docker cp <container>:/var/lib/neondb/data/backups ./neondb-backups
+  docker cp <container>:/var/lib/voltra/data/backups ./voltra-backups
   ```
-- The named volume `neondb-data` survives redeploys. To wipe and start fresh,
+- The named volume `voltra-data` survives redeploys. To wipe and start fresh,
   delete the volume in Dokploy → Volumes (this destroys all data — be sure).
 
 ---
@@ -174,18 +174,18 @@ Push a commit → Dokploy can auto-deploy (enable **Auto Deploy** + a webhook in
 the service settings) or click **Redeploy**. The volume persists across
 redeploys, so data is preserved. For zero data loss on schema-changing updates,
 take a manual backup first (`POST /backup` on the admin port, or
-`neondb backup` via `docker exec`).
+`voltra backup` via `docker exec`).
 
 ---
 
 ## Connecting your game
 
-- **Unity / Godot:** use the bundled clients (`neondb init --template unity` or
+- **Unity / Godot:** use the bundled clients (`voltra init --template unity` or
   `godot`) and point them at `wss://game.yourdomain.com` (or
   `ws://<server-ip>:8080` without TLS). The API key goes in the client's auth
   field.
 - **Any Redis client:** connect to port 6379.
-- **Any Postgres client / ORM:** connect to port 5432, database `neondb`.
+- **Any Postgres client / ORM:** connect to port 5432, database `voltra`.
 
 That's a production-shaped single node: persistent, auto-restarting, backed up,
 TLS-terminated, and firewalled.

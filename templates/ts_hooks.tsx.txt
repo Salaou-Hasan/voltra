@@ -1,21 +1,21 @@
-// React hooks for NeonDB. Requires React 18+.
+// React hooks for Voltra. Requires React 18+.
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { NeonDBClient } from "neondb-client";
+import { VoltraClient } from "voltra-client";
 
-const NeonDBContext = createContext<NeonDBClient | null>(null);
+const VoltraContext = createContext<VoltraClient | null>(null);
 
-export function NeonDBProvider({ client, children }: { client: NeonDBClient; children: ReactNode }) {
-  return <NeonDBContext.Provider value={client}>{children}</NeonDBContext.Provider>;
+export function VoltraProvider({ client, children }: { client: VoltraClient; children: ReactNode }) {
+  return <VoltraContext.Provider value={client}>{children}</VoltraContext.Provider>;
 }
 
-export function useNeonDB(): NeonDBClient {
-  const c = useContext(NeonDBContext);
-  if (!c) throw new Error("NeonDBProvider missing");
+export function useVoltra(): VoltraClient {
+  const c = useContext(VoltraContext);
+  if (!c) throw new Error("VoltraProvider missing");
   return c;
 }
 
-export function useNeonDBQuery<T = unknown>(query: string): T[] {
-  const client = useNeonDB();
+export function useVoltraQuery<T = unknown>(query: string): T[] {
+  const client = useVoltra();
   const [rows, setRows] = useState<T[]>([]);
   useEffect(() => {
     let live = true;
@@ -25,7 +25,7 @@ export function useNeonDBQuery<T = unknown>(query: string): T[] {
   return rows;
 }
 
-export function useNeonDBReducer<R = unknown>(name: string) {
-  const client = useNeonDB();
+export function useVoltraReducer<R = unknown>(name: string) {
+  const client = useVoltra();
   return (args: unknown[]) => client.call(name, args) as Promise<R>;
 }

@@ -1,7 +1,7 @@
-//! Snapshot subsystem for NeonDB.
+//! Snapshot subsystem for Voltra.
 //!
 //! A snapshot serialises every row of every table in a `TableStore` into a
-//! single MessagePack file at path `<dir>/neondb_snapshot_<seq>.bin`.  On
+//! single MessagePack file at path `<dir>/voltra_snapshot_<seq>.bin`.  On
 //! startup the server loads the most-recent valid snapshot and replays only
 //! the WAL entries whose sequence number is *greater than* `last_sequence`.
 //!
@@ -53,16 +53,16 @@ struct SnapshotFile {
 
 /// Return the canonical path for a snapshot at the given sequence number.
 pub fn snapshot_path(dir: &Path, last_seq: u64) -> PathBuf {
-    dir.join(format!("neondb_snapshot_{}.bin", last_seq))
+    dir.join(format!("voltra_snapshot_{}.bin", last_seq))
 }
 
 fn parse_snapshot_seq(name: &str) -> Option<u64> {
-    name.strip_prefix("neondb_snapshot_")
+    name.strip_prefix("voltra_snapshot_")
         .and_then(|s| s.strip_suffix(".bin"))
         .and_then(|s| s.parse().ok())
 }
 
-/// Scan `dir` for `neondb_snapshot_*.bin` files and return the path and
+/// Scan `dir` for `voltra_snapshot_*.bin` files and return the path and
 /// `last_sequence` of the most recent one.  Returns `None` if the directory
 /// does not exist or contains no snapshot files.
 pub fn find_latest_snapshot(dir: &Path) -> Option<(PathBuf, u64)> {
@@ -82,11 +82,11 @@ pub fn find_latest_snapshot(dir: &Path) -> Option<(PathBuf, u64)> {
 
 // ── Save ──────────────────────────────────────────────────────────────────────
 
-/// Atomically write a snapshot of `tables` to `dir/neondb_snapshot_{last_seq}.bin`.
+/// Atomically write a snapshot of `tables` to `dir/voltra_snapshot_{last_seq}.bin`.
 ///
 /// The write sequence is:
 /// 1. Encode to MessagePack in memory.
-/// 2. Write to `<dir>/neondb_snapshot_{last_seq}.bin.tmp`.
+/// 2. Write to `<dir>/voltra_snapshot_{last_seq}.bin.tmp`.
 /// 3. `fsync` the tmp file.
 /// 4. `rename` tmp → final path (atomic on POSIX; best-effort on Windows).
 pub fn save_snapshot(tables: &TableStore, dir: &Path, last_seq: u64, timestamp: u64) -> Result<()> {
@@ -114,7 +114,7 @@ pub fn save_snapshot(tables: &TableStore, dir: &Path, last_seq: u64, timestamp: 
 
     fs::create_dir_all(dir)?;
     let final_path = snapshot_path(dir, last_seq);
-    let tmp_path = dir.join(format!("neondb_snapshot_{}.bin.tmp", last_seq));
+    let tmp_path = dir.join(format!("voltra_snapshot_{}.bin.tmp", last_seq));
 
     {
         // Stream the MessagePack encoding straight to a buffered file writer
@@ -130,7 +130,7 @@ pub fn save_snapshot(tables: &TableStore, dir: &Path, last_seq: u64, timestamp: 
         writer.flush()?;
         // Recover the inner File to fsync it (BufWriter::into_inner flushes too).
         let file = writer.into_inner().map_err(|e| {
-            crate::error::NeonDBError::wal_error(format!("snapshot buffer flush failed: {e}"))
+            crate::error::VoltraError::wal_error(format!("snapshot buffer flush failed: {e}"))
         })?;
         file.sync_all()?;
     }
@@ -197,7 +197,7 @@ mod tests {
     use std::sync::Arc;
 
     fn temp_dir(suffix: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("neondb_snap_{}", suffix));
+        let d = std::env::temp_dir().join(format!("voltra_snap_{}", suffix));
         let _ = fs::remove_dir_all(&d);
         d
     }
@@ -247,9 +247,9 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         // Create fake (empty) snapshot files at various sequence numbers
-        fs::write(dir.join("neondb_snapshot_10.bin"), b"x").unwrap();
-        fs::write(dir.join("neondb_snapshot_200.bin"), b"x").unwrap();
-        fs::write(dir.join("neondb_snapshot_50.bin"), b"x").unwrap();
+        fs::write(dir.join("voltra_snapshot_10.bin"), b"x").unwrap();
+        fs::write(dir.join("voltra_snapshot_200.bin"), b"x").unwrap();
+        fs::write(dir.join("voltra_snapshot_50.bin"), b"x").unwrap();
         fs::write(dir.join("other_file.txt"), b"x").unwrap();
 
         let found = find_latest_snapshot(&dir);

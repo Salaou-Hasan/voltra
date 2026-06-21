@@ -2,7 +2,7 @@
 // src/cluster/gossip.rs — Background gossip/heartbeat task
 //
 // Pings each peer's GET /cluster/health endpoint every
-// NEONDB_GOSSIP_INTERVAL_MS (default 5 000 ms).
+// VOLTRA_GOSSIP_INTERVAL_MS (default 5 000 ms).
 //
 // On success:  ClusterBus::mark_healthy(shard_id)
 // On failure:  ClusterBus::mark_unhealthy(shard_id) — 3 consecutive

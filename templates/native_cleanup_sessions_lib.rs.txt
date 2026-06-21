@@ -1,7 +1,7 @@
 //! # cleanup_sessions reducer
 //!
 //! Removes expired session rows from the `sessions` table. Called by the
-//! NeonDB scheduler on a regular interval. Sessions are considered expired
+//! Voltra scheduler on a regular interval. Sessions are considered expired
 //! when `expires_at < now_ms` (Unix milliseconds stored in the row).
 //!
 //! Because the server does not expose a clock via the host ABI, the current
@@ -17,7 +17,7 @@
 //! { "ok": true, "deleted": 3 }
 //! ```
 //!
-//! ## neondb.toml scheduler entry
+//! ## voltra.toml scheduler entry
 //! ```toml
 //! [[scheduler]]
 //! reducer   = "cleanup_sessions"
@@ -25,7 +25,7 @@
 //! args_json = "[0]"   # caller sets now_ms=0 to skip time-based pruning in tests
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// Clean up expired session rows.
@@ -81,4 +81,4 @@ pub fn cleanup_sessions(ctx: &mut Context, args: Value) -> Result<Value> {
     Ok(json!({ "ok": true, "deleted": deleted }))
 }
 
-neondb_reducer::reducer!(cleanup_sessions);
+voltra_reducer::reducer!(cleanup_sessions);

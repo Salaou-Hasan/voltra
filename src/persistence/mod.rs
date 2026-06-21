@@ -1,5 +1,5 @@
 // ============================================================================
-// persistence/mod.rs — sled-backed disk persistence for NeonDB rows
+// persistence/mod.rs — sled-backed disk persistence for Voltra rows
 //
 // Provides a write-through persistence layer on top of the in-memory
 // TableStore.  Every committed RowDelta is written to a sled database so
@@ -29,7 +29,7 @@
 //   Meta key : "\xff\x00last_seq"           (prefix 0xFF avoids all user keys)
 // ============================================================================
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::table::{RowDelta, TableStore};
 use std::path::Path;
 
@@ -45,7 +45,7 @@ impl PersistenceEngine {
     /// Open (or create) the sled database at the given directory path.
     pub fn open(path: &Path) -> Result<Self> {
         let db = sled::open(path).map_err(|e| {
-            NeonDBError::StorageError(format!("open sled at {:?}: {}", path, e))
+            VoltraError::StorageError(format!("open sled at {:?}: {}", path, e))
         })?;
         Ok(PersistenceEngine { db })
     }
@@ -57,7 +57,7 @@ impl PersistenceEngine {
     pub fn load_all(&self, tables: &TableStore) -> Result<(usize, u64)> {
         // Retrieve last persisted WAL sequence number.
         let last_seq: u64 = match self.db.get(META_LAST_SEQ_KEY).map_err(|e| {
-            NeonDBError::StorageError(format!("sled get last_seq: {}", e))
+            VoltraError::StorageError(format!("sled get last_seq: {}", e))
         })? {
             Some(bytes) if bytes.len() == 8 => {
                 let arr: [u8; 8] = bytes[..8].try_into().unwrap_or([0u8; 8]);
@@ -70,7 +70,7 @@ impl PersistenceEngine {
 
         for result in self.db.iter() {
             let (k, v) = result.map_err(|e| {
-                NeonDBError::StorageError(format!("sled iter: {}", e))
+                VoltraError::StorageError(format!("sled iter: {}", e))
             })?;
 
             // Skip metadata keys (start with 0xFF).
@@ -169,7 +169,7 @@ impl PersistenceEngine {
         batch.insert(META_LAST_SEQ_KEY, &seq.to_le_bytes());
 
         self.db.apply_batch(batch).map_err(|e| {
-            NeonDBError::StorageError(format!("sled apply_batch: {}", e))
+            VoltraError::StorageError(format!("sled apply_batch: {}", e))
         })?;
 
         // sled flushes to disk automatically in the background.

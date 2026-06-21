@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB metrics.rs — Prometheus exposition format
+// Voltra metrics.rs — Prometheus exposition format
 //
 // Provides a `Metrics` struct that holds all registered Prometheus metrics.
 // Call `metrics.render()` to produce a text/plain Prometheus scrape response.
@@ -13,7 +13,7 @@ use prometheus::{
     Histogram, HistogramOpts, IntCounter, IntGauge, Opts, Registry, TextEncoder,
 };
 
-/// All Prometheus metrics exported by the NeonDB server.
+/// All Prometheus metrics exported by the Voltra server.
 ///
 /// Pass `Arc<Metrics>` to any component that needs to record observations.
 pub struct Metrics {
@@ -65,18 +65,18 @@ impl Metrics {
         let registry = Registry::new();
 
         let reducer_calls_total = IntCounter::with_opts(
-            Opts::new("neondb_reducer_calls_total", "Total successful reducer calls"),
+            Opts::new("voltra_reducer_calls_total", "Total successful reducer calls"),
         )
         .expect("metric creation failed");
 
         let reducer_errors_total = IntCounter::with_opts(
-            Opts::new("neondb_reducer_errors_total", "Total reducer errors"),
+            Opts::new("voltra_reducer_errors_total", "Total reducer errors"),
         )
         .expect("metric creation failed");
 
         let reducer_duration_seconds = Histogram::with_opts(
             HistogramOpts::new(
-                "neondb_reducer_duration_seconds",
+                "voltra_reducer_duration_seconds",
                 "Reducer call wall-clock duration in seconds",
             )
             .buckets(vec![
@@ -86,61 +86,61 @@ impl Metrics {
         .expect("metric creation failed");
 
         let websocket_connections_active = IntGauge::with_opts(Opts::new(
-            "neondb_websocket_connections_active",
+            "voltra_websocket_connections_active",
             "Current open WebSocket connections",
         ))
         .expect("metric creation failed");
 
         let websocket_connects_total = IntCounter::with_opts(Opts::new(
-            "neondb_websocket_connects_total",
+            "voltra_websocket_connects_total",
             "Total WebSocket connections accepted",
         ))
         .expect("metric creation failed");
 
         let subscription_frames_dropped_total = IntCounter::with_opts(Opts::new(
-            "neondb_subscription_frames_dropped_total",
+            "voltra_subscription_frames_dropped_total",
             "Total subscription fan-out frames dropped due to full client buffers",
         ))
         .expect("metric creation failed");
 
         let slow_consumer_evictions_total = IntCounter::with_opts(Opts::new(
-            "neondb_slow_consumer_evictions_total",
+            "voltra_slow_consumer_evictions_total",
             "Total connections evicted for sustained send-buffer backlog",
         ))
         .expect("metric creation failed");
 
         let wal_entries_written_total = IntCounter::with_opts(Opts::new(
-            "neondb_wal_entries_written_total",
+            "voltra_wal_entries_written_total",
             "Total WAL entries written",
         ))
         .expect("metric creation failed");
 
         let wal_queue_depth = IntGauge::with_opts(Opts::new(
-            "neondb_wal_queue_depth",
+            "voltra_wal_queue_depth",
             "WAL entries pending flush",
         ))
         .expect("metric creation failed");
 
         let rows_total = IntGauge::with_opts(Opts::new(
-            "neondb_rows_total",
+            "voltra_rows_total",
             "Total rows across all tables",
         ))
         .expect("metric creation failed");
 
         let subscriptions_active = IntGauge::with_opts(Opts::new(
-            "neondb_subscriptions_active",
+            "voltra_subscriptions_active",
             "Current active subscriptions",
         ))
         .expect("metric creation failed");
 
         let raft_log_index = IntGauge::with_opts(Opts::new(
-            "neondb_raft_log_index",
+            "voltra_raft_log_index",
             "Last committed Raft log index",
         ))
         .expect("metric creation failed");
 
         let raft_is_leader = IntGauge::with_opts(Opts::new(
-            "neondb_raft_is_leader",
+            "voltra_raft_is_leader",
             "1 if this node is the Raft leader, 0 otherwise",
         ))
         .expect("metric creation failed");
@@ -253,8 +253,8 @@ mod tests {
         );
         // Verify at least one of our metric names appears in the output.
         assert!(
-            output.contains("neondb_reducer_calls_total"),
-            "Expected neondb_reducer_calls_total in output"
+            output.contains("voltra_reducer_calls_total"),
+            "Expected voltra_reducer_calls_total in output"
         );
     }
 

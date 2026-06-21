@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB SQL Parser
+// Voltra SQL Parser
 //
 // Recursive-descent parser.  Produces AST nodes from a token stream.
 //
@@ -20,7 +20,7 @@
 
 use super::ast::*;
 use super::lexer::Token;
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -53,7 +53,7 @@ impl Parser {
             self.pos += 1;
             Ok(())
         } else {
-            Err(NeonDBError::invalid_argument(format!(
+            Err(VoltraError::invalid_argument(format!(
                 "Expected {:?} but got {:?}", expected, self.peek()
             )))
         }
@@ -75,7 +75,7 @@ impl Parser {
             Token::Length => Ok("length".into()),
             Token::Upper  => Ok("upper".into()),
             Token::Lower  => Ok("lower".into()),
-            other => Err(NeonDBError::invalid_argument(format!(
+            other => Err(VoltraError::invalid_argument(format!(
                 "Expected identifier, got {:?}", other
             ))),
         }
@@ -93,7 +93,7 @@ impl Parser {
             Token::Insert => Ok(Statement::Insert(self.parse_insert()?)),
             Token::Update => Ok(Statement::Update(self.parse_update()?)),
             Token::Delete => Ok(Statement::Delete(self.parse_delete()?)),
-            other => Err(NeonDBError::invalid_argument(format!(
+            other => Err(VoltraError::invalid_argument(format!(
                 "Expected SELECT/INSERT/UPDATE/DELETE, got {:?}", other
             ))),
         }
@@ -183,7 +183,7 @@ impl Parser {
     fn parse_usize(&mut self, ctx: &str) -> Result<usize> {
         match self.advance() {
             Token::Integer(n) if n >= 0 => Ok(n as usize),
-            other => Err(NeonDBError::invalid_argument(format!(
+            other => Err(VoltraError::invalid_argument(format!(
                 "{} requires a non-negative integer, got {:?}", ctx, other
             ))),
         }
@@ -597,7 +597,7 @@ impl Parser {
                 Ok(Expr::Column { table: None, name })
             }
 
-            other => Err(NeonDBError::invalid_argument(format!(
+            other => Err(VoltraError::invalid_argument(format!(
                 "Unexpected token in expression: {:?}", other
             ))),
         }
@@ -772,7 +772,7 @@ pub fn parse(sql: &str) -> Result<Statement> {
 pub fn parse_select(sql: &str) -> Result<SelectStmt> {
     match parse(sql)? {
         Statement::Select(s) => Ok(s),
-        other => Err(NeonDBError::invalid_argument(format!(
+        other => Err(VoltraError::invalid_argument(format!(
             "Expected SELECT statement, got {:?}", std::mem::discriminant(&other)
         ))),
     }

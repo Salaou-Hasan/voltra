@@ -1,4 +1,4 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 use serde_json::json;
 
 #[reducer]
@@ -25,7 +25,7 @@ fn accept_guild_invite(ctx: Ctx, guild_id: String) {
 
     // Increment member_count on the guild
     let guild = ctx.get("guilds", &guild_id)?
-        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Guild not found"))?;
+        .ok_or_else(|| voltra::error::VoltraError::reducer_error("Guild not found"))?;
     let member_count = guild["member_count"].as_i64().unwrap_or(0);
     ctx.set("guilds", &guild_id, json!({
         "guild_id": guild_id,

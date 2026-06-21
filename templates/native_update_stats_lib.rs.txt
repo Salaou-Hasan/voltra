@@ -14,7 +14,7 @@
 //! { "ok": true, "field": "xp", "value": 250 }
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// Blocked fields that must not be changed through this reducer.
@@ -50,4 +50,4 @@ pub fn update_stats(ctx: &mut Context, args: Value) -> Result<Value> {
     Ok(json!({ "ok": true, "field": field, "value": value }))
 }
 
-neondb_reducer::reducer!(update_stats);
+voltra_reducer::reducer!(update_stats);

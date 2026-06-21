@@ -1,7 +1,7 @@
 // ============================================================================
-// server.rs — Public library entry point for embedded NeonDB projects
+// server.rs — Public library entry point for embedded Voltra projects
 //
-// Enables users to write a custom binary that embeds NeonDB as a library:
+// Enables users to write a custom binary that embeds Voltra as a library:
 //
 //   ```rust
 //   // src/main.rs
@@ -9,8 +9,8 @@
 //
 //   #[tokio::main]
 //   async fn main() {
-//       let config = neondb::config::Config::from_env();
-//       neondb::run_server(config).await.expect("NeonDB server failed");
+//       let config = voltra::config::Config::from_env();
+//       voltra::run_server(config).await.expect("Voltra server failed");
 //   }
 //   ```
 //
@@ -47,7 +47,7 @@ use tokio::sync::watch;
 
 const ADMIN_DASHBOARD_HTML: &str = include_str!("admin_dashboard.html");
 
-/// Live handles to a running embedded NeonDB server.
+/// Live handles to a running embedded Voltra server.
 ///
 /// Returned by [`run_server_with_handle`] after the server finishes bootstrapping.
 /// All fields are cheaply cloneable `Arc`s — safe to share across threads/tasks.
@@ -62,7 +62,7 @@ pub struct ServerHandle {
 
 use crate::now_nanos;
 
-/// Start an embedded NeonDB server and return a [`ServerHandle`] once the
+/// Start an embedded Voltra server and return a [`ServerHandle`] once the
 /// server has finished bootstrapping (snapshot + WAL replay + listener bound).
 ///
 /// The server runs as a background Tokio task; the returned future resolves
@@ -71,7 +71,7 @@ use crate::now_nanos;
 ///
 /// # Example
 /// ```rust,ignore
-/// let (handle, server_fut) = neondb::run_server_with_handle(config).await?;
+/// let (handle, server_fut) = voltra::run_server_with_handle(config).await?;
 /// tokio::spawn(server_fut);
 /// // handle.tables.total_row_count(), etc.
 /// ```
@@ -86,21 +86,21 @@ pub async fn run_server_with_handle(config: Config)
     // We do this by spawning run_server_inner and waiting for the oneshot.
     let handle_task = tokio::spawn(fut);
     let handle = rx.await.map_err(|_| {
-        crate::error::NeonDBError::Internal("Server startup failed before sending handle".into())
+        crate::error::VoltraError::Internal("Server startup failed before sending handle".into())
     })?;
     // Wrap the task back into a plain future the caller can await/drop.
     let server_fut = async move {
         handle_task.await
-            .map_err(|e| crate::error::NeonDBError::Internal(format!("Server task panicked: {e}")))?
+            .map_err(|e| crate::error::VoltraError::Internal(format!("Server task panicked: {e}")))?
     };
     Ok((handle, server_fut))
 }
 
-/// Start a NeonDB server with the given configuration.
+/// Start a Voltra server with the given configuration.
 ///
 /// All `#[reducer]`-annotated functions in the calling binary are discovered
 /// automatically via the `inventory` crate.  Call this from `main()` in your
-/// embedded NeonDB project.
+/// embedded Voltra project.
 ///
 /// # Example
 /// ```rust,ignore
@@ -108,7 +108,7 @@ pub async fn run_server_with_handle(config: Config)
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     neondb::run_server(neondb::config::Config::from_env())
+///     voltra::run_server(voltra::config::Config::from_env())
 ///         .await
 ///         .expect("server failed");
 /// }
@@ -121,7 +121,7 @@ pub async fn run_server(config: Config) -> Result<()> {
 /// Creates a Tokio runtime internally — callers do not need to add tokio as a dep.
 pub fn run_server_blocking(config: Config) -> Result<()> {
     tokio::runtime::Runtime::new()
-        .map_err(|e| crate::error::NeonDBError::internal(format!("Tokio runtime: {}", e)))?
+        .map_err(|e| crate::error::VoltraError::internal(format!("Tokio runtime: {}", e)))?
         .block_on(run_server(config))
 }
 
@@ -137,7 +137,7 @@ async fn run_server_inner(
         let tx = shutdown_tx.clone();
         tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
-            log::info!("[neondb] Shutdown signal received.");
+            log::info!("[voltra] Shutdown signal received.");
             let _ = tx.send(());
         });
     }
@@ -163,7 +163,7 @@ async fn run_server_inner(
 
     // ── Disk persistence (redb) ───────────────────────────────────────────────
     //
-    // If NEONDB_PERSISTENCE_PATH is set we open the redb store and restore all
+    // If VOLTRA_PERSISTENCE_PATH is set we open the redb store and restore all
     // rows BEFORE doing snapshot / WAL replay.  When redb has data we advance
     // initial_seq so WAL replay only applies entries that arrived after the
     // last redb commit, avoiding redundant replays.
@@ -176,20 +176,20 @@ async fn run_server_inner(
                             if rows > 0 {
                                 initial_seq = last_seq;
                                 log::info!(
-                                    "[neondb] Loaded {} rows from disk store (last_seq={})",
+                                    "[voltra] Loaded {} rows from disk store (last_seq={})",
                                     rows,
                                     last_seq
                                 );
                             } else {
                                 log::info!(
-                                    "[neondb] Disk store is empty; will bootstrap from snapshot+WAL"
+                                    "[voltra] Disk store is empty; will bootstrap from snapshot+WAL"
                                 );
                             }
                             Some(Arc::new(pe))
                         }
                         Err(e) => {
                             log::warn!(
-                                "[neondb] Disk store load failed ({}); falling back to snapshot+WAL",
+                                "[voltra] Disk store load failed ({}); falling back to snapshot+WAL",
                                 e
                             );
                             None
@@ -197,7 +197,7 @@ async fn run_server_inner(
                     }
                 }
                 Err(e) => {
-                    log::warn!("[neondb] Could not open disk store at {:?}: {}", path, e);
+                    log::warn!("[voltra] Could not open disk store at {:?}: {}", path, e);
                     None
                 }
             }
@@ -213,7 +213,7 @@ async fn run_server_inner(
         if let Some((snap_path, snap_seq)) = find_latest_snapshot(&wal_path) {
             load_snapshot(&snap_path, &tables)?;
             initial_seq = snap_seq;
-            log::info!("[neondb] Loaded snapshot seq={}", snap_seq);
+            log::info!("[voltra] Loaded snapshot seq={}", snap_seq);
         }
     }
 
@@ -228,7 +228,7 @@ async fn run_server_inner(
             }
             if !entry.verify_checksum() {
                 log::warn!(
-                    "[neondb] WAL entry {} bad checksum, skipping",
+                    "[voltra] WAL entry {} bad checksum, skipping",
                     entry.header.sequence_number
                 );
                 continue;
@@ -239,7 +239,7 @@ async fn run_server_inner(
             initial_seq = initial_seq.max(entry.header.sequence_number);
             replayed += 1;
         }
-        log::info!("[neondb] WAL replay complete ({} entries applied).", replayed);
+        log::info!("[voltra] WAL replay complete ({} entries applied).", replayed);
     }
 
     let wal_writer = Arc::new(
@@ -264,12 +264,12 @@ async fn run_server_inner(
     let metrics            = Arc::new(Metrics::new());
 
     // ── Cluster bus (horizontal scaling) ──────────────────────────────────────
-    // Reads NEONDB_PEERS / NEONDB_SHARD_ID / NEONDB_SHARD_COUNT from env.
-    // No-op (single-node) when NEONDB_PEERS is unset — fanout_deltas() returns
+    // Reads VOLTRA_PEERS / VOLTRA_SHARD_ID / VOLTRA_SHARD_COUNT from env.
+    // No-op (single-node) when VOLTRA_PEERS is unset — fanout_deltas() returns
     // immediately, so the embedded game server pays nothing in standalone mode.
-    let my_shard_id: u32 = std::env::var("NEONDB_SHARD_ID")
+    let my_shard_id: u32 = std::env::var("VOLTRA_SHARD_ID")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let shard_count: u32 = std::env::var("NEONDB_SHARD_COUNT")
+    let shard_count: u32 = std::env::var("VOLTRA_SHARD_COUNT")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
     let cluster_bus = crate::cluster::ClusterBus::new(
         crate::cluster::ClusterConfig::from_env(my_shard_id, shard_count)
@@ -279,7 +279,7 @@ async fn run_server_inner(
             "[cluster] Active — shard {}/{}, {} peer(s)",
             my_shard_id, shard_count, cluster_bus.peers.len()
         );
-        println!("[neondb] Cluster mode — shard {}/{}, {} peer(s)",
+        println!("[voltra] Cluster mode — shard {}/{}, {} peer(s)",
             my_shard_id, shard_count, cluster_bus.peers.len());
     }
     crate::cluster::gossip::start_gossip(cluster_bus.clone(), shutdown_rx.clone());
@@ -407,7 +407,7 @@ async fn run_server_inner(
                         "This node is a read-only replica.".to_string(),
                     );
                     if let Err(e) = call.response_tx.send(resp) {
-                        log::warn!("[neondb] Response delivery failed: {}", e);
+                        log::warn!("[voltra] Response delivery failed: {}", e);
                     }
                     continue;
                 }
@@ -442,7 +442,7 @@ async fn run_server_inner(
                     Ok(result_bytes) => {
                         // Commit staged writes atomically.
                         match ctx.commit() {
-                            Err(crate::error::NeonDBError::TxnConflict(_))
+                            Err(crate::error::VoltraError::TxnConflict(_))
                                 if attempt < MAX_CONFLICT_RETRIES =>
                             {
                                 ctx.reset_for_retry();
@@ -451,7 +451,7 @@ async fn run_server_inner(
                             }
                             Err(e) => {
                                 log::error!(
-                                    "[neondb] Commit failed for '{}': {}",
+                                    "[voltra] Commit failed for '{}': {}",
                                     call.reducer_name, e
                                 );
                                 metrics_w.reducer_errors_total.inc();
@@ -476,7 +476,7 @@ async fn run_server_inner(
                                 if let Some(ref pe) = persist_w {
                                     if !deltas.is_empty() {
                                         if let Err(e) = pe.persist_deltas(&deltas, seq_num) {
-                                            log::warn!("[neondb] Disk persist failed: {}", e);
+                                            log::warn!("[voltra] Disk persist failed: {}", e);
                                         }
                                     }
                                 }
@@ -491,7 +491,7 @@ async fn run_server_inner(
                                     deltas,
                                 );
                                 if let Err(e) = wal_w.append(&entry, seq_num) {
-                                    log::warn!("[neondb] WAL append failed: {}", e);
+                                    log::warn!("[voltra] WAL append failed: {}", e);
                                 } else {
                                     metrics_w.wal_entries_written_total.inc();
                                 }
@@ -513,9 +513,9 @@ async fn run_server_inner(
                                         let result = tokio::task::spawn_blocking(move || save_snapshot(&tbl2, &dir2, seq_num, ts2)).await;
                                         match result {
                                             Ok(Ok(())) => {
-                                                log::info!("[neondb] Snapshot at seq {}", seq_num);
+                                                log::info!("[voltra] Snapshot at seq {}", seq_num);
                                                 if let Err(e) = wal2.truncate_before(seq_num) {
-                                                    log::error!("[neondb] WAL rotation failed: {}", e);
+                                                    log::error!("[voltra] WAL rotation failed: {}", e);
                                                 }
                                                 // Prune older snapshot files — only the latest is
                                                 // needed for recovery; without this, snapshots
@@ -524,7 +524,7 @@ async fn run_server_inner(
                                                     for entry in entries.flatten() {
                                                         let name = entry.file_name();
                                                         let name = name.to_string_lossy();
-                                                        if let Some(seq_str) = name.strip_prefix("neondb_snapshot_").and_then(|s| s.strip_suffix(".bin")) {
+                                                        if let Some(seq_str) = name.strip_prefix("voltra_snapshot_").and_then(|s| s.strip_suffix(".bin")) {
                                                             if seq_str.parse::<u64>().map(|s| s < seq_num).unwrap_or(false) {
                                                                 let _ = std::fs::remove_file(entry.path());
                                                             }
@@ -532,8 +532,8 @@ async fn run_server_inner(
                                                     }
                                                 }
                                             }
-                                            Ok(Err(e)) => log::error!("[neondb] Snapshot failed: {}", e),
-                                            Err(e)     => log::error!("[neondb] Snapshot panic: {}", e),
+                                            Ok(Err(e)) => log::error!("[voltra] Snapshot failed: {}", e),
+                                            Err(e)     => log::error!("[voltra] Snapshot panic: {}", e),
                                         }
                                         busy2.store(false, Ordering::Release);
                                     });
@@ -549,7 +549,7 @@ async fn run_server_inner(
 
                 // Deliver response back to the waiting WebSocket handler.
                 if let Err(e) = call.response_tx.send(response) {
-                    log::warn!("[neondb] Response delivery failed: {}", e);
+                    log::warn!("[voltra] Response delivery failed: {}", e);
                 }
                 } // end for call in batch
             }
@@ -570,7 +570,7 @@ async fn run_server_inner(
             .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
             .and_then(|v| rmp_serde::to_vec(&v).ok())
             .unwrap_or_default();
-        log::info!("[neondb] Scheduler: '{}' every {}ms", sched.reducer, sched.interval_ms);
+        log::info!("[voltra] Scheduler: '{}' every {}ms", sched.reducer, sched.interval_ms);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(
                 std::time::Duration::from_millis(sched.interval_ms.max(1)));
@@ -604,7 +604,7 @@ async fn run_server_inner(
     let port      = config.port;
     let max_conns = config.max_connections;
 
-    log::info!("[neondb] Listening on {}:{}", host, port);
+    log::info!("[voltra] Listening on {}:{}", host, port);
 
     // ── Replication: replica mode + optional auto-failover ────────────────────
     if config.role.eq_ignore_ascii_case("replica") {
@@ -626,10 +626,10 @@ async fn run_server_inner(
                     ).await;
                 });
                 log::info!("[replication] Started in REPLICA mode (read-only)");
-                println!("[neondb] Replica mode — pulling from {}", config.primary_url.as_deref().unwrap_or(""));
+                println!("[voltra] Replica mode — pulling from {}", config.primary_url.as_deref().unwrap_or(""));
             }
             None => log::error!(
-                "[replication] NEONDB_ROLE=replica but NEONDB_PRIMARY_URL is not set — staying primary"
+                "[replication] VOLTRA_ROLE=replica but VOLTRA_PRIMARY_URL is not set — staying primary"
             ),
         }
     }
@@ -661,7 +661,7 @@ async fn run_server_inner(
         }
     }
 
-    // Send stats handle back to the caller (e.g. neondb-sim) before blocking.
+    // Send stats handle back to the caller (e.g. voltra-sim) before blocking.
     if let Some(tx) = handle_tx {
         let _ = tx.send(ServerHandle {
             tables:        tables.clone(),
@@ -705,7 +705,7 @@ async fn run_server_inner(
 // ── Embedded admin HTTP server ────────────────────────────────────────────────
 //
 // Provides the same /admin dashboard, /healthz, /metrics, and /admin/api/*
-// endpoints that the NeonDB CLI binary exposes, so scaffold projects using
+// endpoints that the Voltra CLI binary exposes, so scaffold projects using
 // run_server_blocking() get a fully-featured admin console at
 // http://127.0.0.1:<metrics_port>/admin — not just a blank connection refusal.
 
@@ -810,7 +810,7 @@ async fn handle_embedded_admin(
     wal_path: std::path::PathBuf,
     cluster_bus: Arc<crate::cluster::ClusterBus>,
 ) -> std::result::Result<Response<Body>, hyper::Error> {
-    // Optional auth check — only if NEONDB_API_KEY is set.
+    // Optional auth check — only if VOLTRA_API_KEY is set.
     let check_auth = |req: &Request<Body>| -> Option<Response<Body>> {
         let Some(ref key) = api_key else { return None };
         let ok = req.headers()
@@ -961,7 +961,7 @@ async fn handle_embedded_admin(
             }))
         }
         (&Method::POST, "/cluster/deltas") => {
-            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
+            let secret = req.headers().get("x-voltra-cluster-secret").and_then(|v| v.to_str().ok());
             if !cluster_bus.validate_secret(secret) {
                 let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
                 *r.status_mut() = StatusCode::UNAUTHORIZED; return Ok(r);
@@ -982,7 +982,7 @@ async fn handle_embedded_admin(
             }
         }
         (&Method::POST, "/cluster/call") => {
-            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
+            let secret = req.headers().get("x-voltra-cluster-secret").and_then(|v| v.to_str().ok());
             if !cluster_bus.validate_secret(secret) {
                 let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
                 *r.status_mut() = StatusCode::UNAUTHORIZED; return Ok(r);
@@ -1025,7 +1025,7 @@ async fn handle_embedded_admin(
             }
         }
         (&Method::POST, "/cluster/join") => {
-            let secret = req.headers().get("x-neondb-cluster-secret").and_then(|v| v.to_str().ok());
+            let secret = req.headers().get("x-voltra-cluster-secret").and_then(|v| v.to_str().ok());
             if !cluster_bus.validate_secret(secret) {
                 let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
                 *r.status_mut() = StatusCode::UNAUTHORIZED; return Ok(r);
@@ -1089,7 +1089,7 @@ async fn handle_embedded_admin(
             if let Some(resp) = check_auth(&req) { return Ok(resp); }
             let Some(dir) = backup_dir.clone() else {
                 return Ok(admin_bad_request(
-                    "No backup directory configured. Set NEONDB_BACKUP_DIR.".into()
+                    "No backup directory configured. Set VOLTRA_BACKUP_DIR.".into()
                 ));
             };
             let tbl = tables.clone();
@@ -1099,7 +1099,7 @@ async fn handle_embedded_admin(
             let result = tokio::task::spawn_blocking(move || {
                 let path = crate::backup::backup_now(&tbl, &wal, &dir, last_seq)?;
                 let _ = crate::backup::rotate_backups(&dir, keep);
-                Ok::<_, crate::error::NeonDBError>(path)
+                Ok::<_, crate::error::VoltraError>(path)
             }).await;
             match result {
                 Ok(Ok(path)) => {
@@ -1411,7 +1411,7 @@ fn start_embedded_admin_server(
             }
         };
         log::info!("[admin] Admin console: http://{}/admin", addr);
-        println!("[neondb] Admin console: http://{}/admin", addr);
+        println!("[voltra] Admin console: http://{}/admin", addr);
         let graceful = server
             .with_graceful_shutdown(async move { let _ = shutdown_rx.changed().await; });
         if let Err(e) = graceful.await {

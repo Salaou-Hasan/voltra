@@ -1,67 +1,67 @@
-# 3-node NeonDB cluster (advanced — sharded). For most deployments start with
+# 3-node Voltra cluster (advanced — sharded). For most deployments start with
 # docker-compose.single.yml or the Dokploy guide; only reach for this once a
 # single node is proven insufficient (>15K CCU measured).
 #
 # Cluster env vars (see CLAUDE.md "Session 50"):
-#   NEONDB_SHARD_ID / NEONDB_SHARD_COUNT  — identical SHARD_COUNT on every node
-#   NEONDB_PEERS                          — named peer map (shardN=http://host:metrics_port)
-#   NEONDB_CLUSTER_SECRET                 — shared secret, set as a deploy secret
+#   VOLTRA_SHARD_ID / VOLTRA_SHARD_COUNT  — identical SHARD_COUNT on every node
+#   VOLTRA_PEERS                          — named peer map (shardN=http://host:metrics_port)
+#   VOLTRA_CLUSTER_SECRET                 — shared secret, set as a deploy secret
 services:
-  neondb-0:
+  voltra-0:
     build: .
     restart: unless-stopped
     environment:
-      NEONDB_HOST: "0.0.0.0"
-      NEONDB_PORT: "3000"
-      NEONDB_METRICS_PORT: "3001"
-      NEONDB_SHARD_ID: "0"
-      NEONDB_SHARD_COUNT: "3"
-      NEONDB_PEERS: "shard1=http://neondb-1:3001,shard2=http://neondb-2:3001"
-      NEONDB_CLUSTER_SECRET: "${NEONDB_CLUSTER_SECRET:-change-this-shared-secret}"
-      NEONDB_API_KEY: "${NEONDB_API_KEY:-change-this-api-key}"
-      NEONDB_WAL_PATH: "/var/lib/neondb/data/neondb.wal"
-      NEONDB_SNAPSHOT_DIR: "/var/lib/neondb/data/snapshots"
+      VOLTRA_HOST: "0.0.0.0"
+      VOLTRA_PORT: "3000"
+      VOLTRA_METRICS_PORT: "3001"
+      VOLTRA_SHARD_ID: "0"
+      VOLTRA_SHARD_COUNT: "3"
+      VOLTRA_PEERS: "shard1=http://voltra-1:3001,shard2=http://voltra-2:3001"
+      VOLTRA_CLUSTER_SECRET: "${VOLTRA_CLUSTER_SECRET:-change-this-shared-secret}"
+      VOLTRA_API_KEY: "${VOLTRA_API_KEY:-change-this-api-key}"
+      VOLTRA_WAL_PATH: "/var/lib/voltra/data/voltra.wal"
+      VOLTRA_SNAPSHOT_DIR: "/var/lib/voltra/data/snapshots"
     volumes:
-      - neondb-0-data:/var/lib/neondb/data
+      - voltra-0-data:/var/lib/voltra/data
     ports:
       - "3000:3000"
       - "3001:3001"
 
-  neondb-1:
+  voltra-1:
     build: .
     restart: unless-stopped
     environment:
-      NEONDB_HOST: "0.0.0.0"
-      NEONDB_PORT: "3000"
-      NEONDB_METRICS_PORT: "3001"
-      NEONDB_SHARD_ID: "1"
-      NEONDB_SHARD_COUNT: "3"
-      NEONDB_PEERS: "shard0=http://neondb-0:3001,shard2=http://neondb-2:3001"
-      NEONDB_CLUSTER_SECRET: "${NEONDB_CLUSTER_SECRET:-change-this-shared-secret}"
-      NEONDB_API_KEY: "${NEONDB_API_KEY:-change-this-api-key}"
-      NEONDB_WAL_PATH: "/var/lib/neondb/data/neondb.wal"
-      NEONDB_SNAPSHOT_DIR: "/var/lib/neondb/data/snapshots"
+      VOLTRA_HOST: "0.0.0.0"
+      VOLTRA_PORT: "3000"
+      VOLTRA_METRICS_PORT: "3001"
+      VOLTRA_SHARD_ID: "1"
+      VOLTRA_SHARD_COUNT: "3"
+      VOLTRA_PEERS: "shard0=http://voltra-0:3001,shard2=http://voltra-2:3001"
+      VOLTRA_CLUSTER_SECRET: "${VOLTRA_CLUSTER_SECRET:-change-this-shared-secret}"
+      VOLTRA_API_KEY: "${VOLTRA_API_KEY:-change-this-api-key}"
+      VOLTRA_WAL_PATH: "/var/lib/voltra/data/voltra.wal"
+      VOLTRA_SNAPSHOT_DIR: "/var/lib/voltra/data/snapshots"
     volumes:
-      - neondb-1-data:/var/lib/neondb/data
+      - voltra-1-data:/var/lib/voltra/data
 
-  neondb-2:
+  voltra-2:
     build: .
     restart: unless-stopped
     environment:
-      NEONDB_HOST: "0.0.0.0"
-      NEONDB_PORT: "3000"
-      NEONDB_METRICS_PORT: "3001"
-      NEONDB_SHARD_ID: "2"
-      NEONDB_SHARD_COUNT: "3"
-      NEONDB_PEERS: "shard0=http://neondb-0:3001,shard1=http://neondb-1:3001"
-      NEONDB_CLUSTER_SECRET: "${NEONDB_CLUSTER_SECRET:-change-this-shared-secret}"
-      NEONDB_API_KEY: "${NEONDB_API_KEY:-change-this-api-key}"
-      NEONDB_WAL_PATH: "/var/lib/neondb/data/neondb.wal"
-      NEONDB_SNAPSHOT_DIR: "/var/lib/neondb/data/snapshots"
+      VOLTRA_HOST: "0.0.0.0"
+      VOLTRA_PORT: "3000"
+      VOLTRA_METRICS_PORT: "3001"
+      VOLTRA_SHARD_ID: "2"
+      VOLTRA_SHARD_COUNT: "3"
+      VOLTRA_PEERS: "shard0=http://voltra-0:3001,shard1=http://voltra-1:3001"
+      VOLTRA_CLUSTER_SECRET: "${VOLTRA_CLUSTER_SECRET:-change-this-shared-secret}"
+      VOLTRA_API_KEY: "${VOLTRA_API_KEY:-change-this-api-key}"
+      VOLTRA_WAL_PATH: "/var/lib/voltra/data/voltra.wal"
+      VOLTRA_SNAPSHOT_DIR: "/var/lib/voltra/data/snapshots"
     volumes:
-      - neondb-2-data:/var/lib/neondb/data
+      - voltra-2-data:/var/lib/voltra/data
 
 volumes:
-  neondb-0-data:
-  neondb-1-data:
-  neondb-2-data:
+  voltra-0-data:
+  voltra-1-data:
+  voltra-2-data:

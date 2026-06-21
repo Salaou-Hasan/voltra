@@ -17,27 +17,27 @@ Voltra is a single-binary WebSocket server for games and real-time applications.
 
 ```bash
 # Windows
-curl -LO https://github.com/Salaou-Hasan/neondb-releases/releases/latest/download/neondb-x86_64-windows.exe
-mv neondb-x86_64-windows.exe neondb.exe
+curl -LO https://github.com/Salaou-Hasan/voltra-releases/releases/latest/download/voltra-x86_64-windows.exe
+mv voltra-x86_64-windows.exe voltra.exe
 
 # Linux (x86_64)
-curl -LO https://github.com/Salaou-Hasan/neondb-releases/releases/latest/download/neondb-x86_64-linux
-chmod +x neondb-x86_64-linux && mv neondb-x86_64-linux neondb
+curl -LO https://github.com/Salaou-Hasan/voltra-releases/releases/latest/download/voltra-x86_64-linux
+chmod +x voltra-x86_64-linux && mv voltra-x86_64-linux voltra
 ```
 
 **Or build from source** (requires Rust 1.78+):
 
 ```bash
-git clone https://github.com/Salaou-Hasan/NeonDB
+git clone https://github.com/Salaou-Hasan/Voltra
 cd Voltra && cargo build --release
-# binary is at target/release/neondb
+# binary is at target/release/voltra
 ```
 
 **Keep it up to date:**
 
 ```bash
-neondb update          # install latest release
-neondb update --check  # just check, don't install
+voltra update          # install latest release
+voltra update --check  # just check, don't install
 ```
 
 ---
@@ -46,22 +46,22 @@ neondb update --check  # just check, don't install
 
 ```bash
 # 1. Scaffold a game project
-neondb init my-game --template game/basic
+voltra init my-game --template game/basic
 
 # 2. Start the server (from inside the project)
 cd my-game
-neondb start           # builds + runs your game binary automatically
+voltra start           # builds + runs your game binary automatically
 
 # 3. Call a reducer
-neondb call spawn '["alice", "lobby_1", "warrior"]'
+voltra call spawn '["alice", "lobby_1", "warrior"]'
 
 # 4. Watch live updates
-neondb watch "players WHERE alive = true"
+voltra watch "players WHERE alive = true"
 
 # 5. Add more systems
-neondb add combat      # attack, respawn, abilities
-neondb add inventory   # items, equip slots
-neondb add leaderboard # score submit, top-N, weekly reset
+voltra add combat      # attack, respawn, abilities
+voltra add inventory   # items, equip slots
+voltra add leaderboard # score submit, top-N, weekly reset
 ```
 
 ---
@@ -69,8 +69,8 @@ neondb add leaderboard # score submit, top-N, weekly reset
 ## Project Templates
 
 ```bash
-neondb templates    # list all templates
-neondb modules      # list all add-on modules
+voltra templates    # list all templates
+voltra modules      # list all add-on modules
 ```
 
 | Template | Description |
@@ -80,7 +80,7 @@ neondb modules      # list all add-on modules
 | `game/unity` | Unity C# SDK + full game server. Drop `unity/` into `Assets/Scripts/Voltra/` |
 | `game/godot` | Godot 4 GDScript SDK + full game server. Add `godot/` as an Autoload |
 
-### Add-on Modules (`neondb add <module>`)
+### Add-on Modules (`voltra add <module>`)
 
 Each module adds ready-made reducers + schema to an existing project:
 
@@ -103,7 +103,7 @@ Each module adds ready-made reducers + schema to an existing project:
 ### Native Rust — zero overhead
 
 ```rust
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 
 #[reducer]
 fn heal(ctx: Ctx, player_id: String, amount: i32) {
@@ -122,24 +122,24 @@ fn heal(ctx: Ctx, player_id: String, amount: i32) {
 // modules/heal.js
 function reducer(args) {
   const [id, amount] = args;
-  const p = __neondb_get("players", id) || { hp: 0 };
+  const p = __voltra_get("players", id) || { hp: 0 };
   p.hp += amount;
-  __neondb_set("players", id, p);
+  __voltra_set("players", id, p);
   return { ok: true, new_hp: p.hp };
 }
 ```
 
 - 64 MB heap cap per thread; warm context reused across calls.
-- CPU timeout (default 5s, configurable per module or via `NEONDB_REDUCER_TIMEOUT_MS`).
+- CPU timeout (default 5s, configurable per module or via `VOLTRA_REDUCER_TIMEOUT_MS`).
 - Killed script evicted from warm cache — next call rebuilds cleanly.
 
 ### WASM — C#, Go, or any `.wasm`
 
 ```bash
-neondb init my-game --template csharp-reducers   # .NET 8 WASI
-neondb init my-game --template go-reducers        # TinyGo
-neondb build                                       # compiles to .wasm
-neondb start
+voltra init my-game --template csharp-reducers   # .NET 8 WASI
+voltra init my-game --template go-reducers        # TinyGo
+voltra build                                       # compiles to .wasm
+voltra start
 ```
 
 ---
@@ -218,13 +218,13 @@ Client ──WebSocket──► Listener
 | Admin dashboard (dark-theme UI at `/admin`) | ✅ |
 | Prometheus metrics (`GET /metrics`, 11 counters/gauges/histograms) | ✅ |
 | Automated backups + rotation + PITR restore | ✅ |
-| WAL streaming replication (`NEONDB_ROLE=replica`) | ✅ |
-| One-command failover (`neondb promote`) | ✅ |
+| WAL streaming replication (`VOLTRA_ROLE=replica`) | ✅ |
+| One-command failover (`voltra promote`) | ✅ |
 | Graceful shutdown (worker drain, WAL flush) | ✅ |
 | LRU row eviction (`[eviction]` config) | ✅ |
-| Schema migrations (`migrations/*.toml` + `neondb migrate`) | ✅ |
-| `neondb seed` — bulk-seed rows from JSON | ✅ |
-| `neondb update` — self-update from GitHub releases | ✅ |
+| Schema migrations (`migrations/*.toml` + `voltra migrate`) | ✅ |
+| `voltra seed` — bulk-seed rows from JSON | ✅ |
+| `voltra update` — self-update from GitHub releases | ✅ |
 | Schema API (`GET /schema`) | ✅ |
 | **Scaling** | |
 | Multi-tenancy — full namespace isolation per tenant | ✅ |
@@ -243,7 +243,7 @@ Client ──WebSocket──► Listener
 
 ## Benchmarks
 
-**15K CCU lobby-partitioned game sim** (`neondb-sim game --lobby-size 75`, server + 3 client processes):
+**15K CCU lobby-partitioned game sim** (`voltra-sim game --lobby-size 75`, server + 3 client processes):
 
 | Metric | Value |
 |---|---|
@@ -281,7 +281,7 @@ Memory efficiency (hybrid MsgPack/zstd row storage + fixed-slot lock pool):
 ```bash
 # Create a tenant
 curl -X POST http://localhost:3001/admin/api/tenants \
-  -H "Authorization: Bearer $NEONDB_API_KEY" \
+  -H "Authorization: Bearer $VOLTRA_API_KEY" \
   -d '{"name":"acme","max_rows":100000,"max_calls_per_sec":500}'
 # → { "id": "acme-a1b2c3", "api_key": "ndbt_..." }
 
@@ -300,24 +300,24 @@ wscat -H "Authorization: Bearer ndbt_..." -c ws://localhost:3000
 
 ```bash
 # Node 0
-NEONDB_SHARD_ID=0 NEONDB_SHARD_COUNT=2 \
-NEONDB_PEERS="shard1=http://node1:4001" \
-NEONDB_CLUSTER_SECRET=mysecret \
-neondb start
+VOLTRA_SHARD_ID=0 VOLTRA_SHARD_COUNT=2 \
+VOLTRA_PEERS="shard1=http://node1:4001" \
+VOLTRA_CLUSTER_SECRET=mysecret \
+voltra start
 
 # Node 1
-NEONDB_SHARD_ID=1 NEONDB_SHARD_COUNT=2 \
-NEONDB_PEERS="shard0=http://node0:3001" \
-NEONDB_CLUSTER_SECRET=mysecret \
-NEONDB_PORT=4000 NEONDB_METRICS_PORT=4001 \
-neondb start
+VOLTRA_SHARD_ID=1 VOLTRA_SHARD_COUNT=2 \
+VOLTRA_PEERS="shard0=http://node0:3001" \
+VOLTRA_CLUSTER_SECRET=mysecret \
+VOLTRA_PORT=4000 VOLTRA_METRICS_PORT=4001 \
+voltra start
 ```
 
 - **Shard routing**: `shard_for_key(key, shard_count)` — FNV-1a 64-bit hash, deterministic across all nodes.
 - **Delta fan-out**: after each commit, deltas are replicated to all healthy peers with 3-attempt exponential back-off.
 - **Gossip health**: background task pings peers every 5s; 3 failures → unhealthy (skipped in fan-out).
 - **Dynamic join**: `POST /cluster/join` — no restart needed.
-- **Check status**: `neondb cluster-status`
+- **Check status**: `voltra cluster-status`
 
 ---
 
@@ -325,13 +325,13 @@ neondb start
 
 ```bash
 # Primary
-NEONDB_ROLE=primary neondb start
+VOLTRA_ROLE=primary voltra start
 
 # Replica (streams WAL from primary, read-only)
-NEONDB_ROLE=replica NEONDB_PRIMARY_URL=http://primary:3001 neondb start
+VOLTRA_ROLE=replica VOLTRA_PRIMARY_URL=http://primary:3001 voltra start
 
 # Promote replica to primary (instant, single command)
-neondb promote --metrics-url http://replica:4001
+voltra promote --metrics-url http://replica:4001
 ```
 
 ---
@@ -356,11 +356,11 @@ Single-file dark-theme dashboard (no build step, embedded in the binary):
 ## Configuration
 
 ```toml
-# neondb.toml
+# voltra.toml
 port = 3000
 metrics_port = 3001
 workers = 0            # 0 = num_cpus
-wal_dir = ".neondb"
+wal_dir = ".voltra"
 reducer_queue_cap = 16384
 reducer_timeout_ms = 5000
 sub_tick_ms = 50       # subscription coalescing interval (0 = immediate)
@@ -383,7 +383,7 @@ spawn = ["admin", "player"]
 delete_player = ["admin"]
 ```
 
-Key env vars: `NEONDB_PORT`, `NEONDB_API_KEY`, `NEONDB_WAL_DIR`, `NEONDB_REDUCER_TIMEOUT_MS`, `NEONDB_SUB_TICK_MS`, `NEONDB_SHARD_ID`, `NEONDB_SHARD_COUNT`, `NEONDB_PEERS`, `NEONDB_CLUSTER_SECRET`, `NEONDB_BACKUP_DIR`, `NEONDB_ROLE`, `NEONDB_PRIMARY_URL`, `NEONDB_REDIS_PORT`, `NEONDB_PG_PORT`.
+Key env vars: `VOLTRA_PORT`, `VOLTRA_API_KEY`, `VOLTRA_WAL_DIR`, `VOLTRA_REDUCER_TIMEOUT_MS`, `VOLTRA_SUB_TICK_MS`, `VOLTRA_SHARD_ID`, `VOLTRA_SHARD_COUNT`, `VOLTRA_PEERS`, `VOLTRA_CLUSTER_SECRET`, `VOLTRA_BACKUP_DIR`, `VOLTRA_ROLE`, `VOLTRA_PRIMARY_URL`, `VOLTRA_REDIS_PORT`, `VOLTRA_PG_PORT`.
 
 ---
 
@@ -393,8 +393,8 @@ Key env vars: `NEONDB_PORT`, `NEONDB_API_KEY`, `NEONDB_WAL_DIR`, `NEONDB_REDUCER
 cargo test --lib       # 541 unit tests
 cargo test             # + integration tests (requires debug binary)
 cargo bench            # criterion throughput + end-to-end benchmarks
-neondb-sim game --players 500 --duration 60
-neondb-sim game serve  # server-only mode for external clients
+voltra-sim game --players 500 --duration 60
+voltra-sim game serve  # server-only mode for external clients
 ```
 
 ---
@@ -402,25 +402,25 @@ neondb-sim game serve  # server-only mode for external clients
 ## CLI Reference
 
 ```
-neondb init <name> [--template <t>]    Scaffold a new project
-neondb templates                        List available templates
-neondb modules                          List available add-on modules
-neondb add <module>                     Add a module to the current project
-neondb start                            Start server (auto-detects game projects)
-neondb build                            Compile JS/C#/Go reducers to WASM
-neondb call <reducer> <args-json>       Call a reducer
-neondb get <table> [key]                Read rows
-neondb watch <query>                    Subscribe to live updates
-neondb seed <file.json>                 Bulk-seed rows
-neondb migrate [--dir migrations/]      Apply pending migrations
-neondb status                           Show server metrics
-neondb backup                           Trigger a manual backup
-neondb backups <dir>                    List backups in a directory
-neondb restore <backup> --wal-path W    Restore (supports --until-ts for PITR)
-neondb promote                          Promote replica to primary
-neondb cluster-status                   Show cluster peer health
-neondb update                           Self-update to latest release
-neondb update --check                   Check for updates without installing
+voltra init <name> [--template <t>]    Scaffold a new project
+voltra templates                        List available templates
+voltra modules                          List available add-on modules
+voltra add <module>                     Add a module to the current project
+voltra start                            Start server (auto-detects game projects)
+voltra build                            Compile JS/C#/Go reducers to WASM
+voltra call <reducer> <args-json>       Call a reducer
+voltra get <table> [key]                Read rows
+voltra watch <query>                    Subscribe to live updates
+voltra seed <file.json>                 Bulk-seed rows
+voltra migrate [--dir migrations/]      Apply pending migrations
+voltra status                           Show server metrics
+voltra backup                           Trigger a manual backup
+voltra backups <dir>                    List backups in a directory
+voltra restore <backup> --wal-path W    Restore (supports --until-ts for PITR)
+voltra promote                          Promote replica to primary
+voltra cluster-status                   Show cluster peer health
+voltra update                           Self-update to latest release
+voltra update --check                   Check for updates without installing
 ```
 
 ---

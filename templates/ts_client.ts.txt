@@ -1,8 +1,8 @@
-// Minimal NeonDB TypeScript client wrapper.
-import { NeonDBClient } from "neondb-client";
+// Minimal Voltra TypeScript client wrapper.
+import { VoltraClient } from "voltra-client";
 
 export function createClient(url = "ws://127.0.0.1:3000", auth = "dev-key") {
-  return new NeonDBClient({ url, auth });
+  return new VoltraClient({ url, auth });
 }
 
 export async function bootstrap() {

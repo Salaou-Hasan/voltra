@@ -1,6 +1,6 @@
 # game/basic — Minimal Multiplayer Game Backend
 
-A lightweight NeonDB template with player spawn, movement, and health. Use this as the foundation for any multiplayer game.
+A lightweight Voltra template with player spawn, movement, and health. Use this as the foundation for any multiplayer game.
 
 ## Layout
 
@@ -17,9 +17,9 @@ schema.toml     — players + sessions tables
 ## Run
 
 ```bash
-neondb start
-neondb call spawn '["player1", "lobby_1", "warrior"]'
-neondb watch "players WHERE lobby = 'lobby_1'"
+voltra start
+voltra call spawn '["player1", "lobby_1", "warrior"]'
+voltra watch "players WHERE lobby = 'lobby_1'"
 ```
 
 ## Add Modules
@@ -40,7 +40,7 @@ Extend your backend with one command:
 
 ## Scaling
 
-NeonDB handles thousands of concurrent players on a single node. For multi-region or 30K+ CCU, see `SCALING.md`.
+Voltra handles thousands of concurrent players on a single node. For multi-region or 30K+ CCU, see `SCALING.md`.
 
 ## Reducer API
 

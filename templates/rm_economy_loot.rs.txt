@@ -1,4 +1,4 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 use serde_json::json;
 
 #[reducer]
@@ -14,7 +14,7 @@ fn open_loot_box(ctx: Ctx, player_id: String, box_type: String) {
 
     // Add gold to player
     let player = ctx.get("players", &player_id)?
-        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Player not found"))?;
+        .ok_or_else(|| voltra::error::VoltraError::reducer_error("Player not found"))?;
     let current_gold = player["gold"].as_i64().unwrap_or(0);
     let mut updated_player = player.clone();
     updated_player["gold"] = json!(current_gold + gold);

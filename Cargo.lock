@@ -1919,103 +1919,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "neondb"
-version = "2.0.1"
-dependencies = [
- "anyhow",
- "arc-swap",
- "base64 0.21.7",
- "bcrypt",
- "bytes",
- "clap",
- "console",
- "core_affinity",
- "crc32fast",
- "criterion",
- "crossbeam",
- "crossbeam-channel",
- "dashmap",
- "dialoguer",
- "ed25519-dalek",
- "env_logger",
- "flate2",
- "flume",
- "futures",
- "hdrhistogram",
- "hyper",
- "im",
- "inventory",
- "jsonwebtoken",
- "kanal",
- "libc",
- "libmimalloc-sys",
- "log",
- "mimalloc",
- "neondb-macros",
- "num_cpus",
- "ordered-float",
- "parking_lot 0.12.5",
- "pkcs8",
- "prometheus",
- "rand",
- "rcgen",
- "reqwest",
- "rmp-serde",
- "rquickjs",
- "rusqlite",
- "rustls 0.22.4",
- "rustls-pemfile 2.2.0",
- "serde",
- "serde_json",
- "sled",
- "smallvec",
- "socket2 0.5.10",
- "sqlparser",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-rustls",
- "tokio-test",
- "tokio-tungstenite",
- "tokio-util",
- "toml 0.7.8",
- "tungstenite",
- "ureq",
- "wasmtime",
- "wat",
- "zstd 0.12.4",
-]
-
-[[package]]
-name = "neondb-client"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "dashmap",
- "env_logger",
- "futures",
- "log",
- "rmp-serde",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tokio-test",
- "tokio-tungstenite",
- "tungstenite",
- "zstd 0.12.4",
-]
-
-[[package]]
-name = "neondb-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3700,6 +3603,103 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "voltra"
+version = "2.0.1"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "base64 0.21.7",
+ "bcrypt",
+ "bytes",
+ "clap",
+ "console",
+ "core_affinity",
+ "crc32fast",
+ "criterion",
+ "crossbeam",
+ "crossbeam-channel",
+ "dashmap",
+ "dialoguer",
+ "ed25519-dalek",
+ "env_logger",
+ "flate2",
+ "flume",
+ "futures",
+ "hdrhistogram",
+ "hyper",
+ "im",
+ "inventory",
+ "jsonwebtoken",
+ "kanal",
+ "libc",
+ "libmimalloc-sys",
+ "log",
+ "mimalloc",
+ "num_cpus",
+ "ordered-float",
+ "parking_lot 0.12.5",
+ "pkcs8",
+ "prometheus",
+ "rand",
+ "rcgen",
+ "reqwest",
+ "rmp-serde",
+ "rquickjs",
+ "rusqlite",
+ "rustls 0.22.4",
+ "rustls-pemfile 2.2.0",
+ "serde",
+ "serde_json",
+ "sled",
+ "smallvec",
+ "socket2 0.5.10",
+ "sqlparser",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls",
+ "tokio-test",
+ "tokio-tungstenite",
+ "tokio-util",
+ "toml 0.7.8",
+ "tungstenite",
+ "ureq",
+ "voltra-macros",
+ "wasmtime",
+ "wat",
+ "zstd 0.12.4",
+]
+
+[[package]]
+name = "voltra-client"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "env_logger",
+ "futures",
+ "log",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tokio-tungstenite",
+ "tungstenite",
+ "zstd 0.12.4",
+]
+
+[[package]]
+name = "voltra-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "walkdir"

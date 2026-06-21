@@ -9,9 +9,9 @@
 // are reproducible from the printed seed.
 // ============================================================================
 
-use neondb::network::protocol::{decode_client_message, decode_reducer_call, encode_message};
-use neondb::network::ReducerCall;
-use neondb::wal::{WalEntry, WalReader, WalWriter};
+use voltra::network::protocol::{decode_client_message, decode_reducer_call, encode_message};
+use voltra::network::ReducerCall;
+use voltra::wal::{WalEntry, WalReader, WalWriter};
 
 /// Tiny deterministic PRNG — keeps the fuzz reproducible without a rand dep.
 struct XorShift(u64);
@@ -213,7 +213,7 @@ fn fuzz_replication_decode_garbage_never_panics() {
             base64_encode(&raw),
         ];
         let result = std::panic::catch_unwind(|| {
-            let _ = neondb::replication::decode_entries(&strings);
+            let _ = voltra::replication::decode_entries(&strings);
         });
         assert!(result.is_ok(), "replication decode PANICKED on iteration {} (seed {:#x})", i, SEED);
     }

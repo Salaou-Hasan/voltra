@@ -1,6 +1,6 @@
 # TypeScript SDK
 
-The TypeScript SDK is located at `neondb-client-ts/`. It works in both Node.js and browser environments.
+The TypeScript SDK is located at `voltra-client-ts/`. It works in both Node.js and browser environments.
 
 > Note: the package is not yet published to npm. Use it locally via a relative path import or by copying the `src/` directory.
 
@@ -9,7 +9,7 @@ The TypeScript SDK is located at `neondb-client-ts/`. It works in both Node.js a
 ## Installation
 
 ```bash
-cd neondb-client-ts
+cd voltra-client-ts
 npm install
 npm run build
 ```
@@ -19,7 +19,7 @@ For local use in another project:
 ```json
 {
   "dependencies": {
-    "@neondb/client": "file:../neondb-client-ts"
+    "@voltra/client": "file:../voltra-client-ts"
   }
 }
 ```
@@ -35,9 +35,9 @@ npm install ws
 ## Connecting
 
 ```typescript
-import { NeonDBClient } from "@neondb/client";
+import { VoltraClient } from "@voltra/client";
 
-const client = new NeonDBClient({
+const client = new VoltraClient({
   url: "ws://localhost:3000",
   apiKey: "your-api-key",         // optional
   reconnectInterval: 3_000,        // ms between reconnect attempts (0 = disabled)
@@ -172,7 +172,7 @@ The SDK reconnects automatically when `reconnectInterval > 0` (the default is 3 
 Set `reconnectInterval: 0` to disable auto-reconnect.
 
 ```typescript
-const client = new NeonDBClient({
+const client = new VoltraClient({
   url: "ws://localhost:3000",
   reconnectInterval: 0,  // disabled
 });

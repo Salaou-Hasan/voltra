@@ -1,18 +1,18 @@
 # Cluster Builtins
 
-When your game grows beyond what one server can handle, NeonDB can run as a cluster — multiple servers working together, each owning a slice of your data.
+When your game grows beyond what one server can handle, Voltra can run as a cluster — multiple servers working together, each owning a slice of your data.
 
 ---
 
 ## What Is a Cluster?
 
-A single NeonDB server can handle tens of thousands of concurrent players. For most games, you will never need more than one server.
+A single Voltra server can handle tens of thousands of concurrent players. For most games, you will never need more than one server.
 
-When you do need more, a NeonDB cluster lets you run multiple servers and split your player data across them. Each server is called a **shard**. Each shard owns a specific set of row keys, determined by a consistent hash function. The same key always maps to the same shard.
+When you do need more, a Voltra cluster lets you run multiple servers and split your player data across them. Each server is called a **shard**. Each shard owns a specific set of row keys, determined by a consistent hash function. The same key always maps to the same shard.
 
 ```
                     ┌─────────────────────────────────────────────────────┐
-                    │              NeonDB Cluster (3 shards)              │
+                    │              Voltra Cluster (3 shards)              │
                     │                                                     │
    Client A ────►  │  Shard 0  (owns player IDs hashing to range 0-33%) │
    Client B ────►  │  Shard 1  (owns player IDs hashing to range 34-66%) │
@@ -26,9 +26,9 @@ Within a shard, everything works exactly as documented elsewhere. Cluster builti
 
 ## Setting Up a Cluster
 
-In `neondb.toml` on each server, configure the cluster:
+In `voltra.toml` on each server, configure the cluster:
 
-**Server 0 (`neondb.toml`):**
+**Server 0 (`voltra.toml`):**
 ```toml
 [cluster]
 shard_id    = 0
@@ -37,7 +37,7 @@ peers       = "shard1=http://192.168.1.2:4001,shard2=http://192.168.1.3:4001"
 secret      = "your-shared-cluster-secret"
 ```
 
-**Server 1 (`neondb.toml`):**
+**Server 1 (`voltra.toml`):**
 ```toml
 [cluster]
 shard_id    = 1
@@ -48,10 +48,10 @@ secret      = "your-shared-cluster-secret"
 
 Or use environment variables:
 ```
-NEONDB_SHARD_ID=0
-NEONDB_SHARD_COUNT=3
-NEONDB_PEERS=shard1=http://192.168.1.2:4001,shard2=http://192.168.1.3:4001
-NEONDB_CLUSTER_SECRET=your-shared-cluster-secret
+VOLTRA_SHARD_ID=0
+VOLTRA_SHARD_COUNT=3
+VOLTRA_PEERS=shard1=http://192.168.1.2:4001,shard2=http://192.168.1.3:4001
+VOLTRA_CLUSTER_SECRET=your-shared-cluster-secret
 ```
 
 ---
@@ -79,7 +79,7 @@ reducer get_player_location(player_id: str) {
 **Game use — route a cross-shard action:**
 ```neon
 reducer attack_player(attacker_id: str, target_id: str, damage: int) {
-    let my_shard     = 0   // replace with NEONDB_SHARD_ID
+    let my_shard     = 0   // replace with VOLTRA_SHARD_ID
     let target_shard = cluster_route(target_id)
 
     if target_shard != my_shard {
@@ -235,11 +235,11 @@ A local call (same shard) takes microseconds. A `cross_cluster_call` takes a net
 
 ### Single-node first
 
-Start with one server. NeonDB can handle 30K+ concurrent players on a single server. Only add cluster shards when you have measured that you need them.
+Start with one server. Voltra can handle 30K+ concurrent players on a single server. Only add cluster shards when you have measured that you need them.
 
 ### All shards must use the same shard_count
 
-The `cluster_route` function uses `shard_count` to determine which shard owns a key. If different servers have different `shard_count` values, they will disagree about who owns what. All servers in a cluster must have the same `NEONDB_SHARD_COUNT`.
+The `cluster_route` function uses `shard_count` to determine which shard owns a key. If different servers have different `shard_count` values, they will disagree about who owns what. All servers in a cluster must have the same `VOLTRA_SHARD_COUNT`.
 
 ---
 

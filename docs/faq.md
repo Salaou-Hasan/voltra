@@ -31,14 +31,14 @@ For a single-node game server or backend with moderate traffic, Voltra is ready 
 
 Yes. The JS runtime (QuickJS) lets you write reducers in plain JavaScript with no Rust knowledge required:
 
-1. Run `neondb init my-game --template rust/game-ready`.
+1. Run `voltra init my-game --template rust/game-ready`.
 2. Edit the generated `.js` files in `modules/`.
-3. Run `neondb start`.
+3. Run `voltra start`.
 
 You can also compile JS reducers to WASM via javy for better performance:
 
 ```bash
-neondb build   # compiles modules/*.js → modules/*.wasm
+voltra build   # compiles modules/*.js → modules/*.wasm
 ```
 
 The TypeScript SDK lets you connect from a Node.js or browser client without any Rust.
@@ -67,7 +67,7 @@ To run your own benchmarks:
 cargo bench
 
 # Live WebSocket benchmark
-neondb bench --clients 50 --calls 1000
+voltra bench --clients 50 --calls 1000
 ```
 
 ---
@@ -76,18 +76,18 @@ neondb bench --clients 50 --calls 1000
 
 Voltra state is stored in two locations:
 
-1. **WAL file** (`NEONDB_WAL_PATH`): append-only log of every write since the last snapshot.
-2. **Snapshot directory** (`NEONDB_SNAPSHOT_DIR`): periodic full dumps of the in-memory state.
+1. **WAL file** (`VOLTRA_WAL_PATH`): append-only log of every write since the last snapshot.
+2. **Snapshot directory** (`VOLTRA_SNAPSHOT_DIR`): periodic full dumps of the in-memory state.
 
 To back up, copy both directories. The server does not need to be stopped, but it is safer to copy during low-traffic periods.
 
 ```bash
-rsync -a /var/lib/neondb/ backup:/backups/neondb/$(date +%Y%m%d)/
+rsync -a /var/lib/voltra/ backup:/backups/voltra/$(date +%Y%m%d)/
 ```
 
 To restore, copy the files back and start the server. It will load the latest snapshot and replay the WAL entries that followed it.
 
-You can also trigger a manual snapshot via the HTTP API (endpoint under development; currently snapshots are triggered automatically every N commits via `NEONDB_SNAPSHOT_INTERVAL`).
+You can also trigger a manual snapshot via the HTTP API (endpoint under development; currently snapshots are triggered automatically every N commits via `VOLTRA_SNAPSHOT_INTERVAL`).
 
 ---
 
@@ -127,9 +127,9 @@ Multi-cluster sharding is supported but client-routed: the application must impl
 
 ---
 
-## Why does neondb build fail with a javy error?
+## Why does voltra build fail with a javy error?
 
-The `neondb build` command requires the `javy` CLI, which is a standalone binary — it is not available via `cargo install javy`. Download the correct release binary for your OS from:
+The `voltra build` command requires the `javy` CLI, which is a standalone binary — it is not available via `cargo install javy`. Download the correct release binary for your OS from:
 
 https://github.com/bytecodealliance/javy/releases
 
@@ -137,12 +137,12 @@ The current expected subcommand is `javy build` (not `javy compile`). Make sure 
 
 ---
 
-## What happens if I run neondb call from PowerShell?
+## What happens if I run voltra call from PowerShell?
 
 The CLI includes a PowerShell compatibility fix: bare words inside `[...]` are automatically quoted. For example:
 
 ```powershell
-neondb call my_reducer '[general, alice]'
+voltra call my_reducer '[general, alice]'
 ```
 
 is treated as if you typed `["general", "alice"]`. If your args contain objects or nested arrays, use standard JSON quoting.

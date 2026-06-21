@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB SQL Executor
+// Voltra SQL Executor
 //
 // Evaluates a parsed SQL AST against the live TableStore.
 //
@@ -18,7 +18,7 @@
 // ============================================================================
 
 use super::ast::*;
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::table::TableStore;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -780,7 +780,7 @@ fn eval_aggregate(
             Ok(Value::from(vals.len() as i64))
         }
         AggFunc::Sum => {
-            let arg = arg.ok_or_else(|| NeonDBError::invalid_argument("SUM requires an argument"))?;
+            let arg = arg.ok_or_else(|| VoltraError::invalid_argument("SUM requires an argument"))?;
             let mut total = 0.0f64;
             let mut any = false;
             let mut is_int = true;
@@ -797,7 +797,7 @@ fn eval_aggregate(
             if is_int { Ok(Value::from(total as i64)) } else { Ok(json_f64(total)) }
         }
         AggFunc::Avg => {
-            let arg = arg.ok_or_else(|| NeonDBError::invalid_argument("AVG requires an argument"))?;
+            let arg = arg.ok_or_else(|| VoltraError::invalid_argument("AVG requires an argument"))?;
             let mut total = 0.0f64;
             let mut count = 0usize;
             for row in rows {
@@ -808,12 +808,12 @@ fn eval_aggregate(
             if count == 0 { Ok(Value::Null) } else { Ok(json_f64(total / count as f64)) }
         }
         AggFunc::Min => {
-            let arg = arg.ok_or_else(|| NeonDBError::invalid_argument("MIN requires an argument"))?;
+            let arg = arg.ok_or_else(|| VoltraError::invalid_argument("MIN requires an argument"))?;
             let vals: Vec<Value> = rows.iter().filter_map(|r| eval_expr(arg, r, tables).ok()).filter(|v| !v.is_null()).collect();
             Ok(vals.into_iter().min_by(|a, b| compare_values_ord(a, b, false)).unwrap_or(Value::Null))
         }
         AggFunc::Max => {
-            let arg = arg.ok_or_else(|| NeonDBError::invalid_argument("MAX requires an argument"))?;
+            let arg = arg.ok_or_else(|| VoltraError::invalid_argument("MAX requires an argument"))?;
             let vals: Vec<Value> = rows.iter().filter_map(|r| eval_expr(arg, r, tables).ok()).filter(|v| !v.is_null()).collect();
             Ok(vals.into_iter().max_by(|a, b| compare_values_ord(a, b, false)).unwrap_or(Value::Null))
         }
@@ -899,7 +899,7 @@ fn eval_function(name: &str, args: &[Expr], row: &Row, tables: &Arc<TableStore>)
             cast_value(v, type_name)
         }
         unknown => {
-            return Err(NeonDBError::invalid_argument(format!("Unknown function: {}", unknown)));
+            return Err(VoltraError::invalid_argument(format!("Unknown function: {}", unknown)));
         }
     })
 }

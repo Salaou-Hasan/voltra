@@ -381,7 +381,7 @@ fn lobby_worker_loop(
                         ReducerResponse::error(call_id, e.to_string())
                     }
                     Ok(result_bytes) => match ctx.commit() {
-                        Err(crate::error::NeonDBError::TxnConflict(_))
+                        Err(crate::error::VoltraError::TxnConflict(_))
                             if attempt < MAX_CONFLICT_RETRIES =>
                         {
                             ctx.reset_for_retry();

@@ -4,7 +4,7 @@
 # (offsets must be unique across every process on every machine — see below),
 # so players never collide. The server runs separately:
 #
-#   server box:   neondb-sim serve --ws-port 3777 --metrics-port 3778
+#   server box:   voltra-sim serve --ws-port 3777 --metrics-port 3778
 #
 # Usage:
 #   SERVER=ws://10.0.0.1:3777 METRICS=http://10.0.0.1:3778 \
@@ -20,7 +20,7 @@ TOTAL="${TOTAL:-10000}"
 PER_PROC="${PER_PROC:-5000}"
 DUR="${DUR:-120}"
 BASE_OFFSET="${BASE_OFFSET:-0}"
-BIN="${BIN:-./target/release/neondb-sim}"
+BIN="${BIN:-./target/release/voltra-sim}"
 
 pids=()
 for (( off=0; off<TOTAL; off+=PER_PROC )); do

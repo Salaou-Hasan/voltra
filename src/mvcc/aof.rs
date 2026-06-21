@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn aof_roundtrip_and_torn_tail() {
-        let dir = std::env::temp_dir().join(format!("neondb_aof_unit_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("voltra_aof_unit_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("t.aof");
         let _ = std::fs::remove_file(&path);
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn snapshot_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("neondb_snap_unit_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("voltra_snap_unit_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("t.snap");
 

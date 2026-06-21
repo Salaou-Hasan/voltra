@@ -1,10 +1,10 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 use serde_json::json;
 
 #[reducer]
 fn respawn(ctx: Ctx, player_id: String) {
     let player = ctx.get("players", &player_id)?
-        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Player not found"))?;
+        .ok_or_else(|| voltra::error::VoltraError::reducer_error("Player not found"))?;
 
     let max_hp = player["max_hp"].as_i64().unwrap_or(100);
     let mut updated = player.clone();

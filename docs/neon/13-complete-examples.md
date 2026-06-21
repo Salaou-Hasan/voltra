@@ -221,13 +221,13 @@ reducer cleanup_dead() {
 
 **Run it:**
 ```
-neondb init battle-royale --template neon/basic
+voltra init battle-royale --template neon/basic
 # replace reducers.neon with the above
-neondb build
-neondb start
-neondb call spawn '["Alice"]'
-neondb call shoot '["bob_player_id", "rifle"]'
-neondb call get_leaderboard '[]'
+voltra build
+voltra start
+voltra call spawn '["Alice"]'
+voltra call shoot '["bob_player_id", "rifle"]'
+voltra call get_leaderboard '[]'
 ```
 
 ---
@@ -769,25 +769,25 @@ reducer leaderboard() {
 
 **Run it:**
 ```
-neondb init card-game --template neon/basic
+voltra init card-game --template neon/basic
 # replace reducers.neon with the above
-neondb build
-neondb start
+voltra build
+voltra start
 
 # Register two players
-neondb call register_player '["Alice"]'
+voltra call register_player '["Alice"]'
 # (use a different caller_id for bob in your real client)
-neondb call register_player '["Bob"]'
+voltra call register_player '["Bob"]'
 
 # Alice draws a card
-neondb call draw_card '[]'
+voltra call draw_card '[]'
 
 # Alice views her hand
-neondb call view_hand '[]'
+voltra call view_hand '[]'
 
 # Alice plays a card against Bob
-neondb call play_card '["<card_id_from_draw>", "<bob_caller_id>"]'
+voltra call play_card '["<card_id_from_draw>", "<bob_caller_id>"]'
 
 # Check the leaderboard
-neondb call leaderboard '[]'
+voltra call leaderboard '[]'
 ```

@@ -1,4 +1,4 @@
-# NeonDB Phase 1 Benchmark Report
+# Voltra Phase 1 Benchmark Report
 
 ## Environment
 

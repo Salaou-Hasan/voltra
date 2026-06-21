@@ -1,4 +1,4 @@
-# NeonDB – Phase 0: Initiative & Planning
+# Voltra – Phase 0: Initiative & Planning
 
 **Document Version**: 1.0  
 **Date**: 2026-06-05  
@@ -21,7 +21,7 @@
 
 ## Executive Summary
 
-**NeonDB** is a unified in-memory database + application server designed for maximum throughput and minimum latency, 100% self-hostable on consumer hardware via Dokploy with zero cloud fees.
+**Voltra** is a unified in-memory database + application server designed for maximum throughput and minimum latency, 100% self-hostable on consumer hardware via Dokploy with zero cloud fees.
 
 **Key Design Principles:**
 - Single-threaded execution model (maximize CPU cache locality, eliminate lock contention)
@@ -41,7 +41,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         NeonDB Server                           │
+│                         Voltra Server                           │
 │                      (Single Rust Process)                      │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
@@ -129,7 +129,7 @@
 
 ## Technology Stack & Rationale
 
-### Core Server (NeonDB Kernel)
+### Core Server (Voltra Kernel)
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
@@ -147,8 +147,8 @@
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
-| **TypeScript/JS SDK** | **Native TypeScript**, compiled to JS + `.d.ts` | Use `tsc` or `swc` for compilation. Ship as npm package. Include React hooks (`useNeonDBQuery`, `useNeonDBReducer`) for easy UI integration. |
-| **Rust SDK** | **Native Rust crate** | Ship as `neondb-client` on crates.io. Include reactive signal support (e.g., `tokio::sync::watch` or a simple `Signal<T>` struct). |
+| **TypeScript/JS SDK** | **Native TypeScript**, compiled to JS + `.d.ts` | Use `tsc` or `swc` for compilation. Ship as npm package. Include React hooks (`useVoltraQuery`, `useVoltraReducer`) for easy UI integration. |
+| **Rust SDK** | **Native Rust crate** | Ship as `voltra-client` on crates.io. Include reactive signal support (e.g., `tokio::sync::watch` or a simple `Signal<T>` struct). |
 | **Local Cache** | **In-memory HashMap<TableName, Vec<Row>>** (TS) or **IndexMap<String, Vec<Row>>** (Rust) | Each SDK maintains a replica of subscribed tables. Apply deltas incrementally. Support `get()`, `list()`, `subscribe()` APIs. |
 | **Optimistic Updates** | **Immediate client-side cache update, reconcile on server response** | User calls `reducer()`, SDK optimistically updates local cache, sends to server, waits for confirmation. If mismatch, re-sync. |
 
@@ -158,8 +158,8 @@
 |-----------|--------|-----------|
 | **Container** | **Docker** (single stage build) | Multi-stage: build server in Rust, copy binary to slim base (scratch or Alpine). Expose WebSocket port (default 8000), volume for `/data/wal`. |
 | **Orchestration** | **Dokploy** (Docker Compose under the hood) | User deploys via Dokploy dashboard, sets env vars, done in <5 min. Auto TLS via Traefik. |
-| **Database Schema** | **Schema-as-code** (TOML or JSON) + migrations via WAL replay | No SQL DDL. Instead, define tables in a `schema.neondb` file. On server startup, if tables don't exist, create them. Migrations = replay WAL with new reducer logic. |
-| **CLI Tool** | **Rust binary** (`neondb-cli`) | `neondb init`, `neondb build`, `neondb run`, `neondb migrate`. Published on crates.io and as GitHub releases. |
+| **Database Schema** | **Schema-as-code** (TOML or JSON) + migrations via WAL replay | No SQL DDL. Instead, define tables in a `schema.voltra` file. On server startup, if tables don't exist, create them. Migrations = replay WAL with new reducer logic. |
+| **CLI Tool** | **Rust binary** (`voltra-cli`) | `voltra init`, `voltra build`, `voltra run`, `voltra migrate`. Published on crates.io and as GitHub releases. |
 
 ### Optional / Future Versions
 
@@ -172,10 +172,10 @@
 ## Repository Structure & File Layout
 
 ```
-NeonDB/
+Voltra/
 ├── Cargo.workspace.toml                    # Monorepo root
 │
-├── neondb-server/                          # Core server (Rust)
+├── voltra-server/                          # Core server (Rust)
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── main.rs                         # Entry point, arg parsing, server init
@@ -222,22 +222,22 @@ NeonDB/
 │   ├── Dockerfile
 │   └── README.md
 │
-├── neondb-client-ts/                       # TypeScript/JavaScript SDK
+├── voltra-client-ts/                       # TypeScript/JavaScript SDK
 │   ├── package.json
 │   ├── tsconfig.json
 │   ├── src/
 │   │   ├── index.ts                        # Main export
-│   │   ├── client.ts                       # NeonDBClient class
+│   │   ├── client.ts                       # VoltraClient class
 │   │   ├── websocket.ts                    # WebSocket connection management
 │   │   ├── cache.ts                        # Local in-memory cache
 │   │   ├── protocol.ts                     # Binary message encoding/decoding
-│   │   ├── hooks.ts                        # React hooks (useNeonDBQuery, useNeonDBReducer)
+│   │   ├── hooks.ts                        # React hooks (useVoltraQuery, useVoltraReducer)
 │   │   └── types.ts                        # TypeScript interfaces
 │   ├── tests/
 │   │   └── client.test.ts
 │   └── README.md
 │
-├── neondb-client-rust/                     # Rust SDK
+├── voltra-client-rust/                     # Rust SDK
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── lib.rs
@@ -250,39 +250,39 @@ NeonDB/
 │   │   └── client.rs
 │   └── README.md
 │
-├── neondb-cli/                             # Command-line tool
+├── voltra-cli/                             # Command-line tool
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── main.rs
 │   │   ├── commands/
-│   │   │   ├── init.rs                     # `neondb init`
-│   │   │   ├── build.rs                    # `neondb build`
-│   │   │   ├── run.rs                      # `neondb run`
-│   │   │   └── migrate.rs                  # `neondb migrate`
+│   │   │   ├── init.rs                     # `voltra init`
+│   │   │   ├── build.rs                    # `voltra build`
+│   │   │   ├── run.rs                      # `voltra run`
+│   │   │   └── migrate.rs                  # `voltra migrate`
 │   │   └── config.rs
 │   └── README.md
 │
 ├── examples/
 │   ├── chat-room/                          # Chat app with TS reducers
-│   │   ├── schema.neondb
+│   │   ├── schema.voltra
 │   │   ├── reducers.ts
-│   │   ├── server.ts                       # or `neondb run`
+│   │   ├── server.ts                       # or `voltra run`
 │   │   ├── client.tsx                      # React client
 │   │   └── README.md
 │   ├── tic-tac-toe/                        # Game with Rust WASM reducers
-│   │   ├── schema.neondb
+│   │   ├── schema.voltra
 │   │   ├── src/lib.rs                      # Game logic (compiled to WASM)
 │   │   ├── Cargo.toml
 │   │   ├── server.ts                       # Client logic
 │   │   └── README.md
 │   └── mmo-movement/                       # Simple MMO with 1000 players
-│       ├── schema.neondb
+│       ├── schema.voltra
 │       ├── reducers.ts
 │       ├── load_test.ts
 │       └── README.md
 │
 ├── docker-compose.yml                      # Local dev setup with volume
-├── Dockerfile                              # Multi-stage build (if using neondb-server as root)
+├── Dockerfile                              # Multi-stage build (if using voltra-server as root)
 ├── Cargo.lock
 ├── README.md                               # Project overview
 ├── PHASE_0_PLANNING.md                     # This file
@@ -291,7 +291,7 @@ NeonDB/
 
 ```
 
-### Schema File Format (Example: `schema.neondb`)
+### Schema File Format (Example: `schema.voltra`)
 
 ```toml
 [table.users]
@@ -401,7 +401,7 @@ You provide explicit go/no-go. If issues arise, we pivot or extend the phase.
 ## Success Metrics & Acceptance Criteria
 
 ### Phase 1 Acceptance
-- [ ] `neondb-server` binary compiles without warnings
+- [ ] `voltra-server` binary compiles without warnings
 - [ ] Server listens on `0.0.0.0:8000` for WebSocket connections
 - [ ] Single reducer (e.g., `increment(x: i32) -> u64`) can be called 1000 times/second
 - [ ] Crash recovery: kill process, restart, WAL is replayed, state is correct
@@ -423,12 +423,12 @@ You provide explicit go/no-go. If issues arise, we pivot or extend the phase.
 - [ ] TypeScript SDK published to npm (as preview)
 - [ ] Rust SDK published to crates.io (as preview)
 - [ ] Chat room example works: 10 clients, send messages, see real-time updates
-- [ ] React hooks (`useNeonDBQuery`, `useNeonDBReducer`) render correctly
+- [ ] React hooks (`useVoltraQuery`, `useVoltraReducer`) render correctly
 
 ### Phase 5 Acceptance
-- [ ] Docker image builds with `docker build -t neondb-server .`
+- [ ] Docker image builds with `docker build -t voltra-server .`
 - [ ] `docker-compose up` starts server + volume persistence
-- [ ] Env vars: `NEONDB_PORT`, `NEONDB_WAL_PATH`, `NEONDB_FSYNC_INTERVAL_MS` work
+- [ ] Env vars: `VOLTRA_PORT`, `VOLTRA_WAL_PATH`, `VOLTRA_FSYNC_INTERVAL_MS` work
 - [ ] Deployed to Dokploy, accessible from external client within 5 minutes
 
 ### Phase 6 Acceptance (Production Ready)
@@ -440,7 +440,7 @@ You provide explicit go/no-go. If issues arise, we pivot or extend the phase.
 - [ ] Benchmark report: TPS & latency (p99) across all reducer runtimes
 
 ### Final Acceptance: Production-Ready Declaration
-NeonDB is **production-ready** when all Phase 6 criteria pass AND:
+Voltra is **production-ready** when all Phase 6 criteria pass AND:
 - Zero open high-severity bugs
 - Example game is deployed, tested, and documented
 - Setup instructions are <1 page

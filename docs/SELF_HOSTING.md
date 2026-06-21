@@ -38,11 +38,11 @@ instances. Set up basic monitoring so you know if it goes down.
    ```bash
    rustup target add aarch64-unknown-linux-gnu
    cargo build --release --target aarch64-unknown-linux-gnu
-   scp -i ~/.oci_key target/aarch64-unknown-linux-gnu/release/neondb \
-       ubuntu@<your-public-ip>:/home/ubuntu/neondb
+   scp -i ~/.oci_key target/aarch64-unknown-linux-gnu/release/voltra \
+       ubuntu@<your-public-ip>:/home/ubuntu/voltra
    ```
 
-5. **systemd unit** (`/etc/systemd/system/neondb.service`):
+5. **systemd unit** (`/etc/systemd/system/voltra.service`):
    ```ini
    [Unit]
    Description=Voltra
@@ -52,12 +52,12 @@ instances. Set up basic monitoring so you know if it goes down.
    Type=simple
    User=ubuntu
    WorkingDirectory=/home/ubuntu
-   Environment=NEONDB_HOST=0.0.0.0
-   Environment=NEONDB_API_KEY=CHANGE_ME_LONG_RANDOM_TOKEN
-   Environment=NEONDB_WAL_PATH=/var/lib/neondb/neondb.wal
-   Environment=NEONDB_SNAPSHOT_DIR=/var/lib/neondb/snapshots
-   Environment=NEONDB_TUNE_SYSTEM=1
-   ExecStart=/home/ubuntu/neondb start
+   Environment=VOLTRA_HOST=0.0.0.0
+   Environment=VOLTRA_API_KEY=CHANGE_ME_LONG_RANDOM_TOKEN
+   Environment=VOLTRA_WAL_PATH=/var/lib/voltra/voltra.wal
+   Environment=VOLTRA_SNAPSHOT_DIR=/var/lib/voltra/snapshots
+   Environment=VOLTRA_TUNE_SYSTEM=1
+   ExecStart=/home/ubuntu/voltra start
    Restart=always
    RestartSec=2
    LimitNOFILE=65535
@@ -67,10 +67,10 @@ instances. Set up basic monitoring so you know if it goes down.
    ```
 
    ```bash
-   sudo mkdir -p /var/lib/neondb && sudo chown ubuntu:ubuntu /var/lib/neondb
+   sudo mkdir -p /var/lib/voltra && sudo chown ubuntu:ubuntu /var/lib/voltra
    sudo systemctl daemon-reload
-   sudo systemctl enable --now neondb
-   sudo journalctl -u neondb -f
+   sudo systemctl enable --now voltra
+   sudo journalctl -u voltra -f
    ```
 
 6. **Point your domain at it.** Add an A record for `db.yourgame.com` →
@@ -111,9 +111,9 @@ idle, but cold start under 1 s.
      dockerfile = "Dockerfile"
 
    [env]
-     NEONDB_HOST = "0.0.0.0"
-     NEONDB_WAL_PATH = "/data/neondb.wal"
-     NEONDB_SNAPSHOT_DIR = "/data/snapshots"
+     VOLTRA_HOST = "0.0.0.0"
+     VOLTRA_WAL_PATH = "/data/voltra.wal"
+     VOLTRA_SNAPSHOT_DIR = "/data/snapshots"
 
    [[services]]
      internal_port = 3000
@@ -132,18 +132,18 @@ idle, but cold start under 1 s.
        port = 3001
 
    [[mounts]]
-     source      = "neondb_data"
+     source      = "voltra_data"
      destination = "/data"
    ```
 
 3. Set the API key as a secret (don't bake it into the image):
    ```bash
-   fly secrets set NEONDB_API_KEY=$(openssl rand -hex 32)
+   fly secrets set VOLTRA_API_KEY=$(openssl rand -hex 32)
    ```
 
 4. Create the volume + deploy:
    ```bash
-   fly volumes create neondb_data --size 3 --region iad
+   fly volumes create voltra_data --size 3 --region iad
    fly launch --no-deploy   # accepts the fly.toml above
    fly deploy
    ```
@@ -175,7 +175,7 @@ you already have a NAS, mini-PC, or spare laptop.
 1. **Run Voltra locally** on whatever box you've got. Linux example:
    ```bash
    cargo build --release
-   ./target/release/neondb start &
+   ./target/release/voltra start &
    ```
 
 2. **Sign in to Cloudflare**, add a domain (or use a free `*.workers.dev`
@@ -192,12 +192,12 @@ you already have a NAS, mini-PC, or spare laptop.
 4. **Authenticate + run the tunnel**:
    ```bash
    cloudflared tunnel login                       # opens a browser
-   cloudflared tunnel create neondb-tunnel
-   cloudflared tunnel route dns neondb-tunnel db.yourgame.com
+   cloudflared tunnel create voltra-tunnel
+   cloudflared tunnel route dns voltra-tunnel db.yourgame.com
 
    # Map db.yourgame.com → localhost:3000
    cat <<EOF > ~/.cloudflared/config.yml
-   tunnel: neondb-tunnel
+   tunnel: voltra-tunnel
    credentials-file: /home/$USER/.cloudflared/<tunnel-uuid>.json
    ingress:
      - hostname: db.yourgame.com
@@ -254,8 +254,8 @@ Then through the web UI:
 3. **Build pack: Dockerfile** (the repo ships one).
 4. **Domain**: assign `db.yourgame.com`. The panel issues a Let's Encrypt
    cert automatically.
-5. **Environment variables**: set `NEONDB_HOST=0.0.0.0`,
-   `NEONDB_API_KEY=<secret>`, persistent volume mounts for `/data`.
+5. **Environment variables**: set `VOLTRA_HOST=0.0.0.0`,
+   `VOLTRA_API_KEY=<secret>`, persistent volume mounts for `/data`.
 6. **Deploy**. The panel rebuilds on every push to `main`.
 
 **Gotchas.**

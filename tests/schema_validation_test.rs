@@ -11,8 +11,8 @@
 // platform.
 // ============================================================================
 
-use neondb::{ColumnDef, SchemaRegistry, TableSchema};
-use neondb::schema::RlsPolicy;
+use voltra::{ColumnDef, SchemaRegistry, TableSchema};
+use voltra::schema::RlsPolicy;
 use serde_json::json;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-// src/main.rs — NeonDB embedded server
+// src/main.rs — Voltra embedded server
 //
 // All #[reducer]-annotated functions in this crate are discovered automatically
 // at startup via the `inventory` crate. No manual registration needed.
@@ -8,16 +8,16 @@
 //   cargo run --release -- start
 //
 // Client usage (same WebSocket API as always):
-//   neondb call spawn '["player1", 0, 0, "warrior"]'
-//   neondb watch "players WHERE zone = 'zone_0_0'"
+//   voltra call spawn '["player1", 0, 0, "warrior"]'
+//   voltra watch "players WHERE zone = 'zone_0_0'"
 
 mod reducers;
 
 fn main() {
     env_logger::init();
-    let config = neondb::config::Config::from_env();
+    let config = voltra::config::Config::from_env();
     tokio::runtime::Runtime::new()
         .expect("Tokio runtime")
-        .block_on(neondb::run_server(config))
-        .expect("NeonDB server exited with error");
+        .block_on(voltra::run_server(config))
+        .expect("Voltra server exited with error");
 }

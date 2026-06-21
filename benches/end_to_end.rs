@@ -1,6 +1,6 @@
 //! End-to-end WebSocket benchmark.
 //!
-//! Starts the NeonDB server binary automatically, runs concurrent WebSocket
+//! Starts the Voltra server binary automatically, runs concurrent WebSocket
 //! clients, and reports throughput + latency.
 //!
 //! Usage:
@@ -11,7 +11,7 @@
 
 use futures::{SinkExt, StreamExt};
 use hdrhistogram::Histogram;
-use neondb::network::message::{
+use voltra::network::message::{
     ClientMessage, ReducerCall, ReducerResponse, ServerMessage, SqlQuery,
 };
 use serde::Serialize;
@@ -26,9 +26,9 @@ use tokio_tungstenite::tungstenite::Message;
 fn server_binary_path() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let exe = if cfg!(windows) {
-        "neondb.exe"
+        "voltra.exe"
     } else {
-        "neondb"
+        "voltra"
     };
     manifest_dir.join("target").join("release").join(exe)
 }
@@ -39,7 +39,7 @@ fn ensure_server_built() {
         return;
     }
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    println!("Building NeonDB release binary (first run only)…");
+    println!("Building Voltra release binary (first run only)…");
     let status = Command::new("cargo")
         .args(["build", "--release"])
         .current_dir(&manifest_dir)
@@ -51,19 +51,19 @@ fn ensure_server_built() {
 fn spawn_server(port: u16, wal_path: PathBuf) -> Child {
     ensure_server_built();
     // Derive a unique metrics port so the bench server doesn't collide with
-    // the neondb.toml default (3001) that `Config::from_env()` would pick up.
+    // the voltra.toml default (3001) that `Config::from_env()` would pick up.
     let metrics_port = port + 1000;
     Command::new(server_binary_path())
         .arg("start")
-        .env("NEONDB_HOST", "127.0.0.1")
-        .env("NEONDB_PORT", port.to_string())
-        .env("NEONDB_METRICS_PORT", metrics_port.to_string())
-        .env("NEONDB_WAL_PATH", &wal_path)
-        .env("NEONDB_UNSAFE_NO_FSYNC", "true")
+        .env("VOLTRA_HOST", "127.0.0.1")
+        .env("VOLTRA_PORT", port.to_string())
+        .env("VOLTRA_METRICS_PORT", metrics_port.to_string())
+        .env("VOLTRA_WAL_PATH", &wal_path)
+        .env("VOLTRA_UNSAFE_NO_FSYNC", "true")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("Failed to spawn NeonDB server")
+        .expect("Failed to spawn Voltra server")
 }
 
 async fn wait_for_server(url: &str) {
@@ -261,7 +261,7 @@ async fn client_workload_broadcast(
 
 #[tokio::main]
 async fn main() {
-    println!("=== NeonDB End-to-End WebSocket Benchmark ===\n");
+    println!("=== Voltra End-to-End WebSocket Benchmark ===\n");
 
     let ws_url = std::env::var("WS_URL").unwrap_or_else(|_| "ws://127.0.0.1:19000".to_string());
     let calls_per_client: usize = std::env::var("BENCH_CALLS")
@@ -271,7 +271,7 @@ async fn main() {
 
     // Determine whether we need to start our own server
     let use_external = std::env::var("WS_URL").is_ok();
-    let wal_path = std::env::temp_dir().join("neondb_e2e_bench.wal");
+    let wal_path = std::env::temp_dir().join("voltra_e2e_bench.wal");
 
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -325,7 +325,7 @@ async fn main() {
 
         if !use_external {
             let port = 19000u16;
-            println!("Starting NeonDB server on port {}…", port);
+            println!("Starting Voltra server on port {}…", port);
             let _ = std::fs::remove_file(&wal_path);
             let c = spawn_server(port, wal_path.clone());
             server_pid = Some(c.id());

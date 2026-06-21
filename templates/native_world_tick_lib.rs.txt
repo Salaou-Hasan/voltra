@@ -1,6 +1,6 @@
 //! # world_tick reducer
 //!
-//! Periodic world simulation step, typically called by the NeonDB scheduler
+//! Periodic world simulation step, typically called by the Voltra scheduler
 //! every few seconds. Regenerates HP and MP for all alive players and
 //! increments the global tick counter in the `world_state` table.
 //!
@@ -15,14 +15,14 @@
 //! { "ok": true, "tick": 42, "players_regenerated": 7 }
 //! ```
 //!
-//! ## neondb.toml scheduler entry
+//! ## voltra.toml scheduler entry
 //! ```toml
 //! [[scheduler]]
 //! reducer  = "world_tick"
 //! interval = "3s"
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// HP and MP regenerated per tick (flat amount).
@@ -95,4 +95,4 @@ pub fn world_tick(ctx: &mut Context, args: Value) -> Result<Value> {
     }))
 }
 
-neondb_reducer::reducer!(world_tick);
+voltra_reducer::reducer!(world_tick);

@@ -23,7 +23,7 @@
 // ============================================================================
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use neondb::{
+use voltra::{
     reducer::{increment_reducer, ReducerContext},
     subscriptions::{OutboundFrames, SubscriptionManager},
     table::TableStore,
@@ -61,7 +61,7 @@ impl GameServer {
         }
 
         let wal_path =
-            std::env::temp_dir().join(format!("neondb_bench_s3_{}.wal", wal_tag));
+            std::env::temp_dir().join(format!("voltra_bench_s3_{}.wal", wal_tag));
         let _ = std::fs::remove_file(&wal_path);
         let wal = Arc::new(
             BatchedWalWriter::open(&wal_path, 10, 512, /*unsafe_no_fsync=*/true).unwrap(),

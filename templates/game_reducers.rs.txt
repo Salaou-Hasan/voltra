@@ -8,7 +8,7 @@
 // Run:   ./target/release/mygame
 // ════════════════════════════════════════════════════════════════════════
 
-use neondb::{reducer, ReducerContext, ret};
+use voltra::{reducer, ReducerContext, ret};
 use serde_json::json;
 
 // ── Players ───────────────────────────────────────────────────────────────────

@@ -1,11 +1,11 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 use serde_json::json;
 
 #[reducer]
 fn buy_item(ctx: Ctx, player_id: String, item_id: String, price: i64) {
     // Read player and check gold
     let player = ctx.get("players", &player_id)?
-        .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Player not found"))?;
+        .ok_or_else(|| voltra::error::VoltraError::reducer_error("Player not found"))?;
     let gold = player["gold"].as_i64().unwrap_or(0);
 
     if gold < price {

@@ -1,4 +1,4 @@
-//! Interactive CLI client commands for NeonDB.
+//! Interactive CLI client commands for Voltra.
 //!
 //! Session 25 fixes:
 //!   - CallWire: send ClientMessage::ReducerCall directly (struct variant).
@@ -22,7 +22,7 @@
 //!     concatenated without a separator: "[dry-run] Would seedSeeding 3 row(s)...".
 //!     Fixed by splitting into two separate println! calls.
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::network::message::{ClientMessage, ReducerCall};
 use futures::{SinkExt, StreamExt};
 use std::time::Duration;
@@ -35,14 +35,14 @@ fn ws_request(
     api_key: Option<&str>,
 ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
     let mut req = url.into_client_request().map_err(|e| {
-        NeonDBError::network_error(format!("Invalid WebSocket URL '{}': {}", url, e))
+        VoltraError::network_error(format!("Invalid WebSocket URL '{}': {}", url, e))
     })?;
     if let Some(key) = api_key {
         req.headers_mut().insert(
             "authorization",
             format!("Bearer {}", key)
                 .parse()
-                .map_err(|_| NeonDBError::invalid_argument("Invalid API key header value"))?,
+                .map_err(|_| VoltraError::invalid_argument("Invalid API key header value"))?,
         );
     }
     Ok(req)
@@ -51,10 +51,10 @@ fn ws_request(
 async fn http_get(url: &str) -> Result<String> {
     let uri: hyper::Uri = url
         .parse()
-        .map_err(|e| NeonDBError::network_error(format!("Invalid URL '{}': {}", url, e)))?;
+        .map_err(|e| VoltraError::network_error(format!("Invalid URL '{}': {}", url, e)))?;
     let client = hyper::Client::new();
     let resp = client.get(uri).await.map_err(|e| {
-        NeonDBError::network_error(format!(
+        VoltraError::network_error(format!(
             "HTTP request failed: {}. Is the server running?",
             e
         ))
@@ -62,10 +62,10 @@ async fn http_get(url: &str) -> Result<String> {
     let status = resp.status();
     let bytes = hyper::body::to_bytes(resp.into_body())
         .await
-        .map_err(|e| NeonDBError::network_error(format!("Failed to read response: {}", e)))?;
+        .map_err(|e| VoltraError::network_error(format!("Failed to read response: {}", e)))?;
     let body = String::from_utf8_lossy(&bytes).to_string();
     if !status.is_success() {
-        return Err(NeonDBError::network_error(format!(
+        return Err(VoltraError::network_error(format!(
             "Server returned {}: {}",
             status, body
         )));
@@ -165,11 +165,11 @@ fn parse_args_json(raw: &str) -> Result<serde_json::Value> {
     eprintln!("  Raw input received: {}", s);
     eprintln!();
     eprintln!("  PowerShell sometimes strips quotes.  Working alternatives:");
-    eprintln!("    neondb call reducer '[\"arg1\", \"arg2\"]'");
-    eprintln!("    neondb call reducer \"['arg1', 'arg2']\"");
+    eprintln!("    voltra call reducer '[\"arg1\", \"arg2\"]'");
+    eprintln!("    voltra call reducer \"['arg1', 'arg2']\"");
     eprintln!();
 
-    Err(NeonDBError::invalid_argument(format!(
+    Err(VoltraError::invalid_argument(format!(
         "Invalid args JSON: could not parse '{}' as a JSON array",
         s
     )))
@@ -183,8 +183,8 @@ fn parse_args_json(raw: &str) -> Result<serde_json::Value> {
 /// unavailable (no ANTHROPIC_API_KEY set, or network error).
 ///
 /// Usage:
-///   neondb generate-npc goblin
-///   neondb generate-npc dragon --context "volcanic dungeon boss"
+///   voltra generate-npc goblin
+///   voltra generate-npc dragon --context "volcanic dungeon boss"
 pub async fn cmd_generate_npc(
     ws_url: &str,
     npc_type: &str,
@@ -239,11 +239,11 @@ pub async fn cmd_generate_npc(
 
     // ── 4. Cache it in the running server via the cache_npc_template reducer ───
     let template_str = serde_json::to_string(&template_json)
-        .map_err(|e| crate::error::NeonDBError::SerializationError(e.to_string()))?;
+        .map_err(|e| crate::error::VoltraError::SerializationError(e.to_string()))?;
 
     let args = serde_json::json!([npc_type, template_str]);
     let args_bytes = rmp_serde::to_vec(&args)
-        .map_err(|e| crate::error::NeonDBError::SerializationError(e.to_string()))?;
+        .map_err(|e| crate::error::VoltraError::SerializationError(e.to_string()))?;
 
     let msg = crate::network::message::ClientMessage::ReducerCall(
         crate::network::message::ReducerCall {
@@ -253,7 +253,7 @@ pub async fn cmd_generate_npc(
         },
     );
     let frame = rmp_serde::to_vec(&msg)
-        .map_err(|e| crate::error::NeonDBError::SerializationError(e.to_string()))?;
+        .map_err(|e| crate::error::VoltraError::SerializationError(e.to_string()))?;
 
     let request = ws_request(ws_url, api_key)?;
     match tokio_tungstenite::connect_async(request).await {
@@ -365,7 +365,7 @@ fn built_in_npc_template(npc_type: &str) -> serde_json::Value {
 
 // ── seed ─────────────────────────────────────────────────────────────────────
 
-/// Bulk-seed rows from a JSON file into a running NeonDB server.
+/// Bulk-seed rows from a JSON file into a running Voltra server.
 ///
 /// # Seed file format
 ///
@@ -395,15 +395,15 @@ pub async fn cmd_seed(
 ) -> Result<()> {
     // ── 1. Read and parse the seed file ──────────────────────────────────────
     let raw = std::fs::read_to_string(file_path).map_err(|e| {
-        NeonDBError::invalid_argument(format!("Cannot read seed file '{}': {}", file_path, e))
+        VoltraError::invalid_argument(format!("Cannot read seed file '{}': {}", file_path, e))
     })?;
     let seed: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| {
-            NeonDBError::invalid_argument(format!("Seed file is not valid JSON: {}", e))
+            VoltraError::invalid_argument(format!("Seed file is not valid JSON: {}", e))
         })?;
 
     let tables_map = seed.as_object().ok_or_else(|| {
-        NeonDBError::invalid_argument("Seed file root must be a JSON object mapping table names to rows")
+        VoltraError::invalid_argument("Seed file root must be a JSON object mapping table names to rows")
     })?;
 
     // ── 2. Normalize into a flat Vec<(table, key, data)> ─────────────────────
@@ -414,7 +414,7 @@ pub async fn cmd_seed(
             serde_json::Value::Array(arr) => {
                 for (idx, item) in arr.iter().enumerate() {
                     let obj = item.as_object().ok_or_else(|| {
-                        NeonDBError::invalid_argument(format!(
+                        VoltraError::invalid_argument(format!(
                             "{}[{}]: each array element must be a JSON object",
                             table_name, idx
                         ))
@@ -423,7 +423,7 @@ pub async fn cmd_seed(
                         .get("key")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| {
-                            NeonDBError::invalid_argument(format!(
+                            VoltraError::invalid_argument(format!(
                                 "{}[{}]: array-format rows must have a \"key\" string field",
                                 table_name, idx
                             ))
@@ -439,7 +439,7 @@ pub async fn cmd_seed(
                 }
             }
             _ => {
-                return Err(NeonDBError::invalid_argument(format!(
+                return Err(VoltraError::invalid_argument(format!(
                     "Table '{}': value must be an array or object of rows",
                     table_name
                 )));
@@ -492,21 +492,21 @@ pub async fn cmd_seed(
         "rows": rows.iter().map(|(t, k, d)| serde_json::json!([t, k, d])).collect::<Vec<_>>()
     });
     let payload_str = serde_json::to_string(&payload)
-        .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+        .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
     let uri: hyper::Uri = seed_url.parse().map_err(|e| {
-        NeonDBError::network_error(format!("Invalid URL '{}': {}", seed_url, e))
+        VoltraError::network_error(format!("Invalid URL '{}': {}", seed_url, e))
     })?;
     let req = hyper::Request::builder()
         .method(hyper::Method::POST)
         .uri(uri)
         .header(hyper::header::CONTENT_TYPE, "application/json")
         .body(hyper::Body::from(payload_str))
-        .map_err(|e| NeonDBError::network_error(format!("Build request: {}", e)))?;
+        .map_err(|e| VoltraError::network_error(format!("Build request: {}", e)))?;
 
     let client = hyper::Client::new();
     let resp = client.request(req).await.map_err(|e| {
-        NeonDBError::network_error(format!(
+        VoltraError::network_error(format!(
             "POST /seed failed: {}. Is the server running at {}?",
             e, metrics_url
         ))
@@ -515,12 +515,12 @@ pub async fn cmd_seed(
     let status = resp.status();
     let bytes = hyper::body::to_bytes(resp.into_body())
         .await
-        .map_err(|e| NeonDBError::network_error(format!("Read response: {}", e)))?;
+        .map_err(|e| VoltraError::network_error(format!("Read response: {}", e)))?;
     let body = String::from_utf8_lossy(&bytes);
 
     if !status.is_success() {
         eprintln!("Server returned {}: {}", status, body);
-        return Err(NeonDBError::network_error(format!(
+        return Err(VoltraError::network_error(format!(
             "Seed failed with HTTP {}",
             status
         )));
@@ -542,7 +542,7 @@ pub async fn cmd_status(metrics_url: &str) -> Result<()> {
     let health_url = format!("{}/healthz", metrics_url.trim_end_matches('/'));
     let metrics_endpoint = format!("{}/metrics", metrics_url.trim_end_matches('/'));
 
-    println!("Checking NeonDB at {} …\n", metrics_url);
+    println!("Checking Voltra at {} …\n", metrics_url);
 
     match http_get(&health_url).await {
         Ok(body) => {
@@ -567,7 +567,7 @@ pub async fn cmd_tables(metrics_url: &str) -> Result<()> {
     let url = format!("{}/tables", metrics_url.trim_end_matches('/'));
     let body = http_get(&url).await?;
     let parsed: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+        serde_json::from_str(&body).map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
     let empty = vec![];
     let tables = parsed
@@ -599,7 +599,7 @@ pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Resul
     let url = format!("{}/tables/{}", metrics_url.trim_end_matches('/'), table);
     let body = http_get(&url).await?;
     let parsed: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+        serde_json::from_str(&body).map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
     let empty = vec![];
     let rows = parsed
@@ -647,7 +647,7 @@ pub async fn cmd_call(
         None => serde_json::json!([]),
     };
     let args_bytes = rmp_serde::to_vec(&args_value)
-        .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+        .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
     let msg = ClientMessage::ReducerCall(ReducerCall {
         call_id: 1,
@@ -655,13 +655,13 @@ pub async fn cmd_call(
         args: args_bytes,
     });
     let frame = rmp_serde::to_vec(&msg)
-        .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+        .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
     let request = ws_request(ws_url, api_key)?;
     let (mut ws, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|e| {
-            NeonDBError::network_error(format!(
+            VoltraError::network_error(format!(
                 "Connect failed: {}. Is the server running at {}?",
                 e, ws_url
             ))
@@ -669,11 +669,11 @@ pub async fn cmd_call(
 
     ws.send(Message::Binary(frame))
         .await
-        .map_err(|e| NeonDBError::network_error(e.to_string()))?;
+        .map_err(|e| VoltraError::network_error(e.to_string()))?;
 
     let resp = tokio::time::timeout(Duration::from_secs(10), ws.next())
         .await
-        .map_err(|_| NeonDBError::network_error("Timed out waiting for response".to_string()))?;
+        .map_err(|_| VoltraError::network_error("Timed out waiting for response".to_string()))?;
 
     match resp {
         Some(Ok(Message::Binary(data))) => {
@@ -698,8 +698,8 @@ pub async fn cmd_call(
             }
         }
         Some(Ok(_)) => println!("Unexpected non-binary response"),
-        Some(Err(e)) => return Err(NeonDBError::network_error(e.to_string())),
-        None => return Err(NeonDBError::network_error(
+        Some(Err(e)) => return Err(VoltraError::network_error(e.to_string())),
+        None => return Err(VoltraError::network_error(
             "Connection closed without a response".to_string(),
         )),
     }
@@ -713,7 +713,7 @@ pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Resu
     let (mut ws, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|e| {
-            NeonDBError::network_error(format!(
+            VoltraError::network_error(format!(
                 "Connect failed: {}. Is the server running at {}?",
                 e, ws_url
             ))
@@ -724,11 +724,11 @@ pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Resu
         query: query.to_string(),
     };
     let frame = rmp_serde::to_vec(&msg)
-        .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+        .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
     ws.send(Message::Binary(frame))
         .await
-        .map_err(|e| NeonDBError::network_error(e.to_string()))?;
+        .map_err(|e| VoltraError::network_error(e.to_string()))?;
 
     println!("Watching '{}' (Ctrl-C to stop)…\n", query);
 
@@ -818,7 +818,7 @@ fn handle_watch_frame(data: &[u8], pending_route: &mut Option<Vec<String>>) {
     }
 }
 
-// ── neondb migrate ────────────────────────────────────────────────────────────
+// ── voltra migrate ────────────────────────────────────────────────────────────
 
 /// Run pending migrations from the `migrations/` directory against a running server.
 ///
@@ -840,7 +840,7 @@ pub async fn cmd_migrate(
 
     // Collect *.toml files sorted lexicographically (001_ < 002_ etc.)
     let mut paths: Vec<_> = std::fs::read_dir(dir)
-        .map_err(|e| NeonDBError::internal(format!("Cannot read migrations dir: {}", e)))?
+        .map_err(|e| VoltraError::internal(format!("Cannot read migrations dir: {}", e)))?
         .flatten()
         .filter(|e| {
             e.path()
@@ -886,7 +886,7 @@ pub async fn cmd_migrate(
     for p in &paths {
         let filename = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
         let content = std::fs::read_to_string(p)
-            .map_err(|e| NeonDBError::internal(format!("Cannot read {:?}: {}", p, e)))?;
+            .map_err(|e| VoltraError::internal(format!("Cannot read {:?}: {}", p, e)))?;
         migrations.push(serde_json::json!({ "filename": filename, "content": content }));
     }
     let payload = serde_json::json!({ "migrations": migrations });
@@ -899,14 +899,14 @@ pub async fn cmd_migrate(
         .body(payload.to_string())
         .send()
         .await
-        .map_err(|e| NeonDBError::network_error(format!("Cannot reach {}: {}", url, e)))?;
+        .map_err(|e| VoltraError::network_error(format!("Cannot reach {}: {}", url, e)))?;
 
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
 
     if !status.is_success() {
         eprintln!("Server returned HTTP {}: {}", status, body);
-        return Err(NeonDBError::network_error(format!("HTTP {}", status)));
+        return Err(VoltraError::network_error(format!("HTTP {}", status)));
     }
 
     match serde_json::from_str::<serde_json::Value>(&body) {

@@ -1,6 +1,6 @@
 # Rust SDK
 
-The Rust SDK is located at `neondb-client-rust/`. It uses Tokio for async I/O and tokio-tungstenite for the WebSocket connection.
+The Rust SDK is located at `voltra-client-rust/`. It uses Tokio for async I/O and tokio-tungstenite for the WebSocket connection.
 
 ---
 
@@ -9,7 +9,7 @@ The Rust SDK is located at `neondb-client-rust/`. It uses Tokio for async I/O an
 ```toml
 # Cargo.toml
 [dependencies]
-neondb-client = { path = "../neondb-client-rust" }
+voltra-client = { path = "../voltra-client-rust" }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -18,11 +18,11 @@ tokio = { version = "1", features = ["full"] }
 ## Connecting
 
 ```rust
-use neondb_client::{NeonDBClient, ClientOptions};
+use voltra_client::{VoltraClient, ClientOptions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let client = NeonDBClient::connect(ClientOptions {
+    let client = VoltraClient::connect(ClientOptions {
         url: "ws://localhost:3000".to_string(),
         api_key: Some("your-api-key".to_string()),
         ..Default::default()
@@ -58,7 +58,7 @@ let result: serde_json::Value = rmp_serde::from_slice(&result_bytes)?;
 println!("new value: {}", result["value"]);
 ```
 
-`call()` returns `Result<Vec<u8>, NeonDBError>`. It fails if the reducer returned an error, the call timed out, or the connection dropped.
+`call()` returns `Result<Vec<u8>, VoltraError>`. It fails if the reducer returned an error, the call timed out, or the connection dropped.
 
 ---
 
@@ -137,12 +137,12 @@ let alice = client.get_row("players", "alice");
 ## Error Types
 
 ```rust
-use neondb_client::NeonDBError;
+use voltra_client::VoltraError;
 
 match result {
-    Err(NeonDBError::ReducerError(msg)) => eprintln!("reducer: {}", msg),
-    Err(NeonDBError::Timeout) => eprintln!("timed out"),
-    Err(NeonDBError::NotConnected) => eprintln!("not connected"),
+    Err(VoltraError::ReducerError(msg)) => eprintln!("reducer: {}", msg),
+    Err(VoltraError::Timeout) => eprintln!("timed out"),
+    Err(VoltraError::NotConnected) => eprintln!("not connected"),
     Err(e) => eprintln!("other: {}", e),
     Ok(bytes) => { /* ... */ }
 }
@@ -157,7 +157,7 @@ The background connection task reconnects automatically when `reconnect_interval
 To disable:
 
 ```rust
-let client = NeonDBClient::connect(ClientOptions {
+let client = VoltraClient::connect(ClientOptions {
     url: "ws://localhost:3000".to_string(),
     reconnect_interval: None,
     ..Default::default()

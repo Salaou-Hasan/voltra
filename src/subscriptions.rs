@@ -27,7 +27,7 @@
 // ============================================================================
 
 use crate::compression::HybridCompressor;
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::network::message::{ServerMessage, SubscriptionBody, SubscriptionDiff, SubscriptionRoute};
 use crate::table::{RowDelta, TableStore};
 use bytes::Bytes;
@@ -366,7 +366,7 @@ impl SubscriptionManager {
         let order_by = filter.order_by.clone();
 
         let client = self.clients.get(&client_id).ok_or_else(|| {
-            NeonDBError::invalid_argument(format!("Unknown client: {}", client_id))
+            VoltraError::invalid_argument(format!("Unknown client: {}", client_id))
         })?;
 
         let subscription = Subscription {
@@ -494,7 +494,7 @@ impl SubscriptionManager {
 
     pub fn unsubscribe(&self, client_id: ClientId, subscription_id: &str) -> Result<bool> {
         let client = self.clients.get(&client_id).ok_or_else(|| {
-            NeonDBError::invalid_argument(format!("Unknown client: {}", client_id))
+            VoltraError::invalid_argument(format!("Unknown client: {}", client_id))
         })?;
 
         if let Some((_, sub)) = client.subscriptions.remove(subscription_id) {
@@ -770,7 +770,7 @@ fn publish_now(&self, deltas: &[RowDelta]) {
                             Self::SLOW_CONSUMER_EVICT_AFTER
                         };
                         log::warn!(
-                            "[neondb] slow consumer client {}: {} missed tick(s)",
+                            "[voltra] slow consumer client {}: {} missed tick(s)",
                             client_id, missed
                         );
                         if missed >= Self::SLOW_CONSUMER_EVICT_AFTER {
@@ -967,7 +967,7 @@ fn parse_subscription_query(query: &str) -> Result<SubscriptionFilter> {
     };
     let table_name = table_name.trim();
     if table_name.is_empty() {
-        return Err(NeonDBError::invalid_argument(
+        return Err(VoltraError::invalid_argument(
             "Subscription query missing table name",
         ));
     }
@@ -1111,12 +1111,12 @@ fn parse_comparison(predicate: &str) -> Result<Predicate> {
             let field = predicate[..idx].trim().to_string();
             let value_part = predicate[idx + op.len()..].trim();
             let cmp_op = ComparisonOp::from_str(op)
-                .ok_or_else(|| NeonDBError::invalid_argument("Unsupported comparator"))?;
+                .ok_or_else(|| VoltraError::invalid_argument("Unsupported comparator"))?;
             let value = parse_predicate_value(value_part)?;
             return Ok(Predicate::Comparison { field, op: cmp_op, value });
         }
     }
-    Err(NeonDBError::invalid_argument(
+    Err(VoltraError::invalid_argument(
         "Subscription predicate invalid",
     ))
 }
@@ -1132,7 +1132,7 @@ fn parse_predicate_value(value: &str) -> Result<Value> {
     if let Ok(f) = t.parse::<f64>() {
         return serde_json::Number::from_f64(f)
             .map(Value::Number)
-            .ok_or_else(|| NeonDBError::invalid_argument("Invalid numeric literal"));
+            .ok_or_else(|| VoltraError::invalid_argument("Invalid numeric literal"));
     }
     if t.eq_ignore_ascii_case("true") {
         return Ok(Value::Bool(true));

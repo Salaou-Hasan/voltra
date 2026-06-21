@@ -6,27 +6,27 @@
 //         { error: "not_found" | "insufficient_mp" }
 //
 // Usage:
-//   neondb call use_ability '["player1", "fireball", "goblin_1"]'
+//   voltra call use_ability '["player1", "fireball", "goblin_1"]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
   const [pid, ability, tgt] = args;
-  const p = __neondb_get("players", pid);
+  const p = __voltra_get("players", pid);
   if (!p) { return { error: "not_found" }; }
   else if (p.mp < 10) { return { error: "insufficient_mp" }; }
   else {
     p.mp -= 10;
-    __neondb_set("players", pid, p);
+    __voltra_set("players", pid, p);
     return { ok: true, ability, target: tgt, mp_remaining: p.mp };
   }
 }

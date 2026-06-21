@@ -1,6 +1,6 @@
 // latency_bench — WebSocket round-trip latency at increasing concurrency
 //
-// Starts an embedded NeonDB server, drives it with N concurrent clients,
+// Starts an embedded Voltra server, drives it with N concurrent clients,
 // and measures p50 / p99 / p999 latency + aggregate TPS.
 //
 // Run each concurrency level for 5 seconds, then print a table.
@@ -13,7 +13,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use futures::{SinkExt, StreamExt};
 use hdrhistogram::Histogram;
-use neondb::{
+use voltra::{
     network::message::{ClientMessage, ReducerCall},
     reducer::{context::ReducerContext, native::NativeReducerBackend, registry::NativeReducerItem},
     ServerHandle,
@@ -29,7 +29,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 // ── Minimal native reducer for the benchmark ─────────────────────────────────
 
-fn bench_ping(ctx: &mut ReducerContext, args: &[u8]) -> neondb::error::Result<Vec<u8>> {
+fn bench_ping(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let a: Vec<serde_json::Value> = rmp_serde::from_slice(args).unwrap_or_default();
     let key = a.first().and_then(|v| v.as_str()).unwrap_or("k");
     ctx.set_row(
@@ -48,7 +48,7 @@ inventory::submit! { NativeReducerItem {
 // ── Embedded server startup ───────────────────────────────────────────────────
 
 async fn start_server(port: u16) -> ServerHandle {
-    let dir = std::env::temp_dir().join(format!("neondb_latbench_{}", port));
+    let dir = std::env::temp_dir().join(format!("voltra_latbench_{}", port));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -70,7 +70,7 @@ dir = "{snap}"
         snap = dir.join("snaps").display(),
     );
 
-    let mut config = neondb::config::Config::from_env();
+    let mut config = voltra::config::Config::from_env();
     config.port              = port;
     config.metrics_port      = port + 1000;
     config.workers           = 0; // = num_cpus
@@ -79,7 +79,7 @@ dir = "{snap}"
     config.snapshot_dir      = dir.join("snaps");
     let _ = toml; // used for documentation clarity only
 
-    match neondb::run_server_with_handle(config).await {
+    match voltra::run_server_with_handle(config).await {
         Ok((handle, fut)) => { tokio::spawn(fut); handle }
         Err(e) => panic!("Server start failed: {e}"),
     }
@@ -112,7 +112,7 @@ impl WsClient {
     async fn connect(url: &str, client_id: u64) -> Option<Self> {
         let mut req = url.into_client_request().ok()?;
         req.headers_mut().insert(
-            "X-NeonDB-Client-ID",
+            "X-Voltra-Client-ID",
             client_id.to_string().parse().unwrap(),
         );
         let (ws, _) = tokio_tungstenite::connect_async(req).await.ok()?;
@@ -216,7 +216,7 @@ async fn main() {
     let test_secs   = 5u64;
 
     println!();
-    println!("  NeonDB WebSocket Round-Trip Latency Benchmark");
+    println!("  Voltra WebSocket Round-Trip Latency Benchmark");
     println!("  Embedded server on :{port} | native reducer | {} sec per level", test_secs);
     println!("  Metric: p50 / p99 / p999 latency in milliseconds");
     println!("  TPS shown = calls/sec completed by ALL clients combined");
@@ -284,7 +284,7 @@ async fn main() {
     println!("     Each response travels: worker → kanal → write task → TCP → client.");
     println!("     At 15K clients, TCP send buffers and OS scheduler are saturated.");
     println!();
-    println!("  SOLUTION: separate server box from client boxes (neondb-sim serve +");
+    println!("  SOLUTION: separate server box from client boxes (voltra-sim serve +");
     println!("  --external flag). With clients on different machines, the server");
     println!("  stops fighting for CPU with its own load generator.");
     println!();

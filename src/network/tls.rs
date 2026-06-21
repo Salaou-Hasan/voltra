@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB tls.rs — TLS configuration helpers
+// Voltra tls.rs — TLS configuration helpers
 //
 // Provides:
 //   - `load_tls_config`    — load a PEM cert chain + PKCS8 key from disk
@@ -15,18 +15,18 @@ use std::sync::Arc;
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 
 /// Load a TLS `ServerConfig` from PEM-encoded certificate chain and PKCS8
 /// private key files on disk.
 ///
 /// # Errors
-/// Returns `NeonDBError` when either file cannot be read, the cert chain is
+/// Returns `VoltraError` when either file cannot be read, the cert chain is
 /// empty, or the private key cannot be parsed.
 pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerConfig>> {
     // ── Load certificate chain ────────────────────────────────────────────────
     let cert_file = std::fs::File::open(cert_path).map_err(|e| {
-        NeonDBError::network_error(format!(
+        VoltraError::network_error(format!(
             "TLS: cannot open cert file '{}': {}",
             cert_path.display(),
             e
@@ -36,17 +36,17 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerCo
     let certs: Vec<CertificateDer<'static>> =
         rustls_pemfile::certs(&mut cert_reader)
             .collect::<std::io::Result<Vec<_>>>()
-            .map_err(|e| NeonDBError::network_error(format!("TLS: failed to parse cert PEM: {}", e)))?;
+            .map_err(|e| VoltraError::network_error(format!("TLS: failed to parse cert PEM: {}", e)))?;
 
     if certs.is_empty() {
-        return Err(NeonDBError::network_error(
+        return Err(VoltraError::network_error(
             "TLS: cert file contains no valid certificates".to_string(),
         ));
     }
 
     // ── Load private key ──────────────────────────────────────────────────────
     let key_file = std::fs::File::open(key_path).map_err(|e| {
-        NeonDBError::network_error(format!(
+        VoltraError::network_error(format!(
             "TLS: cannot open key file '{}': {}",
             key_path.display(),
             e
@@ -57,13 +57,13 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerCo
     // Try the generic private_key reader first (handles PKCS8 and RSA).
     let private_key: PrivateKeyDer<'static> = {
         let result = rustls_pemfile::private_key(&mut key_reader)
-            .map_err(|e| NeonDBError::network_error(format!("TLS: failed to parse key PEM: {}", e)))?;
+            .map_err(|e| VoltraError::network_error(format!("TLS: failed to parse key PEM: {}", e)))?;
         match result {
             Some(k) => k,
             None => {
                 // Fallback: try PKCS8-specific reader
                 let kf = std::fs::File::open(key_path).map_err(|e| {
-                    NeonDBError::network_error(format!("TLS: cannot open key file: {}", e))
+                    VoltraError::network_error(format!("TLS: cannot open key file: {}", e))
                 })?;
                 let mut kr = BufReader::new(kf);
                 let mut pkcs8_keys: Vec<PrivateKeyDer<'static>> = Vec::new();
@@ -73,7 +73,7 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerCo
                 if !pkcs8_keys.is_empty() {
                     pkcs8_keys.remove(0)
                 } else {
-                    return Err(NeonDBError::network_error(
+                    return Err(VoltraError::network_error(
                         "TLS: key file contains no valid private key".to_string(),
                     ));
                 }
@@ -85,7 +85,7 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerCo
     let config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, private_key)
-        .map_err(|e| NeonDBError::network_error(format!("TLS: invalid cert/key pair: {}", e)))?;
+        .map_err(|e| VoltraError::network_error(format!("TLS: invalid cert/key pair: {}", e)))?;
 
     Ok(Arc::new(config))
 }
@@ -155,8 +155,8 @@ mod tests {
     fn test_load_tls_config_self_signed_succeeds() {
         let (cert_pem, key_pem) = generate_self_signed();
 
-        let cert_path = write_temp_pem("neondb_test_cert.pem", &cert_pem);
-        let key_path  = write_temp_pem("neondb_test_key.pem",  &key_pem);
+        let cert_path = write_temp_pem("voltra_test_cert.pem", &cert_pem);
+        let key_path  = write_temp_pem("voltra_test_key.pem",  &key_pem);
 
         let result = load_tls_config(&cert_path, &key_path);
         assert!(result.is_ok(), "load_tls_config failed: {:?}", result.err());
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn test_load_tls_config_bad_cert_path_returns_error() {
         let (_cert_pem, key_pem) = generate_self_signed();
-        let key_path  = write_temp_pem("neondb_test_key2.pem", &key_pem);
+        let key_path  = write_temp_pem("voltra_test_key2.pem", &key_pem);
 
         let missing_cert = std::path::Path::new("/nonexistent/path/cert.pem");
         let result = load_tls_config(missing_cert, &key_path);
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn test_load_tls_config_bad_key_path_returns_error() {
         let (cert_pem, _key_pem) = generate_self_signed();
-        let cert_path = write_temp_pem("neondb_test_cert2.pem", &cert_pem);
+        let cert_path = write_temp_pem("voltra_test_cert2.pem", &cert_pem);
 
         let missing_key = std::path::Path::new("/nonexistent/path/key.pem");
         let result = load_tls_config(&cert_path, missing_key);

@@ -6,32 +6,32 @@
 //         { error: "no_player" | "no_such_item" }
 //
 // Usage:
-//   neondb call sell_item '["player1", "sword", 25]'
+//   voltra call sell_item '["player1", "sword", 25]'
 //
-// NeonDB reducer API:
-//   __neondb_get(table, key)      → object | null
-//   __neondb_set(table, key, val) → void
-//   __neondb_delete(table, key)   → void
-//   __neondb_get_all(table)       → object[]
-//   __neondb_caller_id            → string (client identity)
-//   __neondb_caller_role          → string (e.g. "admin")
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
 //
 // Performance: runs on Boa JS engine (no JIT).
-//   Run `neondb build` to compile to WASM for 10–50× more throughput.
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
 // ═══════════════════════════════════════════════════════════════════════
 function reducer(args) {
   const [pid, item_id, price] = args;
   const k = pid + ":" + item_id;
-  const inv = __neondb_get("inventory", k);
-  const p = __neondb_get("players", pid);
+  const inv = __voltra_get("inventory", k);
+  const p = __voltra_get("players", pid);
   if (!p) { return { error: "no_player" }; }
   else if (!inv || inv.qty <= 0) { return { error: "no_such_item" }; }
   else {
     inv.qty -= 1;
-    if (inv.qty === 0) __neondb_delete("inventory", k);
-    else __neondb_set("inventory", k, inv);
+    if (inv.qty === 0) __voltra_delete("inventory", k);
+    else __voltra_set("inventory", k, inv);
     p.currency += price;
-    __neondb_set("players", pid, p);
+    __voltra_set("players", pid, p);
     return { ok: true, currency: p.currency, qty: inv.qty };
   }
 }

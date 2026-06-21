@@ -14,7 +14,7 @@
 //! { "ok": true, "item_id": "sword", "quantity": 1, "currency_remaining": 75 }
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// Purchase an item from the shop.
@@ -80,4 +80,4 @@ pub fn buy_item(ctx: &mut Context, args: Value) -> Result<Value> {
     }))
 }
 
-neondb_reducer::reducer!(buy_item);
+voltra_reducer::reducer!(buy_item);

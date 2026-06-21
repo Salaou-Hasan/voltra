@@ -1,4 +1,4 @@
-//! Production-grade matchmaking service for NeonDB.
+//! Production-grade matchmaking service for Voltra.
 //!
 //! Supports queue-based matching, skill-based (Elo/MMR) pairing, region awareness,
 //! configurable team sizes (1v1, 2v2, 5v5, FFA), queue timeouts, and full match

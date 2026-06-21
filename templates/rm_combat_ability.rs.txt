@@ -1,4 +1,4 @@
-use neondb::{reducer, ret};
+use voltra::{reducer, ret};
 use serde_json::json;
 
 #[reducer]
@@ -7,7 +7,7 @@ fn use_ability(ctx: Ctx, player_id: String, target_id: String, ability: String) 
         "heal" => {
             // Restore 30 hp to self
             let player = ctx.get("players", &player_id)?
-                .ok_or_else(|| neondb::error::NeonDBError::reducer_error("Player not found"))?;
+                .ok_or_else(|| voltra::error::VoltraError::reducer_error("Player not found"))?;
             let hp = player["hp"].as_i64().unwrap_or(0);
             let max_hp = player["max_hp"].as_i64().unwrap_or(100);
             let mut updated = player.clone();

@@ -30,7 +30,7 @@
 //   max_calls_per_sec  — token bucket refilled continuously; 0 = unlimited
 // ============================================================================
 
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::table::TableStore;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -164,13 +164,13 @@ impl TenantRegistry {
     ) -> Result<(TenantInfo, crate::table::RowDelta)> {
         let name = name.trim();
         if name.is_empty() {
-            return Err(NeonDBError::invalid_argument("Tenant name must not be empty"));
+            return Err(VoltraError::invalid_argument("Tenant name must not be empty"));
         }
         if name.contains(':') {
-            return Err(NeonDBError::invalid_argument("Tenant name must not contain ':'"));
+            return Err(VoltraError::invalid_argument("Tenant name must not contain ':'"));
         }
         if self.tenants.iter().any(|e| e.value().name == name) {
-            return Err(NeonDBError::invalid_argument(format!(
+            return Err(VoltraError::invalid_argument(format!(
                 "Tenant '{}' already exists", name
             )));
         }
@@ -185,7 +185,7 @@ impl TenantRegistry {
             created_at: now_secs(),
         };
         let row = serde_json::to_value(&info)
-            .map_err(|e| NeonDBError::SerializationError(e.to_string()))?;
+            .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
         let delta = self.tables.set_row(TENANTS_TABLE.to_string(), id.clone(), row)?;
         self.key_index.insert(api_key, id.clone());
         self.tenants.insert(id, info.clone());
@@ -196,7 +196,7 @@ impl TenantRegistry {
     /// every data row) for the caller to journal.
     pub fn delete(&self, tenant_id: &str) -> Result<Vec<crate::table::RowDelta>> {
         let Some(info) = self.get(tenant_id) else {
-            return Err(NeonDBError::invalid_argument(format!(
+            return Err(VoltraError::invalid_argument(format!(
                 "Unknown tenant '{}'", tenant_id
             )));
         };

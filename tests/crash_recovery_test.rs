@@ -1,7 +1,7 @@
 // ============================================================================
 // WAL crash-recovery integration tests (TODO-037)
 //
-// These tests start a real `neondb start` server process, perform writes,
+// These tests start a real `voltra start` server process, perform writes,
 // kill the process abruptly (no graceful shutdown), restart it on the SAME
 // WAL and snapshot directory, then verify that all committed rows are still
 // present and no torn (partial) writes slipped through.
@@ -12,7 +12,7 @@
 // ============================================================================
 
 use futures::{SinkExt, StreamExt};
-use neondb::network::message::ReducerCall;
+use voltra::network::message::ReducerCall;
 use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 fn server_binary_path() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let file_name = if cfg!(windows) { "neondb.exe" } else { "neondb" };
+    let file_name = if cfg!(windows) { "voltra.exe" } else { "voltra" };
     manifest_dir.join("target").join("debug").join(file_name)
 }
 
@@ -39,22 +39,22 @@ fn ensure_server_built() {
 fn spawn_server_on_wal(port: u16, wal_path: &PathBuf, snapshot_dir: &PathBuf) -> Child {
     ensure_server_built();
     let binary = server_binary_path();
-    let blob_dir = std::env::temp_dir().join(format!("neondb_blobs_crash_{}", port));
+    let blob_dir = std::env::temp_dir().join(format!("voltra_blobs_crash_{}", port));
     let metrics_port = port + 1000;
 
     Command::new(binary)
         .arg("start")
-        .env("NEONDB_HOST", "127.0.0.1")
-        .env("NEONDB_PORT", port.to_string())
-        .env("NEONDB_METRICS_PORT", metrics_port.to_string())
-        .env("NEONDB_WAL_PATH", wal_path)
-        .env("NEONDB_SNAPSHOT_DIR", snapshot_dir)
-        .env("NEONDB_BLOB_PATH", blob_dir)
-        .env("NEONDB_UNSAFE_NO_FSYNC", "true")  // faster for tests
+        .env("VOLTRA_HOST", "127.0.0.1")
+        .env("VOLTRA_PORT", port.to_string())
+        .env("VOLTRA_METRICS_PORT", metrics_port.to_string())
+        .env("VOLTRA_WAL_PATH", wal_path)
+        .env("VOLTRA_SNAPSHOT_DIR", snapshot_dir)
+        .env("VOLTRA_BLOB_PATH", blob_dir)
+        .env("VOLTRA_UNSAFE_NO_FSYNC", "true")  // faster for tests
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("Failed to spawn NeonDB server")
+        .expect("Failed to spawn Voltra server")
 }
 
 async fn wait_for_ready(url: &str, timeout: Duration) {
@@ -125,8 +125,8 @@ async fn call_increment(ws: &mut tokio_tungstenite::WebSocketStream<
 #[tokio::test]
 async fn crash_recovery_basic_counter_survives() {
     let port: u16 = 18200;
-    let wal_path = std::env::temp_dir().join("neondb_crash_test_basic.wal");
-    let snap_dir = std::env::temp_dir().join("neondb_crash_test_basic_snaps");
+    let wal_path = std::env::temp_dir().join("voltra_crash_test_basic.wal");
+    let snap_dir = std::env::temp_dir().join("voltra_crash_test_basic_snaps");
     let metrics_port = port + 1000;
 
     // Clean up any leftovers from a previous run.
@@ -193,8 +193,8 @@ async fn crash_recovery_basic_counter_survives() {
 #[tokio::test]
 async fn crash_recovery_no_torn_paired_writes() {
     let port: u16 = 18201;
-    let wal_path = std::env::temp_dir().join("neondb_crash_test_paired.wal");
-    let snap_dir = std::env::temp_dir().join("neondb_crash_test_paired_snaps");
+    let wal_path = std::env::temp_dir().join("voltra_crash_test_paired.wal");
+    let snap_dir = std::env::temp_dir().join("voltra_crash_test_paired_snaps");
     let metrics_port = port + 1000;
 
     let _ = std::fs::remove_file(&wal_path);

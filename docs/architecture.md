@@ -91,9 +91,9 @@ Three runtimes are supported:
 
 **Native Rust**: compiled into the server binary. Zero overhead — a function call. Used for built-in reducers like `increment`.
 
-**JavaScript (Boa 0.19)**: a pure-Rust JS engine with no C++ dependencies. JS reducers live as `.js` files in the `modules/` directory and are loaded at startup. Access to the database is via the `__neondb_*` host API (see [docs/reducers.md](reducers.md)). JS reducers are semi-trusted: the engine enforces a wall-clock timeout but does not cap JS heap memory (use the WASM backend for untrusted code).
+**JavaScript (Boa 0.19)**: a pure-Rust JS engine with no C++ dependencies. JS reducers live as `.js` files in the `modules/` directory and are loaded at startup. Access to the database is via the `__voltra_*` host API (see [docs/reducers.md](reducers.md)). JS reducers are semi-trusted: the engine enforces a wall-clock timeout but does not cap JS heap memory (use the WASM backend for untrusted code).
 
-**WASM (Wasmtime 21, Cranelift JIT)**: `.wasm` or `.wat` files in `modules/`. Wasmtime enforces a hard memory limit via `ResourceLimiter`. 10–50x faster than the Boa interpreter for compute-heavy logic. The `neondb build` command compiles `.js` files to WASM using javy.
+**WASM (Wasmtime 21, Cranelift JIT)**: `.wasm` or `.wat` files in `modules/`. Wasmtime enforces a hard memory limit via `ResourceLimiter`. 10–50x faster than the Boa interpreter for compute-heavy logic. The `voltra build` command compiles `.js` files to WASM using javy.
 
 ### Subscriptions
 

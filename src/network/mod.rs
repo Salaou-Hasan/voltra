@@ -63,7 +63,7 @@ impl InlineRegistry {
     }
 }
 
-/// Build the default inline registry that ships with NeonDB.
+/// Build the default inline registry that ships with Voltra.
 /// `stress_ping` is always registered so benchmarks can bypass the worker pool.
 pub fn build_inline_registry() -> Arc<InlineRegistry> {
     let mut r = InlineRegistry::new();

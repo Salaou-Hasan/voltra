@@ -1,5 +1,5 @@
 // ============================================================================
-// NeonDB throughput benchmarks
+// Voltra throughput benchmarks
 //
 // Scenario 1 — Pure engine (reducer hot-path)
 //   increment_1x       : single-thread, full commit cycle
@@ -23,7 +23,7 @@
 // ============================================================================
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use neondb::{
+use voltra::{
     reducer::{increment_reducer, ReducerContext},
     subscriptions::{OutboundFrames, SubscriptionManager},
     table::{RowDelta, TableStore},

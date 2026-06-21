@@ -1,8 +1,8 @@
 """
-NeonDB Example Game — Multiplayer Dungeon Crawler Demo
+Voltra Example Game — Multiplayer Dungeon Crawler Demo
 ======================================================
 
-This script demonstrates every major NeonDB feature using the Python
+This script demonstrates every major Voltra feature using the Python
 WebSocket client. It works with the built-in `increment` reducer and
 shows subscriptions, initial state sync, and live diffs.
 
@@ -10,7 +10,7 @@ Prerequisites
 -------------
   pip install websocket-client msgpack
 
-Run the NeonDB server first:
+Run the Voltra server first:
   cargo run --release -- start
 
 Then run this script:
@@ -33,13 +33,13 @@ except ImportError:
 # ── Config ────────────────────────────────────────────────────────────────────
 
 SERVER_URL = "ws://127.0.0.1:3000"
-API_KEY    = None          # set to "your-key" if NEONDB_API_KEY is set on server
+API_KEY    = None          # set to "your-key" if VOLTRA_API_KEY is set on server
 
 
 # ── Low-level client helpers ──────────────────────────────────────────────────
 
 def connect():
-    """Open a WebSocket connection to NeonDB."""
+    """Open a WebSocket connection to Voltra."""
     headers = {}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
@@ -325,7 +325,7 @@ def demo_concurrent_clients():
         fail(f"{len(errors)} errors: {errors[:3]}")
     else:
         ok(f"All 100 concurrent increments completed without error")
-        info("Check 'neondb get counters isolation_test' — value should equal all prior runs summed.")
+        info("Check 'voltra get counters isolation_test' — value should equal all prior runs summed.")
 
 
 def demo_cli_hint():
@@ -336,30 +336,30 @@ def demo_cli_hint():
 
     info("After this script finishes, try these commands:\n")
     cmds = [
-        ("neondb status",                          "Server health + metrics"),
-        ("neondb tables",                          "All tables and row counts"),
-        ("neondb get counters",                    "All counter rows"),
-        ("neondb get counters dungeon_gold",       "Single row"),
-        ("neondb call increment '[\"score\", 1]'", "Call a reducer"),
-        ("neondb watch counters",                  "Stream live diffs (Ctrl-C to stop)"),
-        ("neondb watch \"counters WHERE value >= 50\"", "Filtered live stream"),
-        ("neondb bench --clients 10 --calls 200", "Quick throughput test"),
+        ("voltra status",                          "Server health + metrics"),
+        ("voltra tables",                          "All tables and row counts"),
+        ("voltra get counters",                    "All counter rows"),
+        ("voltra get counters dungeon_gold",       "Single row"),
+        ("voltra call increment '[\"score\", 1]'", "Call a reducer"),
+        ("voltra watch counters",                  "Stream live diffs (Ctrl-C to stop)"),
+        ("voltra watch \"counters WHERE value >= 50\"", "Filtered live stream"),
+        ("voltra bench --clients 10 --calls 200", "Quick throughput test"),
     ]
     for cmd, desc in cmds:
         print(f"  {cmd:<52} # {desc}")
 
     print()
     info("All commands work against a server running with:")
-    info("  neondb start")
+    info("  voltra start")
     info("Add --url ws://HOST:PORT to point at a remote server.")
-    info("Add --api-key KEY if NEONDB_API_KEY is set on the server.")
+    info("Add --api-key KEY if VOLTRA_API_KEY is set on the server.")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     print()
-    print("  NeonDB Example Game — Dungeon Crawler Demo")
+    print("  Voltra Example Game — Dungeon Crawler Demo")
     print("  ==========================================")
     print(f"  Server: {SERVER_URL}")
     if API_KEY:
@@ -370,7 +370,7 @@ def main():
     try:
         ws_test = connect()
         ws_test.close()
-        ok("Connected to NeonDB server")
+        ok("Connected to Voltra server")
     except Exception as e:
         fail(f"Cannot connect to {SERVER_URL}")
         fail(f"  {e}")
@@ -378,7 +378,7 @@ def main():
         print("  Start the server with:")
         print("    cargo run --release -- start")
         print("  or:")
-        print("    neondb start")
+        print("    voltra start")
         sys.exit(1)
 
     demo_basic_increment()

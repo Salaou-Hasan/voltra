@@ -1,4 +1,4 @@
-use crate::error::{NeonDBError, Result};
+use crate::error::{VoltraError, Result};
 use crate::reducer::backend::ReducerBackend;
 use crate::reducer::context::ReducerContext;
 use std::cell::Cell;
@@ -128,7 +128,7 @@ pub fn shared_engine() -> &'static Engine {
     WASM_ENGINE.get_or_init(|| {
         build_pooling_engine().unwrap_or_else(|e| {
             log::warn!(
-                "[neondb] WASM pooling allocator unavailable ({}); \
+                "[voltra] WASM pooling allocator unavailable ({}); \
                  falling back to on-demand allocation",
                 e
             );
@@ -191,12 +191,12 @@ fn write_bytes(caller: &mut Caller<'_, WasmLimiter>, ptr: i32, bytes: &[u8]) -> 
 // ── Host function registration ────────────────────────────────────────────────
 
 fn register_host_functions(linker: &mut Linker<WasmLimiter>) -> wasmtime::Result<()> {
-    // ── neondb_get_row ────────────────────────────────────────────────────────
+    // ── voltra_get_row ────────────────────────────────────────────────────────
     // Signature: (table_ptr, table_len, key_ptr, key_len, out_ptr, out_max) -> i32
     // Returns:   bytes written (>=0), -1 (not found), -2 (buf too small / error)
     linker.func_wrap(
         "env",
-        "neondb_get_row",
+        "voltra_get_row",
         |mut caller: Caller<'_, WasmLimiter>,
          table_ptr: i32,
          table_len: i32,
@@ -230,12 +230,12 @@ fn register_host_functions(linker: &mut Linker<WasmLimiter>) -> wasmtime::Result
         },
     )?;
 
-    // ── neondb_set_row ────────────────────────────────────────────────────────
+    // ── voltra_set_row ────────────────────────────────────────────────────────
     // Signature: (table_ptr, table_len, key_ptr, key_len, val_ptr, val_len) -> i32
     // Returns:   0 (ok), -1 (error)
     linker.func_wrap(
         "env",
-        "neondb_set_row",
+        "voltra_set_row",
         |mut caller: Caller<'_, WasmLimiter>,
          table_ptr: i32,
          table_len: i32,
@@ -267,12 +267,12 @@ fn register_host_functions(linker: &mut Linker<WasmLimiter>) -> wasmtime::Result
         },
     )?;
 
-    // ── neondb_delete_row ─────────────────────────────────────────────────────
+    // ── voltra_delete_row ─────────────────────────────────────────────────────
     // Signature: (table_ptr, table_len, key_ptr, key_len) -> i32
     // Returns:   0 (ok), -1 (error)
     linker.func_wrap(
         "env",
-        "neondb_delete_row",
+        "voltra_delete_row",
         |mut caller: Caller<'_, WasmLimiter>,
          table_ptr: i32,
          table_len: i32,
@@ -294,12 +294,12 @@ fn register_host_functions(linker: &mut Linker<WasmLimiter>) -> wasmtime::Result
         },
     )?;
 
-    // ── neondb_caller_id ──────────────────────────────────────────────────────
+    // ── voltra_caller_id ──────────────────────────────────────────────────────
     // Signature: (out_ptr, out_max) -> i32
     // Returns:   bytes written (>=0), -1 (buf too small)
     linker.func_wrap(
         "env",
-        "neondb_caller_id",
+        "voltra_caller_id",
         |mut caller: Caller<'_, WasmLimiter>, out_ptr: i32, out_max: i32| -> i32 {
             let s = with_ctx(|ctx| ctx.caller_id.clone()).unwrap_or_default();
             let b = s.as_bytes();
@@ -313,12 +313,12 @@ fn register_host_functions(linker: &mut Linker<WasmLimiter>) -> wasmtime::Result
         },
     )?;
 
-    // ── neondb_caller_role ────────────────────────────────────────────────────
+    // ── voltra_caller_role ────────────────────────────────────────────────────
     // Signature: (out_ptr, out_max) -> i32
     // Returns:   bytes written (>=0), -1 (buf too small)
     linker.func_wrap(
         "env",
-        "neondb_caller_role",
+        "voltra_caller_role",
         |mut caller: Caller<'_, WasmLimiter>, out_ptr: i32, out_max: i32| -> i32 {
             let s = with_ctx(|ctx| ctx.caller_role.clone()).unwrap_or_default();
             let b = s.as_bytes();
@@ -332,10 +332,10 @@ fn register_host_functions(linker: &mut Linker<WasmLimiter>) -> wasmtime::Result
         },
     )?;
 
-    // ── neondb_get_counter (backward compat) ──────────────────────────────────
+    // ── voltra_get_counter (backward compat) ──────────────────────────────────
     linker.func_wrap(
         "env",
-        "neondb_get_counter",
+        "voltra_get_counter",
         |mut caller: Caller<'_, WasmLimiter>, ptr: i32, len: i32| -> i32 {
             let name = read_str(&mut caller, ptr, len).unwrap_or_default();
             with_ctx(|ctx| {
@@ -349,10 +349,10 @@ fn register_host_functions(linker: &mut Linker<WasmLimiter>) -> wasmtime::Result
         },
     )?;
 
-    // ── neondb_set_counter (backward compat) ──────────────────────────────────
+    // ── voltra_set_counter (backward compat) ──────────────────────────────────
     linker.func_wrap(
         "env",
-        "neondb_set_counter",
+        "voltra_set_counter",
         |mut caller: Caller<'_, WasmLimiter>, ptr: i32, len: i32, value: i32| {
             let name = read_str(&mut caller, ptr, len).unwrap_or_default();
             with_ctx(|ctx| {
@@ -382,10 +382,10 @@ impl WasmReducerBackend {
         let module = if cwasm_path.exists() && is_fresh(&cwasm_path, &path) {
             log::info!("Loading AOT-compiled reducer from {:?}", cwasm_path);
             // SAFETY: the .cwasm was serialized by the same engine configuration
-            // (same Config, same Cranelift version).  `neondb build` always
+            // (same Config, same Cranelift version).  `voltra build` always
             // produces the .cwasm alongside the .wasm in one step.
             unsafe { Module::deserialize_file(engine, &cwasm_path) }.map_err(|e| {
-                NeonDBError::reducer_error(format!(
+                VoltraError::reducer_error(format!(
                     "AOT load {:?}: {}",
                     cwasm_path, e
                 ))
@@ -395,14 +395,14 @@ impl WasmReducerBackend {
             let wasm_bytes = if path.extension().and_then(|s| s.to_str()) == Some("wat") {
                 wat::parse_bytes(&bytes)
                     .map_err(|e| {
-                        NeonDBError::reducer_error(format!("WAT parse: {}", e))
+                        VoltraError::reducer_error(format!("WAT parse: {}", e))
                     })?
                     .into_owned()
             } else {
                 bytes
             };
             Module::new(engine, &wasm_bytes).map_err(|e| {
-                NeonDBError::reducer_error(format!("WASM compile {:?}: {}", path, e))
+                VoltraError::reducer_error(format!("WASM compile {:?}: {}", path, e))
             })?
         };
 
@@ -415,7 +415,7 @@ impl WasmReducerBackend {
     fn call(&self, ctx: &mut ReducerContext, args: &[u8]) -> Result<Vec<u8>> {
         let max_io = crate::reducer::max_io_bytes();
         if args.len() > max_io {
-            return Err(NeonDBError::reducer_error(format!(
+            return Err(VoltraError::reducer_error(format!(
                 "Reducer args too large: {} bytes (limit {})",
                 args.len(),
                 max_io
@@ -435,21 +435,21 @@ impl WasmReducerBackend {
         store.limiter(|s| s);
         store
             .set_fuel(1_000_000)
-            .map_err(|e| NeonDBError::reducer_error(format!("Fuel: {}", e)))?;
+            .map_err(|e| VoltraError::reducer_error(format!("Fuel: {}", e)))?;
 
         let instance = shared_linker()
             .instantiate(&mut store, &self.module)
-            .map_err(|e| NeonDBError::reducer_error(format!("WASM instantiate: {}", e)))?;
+            .map_err(|e| VoltraError::reducer_error(format!("WASM instantiate: {}", e)))?;
 
         let memory = instance
             .get_memory(&mut store, "memory")
-            .ok_or_else(|| NeonDBError::reducer_error("WASM module missing 'memory' export"))?;
+            .ok_or_else(|| VoltraError::reducer_error("WASM module missing 'memory' export"))?;
 
         // Write args into WASM linear memory at the 64 KB mark.
         let args_offset: u32 = 0x10000;
         let mem_data = memory.data_mut(&mut store);
         if mem_data.len() < args_offset as usize + args.len() {
-            return Err(NeonDBError::reducer_error(
+            return Err(VoltraError::reducer_error(
                 "WASM linear memory too small for args",
             ));
         }
@@ -458,10 +458,10 @@ impl WasmReducerBackend {
 
         let (result_ptr, result_len) =
             call_reducer_typed(&instance, &mut store, &self.function_name, args_offset as i32, args.len() as i32)
-                .map_err(|e| NeonDBError::reducer_error(format!("WASM call: {}", e)))?;
+                .map_err(|e| VoltraError::reducer_error(format!("WASM call: {}", e)))?;
 
         if result_len as usize > max_io {
-            return Err(NeonDBError::reducer_error(format!(
+            return Err(VoltraError::reducer_error(format!(
                 "WASM result too large: {} bytes (limit {})",
                 result_len, max_io
             )));
@@ -472,7 +472,7 @@ impl WasmReducerBackend {
         let end = start
             .checked_add(result_len as usize)
             .filter(|&e| e <= mem_slice.len())
-            .ok_or_else(|| NeonDBError::reducer_error("WASM result out of bounds"))?;
+            .ok_or_else(|| VoltraError::reducer_error("WASM result out of bounds"))?;
 
         let result_bytes = mem_slice[start..end].to_vec();
         parse_wasm_result(&result_bytes)
@@ -480,7 +480,7 @@ impl WasmReducerBackend {
 }
 
 /// Parse WASM output: JSON text (WAT backward-compat) is converted to
-/// MessagePack; raw MessagePack (from neondb-reducer compiled modules) is
+/// MessagePack; raw MessagePack (from voltra-reducer compiled modules) is
 /// passed through as-is.
 fn parse_wasm_result(bytes: &[u8]) -> Result<Vec<u8>> {
     if let Ok(s) = std::str::from_utf8(bytes) {
@@ -500,21 +500,21 @@ impl ReducerBackend for WasmReducerBackend {
 // ── AOT compilation ───────────────────────────────────────────────────────────
 
 /// Compile a `.wasm` file to native code and save the result as `.cwasm`
-/// alongside it.  Called by `neondb build` after JS→WASM compilation.
+/// alongside it.  Called by `voltra build` after JS→WASM compilation.
 ///
 /// The resulting `.cwasm` is Cranelift-compiled machine code.  `from_file`
 /// loads it with `Module::deserialize_file` — no JIT warmup at all.
 pub fn aot_compile(wasm_path: &Path) -> Result<PathBuf> {
     let engine = shared_engine();
     let module = Module::from_file(engine, wasm_path).map_err(|e| {
-        NeonDBError::reducer_error(format!("AOT read {:?}: {}", wasm_path, e))
+        VoltraError::reducer_error(format!("AOT read {:?}: {}", wasm_path, e))
     })?;
     let bytes = module
         .serialize()
-        .map_err(|e| NeonDBError::reducer_error(format!("AOT serialize: {}", e)))?;
+        .map_err(|e| VoltraError::reducer_error(format!("AOT serialize: {}", e)))?;
     let cwasm_path = wasm_path.with_extension("cwasm");
     fs::write(&cwasm_path, &bytes)
-        .map_err(|e| NeonDBError::reducer_error(format!("AOT write {:?}: {}", cwasm_path, e)))?;
+        .map_err(|e| VoltraError::reducer_error(format!("AOT write {:?}: {}", cwasm_path, e)))?;
     Ok(cwasm_path)
 }
 
@@ -647,8 +647,8 @@ mod tests {
     #[test]
     fn test_wasm_host_imports_counter_compat() {
         let wat_src = r#"(module
-  (import "env" "neondb_get_counter" (func $get (param i32 i32) (result i32)))
-  (import "env" "neondb_set_counter" (func $set (param i32 i32 i32)))
+  (import "env" "voltra_get_counter" (func $get (param i32 i32) (result i32)))
+  (import "env" "voltra_set_counter" (func $set (param i32 i32 i32)))
   (memory (export "memory") 1)
   (data (i32.const 512) "score")
   (data (i32.const 0) "{\"new_value\":3,\"timestamp\":0}")
@@ -680,11 +680,11 @@ mod tests {
         let _g = crate::reducer::SANDBOX_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // WAT module that calls neondb_set_row then neondb_get_row and returns
+        // WAT module that calls voltra_set_row then voltra_get_row and returns
         // the retrieved JSON length as new_value to prove the round-trip works.
         let wat_src = r#"(module
-  (import "env" "neondb_set_row" (func $set_row (param i32 i32 i32 i32 i32 i32) (result i32)))
-  (import "env" "neondb_get_row" (func $get_row (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "env" "voltra_set_row" (func $set_row (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "env" "voltra_get_row" (func $get_row (param i32 i32 i32 i32 i32 i32) (result i32)))
   (memory (export "memory") 2)
   (data (i32.const 0)   "players")
   (data (i32.const 100) "alice")

@@ -16,7 +16,7 @@
 //! { "ok": true, "new_best": true, "score": 4200, "previous_best": 3800 }
 //! ```
 
-use neondb_reducer::{Context, Result};
+use voltra_reducer::{Context, Result};
 use serde_json::{json, Value};
 
 /// Submit a score to a leaderboard, keeping the personal best.
@@ -65,4 +65,4 @@ pub fn submit_score(ctx: &mut Context, args: Value) -> Result<Value> {
     }))
 }
 
-neondb_reducer::reducer!(submit_score);
+voltra_reducer::reducer!(submit_score);

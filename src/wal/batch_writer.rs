@@ -1,4 +1,4 @@
-﻿use crate::error::{NeonDBError, Result};
+﻿use crate::error::{VoltraError, Result};
 use crate::wal::entry::WalEntry;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -61,7 +61,7 @@ impl BatchedWalWriter {
         let encoded = rmp_serde::to_vec(entry)?;
         self.sender
             .try_send(FlushCommand::Append(encoded, sequence_number))
-            .map_err(|e| NeonDBError::WalError(format!("WAL channel error: {}", e)))
+            .map_err(|e| VoltraError::WalError(format!("WAL channel error: {}", e)))
     }
 
     /// Rotate the WAL file after a snapshot has been confirmed at `sequence`.
@@ -69,15 +69,15 @@ impl BatchedWalWriter {
     /// The flusher thread will:
     /// 1. Flush any pending writes to the current file.
     /// 2. Close the current WAL file.
-    /// 3. Rename it to `neondb.wal.old` (overwriting any previous `.old`).
-    /// 4. Open a fresh `neondb.wal` and continue writing there.
+    /// 3. Rename it to `voltra.wal.old` (overwriting any previous `.old`).
+    /// 4. Open a fresh `voltra.wal` and continue writing there.
     ///
     /// This is NOT in-place truncation — it is a rotate-and-start-fresh approach.
     /// The `.old` file can be deleted by an operator or a separate cleanup pass.
     pub fn truncate_before(&self, sequence: u64) -> Result<()> {
         self.sender
             .try_send(FlushCommand::Truncate(sequence))
-            .map_err(|e| NeonDBError::WalError(format!("WAL truncate channel error: {}", e)))
+            .map_err(|e| VoltraError::WalError(format!("WAL truncate channel error: {}", e)))
     }
 
     /// Return the current WAL file size in bytes.
@@ -100,12 +100,12 @@ impl BatchedWalWriter {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.sender
             .try_send(FlushCommand::Flush(reply_tx))
-            .map_err(|e| NeonDBError::WalError(format!("WAL flush channel error: {}", e)))?;
+            .map_err(|e| VoltraError::WalError(format!("WAL flush channel error: {}", e)))?;
         // Move the blocking recv to a blocking task so we don't hold the async executor.
         tokio::task::spawn_blocking(move || reply_rx.recv())
             .await
-            .map_err(|e| NeonDBError::WalError(format!("WAL flush task error: {}", e)))?
-            .map_err(|e| NeonDBError::WalError(format!("WAL flush reply error: {}", e)))
+            .map_err(|e| VoltraError::WalError(format!("WAL flush task error: {}", e)))?
+            .map_err(|e| VoltraError::WalError(format!("WAL flush reply error: {}", e)))
     }
 
     pub fn shutdown(mut self) -> Result<()> {
@@ -328,12 +328,12 @@ mod tests {
 
     #[test]
     fn test_truncate_rotates_wal_file() {
-        let tmp_dir = std::env::temp_dir().join("neondb_test_truncate");
+        let tmp_dir = std::env::temp_dir().join("voltra_test_truncate");
         let _ = std::fs::remove_dir_all(&tmp_dir);
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
-        let wal_path = tmp_dir.join("neondb.wal");
-        let old_path = tmp_dir.join("neondb.wal.old");
+        let wal_path = tmp_dir.join("voltra.wal");
+        let old_path = tmp_dir.join("voltra.wal.old");
 
         let writer = BatchedWalWriter::open(&wal_path, 5, 1000, true).unwrap();
 
@@ -379,11 +379,11 @@ mod tests {
 
     #[test]
     fn test_wal_file_size_increases_on_append() {
-        let tmp_dir = std::env::temp_dir().join("neondb_test_filesize");
+        let tmp_dir = std::env::temp_dir().join("voltra_test_filesize");
         let _ = std::fs::remove_dir_all(&tmp_dir);
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
-        let wal_path = tmp_dir.join("neondb.wal");
+        let wal_path = tmp_dir.join("voltra.wal");
         let writer = BatchedWalWriter::open(&wal_path, 5, 1000, true).unwrap();
 
         // Initial size should be 0

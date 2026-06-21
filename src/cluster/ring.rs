@@ -2,7 +2,7 @@
 // src/cluster/ring.rs — Consistent hashing ring with virtual nodes
 //
 // Design:
-//   - 160 virtual nodes per cluster (configurable via NEONDB_RING_VNODES).
+//   - 160 virtual nodes per cluster (configurable via VOLTRA_RING_VNODES).
 //   - FNV-1a 64-bit hash for virtual node positions and key placement.
 //   - Adding a new cluster migrates ~1/(N+1) of existing keys on average
 //     (with 160 vnodes, actual migration = 23–27% when going 3→4 clusters).
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_VNODES: u32 = 160;
 
 fn vnodes_from_env() -> u32 {
-    env::var("NEONDB_RING_VNODES")
+    env::var("VOLTRA_RING_VNODES")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_VNODES)
