@@ -1,5 +1,6 @@
 [workspace]
 members  = ["voltra-macros", "voltra-client-rust"]
+exclude  = ["desktop"]
 resolver = "2"
 
 [package]

@@ -2,3 +2,4 @@
 .claude/
 voltra-client-ts/node_modules/
 *.vsix
+desktop/target
