@@ -304,6 +304,7 @@ async fn main() -> Result<()> {
             build_wasm_modules(modules_dir.as_deref().unwrap_or(Path::new("modules")))
         }
         Commands::Start { host, port, data_dir, wal_path, fsync_interval_ms } => {
+            print_banner();
             // If run from inside a scaffolded game project, build + exec that binary
             let cwd = std::env::current_dir()?;
             if let Some(pkg_name) = is_game_project(&cwd) {
@@ -699,6 +700,48 @@ fn is_game_project(cwd: &Path) -> Option<String> {
         .find(|l| l.trim_start().starts_with("name") && l.contains('"'))
         .and_then(|l| l.split('"').nth(1))
         .map(|s| s.to_string())
+}
+
+/// Print the Voltra wordmark at startup — colored on an interactive terminal,
+/// skipped entirely when stdout is piped/redirected so logs stay clean.
+fn print_banner() {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    #[cfg(windows)]
+    let _ = console::Term::stdout(); // nudges Windows to enable ANSI/VT
+
+    const ART: [&str; 6] = [
+        "██╗   ██╗ ██████╗ ██╗     ████████╗██████╗  █████╗ ",
+        "██║   ██║██╔═══██╗██║     ╚══██╔══╝██╔══██╗██╔══██╗",
+        "██║   ██║██║   ██║██║        ██║   ██████╔╝███████║",
+        "╚██╗ ██╔╝██║   ██║██║        ██║   ██╔══██╗██╔══██║",
+        " ╚████╔╝ ╚██████╔╝███████╗   ██║   ██║  ██║██║  ██║",
+        "  ╚═══╝   ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝",
+    ];
+    // cyan → blue → violet, one stop per row
+    const COLORS: [(u8, u8, u8); 6] = [
+        (34, 211, 238), (44, 178, 241), (54, 146, 244),
+        (72, 116, 244), (98, 87, 241), (124, 58, 237),
+    ];
+    let color = std::env::var_os("NO_COLOR").is_none();
+
+    println!();
+    for (i, line) in ART.iter().enumerate() {
+        if color {
+            let (r, g, b) = COLORS[i];
+            println!("   \x1b[1;38;2;{r};{g};{b}m{line}\x1b[0m");
+        } else {
+            println!("   {line}");
+        }
+    }
+    let tag = format!("the in-memory database for games · v{}", env!("CARGO_PKG_VERSION"));
+    if color {
+        println!("   \x1b[38;2;138;147;166m{tag}\x1b[0m\n");
+    } else {
+        println!("   {tag}\n");
+    }
 }
 
 fn cmd_start_project(cwd: &Path, pkg_name: &str) -> Result<()> {
