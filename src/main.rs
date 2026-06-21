@@ -1584,7 +1584,7 @@ const SCALING_MD: &str        = include_str!("../templates/scaling.md.txt");
 /// VS Code language association — makes .vol files use Rust syntax highlighting.
 const VSCODE_VOLTRA_SETTINGS: &str = r#"{
   "files.associations": {
-    "*.vol": "rust"
+    "*.vol": "voltra"
   }
 }
 "#;

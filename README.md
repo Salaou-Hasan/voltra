@@ -1,3 +1,5 @@
+<p align="center"><img src="brand/logo.svg" alt="Voltra" width="380"></p>
+
 # Voltra
 
 Self-hosted, real-time, in-memory game backend in Rust.
