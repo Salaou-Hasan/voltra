@@ -692,9 +692,15 @@ fn is_game_project(cwd: &Path) -> Option<String> {
     let cargo_path = cwd.join("Cargo.toml");
     if !cargo_path.exists() { return None; }
     let content = std::fs::read_to_string(&cargo_path).ok()?;
-    // Must have voltra as a dep but not BE voltra itself
-    if !content.contains("voltra") { return None; }
-    if content.contains("name = \"voltra\"") { return None; }
+    // Must DEPEND on the `voltra` crate (dependency key exactly "voltra"),
+    // not merely contain the substring — otherwise sibling crates like
+    // voltra-console (which depend on wry/tao, not voltra) get misdetected.
+    if content.contains("name = \"voltra\"") { return None; } // the engine itself
+    let depends_on_voltra = content.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("voltra ") || t.starts_with("voltra=") || t.starts_with("voltra.")
+    });
+    if !depends_on_voltra { return None; }
     // Extract package name
     content.lines()
         .find(|l| l.trim_start().starts_with("name") && l.contains('"'))
@@ -5733,4 +5739,39 @@ fn recover_from_wal(wal_path: &Path, tables: &Arc<TableStore>, min_seq: u64) -> 
         replayed += 1;
     }
     Ok((replayed, max_seq))
+}
+
+#[cfg(test)]
+mod start_detection_tests {
+    use super::is_game_project;
+    use std::fs;
+
+    fn proj(label: &str, cargo: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("voltra_isgame_{}_{}", label, std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("Cargo.toml"), cargo).unwrap();
+        dir
+    }
+
+    #[test]
+    fn console_crate_is_not_a_game_project() {
+        // Regression: "voltra-console" contains "voltra" but does not depend on it.
+        let d = proj("console", "[package]\nname = \"voltra-console\"\n\n[dependencies]\nwry = \"0.46\"\ntao = \"0.30\"\n");
+        assert_eq!(is_game_project(&d), None);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn game_with_voltra_dep_is_detected() {
+        let d = proj("game", "[package]\nname = \"mygame\"\n\n[dependencies]\nvoltra = { path = \"../voltra\" }\n");
+        assert_eq!(is_game_project(&d).as_deref(), Some("mygame"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn engine_itself_is_not_a_game_project() {
+        let d = proj("engine", "[package]\nname = \"voltra\"\nversion = \"2.0.3\"\n");
+        assert_eq!(is_game_project(&d), None);
+        let _ = fs::remove_dir_all(&d);
+    }
 }
