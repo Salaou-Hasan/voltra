@@ -127,6 +127,8 @@ enum Commands {
         #[arg(long, help = "Only check — do not download")]
         check: bool,
     },
+    /// Install this binary to a stable location and add it to your PATH
+    Install,
     /// List available project templates
     Templates,
     /// List available add-on modules (`voltra add <module>`)
@@ -289,6 +291,7 @@ async fn main() -> Result<()> {
         Commands::Init { path, template } => { init_project(path, template)?; Ok(()) }
         Commands::Add { module } => { cmd_add_module(&module, &std::env::current_dir()?)?; Ok(()) }
         Commands::Update { check } => { voltra::updater::cmd_update(check) }
+        Commands::Install => { voltra::updater::cmd_install() }
         Commands::Templates => { cmd_list_templates(); Ok(()) }
         Commands::Modules => { cmd_list_modules(); Ok(()) }
         Commands::Build { modules_dir } => {

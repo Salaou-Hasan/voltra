@@ -200,3 +200,82 @@ pub fn check_and_hint() {
         }
     }
 }
+
+/// Per-user folder we install the binary into (and put on PATH).
+fn home_install_dir() -> PathBuf {
+    #[cfg(windows)]
+    let d = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".voltra"));
+    #[cfg(not(windows))]
+    let d = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("bin"));
+    d.unwrap_or_else(|| PathBuf::from(".voltra"))
+}
+
+/// Copy the running binary to a stable location and add it to PATH.
+pub fn cmd_install() -> crate::error::Result<()> {
+    use crate::error::VoltraError;
+    let exe = std::env::current_exe()
+        .map_err(|e| VoltraError::internal(format!("current exe: {e}")))?;
+    let dir = home_install_dir();
+    fs::create_dir_all(&dir)
+        .map_err(|e| VoltraError::internal(format!("create {}: {e}", dir.display())))?;
+    let dest = dir.join(if cfg!(windows) { "voltra.exe" } else { "voltra" });
+
+    if exe != dest {
+        fs::copy(&exe, &dest)
+            .map_err(|e| VoltraError::internal(format!("copy to {}: {e}", dest.display())))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dest, fs::Permissions::from_mode(0o755));
+    }
+    println!("  Installed: {}", dest.display());
+    add_to_path(&dir);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn add_to_path(dir: &std::path::Path) {
+    // Edit the user PATH via PowerShell (idempotent — only appends if absent).
+    let d = dir.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$d='{d}'; $p=[Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $p) {{ $p='' }}; \
+         if (($p -split ';') -notcontains $d) {{ [Environment]::SetEnvironmentVariable('Path', ($p.TrimEnd(';') + ';' + $d), 'User'); 'added' }} else {{ 'present' }}"
+    );
+    match std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+    {
+        Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "added" => {
+            println!("  Added to PATH. Open a NEW terminal, then run: voltra -h");
+        }
+        Ok(_) => println!("  Already on PATH. Run: voltra -h"),
+        Err(e) => println!("  Couldn't edit PATH ({e}). Add this folder yourself: {}", dir.display()),
+    }
+}
+
+#[cfg(not(windows))]
+fn add_to_path(dir: &std::path::Path) {
+    let on_path = std::env::var("PATH")
+        .map(|p| p.split(':').any(|s| std::path::Path::new(s) == dir))
+        .unwrap_or(false);
+    if on_path {
+        println!("  {} is on your PATH. Run: voltra -h", dir.display());
+    } else {
+        println!("  Add to PATH — append to your shell rc (~/.bashrc or ~/.zshrc):");
+        println!("    export PATH=\"$PATH:{}\"", dir.display());
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::home_install_dir;
+    #[test]
+    fn install_dir_has_expected_suffix() {
+        let s = home_install_dir().to_string_lossy().to_string();
+        #[cfg(windows)]
+        assert!(s.ends_with(".voltra"), "got {s}");
+        #[cfg(not(windows))]
+        assert!(s.ends_with("bin"), "got {s}");
+    }
+}
