@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide walks you from zero to a running NeonDB server with live subscriptions in about 5 minutes.
+This guide walks you from zero to a running Voltra server with live subscriptions in about 5 minutes.
 
 ---
 
@@ -15,7 +15,7 @@ This guide walks you from zero to a running NeonDB server with live subscription
 
 ```bash
 git clone <your-repo-url>
-cd NeonDB
+cd Voltra
 cargo install --path .
 ```
 
@@ -66,11 +66,11 @@ neondb start
 Expected output:
 
 ```
-INFO  Starting NeonDB Server
+INFO  Starting Voltra Server
 INFO  Loading WAL from ./wal ...
 INFO  WebSocket listener started on 127.0.0.1:3000
 INFO  Admin/metrics endpoint available on http://127.0.0.1:3001
-INFO  NeonDB ready
+INFO  Voltra ready
 ```
 
 The server is now accepting WebSocket connections on port 3000 and HTTP on port 3001.
@@ -79,7 +79,7 @@ The server is now accepting WebSocket connections on port 3000 and HTTP on port 
 
 **Error: Address already in use (port 3000)**
 
-Another process owns port 3000. Either stop that process, or start NeonDB on a different port:
+Another process owns port 3000. Either stop that process, or start Voltra on a different port:
 
 ```bash
 neondb start --port 3001

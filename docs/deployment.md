@@ -29,7 +29,7 @@ A `Dockerfile` and `docker-compose.yml` are included in the project root.
 docker compose up -d
 ```
 
-The compose file starts one NeonDB container with WebSocket on port 3000 and the admin HTTP endpoint on port 3001.
+The compose file starts one Voltra container with WebSocket on port 3000 and the admin HTTP endpoint on port 3001.
 
 ### Three-node cluster
 
@@ -90,7 +90,7 @@ sudo mkdir -p /var/lib/neondb/snapshots
 
 sudo tee /etc/systemd/system/neondb.service > /dev/null << 'EOF'
 [Unit]
-Description=NeonDB Game Backend
+Description=Voltra Game Backend
 After=network.target
 Wants=network-online.target
 
@@ -125,7 +125,7 @@ sudo systemctl status neondb
 
 ## TLS
 
-NeonDB does not terminate TLS internally. Terminate TLS at a reverse proxy in front of it.
+Voltra does not terminate TLS internally. Terminate TLS at a reverse proxy in front of it.
 
 ### Caddy (automatic Let's Encrypt)
 
@@ -192,7 +192,7 @@ To restore: copy the WAL and snapshot files back, then start the server. Startup
 
 ### Memory Limits
 
-NeonDB's in-memory store grows without bound as rows are added. Monitor RSS with `/metrics` and set OS-level limits if needed:
+Voltra's in-memory store grows without bound as rows are added. Monitor RSS with `/metrics` and set OS-level limits if needed:
 
 ```
 # systemd memory limit

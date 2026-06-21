@@ -4,7 +4,7 @@
 
 ## Single-Node vs Cluster
 
-NeonDB starts in single-node mode by default. In single-node mode the Raft consensus layer still runs but auto-bootstraps as a one-member cluster — writes commit immediately without any quorum round-trip overhead. Clustering is opt-in.
+Voltra starts in single-node mode by default. In single-node mode the Raft consensus layer still runs but auto-bootstraps as a one-member cluster — writes commit immediately without any quorum round-trip overhead. Clustering is opt-in.
 
 When to use clustering:
 
@@ -21,7 +21,7 @@ When NOT to use clustering:
 
 ## Raft Consensus
 
-NeonDB uses openraft 0.9 for Raft consensus. Each node runs a full Raft state machine.
+Voltra uses openraft 0.9 for Raft consensus. Each node runs a full Raft state machine.
 
 Guarantees provided:
 
@@ -133,9 +133,9 @@ This implements last-write-wins conflict resolution without coordination. In a p
 
 ## Sharding
 
-NeonDB does not implement transparent server-side sharding. Each Raft cluster is a single logical unit that holds the full dataset in memory across all nodes.
+Voltra does not implement transparent server-side sharding. Each Raft cluster is a single logical unit that holds the full dataset in memory across all nodes.
 
-If your dataset does not fit in memory on any single machine, you need to shard across multiple NeonDB clusters. The canonical shard assignment function is:
+If your dataset does not fit in memory on any single machine, you need to shard across multiple Voltra clusters. The canonical shard assignment function is:
 
 ```
 shard = fnv1a_64(row_key) % shard_count

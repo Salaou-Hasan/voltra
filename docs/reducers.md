@@ -65,7 +65,7 @@ JS reducers access the database through these global functions:
 | `__neondb_set(table, key, value)` | Write a row. For the `"counters"` table with a plain number, calls the counter increment path. For any other value, writes the full object. |
 | `__neondb_delete(table, key)` | Delete a row. |
 | `__neondb_get_all(table)` | Returns all rows in a table as an array of `[key, value]` pairs. |
-| `__neondb_caller_id` | String: the identity of the client that called this reducer (from `X-NeonDB-Identity` header or TCP peer address). |
+| `__neondb_caller_id` | String: the identity of the client that called this reducer (from `X-Voltra-Identity` header or TCP peer address). |
 | `__neondb_caller_role` | String: the role extracted from `Bearer <key>:<role>`, or `""` if no role was provided. |
 
 ### Performance

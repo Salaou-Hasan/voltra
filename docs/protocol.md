@@ -4,7 +4,7 @@
 
 ## Transport
 
-NeonDB speaks **WebSocket** with **MessagePack** binary framing.
+Voltra speaks **WebSocket** with **MessagePack** binary framing.
 
 - Connect to `ws://host:port` (default `ws://127.0.0.1:3000`).
 - All frames are binary. Every frame is a MessagePack-encoded enum variant.

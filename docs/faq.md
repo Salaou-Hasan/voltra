@@ -2,7 +2,7 @@
 
 ---
 
-## Is NeonDB production-ready?
+## Is Voltra production-ready?
 
 The core engine is solid. The following components are stable and well-tested:
 
@@ -21,13 +21,13 @@ The following items are partial or in progress:
 - **TLS**: supported natively via `[tls]` config section (auto-generates self-signed cert; bring your own for production). For advanced termination, a reverse proxy (Caddy or nginx) still works. See [docs/deployment.md](deployment.md).
 - **JS heap memory limit**: QuickJS enforces a 64 MB memory cap per runtime. The CPU timeout is also enforced. For untrusted code, the WASM backend provides the strongest isolation.
 - **Graceful shutdown**: workers drain and the WAL flushes, but there is no formal quiesce-and-drain for in-flight WebSocket connections.
-- **Transparent shard routing**: multiple NeonDB clusters can be used as shards, but routing is client-side. There is no built-in proxy layer.
+- **Transparent shard routing**: multiple Voltra clusters can be used as shards, but routing is client-side. There is no built-in proxy layer.
 
-For a single-node game server or backend with moderate traffic, NeonDB is ready to use. For a large-scale production deployment, review the items above and evaluate whether they affect your use case.
+For a single-node game server or backend with moderate traffic, Voltra is ready to use. For a large-scale production deployment, review the items above and evaluate whether they affect your use case.
 
 ---
 
-## Can I use NeonDB without knowing Rust?
+## Can I use Voltra without knowing Rust?
 
 Yes. The JS runtime (QuickJS) lets you write reducers in plain JavaScript with no Rust knowledge required:
 
@@ -72,9 +72,9 @@ neondb bench --clients 50 --calls 1000
 
 ---
 
-## How do I back up NeonDB?
+## How do I back up Voltra?
 
-NeonDB state is stored in two locations:
+Voltra state is stored in two locations:
 
 1. **WAL file** (`NEONDB_WAL_PATH`): append-only log of every write since the last snapshot.
 2. **Snapshot directory** (`NEONDB_SNAPSHOT_DIR`): periodic full dumps of the in-memory state.
@@ -121,7 +121,7 @@ Supported operations: `add_field`, `remove_field`, `rename_field`. See `migratio
 
 ## Is clustering supported?
 
-Yes. NeonDB uses openraft 0.9 for Raft consensus. A 3-node cluster tolerates one node failure; a 5-node cluster tolerates two. See [docs/cluster.md](cluster.md) for bootstrapping instructions.
+Yes. Voltra uses openraft 0.9 for Raft consensus. A 3-node cluster tolerates one node failure; a 5-node cluster tolerates two. See [docs/cluster.md](cluster.md) for bootstrapping instructions.
 
 Multi-cluster sharding is supported but client-routed: the application must implement routing logic using the canonical `fnv1a_64(key) % shard_count` function. Transparent server-side shard routing is not yet implemented.
 

@@ -1,8 +1,8 @@
-# NeonDB
+# Voltra
 
 Self-hosted, real-time, in-memory game backend in Rust.
 
-NeonDB is a single-binary WebSocket server for games and real-time applications. Clients call **reducers** (named, atomic functions) over WebSocket, data lands in a lock-free in-memory table store, every write is durably logged to a WAL, and subscribers receive live row diffs instantly. Three reducer runtimes — native Rust, JavaScript (QuickJS), and WASM (Wasmtime/Cranelift JIT) — let you write game logic in whichever language fits the problem.
+Voltra is a single-binary WebSocket server for games and real-time applications. Clients call **reducers** (named, atomic functions) over WebSocket, data lands in a lock-free in-memory table store, every write is durably logged to a WAL, and subscribers receive live row diffs instantly. Three reducer runtimes — native Rust, JavaScript (QuickJS), and WASM (Wasmtime/Cranelift JIT) — let you write game logic in whichever language fits the problem.
 
 [![Version](https://img.shields.io/badge/version-1.0.21-blue)](#installation)
 [![Tests](https://img.shields.io/badge/tests-541%20passing-brightgreen)](#testing)
@@ -29,7 +29,7 @@ chmod +x neondb-x86_64-linux && mv neondb-x86_64-linux neondb
 
 ```bash
 git clone https://github.com/Salaou-Hasan/NeonDB
-cd NeonDB && cargo build --release
+cd Voltra && cargo build --release
 # binary is at target/release/neondb
 ```
 
@@ -77,7 +77,7 @@ neondb modules      # list all add-on modules
 |---|---|
 | `game/basic` | Spawn, move, despawn, health — the minimal multiplayer foundation |
 | `game/full` | All 9 modules pre-configured: combat, inventory, economy, matchmaking, guilds, quests, leaderboard, chat, world |
-| `game/unity` | Unity C# SDK + full game server. Drop `unity/` into `Assets/Scripts/NeonDB/` |
+| `game/unity` | Unity C# SDK + full game server. Drop `unity/` into `Assets/Scripts/Voltra/` |
 | `game/godot` | Godot 4 GDScript SDK + full game server. Add `godot/` as an Autoload |
 
 ### Add-on Modules (`neondb add <module>`)

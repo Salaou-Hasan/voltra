@@ -1,6 +1,6 @@
 # Writing Reducers in C# (TODO-032)
 
-NeonDB supports C# reducers compiled to WebAssembly via the **.NET 8 WASI workload**.
+Voltra supports C# reducers compiled to WebAssembly via the **.NET 8 WASI workload**.
 The resulting `.wasm` is loaded and executed by the existing Wasmtime backend —
 no changes to the server are needed.
 
@@ -29,7 +29,7 @@ neondb call attack '["player1", "enemy1", 25]'
 ```
 reducers/
 ├── Reducers.csproj     ← .NET 8 WASI project
-├── NeonDB.cs           ← host-function bindings
+├── Voltra.cs           ← host-function bindings
 └── Combat.cs           ← your reducers
 modules/
 └── *.wasm              ← compiled output (written by neondb build)
@@ -41,7 +41,7 @@ modules/
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using NeonDB;
+using Voltra;
 
 public static class Combat
 {
@@ -74,7 +74,7 @@ public static class Combat
 
 ## Return Convention
 
-C# `[UnmanagedCallersOnly]` cannot return multiple WASM values. NeonDB uses
+C# `[UnmanagedCallersOnly]` cannot return multiple WASM values. Voltra uses
 an **i64 fat-pointer** encoding instead:
 
 ```

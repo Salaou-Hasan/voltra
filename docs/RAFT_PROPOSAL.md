@@ -1,4 +1,4 @@
-# Raft Consensus Architecture Proposal for NeonDB
+# Raft Consensus Architecture Proposal for Voltra
 
 **Author:** Agent 5 (Distributed Systems Architect)
 **Date:** 2026-06-08
@@ -9,7 +9,7 @@
 ## 1. Current State Audit
 
 This section evaluates every distributed-systems primitive in the existing
-NeonDB cluster layer against what Raft consensus requires.
+Voltra cluster layer against what Raft consensus requires.
 
 ### 1.1 Leader Election -- MISSING
 
@@ -132,7 +132,7 @@ sequence number on replicated deltas to detect gaps or duplicates.
 
 #### Option A: Embedded Raft (Build It)
 
-Implement the Raft consensus algorithm directly in NeonDB from scratch.
+Implement the Raft consensus algorithm directly in Voltra from scratch.
 The existing WAL (`src/wal/batch_writer.rs`) becomes the Raft log. The
 existing `TableStore` (`src/table/mod.rs`) becomes the Raft state machine.
 
@@ -141,7 +141,7 @@ existing `TableStore` (`src/table/mod.rs`) becomes the Raft state machine.
 **Pros:**
 - Zero external dependencies.
 - Full control over every aspect of the protocol.
-- Can optimize for NeonDB's specific access patterns (high fan-out,
+- Can optimize for Voltra's specific access patterns (high fan-out,
   game-tick workloads, per-row deltas).
 
 **Cons:**
@@ -150,12 +150,12 @@ existing `TableStore` (`src/table/mod.rs`) becomes the Raft state machine.
   pre-vote protocol, leadership transfer, read-index, learner nodes,
   joint consensus for membership, snapshot streaming, log compaction.
 - Testing Raft correctly requires deterministic simulation (like
-  Jepsen/FoundationDB-style testing). NeonDB has no simulation harness.
+  Jepsen/FoundationDB-style testing). Voltra has no simulation harness.
 - A single subtle bug in term handling or log matching can cause
   silent data loss or split-brain -- the exact problems Raft is
   supposed to prevent.
 - Every Raft implementation in production (etcd, CockroachDB, TiKV)
-  took years of hardening. NeonDB cannot afford that timeline.
+  took years of hardening. Voltra cannot afford that timeline.
 
 **Risk:** HIGH. The probability of shipping a correct, production-grade
 Raft from scratch within 6 months is low.
@@ -182,13 +182,13 @@ the most mature and actively maintained Raft library in Rust.
 - Ships with: pre-vote protocol, leadership transfer, learner nodes,
   joint consensus, log compaction, and snapshot transfer.
 - Active maintenance with regular releases.
-- Pure Rust, no C/C++ FFI -- matches NeonDB's dependency philosophy.
+- Pure Rust, no C/C++ FFI -- matches Voltra's dependency philosophy.
 
 **Cons:**
 - Additional dependency (~15k LOC).
 - Must adapt to `openraft`'s trait API -- some impedance mismatch with
   the existing WAL format and TableStore API.
-- `openraft`'s async API requires careful integration with NeonDB's
+- `openraft`'s async API requires careful integration with Voltra's
   `spawn_blocking` worker model.
 - Breaking changes between `openraft` versions require tracking upstream.
 
@@ -364,7 +364,7 @@ The Raft state machine IS `TableStore` (`src/table/mod.rs`).
 |                                                                  |
 |  +-------------------+    +---------------------------+          |
 |  | RaftStateMachine   |    | TableStore (DashMap)      |          |
-|  | impl for NeonDB   |--->| apply_delta_batch(deltas) |          |
+|  | impl for Voltra   |--->| apply_delta_batch(deltas) |          |
 |  +-------------------+    +---------------------------+          |
 |         |                           |                            |
 |         |  apply(entries)           |  For each committed entry: |
@@ -549,7 +549,7 @@ Only the partition with a majority of voters can elect a leader and
 commit writes. The minority partition becomes read-only (stale reads)
 or unavailable until the partition heals.
 
-**Residual risk:** If NeonDB is deployed with only 2 nodes (no quorum
+**Residual risk:** If Voltra is deployed with only 2 nodes (no quorum
 possible if one fails), a partition makes the cluster fully unavailable.
 Minimum recommended deployment: 3 nodes.
 
@@ -564,7 +564,7 @@ are lost.
   retry. The TS/Rust SDKs already have timeout handling.
 - `openraft` pre-vote protocol prevents unnecessary leader disruption.
 
-**Residual risk:** A reducer call that has side effects outside NeonDB
+**Residual risk:** A reducer call that has side effects outside Voltra
 (e.g., sending an email via a native reducer) cannot be rolled back if
 the Raft entry is not committed. Solution: make such reducers idempotent.
 
@@ -903,7 +903,7 @@ quorum acknowledgment.
    silent data loss or split-brain -- the exact problems we are trying
    to solve. `openraft` has years of testing and production use.
    Building from scratch would require 6+ months of hardening that
-   NeonDB cannot afford.
+   Voltra cannot afford.
 
 2. **The existing architecture maps cleanly onto openraft's API.**
    `BatchedWalWriter` already has `append()` and `truncate_before()` --
@@ -920,7 +920,7 @@ quorum acknowledgment.
 
 4. **The dependency risk is manageable.** `openraft` is pure Rust
    (~15k LOC), actively maintained by the Databend team, and has no
-   transitive C/C++ dependencies. It aligns with NeonDB's "no V8,
+   transitive C/C++ dependencies. It aligns with Voltra's "no V8,
    no external C++ runtime" philosophy. Version pinning in `Cargo.toml`
    prevents surprise breakage.
 

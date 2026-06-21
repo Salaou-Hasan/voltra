@@ -1,6 +1,6 @@
-# Self-Hosting NeonDB for Free
+# Self-Hosting Voltra for Free
 
-Four real-world ways to run NeonDB at zero monthly cost. Every option below has
+Four real-world ways to run Voltra at zero monthly cost. Every option below has
 been verified to handle a small game's traffic (hundreds of concurrent clients,
 tens of thousands of rows). For each, you get a one-paragraph intro covering
 the real limits, the actual commands, and a "gotchas" section listing the things
@@ -45,7 +45,7 @@ instances. Set up basic monitoring so you know if it goes down.
 5. **systemd unit** (`/etc/systemd/system/neondb.service`):
    ```ini
    [Unit]
-   Description=NeonDB
+   Description=Voltra
    After=network.target
 
    [Service]
@@ -152,7 +152,7 @@ idle, but cold start under 1 s.
 
 **Gotchas.**
 
-- 256 MB is tight. NeonDB itself idles around 30 MB, but ~50k rows + fan-out
+- 256 MB is tight. Voltra itself idles around 30 MB, but ~50k rows + fan-out
   buffers push you past 200 MB fast. Suitable for small games, not anything
   ambitious. Upgrade to `shared-cpu-1x@512MB` for ~$2/mo if you need it.
 - Free volumes are NOT replicated. If the volume's host dies, you lose data
@@ -172,7 +172,7 @@ you already have a NAS, mini-PC, or spare laptop.
 
 **Step-by-step.**
 
-1. **Run NeonDB locally** on whatever box you've got. Linux example:
+1. **Run Voltra locally** on whatever box you've got. Linux example:
    ```bash
    cargo build --release
    ./target/release/neondb start &
@@ -217,7 +217,7 @@ you already have a NAS, mini-PC, or spare laptop.
 **Gotchas.**
 
 - Cloudflare's Free tier WebSocket connections have a **100 second idle
-  timeout**. NeonDB's TypeScript SDK heartbeats automatically; verify your
+  timeout**. Voltra's TypeScript SDK heartbeats automatically; verify your
   own clients send something at least every 90 seconds or you'll get random
   disconnects.
 - Latency adds 10–40 ms vs. a direct connection because traffic egresses
@@ -233,7 +233,7 @@ you already have a NAS, mini-PC, or spare laptop.
 **What you get.** A self-hosted Heroku-like control panel that handles Git
 deploys, TLS, restarts, log tailing, and Docker. Free and open source. Run it
 on any $4/mo VPS (Hetzner CX22, OVH, Vultr) or — back to free — on the Oracle
-ARM instance from Option A. Best when you'll deploy NeonDB **plus** other
+ARM instance from Option A. Best when you'll deploy Voltra **plus** other
 services (e.g. your game's HTTP API, a Postgres for accounts) on the same box.
 
 The repo already includes `DOKPLOY_DEPLOYMENT.md` for the Dokploy specifics.
@@ -250,7 +250,7 @@ curl -sSL https://dokploy.com/install.sh | sudo bash
 Then through the web UI:
 
 1. **Add a "New Service" → "Application"**.
-2. **Source: GitHub** (or upload). Point at the NeonDB repo (or your fork).
+2. **Source: GitHub** (or upload). Point at the Voltra repo (or your fork).
 3. **Build pack: Dockerfile** (the repo ships one).
 4. **Domain**: assign `db.yourgame.com`. The panel issues a Let's Encrypt
    cert automatically.

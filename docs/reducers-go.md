@@ -1,6 +1,6 @@
 # Writing Reducers in Go (TODO-033)
 
-NeonDB supports Go reducers compiled to WebAssembly via **TinyGo** (wasm32-wasi target).
+Voltra supports Go reducers compiled to WebAssembly via **TinyGo** (wasm32-wasi target).
 Standard `go build` will NOT produce a correct WASM module — always use TinyGo.
 
 ## Prerequisites
@@ -81,7 +81,7 @@ func main() {} // required by TinyGo wasi target
 
 ## Return Convention
 
-TinyGo correctly exports multi-value WASM returns. The NeonDB backend
+TinyGo correctly exports multi-value WASM returns. The Voltra backend
 expects `(result_ptr i32, result_len i32)`. Use `neondb.WriteResult([]byte)`
 which writes data to a static buffer and returns the correct (ptr, len) pair.
 

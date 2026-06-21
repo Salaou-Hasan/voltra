@@ -114,7 +114,7 @@ When a delta is published:
 
 ### Raft Consensus
 
-NeonDB embeds an openraft-based Raft node. In single-node mode it auto-bootstraps as a one-member cluster. In multi-node mode, nodes are added as learners first, then promoted to voters via `POST /raft/change-membership`.
+Voltra embeds an openraft-based Raft node. In single-node mode it auto-bootstraps as a one-member cluster. In multi-node mode, nodes are added as learners first, then promoted to voters via `POST /raft/change-membership`.
 
 Every reducer write goes through Raft: the worker drains staged deltas and submits them as a `RaftRequest` via `client_write()`. The entry is replicated to a quorum of nodes, then the state machine's `apply()` is called on every node — applying to the TableStore and fanning out subscriptions. This guarantees every node sees every write in the same order.
 

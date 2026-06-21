@@ -6,7 +6,7 @@ All commands are accessed via the `neondb` binary. Use `neondb --help` or `neond
 
 ## neondb init
 
-Scaffold a new NeonDB project. Without `--template`, opens an interactive selector.
+Scaffold a new Voltra project. Without `--template`, opens an interactive selector.
 
 ```
 neondb init [NAME] [--template TEMPLATE]
@@ -68,7 +68,7 @@ neondb build --modules-dir src/reducers
 
 ## neondb start
 
-Start the NeonDB server. Config is loaded from `neondb.toml` in the current directory (or searched upward). Environment variables override TOML values.
+Start the Voltra server. Config is loaded from `neondb.toml` in the current directory (or searched upward). Environment variables override TOML values.
 
 ```
 neondb start [OPTIONS]

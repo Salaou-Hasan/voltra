@@ -1,7 +1,7 @@
 # Neon V1 Runtime Direction
 
-Neon V1 turns NeonDB into a low-latency game database/server/runtime while
-keeping the systems that already make NeonDB fast: reducers, WAL recovery,
+Neon V1 turns Voltra into a low-latency game database/server/runtime while
+keeping the systems that already make Voltra fast: reducers, WAL recovery,
 subscriptions, SDKs, and protocol support.
 
 The first architectural rule is that hot simulation state and durable gameplay
