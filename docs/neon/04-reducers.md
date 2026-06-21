@@ -207,7 +207,7 @@ reducer player_count() {
 
 ## Multiple Reducers
 
-A `reducers.neon` file can have any number of reducers. There is no limit.
+A `reducers.vol` file can have any number of reducers. There is no limit.
 
 ```neon
 table players { ... }

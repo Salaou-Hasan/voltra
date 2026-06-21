@@ -68,7 +68,7 @@ Every write to a table is logged to the WAL before the response is sent to the c
 
 ## Table Declarations are Documentation
 
-The table declaration in `reducers.neon` tells Voltra the intended structure of your rows. The server uses it for:
+The table declaration in `reducers.vol` tells Voltra the intended structure of your rows. The server uses it for:
 - Editor tooling and autocomplete
 - Default value filling when a row is written with missing fields
 - Documentation for other developers
@@ -157,7 +157,7 @@ Row keys for leaderboard entries are usually the player ID so each player has ex
 
 ## Multiple Tables
 
-A single `reducers.neon` file can declare any number of tables:
+A single `reducers.vol` file can declare any number of tables:
 
 ```neon
 table players {

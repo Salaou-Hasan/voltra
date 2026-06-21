@@ -1,13 +1,13 @@
 # Neon Language
 
-**Neon** is the purpose-built language for Voltra game backends. You write simple, readable game logic in `.neon` files. `voltra build` compiles them to native Rust — zero interpreter, zero overhead, full performance.
+**Neon** is the purpose-built language for Voltra game backends. You write simple, readable game logic in `.vol` files. `voltra build` compiles them to native Rust — zero interpreter, zero overhead, full performance.
 
 ---
 
 ## The Compilation Pipeline
 
 ```
-reducers.neon
+reducers.vol
       │
       │  voltra build
       ▼
@@ -18,13 +18,13 @@ src/reducers.rs   ← generated Rust source (never edit this)
 voltra binary     ← your game server, running at native speed
 ```
 
-There is no JavaScript. There is no interpreter. Every `.neon` file becomes native machine code.
+There is no JavaScript. There is no interpreter. Every `.vol` file becomes native machine code.
 
 ---
 
 ## 30-Second Example
 
-Create `reducers.neon`:
+Create `reducers.vol`:
 
 ```neon
 table players {
@@ -86,8 +86,8 @@ That's it. Your multiplayer game backend is live.
 
 | Pain with other backends | Neon solution |
 |---|---|
-| Configure a database, write ORM models, write API handlers, deploy — for every feature | One `.neon` file. `voltra build`. Done. |
+| Configure a database, write ORM models, write API handlers, deploy — for every feature | One `.vol` file. `voltra build`. Done. |
 | Runtime scripting is slow | Neon compiles to native Rust — same speed as hand-written Rust |
 | Atomic transactions are hard | Every reducer is atomic by default. Error halfway? Nothing was written. |
 | Real-time subscriptions need extra infrastructure | Built in. `voltra watch "players WHERE zone = 'lobby'"` |
-| Scaling requires rewrites | Add cluster builtins. Same `.neon` file, distributed. |
+| Scaling requires rewrites | Add cluster builtins. Same `.vol` file, distributed. |

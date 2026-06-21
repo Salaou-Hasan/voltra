@@ -42,7 +42,7 @@ voltra init my-game --template neon/basic
 Expected output:
 ```
 Created project: my-game/
-  reducers.neon       <- your game logic (edit this)
+  reducers.vol       <- your game logic (edit this)
   voltra.toml         <- server configuration
   schema.toml         <- optional field validation
   Cargo.toml          <- Rust package (set your game name here)
@@ -56,13 +56,13 @@ Created project: my-game/
 
 ---
 
-## Step 3 — Look at reducers.neon
+## Step 3 — Look at reducers.vol
 
 ```
 cd my-game
 ```
 
-Open `reducers.neon`. The basic template gives you a starting point:
+Open `reducers.vol`. The basic template gives you a starting point:
 
 ```neon
 table players {
@@ -98,7 +98,7 @@ voltra build
 
 Expected output:
 ```
-[voltra] Compiling reducers.neon...
+[voltra] Compiling reducers.vol...
 [voltra] Generated src/reducers.rs (312 lines)
 [voltra] Running cargo build --release...
    Compiling my-game v0.1.0
@@ -107,10 +107,10 @@ Expected output:
 ```
 
 `voltra build` does two things:
-1. Translates `reducers.neon` into `src/reducers.rs` (native Rust code)
+1. Translates `reducers.vol` into `src/reducers.rs` (native Rust code)
 2. Runs `cargo build --release` to compile everything to a native binary
 
-Every time you change `reducers.neon`, run `voltra build` again.
+Every time you change `reducers.vol`, run `voltra build` again.
 
 ---
 
@@ -190,7 +190,7 @@ This is the real-time subscription system. Game clients use this to receive live
 
 ## What's Next?
 
-- Add more reducers to `reducers.neon` — combat, chat, inventory, guilds
+- Add more reducers to `reducers.vol` — combat, chat, inventory, guilds
 - Run `voltra build` after every change
 - Connect your Unity or Godot client using the SDK in `clients/`
 - See [13 — Complete Examples](13-complete-examples.md) for full game templates

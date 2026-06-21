@@ -1,8 +1,8 @@
 // ============================================================================
-// .neon DSL — Abstract Syntax Tree
+// .vol DSL — Abstract Syntax Tree
 // ============================================================================
 
-/// A complete .neon source file.
+/// A complete .vol source file.
 #[derive(Debug, Clone)]
 pub struct Program {
     pub tables:   Vec<TableDecl>,

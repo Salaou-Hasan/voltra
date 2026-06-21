@@ -1,5 +1,5 @@
 // ============================================================================
-// .neon DSL — public API
+// .vol DSL — public API
 // ============================================================================
 
 pub mod ast;
@@ -10,7 +10,7 @@ pub mod parser;
 
 use error::NeonError;
 
-/// Compile a complete `.neon` source file to a `reducers.rs` string.
+/// Compile a complete `.vol` source file to a `reducers.rs` string.
 ///
 /// Returns the generated Rust source on success, or a list of errors
 /// (with line numbers) on failure.

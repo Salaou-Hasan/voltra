@@ -1,6 +1,6 @@
 # Complete Examples
 
-Three fully working `reducers.neon` files you can copy into a new project and run immediately.
+Three fully working `reducers.vol` files you can copy into a new project and run immediately.
 
 ---
 
@@ -10,7 +10,7 @@ A shrinking-zone battle royale. Players spawn, move, shoot each other, heal, and
 
 ```neon
 // ============================================================
-// BATTLE ROYALE — reducers.neon
+// BATTLE ROYALE — reducers.vol
 // ============================================================
 
 table players {
@@ -222,7 +222,7 @@ reducer cleanup_dead() {
 **Run it:**
 ```
 voltra init battle-royale --template neon/basic
-# replace reducers.neon with the above
+# replace reducers.vol with the above
 voltra build
 voltra start
 voltra call spawn '["Alice"]'
@@ -238,7 +238,7 @@ Rooms with membership, message history, and moderation.
 
 ```neon
 // ============================================================
-// CHAT SERVER — reducers.neon
+// CHAT SERVER — reducers.vol
 // ============================================================
 
 table rooms {
@@ -510,7 +510,7 @@ Players collect cards, build hands, and battle. Gold economy for buying new card
 
 ```neon
 // ============================================================
-// TRADING CARD GAME — reducers.neon
+// TRADING CARD GAME — reducers.vol
 // ============================================================
 
 table players {
@@ -770,7 +770,7 @@ reducer leaderboard() {
 **Run it:**
 ```
 voltra init card-game --template neon/basic
-# replace reducers.neon with the above
+# replace reducers.vol with the above
 voltra build
 voltra start
 

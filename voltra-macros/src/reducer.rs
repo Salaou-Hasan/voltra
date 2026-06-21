@@ -14,7 +14,7 @@ pub fn expand(item: TokenStream) -> TokenStream {
 
 fn expand_inner(input: ItemFn) -> Result<TokenStream, syn::Error> {
     let fn_name   = &input.sig.ident;
-    // A raw identifier (e.g. `r#move`, emitted by the .neon codegen for reducers
+    // A raw identifier (e.g. `r#move`, emitted by the .vol codegen for reducers
     // named after Rust keywords) stringifies to "r#move". Strip the prefix so the
     // wire name, struct name, and inner-fn name are derived from the plain name
     // ("move") — clients call the reducer by its real Neon name, not "r#move".

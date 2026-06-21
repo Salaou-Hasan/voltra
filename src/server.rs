@@ -559,7 +559,7 @@ async fn run_server_inner(
     // ── Scheduled reducers ─────────────────────────────────────────────────────
     // Fire each configured reducer on its interval by enqueuing a PendingCall
     // through the same reducer queue as client calls. Without this, embedded
-    // servers (run_server / .neon projects) silently never run their schedulers.
+    // servers (run_server / .vol projects) silently never run their schedulers.
     let sched_seq = Arc::new(AtomicU64::new(u64::MAX / 2));
     for sched in &config.scheduled_reducers {
         let sched = sched.clone();

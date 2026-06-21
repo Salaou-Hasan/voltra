@@ -72,9 +72,9 @@ struct Template {
 
 const TEMPLATES: &[Template] = &[
     // ── Neon Language (DSL → native Rust, zero interpreted layer) ─────────────
-    Template { name: "neon/basic",      category: "Neon Language", description: "Spawn, move, despawn, combat — write game logic in .neon DSL, compiles to native Rust speed." },
-    Template { name: "neon/game-ready", category: "Neon Language", description: "Full game in .neon: combat, economy, guilds, quests, leaderboard, chat — compile once, run forever." },
-    Template { name: "neon/chat",       category: "Neon Language", description: "Chat rooms, presence, moderation — minimal .neon server you can understand in 5 minutes." },
+    Template { name: "neon/basic",      category: "Neon Language", description: "Spawn, move, despawn, combat — write game logic in .vol DSL, compiles to native Rust speed." },
+    Template { name: "neon/game-ready", category: "Neon Language", description: "Full game in .vol: combat, economy, guilds, quests, leaderboard, chat — compile once, run forever." },
+    Template { name: "neon/chat",       category: "Neon Language", description: "Chat rooms, presence, moderation — minimal .vol server you can understand in 5 minutes." },
     // ── Rust (handwritten native reducers) ────────────────────────────────────
     Template { name: "game/basic", category: "Rust", description: "Spawn, move, despawn, health — the minimal multiplayer foundation. Add modules with `voltra add`." },
     Template { name: "game/full",  category: "Rust", description: "All modules pre-configured: combat, inventory, economy, matchmaking, guilds, quests, leaderboard, chat, world." },
@@ -293,8 +293,8 @@ async fn main() -> Result<()> {
         Commands::Modules => { cmd_list_modules(); Ok(()) }
         Commands::Build { modules_dir } => {
             let cwd = std::env::current_dir()?;
-            // Neon project: reducers/ directory OR reducers.neon → compile to native Rust
-            if cwd.join("reducers").is_dir() || cwd.join("reducers.neon").exists() {
+            // Neon project: reducers/ directory OR reducers.vol → compile to native Rust
+            if cwd.join("reducers").is_dir() || cwd.join("reducers.vol").exists() {
                 return build_neon_reducers(&cwd).map_err(Into::into);
             }
             // Rust/WASM project: compile .js/.wat files in modules/
@@ -1132,21 +1132,21 @@ fn scaffold_game_godot(p: &Path, name: &str) -> Result<()> {
 // Neon Language templates
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Compile reducers.neon → src/reducers.rs, then run cargo build --release.
+/// Compile reducers.vol → src/reducers.rs, then run cargo build --release.
 fn build_neon_reducers(project_dir: &std::path::Path) -> Result<()> {
-    // Prefer reducers/ directory (new per-file layout); fall back to reducers.neon.
+    // Prefer reducers/ directory (new per-file layout); fall back to reducers.vol.
     let reducers_dir  = project_dir.join("reducers");
-    let reducers_neon = project_dir.join("reducers.neon");
+    let reducers_neon = project_dir.join("reducers.vol");
 
     let (combined, display) = if reducers_dir.is_dir() {
         let mut entries: Vec<_> = std::fs::read_dir(&reducers_dir)
             .map_err(|e| voltra::error::VoltraError::internal(format!("Cannot read reducers/: {e}")))?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "neon").unwrap_or(false))
+            .filter(|e| e.path().extension().map(|x| x == "vol").unwrap_or(false))
             .collect();
         entries.sort_by_key(|e| e.file_name());
         if entries.is_empty() {
-            return Err(voltra::error::VoltraError::internal("reducers/ exists but contains no .neon files").into());
+            return Err(voltra::error::VoltraError::internal("reducers/ exists but contains no .vol files").into());
         }
         let mut src = String::new();
         for e in &entries {
@@ -1157,11 +1157,11 @@ fn build_neon_reducers(project_dir: &std::path::Path) -> Result<()> {
         (src, format!("reducers/ ({} files)", entries.len()))
     } else if reducers_neon.exists() {
         let src = std::fs::read_to_string(&reducers_neon)
-            .map_err(|e| voltra::error::VoltraError::internal(format!("Cannot read reducers.neon: {e}")))?;
-        (src, "reducers.neon".to_string())
+            .map_err(|e| voltra::error::VoltraError::internal(format!("Cannot read reducers.vol: {e}")))?;
+        (src, "reducers.vol".to_string())
     } else {
         return Err(voltra::error::VoltraError::internal(
-            "No reducers/ directory or reducers.neon found. Run `voltra init` to create a project."
+            "No reducers/ directory or reducers.vol found. Run `voltra init` to create a project."
         ).into());
     };
 
@@ -1209,11 +1209,11 @@ fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
     // Per-file reducer layout (mirrors the Rust template structure)
-    wf(p, "reducers/schema.neon",        NEON_BASIC_SCHEMA)?;
-    wf(p, "reducers/spawn.neon",         NEON_BASIC_SPAWN)?;
-    wf(p, "reducers/movement.neon",      NEON_BASIC_MOVEMENT)?;
-    wf(p, "reducers/combat.neon",        NEON_BASIC_COMBAT)?;
-    wf(p, "reducers/system.neon",        NEON_BASIC_SYSTEM)?;
+    wf(p, "reducers/schema.vol",        NEON_BASIC_SCHEMA)?;
+    wf(p, "reducers/spawn.vol",         NEON_BASIC_SPAWN)?;
+    wf(p, "reducers/movement.vol",      NEON_BASIC_MOVEMENT)?;
+    wf(p, "reducers/combat.vol",        NEON_BASIC_COMBAT)?;
+    wf(p, "reducers/system.vol",        NEON_BASIC_SYSTEM)?;
     wf(p, "src/reducers.rs",             &compile_neon_to_rs(&all_neon))?;
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
@@ -1222,11 +1222,11 @@ fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
     wf(p, "docs/neon/README.md",         NEON_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/basic", &[
-        ("reducers/schema.neon",          "table definitions"),
-        ("reducers/spawn.neon",           "spawn + despawn"),
-        ("reducers/movement.neon",        "move_player"),
-        ("reducers/combat.neon",          "damage + heal"),
-        ("reducers/system.neon",          "get_stats + cleanup_dead (scheduler)"),
+        ("reducers/schema.vol",          "table definitions"),
+        ("reducers/spawn.vol",           "spawn + despawn"),
+        ("reducers/movement.vol",        "move_player"),
+        ("reducers/combat.vol",          "damage + heal"),
+        ("reducers/system.vol",          "get_stats + cleanup_dead (scheduler)"),
         ("src/reducers.rs",               "auto-generated — do not edit"),
         ("docs/neon/README.md",           "Neon language reference"),
         ("clients/rust/src/main.rs",      "Rust client"),
@@ -1235,7 +1235,7 @@ fn scaffold_neon_basic(p: &Path, name: &str) -> Result<()> {
     ]);
     println!("  Neon workflow:");
     println!("    1. Edit any file in reducers/");
-    println!("    2. voltra build    — compile .neon → native Rust");
+    println!("    2. voltra build    — compile .vol → native Rust");
     println!("    3. voltra start    — start the server");
     println!();
     Ok(())
@@ -1251,15 +1251,15 @@ fn scaffold_neon_game_ready(p: &Path, name: &str) -> Result<()> {
     copy_lockfile_if_available(p)?;
     wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
-    wf(p, "reducers/schema.neon",        NEON_GAME_SCHEMA)?;
-    wf(p, "reducers/spawn.neon",         NEON_GAME_SPAWN)?;
-    wf(p, "reducers/movement.neon",      NEON_GAME_MOVEMENT)?;
-    wf(p, "reducers/combat.neon",        NEON_GAME_COMBAT)?;
-    wf(p, "reducers/progression.neon",   NEON_GAME_PROGRESSION)?;
-    wf(p, "reducers/economy.neon",       NEON_GAME_ECONOMY)?;
-    wf(p, "reducers/guilds.neon",        NEON_GAME_GUILDS)?;
-    wf(p, "reducers/leaderboard.neon",   NEON_GAME_LEADERBOARD)?;
-    wf(p, "reducers/system.neon",        NEON_GAME_SYSTEM)?;
+    wf(p, "reducers/schema.vol",        NEON_GAME_SCHEMA)?;
+    wf(p, "reducers/spawn.vol",         NEON_GAME_SPAWN)?;
+    wf(p, "reducers/movement.vol",      NEON_GAME_MOVEMENT)?;
+    wf(p, "reducers/combat.vol",        NEON_GAME_COMBAT)?;
+    wf(p, "reducers/progression.vol",   NEON_GAME_PROGRESSION)?;
+    wf(p, "reducers/economy.vol",       NEON_GAME_ECONOMY)?;
+    wf(p, "reducers/guilds.vol",        NEON_GAME_GUILDS)?;
+    wf(p, "reducers/leaderboard.vol",   NEON_GAME_LEADERBOARD)?;
+    wf(p, "reducers/system.vol",        NEON_GAME_SYSTEM)?;
     wf(p, "src/reducers.rs",             &compile_neon_to_rs(&all_neon))?;
     wf(p, "schema.toml",                 R_BASIC_SCHEMA)?;
     wf(p, "SCALING.md",                  SCALING_MD)?;
@@ -1268,15 +1268,15 @@ fn scaffold_neon_game_ready(p: &Path, name: &str) -> Result<()> {
     wf(p, "docs/neon/README.md",         NEON_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/game-ready", &[
-        ("reducers/schema.neon",       "table definitions (players + guilds)"),
-        ("reducers/spawn.neon",        "spawn + despawn"),
-        ("reducers/movement.neon",     "move_player"),
-        ("reducers/combat.neon",       "take_damage + heal"),
-        ("reducers/progression.neon",  "grant_xp + roll_loot"),
-        ("reducers/economy.neon",      "transfer_gold"),
-        ("reducers/guilds.neon",       "create_guild + join + leave"),
-        ("reducers/leaderboard.neon",  "leaderboard + top_killers"),
-        ("reducers/system.neon",       "get_stats + cleanup_dead (scheduler)"),
+        ("reducers/schema.vol",       "table definitions (players + guilds)"),
+        ("reducers/spawn.vol",        "spawn + despawn"),
+        ("reducers/movement.vol",     "move_player"),
+        ("reducers/combat.vol",       "take_damage + heal"),
+        ("reducers/progression.vol",  "grant_xp + roll_loot"),
+        ("reducers/economy.vol",      "transfer_gold"),
+        ("reducers/guilds.vol",       "create_guild + join + leave"),
+        ("reducers/leaderboard.vol",  "leaderboard + top_killers"),
+        ("reducers/system.vol",       "get_stats + cleanup_dead (scheduler)"),
         ("src/reducers.rs",            "auto-generated — do not edit"),
         ("docs/neon/README.md",        "Neon language reference"),
         ("clients/",                   "Rust, Unity, Godot client SDKs"),
@@ -1298,10 +1298,10 @@ fn scaffold_neon_chat(p: &Path, name: &str) -> Result<()> {
     copy_lockfile_if_available(p)?;
     wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
-    wf(p, "reducers/schema.neon",        NEON_CHAT_SCHEMA_NEON)?;
-    wf(p, "reducers/rooms.neon",         NEON_CHAT_ROOMS)?;
-    wf(p, "reducers/messages.neon",      NEON_CHAT_MESSAGES)?;
-    wf(p, "reducers/system.neon",        NEON_CHAT_SYSTEM)?;
+    wf(p, "reducers/schema.vol",        NEON_CHAT_SCHEMA_NEON)?;
+    wf(p, "reducers/rooms.vol",         NEON_CHAT_ROOMS)?;
+    wf(p, "reducers/messages.vol",      NEON_CHAT_MESSAGES)?;
+    wf(p, "reducers/system.vol",        NEON_CHAT_SYSTEM)?;
     wf(p, "src/reducers.rs",             &compile_neon_to_rs(&all_neon))?;
     wf(p, "schema.toml",                 NEON_CHAT_SCHEMA)?;
     wf(p, ".vscode/settings.json",       VSCODE_NEON_SETTINGS)?;
@@ -1309,10 +1309,10 @@ fn scaffold_neon_chat(p: &Path, name: &str) -> Result<()> {
     wf(p, "docs/neon/README.md",         NEON_LANG_REFERENCE)?;
     scaffold_all_clients(p, name)?;
     print_success(name, "neon/chat", &[
-        ("reducers/schema.neon",   "table definitions (rooms + messages + members)"),
-        ("reducers/rooms.neon",    "create_room + join_room + leave_room"),
-        ("reducers/messages.neon", "send_message + list_rooms"),
-        ("reducers/system.neon",   "online_count + room_members + kick + cleanup"),
+        ("reducers/schema.vol",   "table definitions (rooms + messages + members)"),
+        ("reducers/rooms.vol",    "create_room + join_room + leave_room"),
+        ("reducers/messages.vol", "send_message + list_rooms"),
+        ("reducers/system.vol",   "online_count + room_members + kick + cleanup"),
         ("src/reducers.rs",        "auto-generated — do not edit"),
         ("docs/neon/README.md",    "Neon language reference"),
     ]);
@@ -1429,9 +1429,9 @@ fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
         return Err(voltra::error::VoltraError::invalid_argument("not a Voltra project directory"));
     }
 
-    // If this is a Neon-language project, write a .neon file instead of Rust files.
+    // If this is a Neon-language project, write a .vol file instead of Rust files.
     if project_path.join("reducers").is_dir()
-        || project_path.join("reducers.neon").exists()
+        || project_path.join("reducers.vol").exists()
     {
         return cmd_add_module_neon(module, project_path);
     }
@@ -1457,7 +1457,7 @@ fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Neon project: write a dedicated reducers/<module>.neon file, then rebuild.
+/// Neon project: write a dedicated reducers/<module>.vol file, then rebuild.
 fn cmd_add_module_neon(module: &str, project_path: &Path) -> Result<()> {
     let neon_snippet = match module {
         "chat"        => NEON_MOD_CHAT,
@@ -1479,31 +1479,31 @@ fn cmd_add_module_neon(module: &str, project_path: &Path) -> Result<()> {
 
     let reducers_dir = project_path.join("reducers");
     let target_path = if reducers_dir.is_dir() {
-        // New per-file layout: write reducers/<module>.neon
-        let path = reducers_dir.join(format!("{module}.neon"));
+        // New per-file layout: write reducers/<module>.vol
+        let path = reducers_dir.join(format!("{module}.vol"));
         if path.exists() {
-            println!("  {module} module already exists at reducers/{module}.neon — skipped.");
+            println!("  {module} module already exists at reducers/{module}.vol — skipped.");
             println!();
             return Ok(());
         }
         path
     } else {
-        // Legacy single-file layout: append to reducers.neon
-        let neon_path = project_path.join("reducers.neon");
+        // Legacy single-file layout: append to reducers.vol
+        let neon_path = project_path.join("reducers.vol");
         let existing = fs::read_to_string(&neon_path).unwrap_or_default();
         let marker = format!("// ── {module} module");
         if existing.contains(&marker) {
-            println!("  {module} module already present in reducers.neon — skipped.");
+            println!("  {module} module already present in reducers.vol — skipped.");
             println!();
             return Ok(());
         }
         use std::io::Write as _;
         let mut file = fs::OpenOptions::new().append(true).open(&neon_path)
-            .map_err(|e| voltra::error::VoltraError::internal(format!("open reducers.neon: {e}")))?;
+            .map_err(|e| voltra::error::VoltraError::internal(format!("open reducers.vol: {e}")))?;
         writeln!(file, "\n{}", neon_snippet.trim())
-            .map_err(|e| voltra::error::VoltraError::internal(format!("append reducers.neon: {e}")))?;
+            .map_err(|e| voltra::error::VoltraError::internal(format!("append reducers.vol: {e}")))?;
         println!();
-        println!("  Added {module} module → reducers.neon");
+        println!("  Added {module} module → reducers.vol");
         println!("  Rebuild: voltra build");
         println!("  Restart: voltra start");
         println!();
@@ -1512,10 +1512,10 @@ fn cmd_add_module_neon(module: &str, project_path: &Path) -> Result<()> {
     };
 
     fs::write(&target_path, neon_snippet.trim())
-        .map_err(|e| voltra::error::VoltraError::internal(format!("write reducers/{module}.neon: {e}")))?;
+        .map_err(|e| voltra::error::VoltraError::internal(format!("write reducers/{module}.vol: {e}")))?;
 
     println!();
-    println!("  Added {module} module → reducers/{module}.neon");
+    println!("  Added {module} module → reducers/{module}.vol");
     println!("  Rebuild: voltra build");
     println!("  Restart: voltra start");
     println!();
@@ -1578,10 +1578,10 @@ const PERF_MD: &str           = include_str!("../templates/performance.md.txt");
 const SCALING_MD: &str        = include_str!("../templates/scaling.md.txt");
 
 // ── Neon language template content (inline — no extra template files needed) ──
-/// VS Code language association — makes .neon files use Rust syntax highlighting.
+/// VS Code language association — makes .vol files use Rust syntax highlighting.
 const VSCODE_NEON_SETTINGS: &str = r#"{
   "files.associations": {
-    "*.neon": "rust"
+    "*.vol": "rust"
   }
 }
 "#;
@@ -1745,16 +1745,16 @@ let role = caller_role  // string — their role ("admin", "user", etc.)
 
 ```
 1. Edit files in reducers/
-2. voltra build      ← compiles .neon → src/reducers.rs → native binary
+2. voltra build      ← compiles .vol → src/reducers.rs → native binary
 3. voltra start      ← starts the server
 ```
 
-Changes to `.neon` files require `voltra build` before they take effect.
+Changes to `.vol` files require `voltra build` before they take effect.
 "#;
 
 // ── neon/basic per-file constants ────────────────────────────────────────────
 
-const NEON_BASIC_SCHEMA: &str = r#"// schema.neon — table definitions
+const NEON_BASIC_SCHEMA: &str = r#"// schema.vol — table definitions
 // Add fields here, then run: voltra build
 
 table players {
@@ -1767,7 +1767,7 @@ table players {
 }
 "#;
 
-const NEON_BASIC_SPAWN: &str = r#"// spawn.neon — player lifecycle
+const NEON_BASIC_SPAWN: &str = r#"// spawn.vol — player lifecycle
 
 reducer spawn(player_id: str, name: str, x: float, y: float) {
     players[player_id] = { hp: 100, alive: true, x: x, y: y, kills: 0, name: name }
@@ -1783,7 +1783,7 @@ reducer despawn(player_id: str) {
 }
 "#;
 
-const NEON_BASIC_MOVEMENT: &str = r#"// movement.neon — position updates
+const NEON_BASIC_MOVEMENT: &str = r#"// movement.vol — position updates
 
 reducer move_player(player_id: str, x: float, y: float) {
     let p = players[player_id] else { error("Player not found") }
@@ -1793,7 +1793,7 @@ reducer move_player(player_id: str, x: float, y: float) {
 }
 "#;
 
-const NEON_BASIC_COMBAT: &str = r#"// combat.neon — damage & healing
+const NEON_BASIC_COMBAT: &str = r#"// combat.vol — damage & healing
 
 reducer damage(target_id: str, amount: int) {
     let p = players[target_id] else { error("Player not found") }
@@ -1813,7 +1813,7 @@ reducer heal(target_id: str, amount: int) {
 }
 "#;
 
-const NEON_BASIC_SYSTEM: &str = r#"// system.neon — stats & scheduled maintenance
+const NEON_BASIC_SYSTEM: &str = r#"// system.vol — stats & scheduled maintenance
 
 reducer get_stats() {
     let online = counter("online")
@@ -1837,7 +1837,7 @@ reducer cleanup_dead() {
 
 // ── neon/game-ready per-file constants ───────────────────────────────────────
 
-const NEON_GAME_SCHEMA: &str = r#"// schema.neon — table definitions
+const NEON_GAME_SCHEMA: &str = r#"// schema.vol — table definitions
 
 table players {
     hp:     int   = 100,
@@ -1861,7 +1861,7 @@ table guilds {
 }
 "#;
 
-const NEON_GAME_SPAWN: &str = r#"// spawn.neon — player lifecycle
+const NEON_GAME_SPAWN: &str = r#"// spawn.vol — player lifecycle
 
 reducer spawn(player_id: str, name: str, x: float, y: float) {
     players[player_id] = { hp: 100, max_hp: 100, level: 1, xp: 0,
@@ -1879,7 +1879,7 @@ reducer despawn(player_id: str) {
 }
 "#;
 
-const NEON_GAME_MOVEMENT: &str = r#"// movement.neon — position updates
+const NEON_GAME_MOVEMENT: &str = r#"// movement.vol — position updates
 
 reducer move_player(player_id: str, x: float, y: float) {
     let p = players[player_id] else { error("Player not found") }
@@ -1889,7 +1889,7 @@ reducer move_player(player_id: str, x: float, y: float) {
 }
 "#;
 
-const NEON_GAME_COMBAT: &str = r#"// combat.neon — damage & healing
+const NEON_GAME_COMBAT: &str = r#"// combat.vol — damage & healing
 
 reducer take_damage(player_id: str, amount: int, attacker_id: str) {
     let p = players[player_id] else { error("Player not found") }
@@ -1918,7 +1918,7 @@ reducer heal(player_id: str, amount: int) {
 }
 "#;
 
-const NEON_GAME_PROGRESSION: &str = r#"// progression.neon — XP, leveling, loot
+const NEON_GAME_PROGRESSION: &str = r#"// progression.vol — XP, leveling, loot
 
 reducer grant_xp(player_id: str, amount: int) {
     let p = players[player_id] else { error("Player not found") }
@@ -1947,7 +1947,7 @@ reducer roll_loot(player_id: str) {
 }
 "#;
 
-const NEON_GAME_ECONOMY: &str = r#"// economy.neon — gold transfers
+const NEON_GAME_ECONOMY: &str = r#"// economy.vol — gold transfers
 
 reducer transfer_gold(from_id: str, to_id: str, amount: int) {
     let from = players[from_id] else { error("Sender not found") }
@@ -1961,7 +1961,7 @@ reducer transfer_gold(from_id: str, to_id: str, amount: int) {
 }
 "#;
 
-const NEON_GAME_GUILDS: &str = r#"// guilds.neon — guild management
+const NEON_GAME_GUILDS: &str = r#"// guilds.vol — guild management
 
 reducer create_guild(guild_id: str, name: str) {
     let owner = caller_id
@@ -1988,7 +1988,7 @@ reducer leave_guild() {
 }
 "#;
 
-const NEON_GAME_LEADERBOARD: &str = r#"// leaderboard.neon — rankings
+const NEON_GAME_LEADERBOARD: &str = r#"// leaderboard.vol — rankings
 
 reducer leaderboard(field: str) {
     let rows = sort_by("players", field, "desc")
@@ -2001,7 +2001,7 @@ reducer top_killers() {
 }
 "#;
 
-const NEON_GAME_SYSTEM: &str = r#"// system.neon — stats & scheduled maintenance
+const NEON_GAME_SYSTEM: &str = r#"// system.vol — stats & scheduled maintenance
 
 reducer get_stats() {
     let total  = count_rows("players")
@@ -2026,7 +2026,7 @@ reducer cleanup_dead() {
 
 // ── neon/chat per-file constants ─────────────────────────────────────────────
 
-const NEON_CHAT_SCHEMA_NEON: &str = r#"// schema.neon — table definitions
+const NEON_CHAT_SCHEMA_NEON: &str = r#"// schema.vol — table definitions
 
 table rooms {
     name:         str = "",
@@ -2047,7 +2047,7 @@ table messages {
 }
 "#;
 
-const NEON_CHAT_ROOMS: &str = r#"// rooms.neon — room lifecycle
+const NEON_CHAT_ROOMS: &str = r#"// rooms.vol — room lifecycle
 
 reducer create_room(room_id: str, name: str) {
     let creator = caller_id
@@ -2074,7 +2074,7 @@ reducer leave_room(room_id: str) {
 }
 "#;
 
-const NEON_CHAT_MESSAGES: &str = r#"// messages.neon — messaging & room listing
+const NEON_CHAT_MESSAGES: &str = r#"// messages.vol — messaging & room listing
 
 reducer send_message(room_id: str, text: str) {
     let sender = caller_id
@@ -2095,7 +2095,7 @@ reducer list_rooms() {
 }
 "#;
 
-const NEON_CHAT_SYSTEM: &str = r#"// system.neon — presence, moderation & cleanup
+const NEON_CHAT_SYSTEM: &str = r#"// system.vol — presence, moderation & cleanup
 
 reducer online_count() {
     let count = count_rows("room_members")
@@ -2136,7 +2136,7 @@ reducer cleanup_old_messages() {
 
 // ── Legacy single-file constants (kept for backward compatibility) ────────────
 const NEON_BASIC_REDUCERS: &str = r#"// ============================================================
-// reducers.neon — basic game template
+// reducers.vol — basic game template
 //
 // This is your entire game logic. Edit here, then run:
 //   voltra build   → compiles to native Rust
@@ -2216,7 +2216,7 @@ reducer cleanup_dead() {
 "#;
 
 const NEON_GAME_READY_REDUCERS: &str = r#"// ============================================================
-// reducers.neon — full game template (Neon Language)
+// reducers.vol — full game template (Neon Language)
 //
 // Covers: spawn/despawn, movement, combat, XP/leveling,
 //         loot boxes, guilds, leaderboard, economy.
@@ -2398,7 +2398,7 @@ reducer cleanup_dead() {
 "#;
 
 const NEON_CHAT_REDUCERS: &str = r#"// ============================================================
-// reducers.neon — chat server template (Neon Language)
+// reducers.vol — chat server template (Neon Language)
 //
 // Covers: rooms, messages, presence, moderation.
 //
@@ -2554,7 +2554,7 @@ name = "ts"
 type = "integer"
 "#;
 
-// ── Neon module snippets (appended to reducers.neon by `voltra add <module>`) ─
+// ── Neon module snippets (appended to reducers.vol by `voltra add <module>`) ─
 const NEON_MOD_CHAT: &str = r#"
 // ── chat module ───────────────────────────────────────────────────────────────
 table chat_messages {
@@ -3295,7 +3295,7 @@ fn build_multi_lang_reducers(project_root: &Path, modules_dir: &Path) -> Result<
     Ok(())
 }
 
-/// Compile every `.neon` file found in `neon_dir` into a `<stem>.rs` file.
+/// Compile every `.vol` file found in `neon_dir` into a `<stem>.rs` file.
 /// On success prints a summary line; on error prints each diagnostic and
 /// returns an error so the caller aborts the build.
 fn build_neon_files(neon_dir: &Path) -> Result<()> {
@@ -3307,7 +3307,7 @@ fn build_neon_files(neon_dir: &Path) -> Result<()> {
     let mut neon_files: Vec<std::path::PathBuf> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("neon"))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("vol"))
         .collect();
     neon_files.sort();
 
@@ -3318,11 +3318,11 @@ fn build_neon_files(neon_dir: &Path) -> Result<()> {
     let mut ok = 0usize;
     let mut failed = 0usize;
 
-    println!("  .neon compiler:");
+    println!("  .vol compiler:");
     for neon_path in &neon_files {
         let stem = neon_path.file_stem().unwrap_or_default().to_string_lossy();
         let out_path = neon_path.with_extension("rs");
-        print!("  .neon  {} → {} ... ", neon_path.display(), out_path.display());
+        print!("  .vol  {} → {} ... ", neon_path.display(), out_path.display());
 
         let source = match std::fs::read_to_string(neon_path) {
             Ok(s) => s,
@@ -3346,16 +3346,16 @@ fn build_neon_files(neon_dir: &Path) -> Result<()> {
         }
     }
 
-    println!("  .neon: {} compiled, {} failed", ok, failed);
+    println!("  .vol: {} compiled, {} failed", ok, failed);
     if failed > 0 {
-        Err(voltra::error::VoltraError::internal(format!("{} .neon file(s) failed to compile", failed)))
+        Err(voltra::error::VoltraError::internal(format!("{} .vol file(s) failed to compile", failed)))
     } else {
         Ok(())
     }
 }
 
 fn build_wasm_modules(modules_dir: &Path) -> Result<()> {
-    // ── Step 0a: compile .neon files if present ───────────────────────────────
+    // ── Step 0a: compile .vol files if present ───────────────────────────────
     let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     build_neon_files(&project_root)?;
 
