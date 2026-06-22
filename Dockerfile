@@ -1,5 +1,5 @@
 # ── Stage 1: builder ─────────────────────────────────────────────────────────
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:slim-bookworm AS builder
 
 # Build deps: Voltra pulls in wasmtime (cranelift), rquickjs, ring (TLS), zstd.
 RUN apt-get update && apt-get install -y --no-install-recommends \

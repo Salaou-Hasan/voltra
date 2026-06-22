@@ -3,3 +3,6 @@
 voltra-client-ts/node_modules/
 *.vsix
 desktop/target
+
+# Local-only toolchain pin (maintainer builds on Windows-gnu; invalid on CI)
+rust-toolchain.toml
