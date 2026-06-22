@@ -503,7 +503,7 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
             lobby_routes: lobby_routes.clone(),
             leaderboard: leaderboard.clone(),
             stat_sync: stat_sync.clone(),
-            lobby_router: lobby_router.clone(),
+            lobby_router: Some(lobby_router.clone()),
             persistent: persistent_store.clone(),
             auth_service: auth_service.clone(),
         });

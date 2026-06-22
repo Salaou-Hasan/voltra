@@ -34,18 +34,11 @@ use crate::wal::{
     snapshot::{find_latest_snapshot, load_snapshot, save_snapshot},
     BatchedWalWriter, WalEntry, WalReader,
 };
-use hyper::{
-    service::{make_service_fn, service_fn},
-    Body, Method, Request, Response, Server, StatusCode,
-};
-use std::net::SocketAddr;
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
     Arc,
 };
 use tokio::sync::watch;
-
-const ADMIN_DASHBOARD_HTML: &str = include_str!("admin_dashboard.html");
 
 /// Live handles to a running embedded Voltra server.
 ///
@@ -695,32 +688,8 @@ async fn run_server_inner(
         }
     }
 
-    // ── Embedded admin/metrics HTTP server ────────────────────────────────────
-    {
-        let metrics_port = config.metrics_port;
-        if metrics_port > 0 {
-            let startup = std::time::Instant::now();
-            start_embedded_admin_server(
-                host.clone(),
-                metrics_port,
-                tables.clone(),
-                subs.clone(),
-                registry.clone(),
-                schema_reg.clone(),
-                wal_writer.clone(),
-                global_seq.clone(),
-                metrics.clone(),
-                startup,
-                tx.clone(),
-                api_key.clone(),
-                config.backup_dir.clone(),
-                config.backup_keep,
-                wal_file.clone(),
-                cluster_bus.clone(),
-                shutdown_rx.clone(),
-            );
-        }
-    }
+    // The full admin/metrics console (voltra::admin) is started below, after the
+    // tenant registry is built — same console as `voltra start`.
 
     // Send stats handle back to the caller (e.g. voltra-sim) before blocking.
     if let Some(tx) = handle_tx {
@@ -736,6 +705,130 @@ async fn run_server_inner(
 
     let tenant_registry = crate::tenant::TenantRegistry::load(tables.clone());
     let inline_registry = crate::network::build_inline_registry();
+
+    // ── Full admin/metrics console (same as `voltra start`) ──────────────────
+    // Shared drain flag so the admin console can toggle drain mode on the same
+    // flag the listener observes.
+    let drain_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let metrics_port = config.metrics_port;
+        if metrics_port > 0 {
+            let startup = std::time::Instant::now();
+
+            // SQLite accounts/auth tier (handshake/HTTP only — not the hot path).
+            let persistent_db_path = config
+                .wal_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("voltra_persistent.db");
+            let persistent_store: Arc<crate::persistent::PersistentStore> =
+                match crate::persistent::PersistentStore::open(&persistent_db_path) {
+                    Ok(s) => Arc::new(s),
+                    Err(e) => {
+                        log::warn!(
+                            "[persistent] Could not open SQLite ({}); using in-memory fallback",
+                            e
+                        );
+                        Arc::new(
+                            crate::persistent::PersistentStore::open(std::path::Path::new(
+                                ":memory:",
+                            ))
+                            .unwrap_or_else(|_| panic!("SQLite in-memory fallback failed")),
+                        )
+                    }
+                };
+            let auth_service = Arc::new(crate::auth_service::AuthService::new(
+                persistent_store.clone(),
+                identity_issuer.clone(),
+                std::env::var("VOLTRA_TOKEN_TTL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(86_400),
+            ));
+
+            // Cross-region / leaderboard / stat-sync subsystems.
+            let region_registry = Arc::new(crate::cluster::RegionRegistry::from_env());
+            let lobby_routes = crate::cluster::LobbyRouteRegistry::new(tables.clone());
+            let leaderboard = Arc::new(crate::leaderboard::LeaderboardEngine::new());
+            leaderboard.create_board(crate::leaderboard::LeaderboardConfig {
+                name: config.leaderboard_board.clone(),
+                sort_order: crate::leaderboard::SortOrder::HighestFirst,
+                time_window: crate::leaderboard::TimeWindow::AllTime,
+                max_entries: config.leaderboard_top_n,
+            });
+            crate::leaderboard::LeaderboardAggregator::new(
+                leaderboard.clone(),
+                region_registry.clone(),
+                config.leaderboard_board.clone(),
+                config.leaderboard_interval_secs,
+                config.leaderboard_top_n,
+            )
+            .start(shutdown_rx.clone());
+            let stat_sync = crate::stat_sync::StatSyncQueue::new(
+                tables.clone(),
+                region_registry.clone(),
+                config.stat_sync_flush_ms,
+                shutdown_rx.clone(),
+            );
+
+            let admin_state = Arc::new(crate::admin::AdminState {
+                wal_path: wal_file.clone(),
+                backup_dir: config.backup_dir.clone(),
+                backup_keep: config.backup_keep,
+                tenant_registry: tenant_registry.clone(),
+                cluster_bus: cluster_bus.clone(),
+                drain_flag: drain_flag.clone(),
+                active_connections: active_connections.clone(),
+                region_registry,
+                lobby_routes,
+                leaderboard,
+                stat_sync,
+                // run_server uses single-channel dispatch (no lobby routing).
+                lobby_router: None,
+                persistent: persistent_store,
+                auth_service,
+            });
+
+            let host_a = host.clone();
+            let subs_a = subs.clone();
+            let tables_a = tables.clone();
+            let registry_a = registry.clone();
+            let wal_a = wal_writer.clone();
+            let seq_a = global_seq.clone();
+            let presence_a = presence.clone();
+            let ttl_a = ttl_manager.clone();
+            let metrics_a = metrics.clone();
+            let issuer_a = identity_issuer.clone();
+            let tx_a = tx.clone();
+            let schema_a = schema_reg.clone();
+            let shutdown_a = shutdown_rx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::admin::start_metrics_server(
+                    host_a,
+                    metrics_port,
+                    subs_a,
+                    tables_a,
+                    registry_a,
+                    wal_a,
+                    seq_a,
+                    startup,
+                    presence_a,
+                    ttl_a,
+                    metrics_a,
+                    issuer_a,
+                    tx_a,
+                    admin_state,
+                    schema_a,
+                    shutdown_a,
+                )
+                .await
+                {
+                    log::error!("[admin] metrics server error: {}", e);
+                }
+            });
+        }
+    }
+
     crate::network::start_listener(
         host,
         port,
@@ -758,881 +851,9 @@ async fn run_server_inner(
         tenant_registry,
         inline_registry,
         None,
-        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        drain_flag,
     )
     .await
-}
-
-// ── Embedded admin HTTP server ────────────────────────────────────────────────
-//
-// Provides the same /admin dashboard, /healthz, /metrics, and /admin/api/*
-// endpoints that the Voltra CLI binary exposes, so scaffold projects using
-// run_server_blocking() get a fully-featured admin console at
-// http://127.0.0.1:<metrics_port>/admin — not just a blank connection refusal.
-
-fn admin_json(v: serde_json::Value) -> Response<Body> {
-    let mut r = Response::new(Body::from(v.to_string()));
-    r.headers_mut().insert(
-        hyper::header::CONTENT_TYPE,
-        hyper::header::HeaderValue::from_static("application/json"),
-    );
-    r
-}
-fn admin_bad_request(msg: String) -> Response<Body> {
-    let mut r = admin_json(serde_json::json!({ "error": msg }));
-    *r.status_mut() = StatusCode::BAD_REQUEST;
-    r
-}
-fn admin_server_error(msg: String) -> Response<Body> {
-    let mut r = admin_json(serde_json::json!({ "error": msg }));
-    *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-    r
-}
-fn admin_url_decode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
-                if let Ok(b) = u8::from_str_radix(hex, 16) {
-                    out.push(b as char);
-                    i += 3;
-                    continue;
-                }
-            }
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
-
-/// Best-effort resident memory of the current process, in bytes.
-/// Windows uses GetProcessMemoryInfo; Linux reads /proc/self/statm; other
-/// platforms return 0 (the dashboard simply shows 0 MB).
-fn embedded_memory_bytes() -> u64 {
-    #[cfg(target_os = "windows")]
-    {
-        #[allow(non_camel_case_types)]
-        type HANDLE = *mut std::ffi::c_void;
-        #[allow(non_camel_case_types)]
-        type DWORD = u32;
-        #[allow(non_camel_case_types)]
-        type SIZE_T = usize;
-        #[repr(C)]
-        struct PROCESS_MEMORY_COUNTERS {
-            cb: DWORD,
-            page_fault_count: DWORD,
-            peak_working_set_size: SIZE_T,
-            working_set_size: SIZE_T,
-            quota_peak_paged_pool_usage: SIZE_T,
-            quota_paged_pool_usage: SIZE_T,
-            quota_peak_non_paged_pool_usage: SIZE_T,
-            quota_non_paged_pool_usage: SIZE_T,
-            pagefile_usage: SIZE_T,
-            peak_pagefile_usage: SIZE_T,
-        }
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetCurrentProcess() -> HANDLE;
-        }
-        #[link(name = "psapi")]
-        extern "system" {
-            fn GetProcessMemoryInfo(p: HANDLE, c: *mut PROCESS_MEMORY_COUNTERS, cb: DWORD) -> i32;
-        }
-        unsafe {
-            let mut c: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
-            c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
-            if GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) != 0 {
-                return c.working_set_size as u64;
-            }
-        }
-        0
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
-            if let Some(pages) = s
-                .split_whitespace()
-                .nth(1)
-                .and_then(|p| p.parse::<u64>().ok())
-            {
-                return pages * 4096;
-            }
-        }
-        0
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    {
-        0
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn handle_embedded_admin(
-    req: Request<Body>,
-    tables: Arc<TableStore>,
-    subs: Arc<SubscriptionManager>,
-    registry: Arc<ReducerRegistry>,
-    schema_reg: Arc<crate::schema::SchemaRegistry>,
-    wal_writer: Arc<BatchedWalWriter>,
-    global_seq: Arc<AtomicU64>,
-    metrics: Arc<Metrics>,
-    startup: std::time::Instant,
-    queue_tx: kanal::AsyncSender<PendingCall>,
-    api_key: Option<String>,
-    backup_dir: Option<std::path::PathBuf>,
-    backup_keep: usize,
-    wal_path: std::path::PathBuf,
-    cluster_bus: Arc<crate::cluster::ClusterBus>,
-) -> std::result::Result<Response<Body>, hyper::Error> {
-    // Optional auth check — only if VOLTRA_API_KEY is set.
-    let check_auth = |req: &Request<Body>| -> Option<Response<Body>> {
-        let key = api_key.as_ref()?;
-        let ok = req
-            .headers()
-            .get(hyper::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.trim_start_matches("Bearer ").trim() == key.as_str())
-            .unwrap_or(false);
-        if !ok {
-            let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
-            *r.status_mut() = StatusCode::UNAUTHORIZED;
-            Some(r)
-        } else {
-            None
-        }
-    };
-
-    let path = req.uri().path().to_string();
-    let resp = match (req.method(), path.as_str()) {
-        // ── Admin dashboard ───────────────────────────────────────────────────
-        (&Method::GET, "/admin") | (&Method::GET, "/admin/") => {
-            let mut r = Response::new(Body::from(ADMIN_DASHBOARD_HTML));
-            r.headers_mut().insert(
-                hyper::header::CONTENT_TYPE,
-                hyper::header::HeaderValue::from_static("text/html; charset=utf-8"),
-            );
-            r
-        }
-
-        // ── Health check ──────────────────────────────────────────────────────
-        (&Method::GET, "/healthz") => admin_json(serde_json::json!({
-            "status": "ok",
-            "role": if crate::replication::is_replica() { "replica" } else { "primary" },
-            "replication_lag_entries": crate::replication::replication_lag(),
-            "total_rows": tables.total_row_count(),
-            "active_connections": subs.active_connections(),
-            "active_subscriptions": subs.active_subscriptions(),
-            "wal_sequence": global_seq.load(Ordering::Relaxed),
-            "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
-            "uptime_seconds": startup.elapsed().as_secs(),
-            "reducer_queue_depth": queue_tx.len(),
-            "memory_usage_bytes": embedded_memory_bytes(),
-            "presence_tracked": 0u64,
-            "ttl_active": 0u64,
-        })),
-
-        // ── Prometheus metrics ────────────────────────────────────────────────
-        (&Method::GET, "/metrics") => {
-            let text = metrics.render();
-            let mut r = Response::new(Body::from(text));
-            r.headers_mut().insert(
-                hyper::header::CONTENT_TYPE,
-                hyper::header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
-            );
-            r
-        }
-
-        // ── Table stats ───────────────────────────────────────────────────────
-        (&Method::GET, "/stats") => {
-            let table_list: Vec<_> = tables
-                .list_tables()
-                .into_iter()
-                .map(|name| {
-                    let count = tables
-                        .list_rows_with_keys(&name)
-                        .map(|r| r.len())
-                        .unwrap_or(0);
-                    serde_json::json!({ "name": name, "rows": count })
-                })
-                .collect();
-            admin_json(serde_json::json!({
-                "tables": table_list,
-                "total_rows": tables.total_row_count(),
-                "wal_sequence": global_seq.load(Ordering::Relaxed),
-                "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
-            }))
-        }
-
-        // ── Schema (table map: { name: { columns, rows, rls } }) ─────────────
-        (&Method::GET, "/schema") | (&Method::GET, "/admin/api/schema") => {
-            let mut table_map = serde_json::Map::new();
-            for table_name in schema_reg.list_tables() {
-                if let Some(schema) = schema_reg.get(table_name) {
-                    let cols: Vec<_> = schema
-                        .columns
-                        .iter()
-                        .map(|c| {
-                            serde_json::json!({
-                                "name": c.name,
-                                "type": c.type_str,
-                                "required": c.required,
-                                "default": c.default,
-                                "key": schema.primary_key.as_deref() == Some(&c.name),
-                            })
-                        })
-                        .collect();
-                    let rows = tables
-                        .list_rows_with_keys(table_name)
-                        .map(|r| r.len())
-                        .unwrap_or(0);
-                    table_map.insert(
-                        table_name.to_string(),
-                        serde_json::json!({
-                            "columns": cols,
-                            "primary_key": schema.primary_key,
-                            "rls": format!("{:?}", schema.rls),
-                            "rows": rows,
-                        }),
-                    );
-                }
-            }
-            for table_name in tables.list_tables() {
-                if !table_map.contains_key(&table_name) {
-                    let rows = tables
-                        .list_rows_with_keys(&table_name)
-                        .map(|r| r.len())
-                        .unwrap_or(0);
-                    table_map.insert(
-                        table_name,
-                        serde_json::json!({ "columns": [], "rows": rows }),
-                    );
-                }
-            }
-            admin_json(serde_json::json!({
-                "tables": serde_json::Value::Object(table_map),
-                "reducers": registry.list_reducers(),
-                "version": env!("CARGO_PKG_VERSION"),
-            }))
-        }
-
-        // ── Table list ────────────────────────────────────────────────────────
-        (&Method::GET, "/tables") => {
-            let list: Vec<_> = tables
-                .list_tables()
-                .into_iter()
-                .map(|name| {
-                    let count = tables
-                        .list_rows_with_keys(&name)
-                        .map(|r| r.len())
-                        .unwrap_or(0);
-                    serde_json::json!({ "name": name, "rows": count })
-                })
-                .collect();
-            admin_json(
-                serde_json::json!({ "tables": list, "total_rows": tables.total_row_count() }),
-            )
-        }
-
-        // ── Rows of one table ({ row_key, data }) ─────────────────────────────
-        (&Method::GET, p) if p.starts_with("/tables/") => {
-            let table_name = admin_url_decode(p.trim_start_matches("/tables/"));
-            match tables.list_rows_with_keys(&table_name) {
-                Ok(rows) => {
-                    let row_objs: Vec<_> = rows
-                        .into_iter()
-                        .map(|(key, data)| serde_json::json!({ "row_key": key, "data": data }))
-                        .collect();
-                    admin_json(serde_json::json!({
-                        "table": table_name, "count": row_objs.len(), "rows": row_objs,
-                    }))
-                }
-                Err(e) => admin_server_error(e.to_string()),
-            }
-        }
-
-        // ── Cluster status + peer endpoints ───────────────────────────────────
-        (&Method::GET, "/cluster/health") => admin_json(serde_json::json!({
-            "ok": true,
-            "shard_id": cluster_bus.config.my_shard_id,
-        })),
-        (&Method::GET, "/cluster/peers") => admin_json(serde_json::json!({
-            "cluster_enabled": cluster_bus.is_active(),
-            "my_shard_id":     cluster_bus.config.my_shard_id,
-            "shard_count":     cluster_bus.config.shard_count,
-            "peers":           cluster_bus.peers_snapshot(),
-        })),
-        (&Method::POST, "/cluster/deltas") => {
-            let secret = req
-                .headers()
-                .get("x-voltra-cluster-secret")
-                .and_then(|v| v.to_str().ok());
-            if !cluster_bus.validate_secret(secret) {
-                let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED;
-                return Ok(r);
-            }
-            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_server_error(e.to_string())),
-            };
-            match crate::cluster::fanout::parse_delta_payload(&body_bytes) {
-                Err(e) => admin_bad_request(e.to_string()),
-                Ok(payload) => {
-                    let row_deltas = crate::cluster::fanout::wire_to_row_deltas(payload.deltas);
-                    let applied = row_deltas.len();
-                    match crate::cluster::ClusterBus::apply_peer_deltas(&row_deltas, &tables, &subs)
-                    {
-                        Ok(()) => admin_json(serde_json::json!({ "ok": true, "applied": applied })),
-                        Err(e) => admin_server_error(e.to_string()),
-                    }
-                }
-            }
-        }
-        (&Method::POST, "/cluster/call") => {
-            let secret = req
-                .headers()
-                .get("x-voltra-cluster-secret")
-                .and_then(|v| v.to_str().ok());
-            if !cluster_bus.validate_secret(secret) {
-                let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED;
-                return Ok(r);
-            }
-            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_server_error(e.to_string())),
-            };
-            let pr: crate::cluster::proxy::ProxyCallRequest =
-                match serde_json::from_slice(&body_bytes) {
-                    Ok(r) => r,
-                    Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
-                };
-            use base64::Engine as _;
-            let args = match base64::engine::general_purpose::STANDARD.decode(&pr.args_b64) {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_bad_request(format!("Bad args_b64: {}", e))),
-            };
-            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
-            let call = PendingCall {
-                call_id: 0,
-                reducer_name: pr.reducer_name,
-                args,
-                caller_id: pr.caller_id,
-                caller_role: pr.caller_role,
-                tenant_id: None,
-                lobby_hint: None,
-                response_tx: resp_tx,
-            };
-            if queue_tx.send(call).await.is_err() {
-                return Ok(admin_server_error("Reducer queue closed".into()));
-            }
-            match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await {
-                Ok(Some(resp)) => {
-                    if resp.success {
-                        let result_b64 = resp
-                            .result
-                            .as_deref()
-                            .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
-                            .unwrap_or_default();
-                        admin_json(serde_json::json!({ "ok": true, "result_b64": result_b64 }))
-                    } else {
-                        admin_json(serde_json::json!({
-                            "ok": false,
-                            "error": resp.error.unwrap_or_else(|| "Reducer error".to_string()),
-                        }))
-                    }
-                }
-                Ok(None) => admin_server_error("Worker dropped response channel".into()),
-                Err(_) => admin_server_error("Proxied call timed out after 30s".into()),
-            }
-        }
-        (&Method::POST, "/cluster/join") => {
-            let secret = req
-                .headers()
-                .get("x-voltra-cluster-secret")
-                .and_then(|v| v.to_str().ok());
-            if !cluster_bus.validate_secret(secret) {
-                let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED;
-                return Ok(r);
-            }
-            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_server_error(e.to_string())),
-            };
-            let node: crate::cluster::NodeInfo = match serde_json::from_slice(&body_bytes) {
-                Ok(n) => n,
-                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
-            };
-            cluster_bus.add_peer(node);
-            admin_json(serde_json::json!({ "ok": true, "peers": cluster_bus.peers_snapshot() }))
-        }
-
-        // ── Replication: primary serves WAL entries to replicas ──────────────
-        (&Method::GET, "/replication/wal") => {
-            let query = req.uri().query().unwrap_or("");
-            let mut from_seq = 0u64;
-            let mut max = 2048usize;
-            for pair in query.split('&') {
-                let mut kv = pair.splitn(2, '=');
-                match (kv.next(), kv.next()) {
-                    (Some("from_seq"), Some(v)) => from_seq = v.parse().unwrap_or(0),
-                    (Some("max"), Some(v)) => {
-                        max = v.parse::<usize>().unwrap_or(2048).clamp(1, 8192)
-                    }
-                    _ => {}
-                }
-            }
-            let wal = wal_path.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                crate::replication::serve_wal_entries(&wal, from_seq, max)
-            })
-            .await;
-            match result {
-                Ok(Ok((entries, last_seq))) => admin_json(serde_json::json!({
-                    "entries": crate::replication::encode_entries(&entries),
-                    "last_seq": last_seq,
-                })),
-                Ok(Err(e)) => admin_server_error(e.to_string()),
-                Err(e) => admin_server_error(format!("task: {}", e)),
-            }
-        }
-
-        // ── Replication status / promote ──────────────────────────────────────
-        (&Method::GET, "/replication/status") => admin_json(crate::replication::status_json()),
-        (&Method::POST, "/replication/promote") => {
-            let was_replica = crate::replication::is_replica();
-            crate::replication::set_replica(false);
-            if was_replica {
-                log::warn!("[replication] PROMOTED to primary via /replication/promote");
-            }
-            admin_json(serde_json::json!({
-                "promoted": was_replica,
-                "role": "primary",
-                "last_applied_seq": crate::replication::last_applied_seq(),
-            }))
-        }
-
-        // ── Backup now ────────────────────────────────────────────────────────
-        (&Method::POST, "/backup") => {
-            if let Some(resp) = check_auth(&req) {
-                return Ok(resp);
-            }
-            let Some(dir) = backup_dir.clone() else {
-                return Ok(admin_bad_request(
-                    "No backup directory configured. Set VOLTRA_BACKUP_DIR.".into(),
-                ));
-            };
-            let tbl = tables.clone();
-            let wal = wal_path.clone();
-            let keep = backup_keep;
-            let last_seq = global_seq.load(Ordering::Relaxed);
-            let result = tokio::task::spawn_blocking(move || {
-                let path = crate::backup::backup_now(&tbl, &wal, &dir, last_seq)?;
-                let _ = crate::backup::rotate_backups(&dir, keep);
-                Ok::<_, crate::error::VoltraError>(path)
-            })
-            .await;
-            match result {
-                Ok(Ok(path)) => {
-                    let meta = crate::backup::read_meta(&path);
-                    admin_json(serde_json::json!({
-                        "path": path.to_string_lossy(),
-                        "last_seq": last_seq,
-                        "row_count": meta.map(|m| m.row_count).unwrap_or(0),
-                    }))
-                }
-                Ok(Err(e)) => admin_server_error(e.to_string()),
-                Err(e) => admin_server_error(format!("task: {}", e)),
-            }
-        }
-
-        // ── Apply migration(s) ────────────────────────────────────────────────
-        (&Method::POST, "/migrate") => {
-            if let Some(resp) = check_auth(&req) {
-                return Ok(resp);
-            }
-            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_server_error(e.to_string())),
-            };
-            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v,
-                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
-            };
-            let mig_arr = match payload.get("migrations").and_then(|v| v.as_array()) {
-                Some(a) => a.clone(),
-                None => return Ok(admin_bad_request("Expected {\"migrations\": [...]}".into())),
-            };
-            let mut applied = 0usize;
-            let mut skipped = 0usize;
-            let mut errors: Vec<String> = Vec::new();
-            for entry in &mig_arr {
-                let filename = match entry.get("filename").and_then(|v| v.as_str()) {
-                    Some(f) => f.to_string(),
-                    None => {
-                        errors.push("missing filename field".into());
-                        skipped += 1;
-                        continue;
-                    }
-                };
-                let content = match entry.get("content").and_then(|v| v.as_str()) {
-                    Some(c) => c.to_string(),
-                    None => {
-                        errors.push(format!("{}: missing content field", filename));
-                        skipped += 1;
-                        continue;
-                    }
-                };
-                match crate::migrations::apply_migration_str(&filename, &content, &tables) {
-                    Ok(true) => applied += 1,
-                    Ok(false) => skipped += 1,
-                    Err(e) => {
-                        errors.push(format!("{}: {}", filename, e));
-                        skipped += 1;
-                    }
-                }
-            }
-            let mut body = serde_json::json!({ "applied": applied, "skipped": skipped });
-            if !errors.is_empty() {
-                body["errors"] = serde_json::Value::Array(
-                    errors.into_iter().map(serde_json::Value::String).collect(),
-                );
-            }
-            admin_json(body)
-        }
-
-        // ── Invoke reducer ────────────────────────────────────────────────────
-        (&Method::POST, "/admin/api/call") => {
-            if let Some(resp) = check_auth(&req) {
-                return Ok(resp);
-            }
-            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_server_error(e.to_string())),
-            };
-            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v,
-                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
-            };
-            let name = match payload.get("name").and_then(|v| v.as_str()) {
-                Some(n) if !n.is_empty() => n.to_string(),
-                _ => return Ok(admin_bad_request("Missing 'name' field".into())),
-            };
-            let args_val = payload
-                .get("args")
-                .cloned()
-                .unwrap_or(serde_json::json!([]));
-            let args_bytes = match rmp_serde::to_vec(&args_val) {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_bad_request(format!("Args encode: {}", e))),
-            };
-            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
-            let call = PendingCall {
-                call_id: 0,
-                reducer_name: name,
-                args: args_bytes,
-                caller_id: "admin-console".to_string(),
-                caller_role: "admin".to_string(),
-                tenant_id: None,
-                lobby_hint: None,
-                response_tx: resp_tx,
-            };
-            if queue_tx.send(call).await.is_err() {
-                return Ok(admin_server_error("Reducer queue closed".into()));
-            }
-            match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await {
-                Ok(Some(resp)) => {
-                    let result_json: serde_json::Value = resp
-                        .result
-                        .as_deref()
-                        .and_then(|b| rmp_serde::from_slice(b).ok())
-                        .unwrap_or(serde_json::Value::Null);
-                    admin_json(serde_json::json!({
-                        "success": resp.success,
-                        "result": result_json,
-                        "error": resp.error,
-                    }))
-                }
-                Ok(None) => admin_server_error("Worker dropped response channel".into()),
-                Err(_) => admin_server_error("Reducer call timed out after 30s".into()),
-            }
-        }
-
-        // ── SQL query ─────────────────────────────────────────────────────────
-        (&Method::POST, "/admin/api/sql") => {
-            if let Some(resp) = check_auth(&req) {
-                return Ok(resp);
-            }
-            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_server_error(e.to_string())),
-            };
-            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v,
-                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
-            };
-            let query = match payload.get("query").and_then(|v| v.as_str()) {
-                Some(q) if !q.trim().is_empty() => q.to_string(),
-                _ => return Ok(admin_bad_request("Missing 'query' field".into())),
-            };
-            let tbl = tables.clone();
-            let result = tokio::task::spawn_blocking(move || -> std::result::Result<_, String> {
-                let stmt =
-                    crate::sql::parser::parse(&query).map_err(|e| format!("Parse error: {}", e))?;
-                let exec = crate::SqlExecutor::new(tbl);
-                exec.execute_statement(&stmt)
-                    .map_err(|e| format!("Execution error: {}", e))
-            })
-            .await;
-            match result {
-                Ok(Ok(res)) => {
-                    let rows: Vec<serde_json::Value> = res
-                        .rows
-                        .into_iter()
-                        .map(serde_json::Value::Object)
-                        .collect();
-                    admin_json(serde_json::json!({
-                        "columns": res.columns,
-                        "rows": rows,
-                        "rows_affected": res.rows_affected,
-                    }))
-                }
-                Ok(Err(e)) => admin_bad_request(e),
-                Err(e) => admin_server_error(format!("task: {}", e)),
-            }
-        }
-
-        // ── Upsert row (WAL + live fan-out) ──────────────────────────────────
-        (&Method::POST, "/admin/api/row") => {
-            if let Some(resp) = check_auth(&req) {
-                return Ok(resp);
-            }
-            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_server_error(e.to_string())),
-            };
-            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v,
-                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
-            };
-            let (table, rkey, data) = match (
-                payload.get("table").and_then(|v| v.as_str()),
-                payload.get("key").and_then(|v| v.as_str()),
-                payload.get("data"),
-            ) {
-                (Some(t), Some(k), Some(d)) if !t.is_empty() && !k.is_empty() => {
-                    (t.to_string(), k.to_string(), d.clone())
-                }
-                _ => return Ok(admin_bad_request("Expected {table, key, data}".into())),
-            };
-            match tables.set_row(table.clone(), rkey.clone(), data) {
-                Ok(delta) => {
-                    let deltas = vec![delta];
-                    subs.publish_deltas(&deltas);
-                    let seq = global_seq.fetch_add(1, Ordering::Relaxed);
-                    let entry = WalEntry::new(
-                        now_nanos(),
-                        seq,
-                        "__admin_set_row".to_string(),
-                        vec![],
-                        deltas,
-                    );
-                    if let Err(e) = wal_writer.append(&entry, seq) {
-                        log::warn!("[admin] WAL append failed: {}", e);
-                    }
-                    admin_json(serde_json::json!({ "ok": true, "table": table, "key": rkey }))
-                }
-                Err(e) => admin_bad_request(e.to_string()),
-            }
-        }
-
-        // ── Delete row (WAL + live fan-out) ──────────────────────────────────
-        (&Method::DELETE, "/admin/api/row") => {
-            if let Some(resp) = check_auth(&req) {
-                return Ok(resp);
-            }
-            let query = req.uri().query().unwrap_or("");
-            let mut table = String::new();
-            let mut rkey = String::new();
-            for pair in query.split('&') {
-                let mut kv = pair.splitn(2, '=');
-                match (kv.next(), kv.next()) {
-                    (Some("table"), Some(v)) => table = admin_url_decode(v),
-                    (Some("key"), Some(v)) => rkey = admin_url_decode(v),
-                    _ => {}
-                }
-            }
-            if table.is_empty() || rkey.is_empty() {
-                return Ok(admin_bad_request("Expected ?table=X&key=Y".into()));
-            }
-            match tables.delete_row(&table, &rkey) {
-                Ok(delta) => {
-                    let deltas = vec![delta];
-                    subs.publish_deltas(&deltas);
-                    let seq = global_seq.fetch_add(1, Ordering::Relaxed);
-                    let entry = WalEntry::new(
-                        now_nanos(),
-                        seq,
-                        "__admin_delete_row".to_string(),
-                        vec![],
-                        deltas,
-                    );
-                    if let Err(e) = wal_writer.append(&entry, seq) {
-                        log::warn!("[admin] WAL append failed: {}", e);
-                    }
-                    admin_json(serde_json::json!({ "ok": true }))
-                }
-                Err(e) => admin_bad_request(e.to_string()),
-            }
-        }
-
-        // ── Seed rows (no WAL, no fan-out — dev/test only) ───────────────────
-        (&Method::POST, "/seed") => {
-            let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b,
-                Err(e) => return Ok(admin_server_error(e.to_string())),
-            };
-            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v,
-                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
-            };
-            let row_arr = match payload.get("rows").and_then(|v| v.as_array()) {
-                Some(a) => a.clone(),
-                None => return Ok(admin_bad_request("Expected {\"rows\": [...]}".into())),
-            };
-            let mut written = 0usize;
-            let mut skipped = 0usize;
-            for item in &row_arr {
-                if let Some(triple) = item.as_array() {
-                    if triple.len() == 3 {
-                        if let (Some(t), Some(k), Some(d)) =
-                            (triple[0].as_str(), triple[1].as_str(), Some(&triple[2]))
-                        {
-                            if tables
-                                .set_row(t.to_string(), k.to_string(), d.clone())
-                                .is_ok()
-                            {
-                                written += 1;
-                                continue;
-                            }
-                        }
-                    }
-                }
-                skipped += 1;
-            }
-            admin_json(serde_json::json!({ "rows_written": written, "rows_skipped": skipped }))
-        }
-
-        // ── Redirect / → /admin ───────────────────────────────────────────────
-        (&Method::GET, "/") => {
-            let mut r = Response::new(Body::empty());
-            r.headers_mut().insert(
-                hyper::header::LOCATION,
-                hyper::header::HeaderValue::from_static("/admin"),
-            );
-            *r.status_mut() = StatusCode::FOUND;
-            r
-        }
-
-        _ => {
-            let mut r = admin_json(serde_json::json!({ "error": "not found" }));
-            *r.status_mut() = StatusCode::NOT_FOUND;
-            r
-        }
-    };
-    Ok(resp)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn start_embedded_admin_server(
-    host: String,
-    port: u16,
-    tables: Arc<TableStore>,
-    subs: Arc<SubscriptionManager>,
-    registry: Arc<ReducerRegistry>,
-    schema_reg: Arc<crate::schema::SchemaRegistry>,
-    wal_writer: Arc<BatchedWalWriter>,
-    global_seq: Arc<AtomicU64>,
-    metrics: Arc<Metrics>,
-    startup: std::time::Instant,
-    queue_tx: kanal::AsyncSender<PendingCall>,
-    api_key: Option<String>,
-    backup_dir: Option<std::path::PathBuf>,
-    backup_keep: usize,
-    wal_path: std::path::PathBuf,
-    cluster_bus: Arc<crate::cluster::ClusterBus>,
-    mut shutdown_rx: watch::Receiver<()>,
-) {
-    let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
-        Ok(a) => a,
-        Err(e) => {
-            log::warn!("[admin] invalid metrics address: {}", e);
-            return;
-        }
-    };
-
-    tokio::spawn(async move {
-        let make_svc = make_service_fn(move |_| {
-            let tbl = tables.clone();
-            let sb = subs.clone();
-            let reg = registry.clone();
-            let sch = schema_reg.clone();
-            let wal = wal_writer.clone();
-            let seq = global_seq.clone();
-            let met = metrics.clone();
-            let qtx = queue_tx.clone();
-            let akey = api_key.clone();
-            let bdir = backup_dir.clone();
-            let bkeep = backup_keep;
-            let wpath = wal_path.clone();
-            let cbus = cluster_bus.clone();
-            async move {
-                Ok::<_, hyper::Error>(service_fn(move |req| {
-                    handle_embedded_admin(
-                        req,
-                        tbl.clone(),
-                        sb.clone(),
-                        reg.clone(),
-                        sch.clone(),
-                        wal.clone(),
-                        seq.clone(),
-                        met.clone(),
-                        startup,
-                        qtx.clone(),
-                        akey.clone(),
-                        bdir.clone(),
-                        bkeep,
-                        wpath.clone(),
-                        cbus.clone(),
-                    )
-                }))
-            }
-        });
-
-        let server = match Server::try_bind(&addr) {
-            Ok(s) => s.serve(make_svc),
-            Err(e) => {
-                log::warn!(
-                    "[admin] could not bind metrics port {}: {} — admin console disabled",
-                    addr,
-                    e
-                );
-                return;
-            }
-        };
-        log::info!("[admin] Admin console: http://{}/admin", addr);
-        println!("[voltra] Admin console: http://{}/admin", addr);
-        let graceful = server.with_graceful_shutdown(async move {
-            let _ = shutdown_rx.changed().await;
-        });
-        if let Err(e) = graceful.await {
-            log::warn!("[admin] Metrics server error: {}", e);
-        }
-    });
 }
 
 /// Start the Redis (RESP) and PostgreSQL (pgwire) listeners over a shared

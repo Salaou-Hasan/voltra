@@ -39,7 +39,8 @@ pub struct AdminState {
     #[allow(dead_code)]
     pub stat_sync: Arc<crate::stat_sync::StatSyncQueue>,
     /// Per-lobby worker router — exposes queue depths and call stats.
-    pub lobby_router: Arc<crate::worker_pool::LobbyRouter>,
+    /// `None` when the server does not use lobby-routed dispatch (e.g. run_server).
+    pub lobby_router: Option<Arc<crate::worker_pool::LobbyRouter>>,
     /// SQLite-backed relational tier (auth users, characters, catalog).
     pub persistent: Arc<crate::persistent::PersistentStore>,
     /// Authentication service (register / login / verify token).
@@ -577,7 +578,11 @@ pub async fn handle_metrics_request(
             if let Some(resp) = admin_auth_check(&req) {
                 return Ok(resp);
             }
-            let snapshots = admin.lobby_router.lobbies_snapshot();
+            let snapshots = admin
+                .lobby_router
+                .as_ref()
+                .map(|r| r.lobbies_snapshot())
+                .unwrap_or_default();
             Ok(json_response(serde_json::json!({
                 "active_lobbies": snapshots.len(),
                 "lobbies": snapshots,
