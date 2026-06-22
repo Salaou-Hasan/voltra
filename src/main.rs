@@ -1233,12 +1233,44 @@ fn build_voltra_reducers(project_dir: &std::path::Path) -> Result<()> {
         .map_err(|e| voltra::error::VoltraError::internal(format!("Cannot write src/reducers.rs: {e}")))?;
     println!("  {} → src/reducers.rs", display);
 
+    // Preflight: the native template compiles real Rust, so it needs a Rust
+    // toolchain (cargo) and a working linker. Fail with one clear message
+    // instead of a wall of cargo errors.
+    let cargo_ok = std::process::Command::new("cargo")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !cargo_ok {
+        return Err(voltra::error::VoltraError::internal(
+            "this template compiles native Rust reducers, which needs the Rust toolchain.\n\
+             \n  Install it (2 min): https://rustup.rs\n\
+             \n  Or skip the compiler entirely: put .js reducers in modules/ and run `voltra start` —\
+             \n  JS reducers run inside the engine with no build step."
+        ).into());
+    }
+
     let status = std::process::Command::new("cargo")
         .args(["build", "--release"])
         .current_dir(project_dir)
         .status()
         .map_err(|e| voltra::error::VoltraError::internal(format!("cargo build failed: {e}")))?;
     if !status.success() {
+        eprintln!(
+            "\n  Build failed. Most common cause: no linker for the default target.\n\
+             {}\
+             \n  Alternatively, skip compiling: put .js reducers in modules/ and run `voltra start`.",
+            if cfg!(windows) {
+                "\n  On Windows, either:\n\
+                 \x20   • install the GNU toolchain (bundles its own linker, no Visual Studio):\n\
+                 \x20       rustup toolchain install stable-x86_64-pc-windows-gnu\n\
+                 \x20       rustup default stable-x86_64-pc-windows-gnu\n\
+                 \x20   • or install \"Build Tools for Visual Studio\" with the C++ workload (provides link.exe).\n"
+            } else {
+                "\n  Install a C toolchain: Debian/Ubuntu `apt install build-essential`, \
+                 Fedora `dnf install gcc`, macOS `xcode-select --install`.\n"
+            }
+        );
         return Err(voltra::error::VoltraError::internal("cargo build --release failed").into());
     }
     println!("  Native binary ready.");
