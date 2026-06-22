@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'g*.*.*.*'   # generation scheme: g<gen>.<major>.<minor>.<patch>
+      - 'v*.*.*'     # legacy (generation 0) tags
 
 jobs:
   build:
@@ -85,5 +86,6 @@ jobs:
           repository: Salaou-Hasan/voltra-releases
           token: ${{ secrets.RELEASES_TOKEN }}   # PAT with contents:write on voltra-releases
           tag_name: ${{ github.ref_name }}
+          name: "Voltra ${{ github.ref_name }} — Gen 1 (Genesis)"
           files: artifacts/**/*
           generate_release_notes: true

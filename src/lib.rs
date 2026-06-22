@@ -33,6 +33,16 @@ pub mod updater;
 pub mod wal;
 pub mod worker_pool;
 
+/// Release generation. The most-significant component of Voltra's version: a
+/// generation groups a line of releases, and resets the numeric version to
+/// 1.0.0. Release tags are `g<GENERATION>.<major>.<minor>.<patch>`
+/// (e.g. `g1.1.0.0`). The updater treats generation as the highest-priority
+/// component, so a generation bump always supersedes the previous line.
+/// See VERSIONING.md.
+pub const GENERATION: u32 = 1;
+/// Human-readable codename for the current [`GENERATION`].
+pub const GENERATION_CODENAME: &str = "Genesis";
+
 pub use error::{Result, VoltraError};
 pub use network::{
     start_listener, ClientMessage, PendingCall, ReducerCall, ReducerResponse, ServerMessage,

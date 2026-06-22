@@ -55,7 +55,7 @@ use app::scaffold::{cmd_add_module, init_project};
 
 #[derive(Parser, Debug)]
 #[command(name = "voltra")]
-#[command(author, version = concat!("v", env!("CARGO_PKG_VERSION")), about = "Voltra — self-hosted real-time game backend")]
+#[command(author, version = concat!("v", env!("CARGO_PKG_VERSION"), " · Gen 1 (Genesis)"), about = "Voltra — self-hosted real-time game backend")]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
@@ -285,8 +285,10 @@ async fn main() -> Result<()> {
         Some(cmd) => cmd,
         None => {
             println!(
-                "Voltra {} — self-hosted real-time game backend",
-                concat!("v", env!("CARGO_PKG_VERSION"))
+                "Voltra v{} · Gen {} ({}) — self-hosted real-time game backend",
+                env!("CARGO_PKG_VERSION"),
+                voltra::GENERATION,
+                voltra::GENERATION_CODENAME
             );
             println!();
             println!("  Engine is ready.");

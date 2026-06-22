@@ -264,7 +264,8 @@ pub(crate) fn game_cargo_toml(name: &str) -> String {
         )
     } else {
         format!(
-            "voltra     = {{ git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"v{}\" }}",
+            "voltra     = {{ git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"g{}.{}\" }}",
+            voltra::GENERATION,
             env!("CARGO_PKG_VERSION")
         )
     };
@@ -880,7 +881,8 @@ pub(crate) fn client_cargo_toml(name: &str) -> String {
         )
     } else {
         format!(
-            "voltra-client = {{ git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"v{}\", package = \"voltra-client\" }}",
+            "voltra-client = {{ git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"g{}.{}\", package = \"voltra-client\" }}",
+            voltra::GENERATION,
             env!("CARGO_PKG_VERSION")
         )
     };

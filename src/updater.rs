@@ -38,16 +38,47 @@ fn latest_tag() -> Option<String> {
         .map(|s| s.trim_start_matches('v').to_string())
 }
 
+/// Compare a release tag against the running build, generation-aware.
+///
+/// A tag is `g<gen>.<major>.<minor>.<patch>` (this generation's scheme) or a
+/// legacy `v<major>.<minor>.<patch>` / bare `<major>.<minor>.<patch>` (treated
+/// as generation 0). Generation is the most-significant component, so any
+/// release in a newer generation supersedes an older-generation build even if
+/// its numeric version is lower (the 1.0.0 reset at the start of a generation
+/// must still update users on the previous line).
 fn version_newer(latest: &str) -> bool {
-    fn parse(v: &str) -> (u64, u64, u64) {
-        let parts: Vec<u64> = v.split('.').filter_map(|p| p.parse().ok()).collect();
-        (
-            parts.first().copied().unwrap_or(0),
-            parts.get(1).copied().unwrap_or(0),
-            parts.get(2).copied().unwrap_or(0),
-        )
+    fn parse(v: &str) -> (u64, u64, u64, u64) {
+        let v = v.trim();
+        if let Some(rest) = v.strip_prefix('g') {
+            let p: Vec<u64> = rest.split('.').filter_map(|x| x.parse().ok()).collect();
+            (
+                p.first().copied().unwrap_or(0),
+                p.get(1).copied().unwrap_or(0),
+                p.get(2).copied().unwrap_or(0),
+                p.get(3).copied().unwrap_or(0),
+            )
+        } else {
+            let s = v.strip_prefix('v').unwrap_or(v);
+            let p: Vec<u64> = s.split('.').filter_map(|x| x.parse().ok()).collect();
+            (
+                0,
+                p.first().copied().unwrap_or(0),
+                p.get(1).copied().unwrap_or(0),
+                p.get(2).copied().unwrap_or(0),
+            )
+        }
     }
-    parse(latest) > parse(CURRENT_VERSION)
+    let cur: Vec<u64> = CURRENT_VERSION
+        .split('.')
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    let current = (
+        crate::GENERATION as u64,
+        cur.first().copied().unwrap_or(0),
+        cur.get(1).copied().unwrap_or(0),
+        cur.get(2).copied().unwrap_or(0),
+    );
+    parse(latest) > current
 }
 
 fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
