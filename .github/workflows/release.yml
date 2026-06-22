@@ -67,8 +67,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/voltra:${{ github.ref_name }}
-            ghcr.io/${{ github.repository_owner }}/voltra:latest
+            ghcr.io/salaou-hasan/voltra:${{ github.ref_name }}
+            ghcr.io/salaou-hasan/voltra:latest
 
   release:
     name: Publish release to voltra-releases
