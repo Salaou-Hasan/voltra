@@ -13,42 +13,40 @@ use hyper::{
 };
 use tokio::sync::watch;
 
-use voltra::{
+use crate::{
     auth::IdentityIssuer, error::Result, metrics::Metrics, network::PendingCall,
     presence::PresenceManager, reducer::ReducerRegistry, subscriptions::SubscriptionManager,
     table::TableStore, ttl::TtlManager, wal::BatchedWalWriter,
 };
-
-use crate::app::{current_timestamp_nanos, get_memory_usage_bytes};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Metrics / admin HTTP server
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Paths + backup policy needed by the admin endpoints (backup, replication).
-pub(crate) struct AdminState {
-    pub(crate) wal_path: PathBuf,
-    pub(crate) backup_dir: Option<PathBuf>,
-    pub(crate) backup_keep: usize,
-    pub(crate) tenant_registry: Arc<voltra::tenant::TenantRegistry>,
-    pub(crate) cluster_bus: Arc<voltra::cluster::ClusterBus>,
-    pub(crate) drain_flag: Arc<std::sync::atomic::AtomicBool>,
-    pub(crate) active_connections: Arc<std::sync::atomic::AtomicUsize>,
-    pub(crate) region_registry: Arc<voltra::cluster::RegionRegistry>,
-    pub(crate) lobby_routes: Arc<voltra::cluster::LobbyRouteRegistry>,
-    pub(crate) leaderboard: Arc<voltra::leaderboard::LeaderboardEngine>,
+pub struct AdminState {
+    pub wal_path: PathBuf,
+    pub backup_dir: Option<PathBuf>,
+    pub backup_keep: usize,
+    pub tenant_registry: Arc<crate::tenant::TenantRegistry>,
+    pub cluster_bus: Arc<crate::cluster::ClusterBus>,
+    pub drain_flag: Arc<std::sync::atomic::AtomicBool>,
+    pub active_connections: Arc<std::sync::atomic::AtomicUsize>,
+    pub region_registry: Arc<crate::cluster::RegionRegistry>,
+    pub lobby_routes: Arc<crate::cluster::LobbyRouteRegistry>,
+    pub leaderboard: Arc<crate::leaderboard::LeaderboardEngine>,
     // Held to keep the stat-sync queue alive for the server's lifetime; not read directly.
     #[allow(dead_code)]
-    pub(crate) stat_sync: Arc<voltra::stat_sync::StatSyncQueue>,
+    pub stat_sync: Arc<crate::stat_sync::StatSyncQueue>,
     /// Per-lobby worker router — exposes queue depths and call stats.
-    pub(crate) lobby_router: Arc<voltra::worker_pool::LobbyRouter>,
+    pub lobby_router: Arc<crate::worker_pool::LobbyRouter>,
     /// SQLite-backed relational tier (auth users, characters, catalog).
-    pub(crate) persistent: Arc<voltra::persistent::PersistentStore>,
+    pub persistent: Arc<crate::persistent::PersistentStore>,
     /// Authentication service (register / login / verify token).
-    pub(crate) auth_service: Arc<voltra::auth_service::AuthService>,
+    pub auth_service: Arc<crate::auth_service::AuthService>,
 }
 
-pub(crate) async fn start_metrics_server(
+pub async fn start_metrics_server(
     host: String,
     port: u16,
     subscription_manager: Arc<SubscriptionManager>,
@@ -63,11 +61,11 @@ pub(crate) async fn start_metrics_server(
     identity_issuer: Arc<IdentityIssuer>,
     queue_probe: kanal::AsyncSender<PendingCall>,
     admin: Arc<AdminState>,
-    schema_registry: Arc<voltra::schema::SchemaRegistry>,
+    schema_registry: Arc<crate::schema::SchemaRegistry>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", host, port).parse().map_err(|e| {
-        voltra::error::VoltraError::invalid_argument(format!("Invalid metrics address: {}", e))
+        crate::error::VoltraError::invalid_argument(format!("Invalid metrics address: {}", e))
     })?;
 
     let make_service = make_service_fn(move |_| {
@@ -117,10 +115,10 @@ pub(crate) async fn start_metrics_server(
             let _ = shutdown.changed().await;
         })
         .await
-        .map_err(|e| voltra::error::VoltraError::network_error(format!("Metrics server: {}", e)))
+        .map_err(|e| crate::error::VoltraError::network_error(format!("Metrics server: {}", e)))
 }
 
-pub(crate) fn json_response(value: serde_json::Value) -> Response<Body> {
+pub fn json_response(value: serde_json::Value) -> Response<Body> {
     let mut r = Response::new(Body::from(value.to_string()));
     r.headers_mut().insert(
         hyper::header::CONTENT_TYPE,
@@ -130,22 +128,22 @@ pub(crate) fn json_response(value: serde_json::Value) -> Response<Body> {
 }
 
 /// The single-file admin console, embedded at compile time.
-pub(crate) const ADMIN_DASHBOARD_HTML: &str = include_str!("../admin_dashboard.html");
+pub const ADMIN_DASHBOARD_HTML: &str = include_str!("admin_dashboard.html");
 
-pub(crate) fn bad_request(msg: String) -> Response<Body> {
+pub fn bad_request(msg: String) -> Response<Body> {
     let mut r = json_response(serde_json::json!({ "error": msg }));
     *r.status_mut() = StatusCode::BAD_REQUEST;
     r
 }
 
-pub(crate) fn server_error(msg: String) -> Response<Body> {
+pub fn server_error(msg: String) -> Response<Body> {
     let mut r = json_response(serde_json::json!({ "error": msg }));
     *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
     r
 }
 
 /// Minimal percent-decoding for admin query params (UTF-8, lossy on bad bytes).
-pub(crate) fn url_decode(s: &str) -> String {
+pub fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -172,7 +170,7 @@ pub(crate) fn url_decode(s: &str) -> String {
 
 /// Gate mutating admin endpoints behind the API key when one is configured.
 /// With no VOLTRA_API_KEY set (dev mode), all requests pass.
-pub(crate) fn admin_auth_check(req: &Request<Body>) -> Option<Response<Body>> {
+pub fn admin_auth_check(req: &Request<Body>) -> Option<Response<Body>> {
     let configured = std::env::var("VOLTRA_API_KEY").unwrap_or_default();
     if configured.is_empty() {
         return None;
@@ -194,7 +192,7 @@ pub(crate) fn admin_auth_check(req: &Request<Body>) -> Option<Response<Body>> {
     Some(r)
 }
 
-pub(crate) async fn handle_metrics_request(
+pub async fn handle_metrics_request(
     req: Request<Body>,
     subscription_manager: Arc<SubscriptionManager>,
     tables: Arc<TableStore>,
@@ -208,7 +206,7 @@ pub(crate) async fn handle_metrics_request(
     identity_issuer: Arc<IdentityIssuer>,
     queue_probe: kanal::AsyncSender<PendingCall>,
     admin: Arc<AdminState>,
-    schema_registry: Arc<voltra::schema::SchemaRegistry>,
+    schema_registry: Arc<crate::schema::SchemaRegistry>,
 ) -> Result<Response<Body>> {
     let path = req.uri().path().to_string();
 
@@ -293,7 +291,7 @@ pub(crate) async fn handle_metrics_request(
                 return Ok(resp);
             }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-                voltra::error::VoltraError::network_error(format!("Read body: {}", e))
+                crate::error::VoltraError::network_error(format!("Read body: {}", e))
             })?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
@@ -308,7 +306,7 @@ pub(crate) async fn handle_metrics_request(
                 .cloned()
                 .unwrap_or(serde_json::json!([]));
             let args_bytes = rmp_serde::to_vec(&args_val).map_err(|e| {
-                voltra::error::VoltraError::reducer_error(format!("Args encode: {}", e))
+                crate::error::VoltraError::reducer_error(format!("Args encode: {}", e))
             })?;
 
             // Dispatch through the real reducer queue so the call gets the
@@ -351,7 +349,7 @@ pub(crate) async fn handle_metrics_request(
                 return Ok(resp);
             }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-                voltra::error::VoltraError::network_error(format!("Read body: {}", e))
+                crate::error::VoltraError::network_error(format!("Read body: {}", e))
             })?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
@@ -363,9 +361,9 @@ pub(crate) async fn handle_metrics_request(
             };
             let tbl = tables.clone();
             let result = tokio::task::spawn_blocking(move || -> std::result::Result<_, String> {
-                let stmt = voltra::sql::parser::parse(&query)
-                    .map_err(|e| format!("Parse error: {}", e))?;
-                let exec = voltra::SqlExecutor::new(tbl);
+                let stmt =
+                    crate::sql::parser::parse(&query).map_err(|e| format!("Parse error: {}", e))?;
+                let exec = crate::SqlExecutor::new(tbl);
                 exec.execute_statement(&stmt)
                     .map_err(|e| format!("Execution error: {}", e))
             })
@@ -393,7 +391,7 @@ pub(crate) async fn handle_metrics_request(
                 return Ok(resp);
             }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-                voltra::error::VoltraError::network_error(format!("Read body: {}", e))
+                crate::error::VoltraError::network_error(format!("Read body: {}", e))
             })?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
@@ -416,8 +414,8 @@ pub(crate) async fn handle_metrics_request(
                     let deltas = vec![delta];
                     subscription_manager.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let entry = voltra::WalEntry::new(
-                        current_timestamp_nanos(),
+                    let entry = crate::WalEntry::new(
+                        crate::now_nanos(),
                         seq,
                         "__admin_set_row".to_string(),
                         vec![],
@@ -457,8 +455,8 @@ pub(crate) async fn handle_metrics_request(
                     let deltas = vec![delta];
                     subscription_manager.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let entry = voltra::WalEntry::new(
-                        current_timestamp_nanos(),
+                    let entry = crate::WalEntry::new(
+                        crate::now_nanos(),
                         seq,
                         "__admin_delete_row".to_string(),
                         vec![],
@@ -490,7 +488,7 @@ pub(crate) async fn handle_metrics_request(
                 return Ok(resp);
             }
             let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-                voltra::error::VoltraError::network_error(format!("Read body: {}", e))
+                crate::error::VoltraError::network_error(format!("Read body: {}", e))
             })?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
@@ -515,8 +513,8 @@ pub(crate) async fn handle_metrics_request(
                     let deltas = vec![delta];
                     subscription_manager.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let entry = voltra::WalEntry::new(
-                        current_timestamp_nanos(),
+                    let entry = crate::WalEntry::new(
+                        crate::now_nanos(),
                         seq,
                         "__admin_create_tenant".to_string(),
                         vec![],
@@ -558,8 +556,8 @@ pub(crate) async fn handle_metrics_request(
                 Ok(deltas) => {
                     subscription_manager.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let entry = voltra::WalEntry::new(
-                        current_timestamp_nanos(),
+                    let entry = crate::WalEntry::new(
+                        crate::now_nanos(),
                         seq,
                         "__admin_delete_tenant".to_string(),
                         vec![],
@@ -607,12 +605,12 @@ pub(crate) async fn handle_metrics_request(
             }
             let wal_path = admin.wal_path.clone();
             let result = tokio::task::spawn_blocking(move || {
-                voltra::replication::serve_wal_entries(&wal_path, from_seq, max)
+                crate::replication::serve_wal_entries(&wal_path, from_seq, max)
             })
             .await;
             match result {
                 Ok(Ok((entries, last_seq))) => Ok(json_response(serde_json::json!({
-                    "entries": voltra::replication::encode_entries(&entries),
+                    "entries": crate::replication::encode_entries(&entries),
                     "last_seq": last_seq,
                 }))),
                 Ok(Err(e)) => {
@@ -630,19 +628,19 @@ pub(crate) async fn handle_metrics_request(
         }
 
         (&Method::GET, "/replication/status") => {
-            Ok(json_response(voltra::replication::status_json()))
+            Ok(json_response(crate::replication::status_json()))
         }
 
         (&Method::POST, "/replication/promote") => {
-            let was_replica = voltra::replication::is_replica();
-            voltra::replication::set_replica(false);
+            let was_replica = crate::replication::is_replica();
+            crate::replication::set_replica(false);
             if was_replica {
                 log::warn!("[replication] PROMOTED to primary via /replication/promote");
             }
             Ok(json_response(serde_json::json!({
                 "promoted": was_replica,
                 "role": "primary",
-                "last_applied_seq": voltra::replication::last_applied_seq(),
+                "last_applied_seq": crate::replication::last_applied_seq(),
             })))
         }
 
@@ -680,13 +678,13 @@ pub(crate) async fn handle_metrics_request(
             }
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
-            match voltra::cluster::fanout::parse_delta_payload(&body_bytes) {
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
+            match crate::cluster::fanout::parse_delta_payload(&body_bytes) {
                 Err(e) => Ok(bad_request(e.to_string())),
                 Ok(payload) => {
-                    let row_deltas = voltra::cluster::fanout::wire_to_row_deltas(payload.deltas);
+                    let row_deltas = crate::cluster::fanout::wire_to_row_deltas(payload.deltas);
                     let applied = row_deltas.len();
-                    match voltra::cluster::ClusterBus::apply_peer_deltas(
+                    match crate::cluster::ClusterBus::apply_peer_deltas(
                         &row_deltas,
                         &tables,
                         &subscription_manager,
@@ -712,8 +710,8 @@ pub(crate) async fn handle_metrics_request(
             }
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
-            let pr: voltra::cluster::proxy::ProxyCallRequest =
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
+            let pr: crate::cluster::proxy::ProxyCallRequest =
                 match serde_json::from_slice(&body_bytes) {
                     Ok(r) => r,
                     Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
@@ -773,8 +771,8 @@ pub(crate) async fn handle_metrics_request(
             }
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
-            let node: voltra::cluster::NodeInfo = match serde_json::from_slice(&body_bytes) {
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
+            let node: crate::cluster::NodeInfo = match serde_json::from_slice(&body_bytes) {
                 Ok(n) => n,
                 Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
             };
@@ -836,7 +834,7 @@ pub(crate) async fn handle_metrics_request(
         (&Method::POST, "/cluster/register-lobby") => {
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
             let v: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
@@ -893,7 +891,7 @@ pub(crate) async fn handle_metrics_request(
                 .and_then(|s| s.strip_prefix("n="))
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(100);
-            let result = voltra::leaderboard::http_top_entries(&admin.leaderboard, board, n);
+            let result = crate::leaderboard::http_top_entries(&admin.leaderboard, board, n);
             Ok(json_response(result))
         }
 
@@ -903,8 +901,8 @@ pub(crate) async fn handle_metrics_request(
         (&Method::POST, "/cluster/stat-sync") => {
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
-            let result = voltra::stat_sync::handle_stat_sync(&tables, &body_bytes);
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
+            let result = crate::stat_sync::handle_stat_sync(&tables, &body_bytes);
             Ok(json_response(result))
         }
 
@@ -922,14 +920,14 @@ pub(crate) async fn handle_metrics_request(
             let keep = admin.backup_keep;
             let last_seq = global_seq.load(std::sync::atomic::Ordering::Relaxed);
             let result = tokio::task::spawn_blocking(move || {
-                let path = voltra::backup::backup_now(&tbl, &wal_path, &backup_dir, last_seq)?;
-                let _ = voltra::backup::rotate_backups(&backup_dir, keep);
-                Ok::<_, voltra::error::VoltraError>(path)
+                let path = crate::backup::backup_now(&tbl, &wal_path, &backup_dir, last_seq)?;
+                let _ = crate::backup::rotate_backups(&backup_dir, keep);
+                Ok::<_, crate::error::VoltraError>(path)
             })
             .await;
             match result {
                 Ok(Ok(path)) => {
-                    let meta = voltra::backup::read_meta(&path);
+                    let meta = crate::backup::read_meta(&path);
                     Ok(json_response(serde_json::json!({
                         "path": path.to_string_lossy(),
                         "last_seq": last_seq,
@@ -963,8 +961,8 @@ pub(crate) async fn handle_metrics_request(
 
         (&Method::GET, "/healthz") => Ok(json_response(serde_json::json!({
             "status": "ok",
-            "role": if voltra::replication::is_replica() { "replica" } else { "primary" },
-            "replication_lag_entries": voltra::replication::replication_lag(),
+            "role": if crate::replication::is_replica() { "replica" } else { "primary" },
+            "replication_lag_entries": crate::replication::replication_lag(),
             "total_rows": tables.total_row_count(),
             "active_connections": subscription_manager.active_connections(),
             "active_subscriptions": subscription_manager.active_subscriptions(),
@@ -1013,7 +1011,7 @@ pub(crate) async fn handle_metrics_request(
 
         (&Method::POST, "/seed") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-                voltra::error::VoltraError::network_error(format!("Read body: {}", e))
+                crate::error::VoltraError::network_error(format!("Read body: {}", e))
             })?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
@@ -1091,7 +1089,7 @@ pub(crate) async fn handle_metrics_request(
             // Accepts: {"migrations": [{"filename": "001_add_score.toml", "content": "<toml>"}]}
             // Applies each migration via apply_migrations_inline(); returns applied/skipped/errors.
             let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-                voltra::error::VoltraError::network_error(format!("Read body: {}", e))
+                crate::error::VoltraError::network_error(format!("Read body: {}", e))
             })?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
@@ -1133,7 +1131,7 @@ pub(crate) async fn handle_metrics_request(
                         continue;
                     }
                 };
-                match voltra::migrations::apply_migration_str(&filename, &content, &tables) {
+                match crate::migrations::apply_migration_str(&filename, &content, &tables) {
                     Ok(true) => applied += 1,
                     Ok(false) => skipped += 1,
                     Err(e) => {
@@ -1277,7 +1275,7 @@ pub(crate) async fn handle_metrics_request(
             }
 
             let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-                voltra::error::VoltraError::network_error(format!("Read body: {}", e))
+                crate::error::VoltraError::network_error(format!("Read body: {}", e))
             })?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
@@ -1346,7 +1344,7 @@ pub(crate) async fn handle_metrics_request(
         (&Method::POST, "/auth/register") => {
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -1383,7 +1381,7 @@ pub(crate) async fn handle_metrics_request(
         (&Method::POST, "/auth/login") => {
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -1447,7 +1445,7 @@ pub(crate) async fn handle_metrics_request(
         (&Method::POST, "/auth/change-password") => {
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -1484,7 +1482,7 @@ pub(crate) async fn handle_metrics_request(
         (&Method::POST, "/player/save") => {
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -1574,7 +1572,7 @@ pub(crate) async fn handle_metrics_request(
         (&Method::POST, "/catalog") => {
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -1626,7 +1624,7 @@ pub(crate) async fn handle_metrics_request(
             }
             let body_bytes = hyper::body::to_bytes(req.into_body())
                 .await
-                .map_err(|e| voltra::error::VoltraError::network_error(e.to_string()))?;
+                .map_err(|e| crate::error::VoltraError::network_error(e.to_string()))?;
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
                 Ok(v) => v,
                 Err(e) => return Ok(bad_request(format!("invalid JSON: {e}"))),
@@ -1652,3 +1650,66 @@ pub(crate) async fn handle_metrics_request(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Resident-set memory of the current process, in bytes (0 if unavailable).
+// Moved here from the binary's app module — the admin console is its sole user.
+fn get_memory_usage_bytes() -> u64 {
+    #[cfg(target_os = "windows")]
+    {
+        use std::mem;
+        #[allow(non_camel_case_types)]
+        type HANDLE = *mut std::ffi::c_void;
+        #[allow(non_camel_case_types)]
+        type DWORD = u32;
+        #[allow(non_camel_case_types)]
+        type SIZE_T = usize;
+        #[repr(C)]
+        struct PROCESS_MEMORY_COUNTERS {
+            cb: DWORD,
+            page_fault_count: DWORD,
+            peak_working_set_size: SIZE_T,
+            working_set_size: SIZE_T,
+            quota_peak_paged_pool_usage: SIZE_T,
+            quota_paged_pool_usage: SIZE_T,
+            quota_peak_non_paged_pool_usage: SIZE_T,
+            quota_non_paged_pool_usage: SIZE_T,
+            pagefile_usage: SIZE_T,
+            peak_pagefile_usage: SIZE_T,
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> HANDLE;
+        }
+        #[link(name = "psapi")]
+        extern "system" {
+            fn GetProcessMemoryInfo(
+                process: HANDLE,
+                ppsmemcounters: *mut PROCESS_MEMORY_COUNTERS,
+                cb: DWORD,
+            ) -> i32;
+        }
+        unsafe {
+            let mut pmc: PROCESS_MEMORY_COUNTERS = mem::zeroed();
+            pmc.cb = mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
+            if GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 {
+                return pmc.working_set_size as u64;
+            }
+        }
+        0
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(data) = std::fs::read_to_string("/proc/self/statm") {
+            if let Some(rss_pages) = data.split_whitespace().nth(1) {
+                if let Ok(pages) = rss_pages.parse::<u64>() {
+                    return pages * 4096;
+                }
+            }
+        }
+        0
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        0
+    }
+}

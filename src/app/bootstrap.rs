@@ -27,8 +27,8 @@ use voltra::{
     },
 };
 
-use crate::app::admin::{start_metrics_server, AdminState};
 use crate::app::{current_timestamp_nanos, recover_from_wal};
+use voltra::admin::{start_metrics_server, AdminState};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Server bootstrap
