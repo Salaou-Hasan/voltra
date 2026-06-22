@@ -1034,7 +1034,10 @@ fn game_cargo_toml(name: &str) -> String {
             VOLTRA_SOURCE_DIR.replace('\\', "/")
         )
     } else {
-        "voltra     = { git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"v2.0.3\" }".to_string()
+        format!(
+            "voltra     = {{ git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"v{}\" }}",
+            env!("CARGO_PKG_VERSION")
+        )
     };
     format!(
         "[workspace]\n\n\
@@ -3056,7 +3059,10 @@ fn client_cargo_toml(name: &str) -> String {
             VOLTRA_SOURCE_DIR.replace('\\', "/")
         )
     } else {
-        "voltra-client = { git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"v2.0.3\", package = \"voltra-client\" }".to_string()
+        format!(
+            "voltra-client = {{ git = \"https://github.com/Salaou-Hasan/Voltra\", tag = \"v{}\", package = \"voltra-client\" }}",
+            env!("CARGO_PKG_VERSION")
+        )
     };
     format!(
         "[workspace]\n\n\
