@@ -120,6 +120,15 @@ impl Parser {
 
     fn parse_literal(&mut self) -> Result<Literal, VoltraError> {
         let line = self.line();
+        // Allow negative numeric defaults: `hp: int = -5`
+        if self.peek() == &Token::Minus {
+            self.advance();
+            return match self.peek().clone() {
+                Token::IntLit(n)   => { self.advance(); Ok(Literal::Int(-n)) }
+                Token::FloatLit(f) => { self.advance(); Ok(Literal::Float(-f)) }
+                other => Err(VoltraError::new(line, format!("expected numeric literal after '-', found {:?}", other))),
+            };
+        }
         match self.peek().clone() {
             Token::IntLit(n)  => { self.advance(); Ok(Literal::Int(n)) }
             Token::FloatLit(f)=> { self.advance(); Ok(Literal::Float(f)) }
@@ -502,6 +511,16 @@ impl Parser {
             let inner = self.parse_unary()?;
             return Ok(Expr::Not(Box::new(inner)));
         }
+        if self.peek() == &Token::Minus {
+            self.advance();
+            let inner = self.parse_unary()?;
+            // Represent -x as (0 - x); avoids adding a new AST node
+            return Ok(Expr::BinOp {
+                left:  Box::new(Expr::Lit(Literal::Int(0))),
+                op:    BinOp::Sub,
+                right: Box::new(inner),
+            });
+        }
         self.parse_postfix()
     }
 
@@ -825,6 +844,34 @@ mod tests {
         if let Stmt::Let { value, .. } = &p.reducers[0].body[0] {
             assert!(matches!(value.as_ref(), Expr::ArrayLit(v) if v.len() == 3));
         }
+    }
+
+    #[test]
+    fn parse_subtract_integer_literal() {
+        // Previously broken: `hp - 1` lexed as `hp, -1` (two tokens). Now fixed.
+        let src = r#"reducer x(hp: int) { let r = hp - 1 }"#;
+        let p = parse_src(src);
+        if let Stmt::Let { value, .. } = &p.reducers[0].body[0] {
+            assert!(matches!(value.as_ref(), Expr::BinOp { op: BinOp::Sub, .. }),
+                "hp - 1 must parse as BinOp::Sub, not two separate expressions");
+        }
+    }
+
+    #[test]
+    fn parse_unary_minus_on_variable() {
+        let src = r#"reducer x(n: int) { let r = -n }"#;
+        let p = parse_src(src);
+        if let Stmt::Let { value, .. } = &p.reducers[0].body[0] {
+            assert!(matches!(value.as_ref(), Expr::BinOp { op: BinOp::Sub, .. }),
+                "-n should parse as BinOp::Sub(0, n)");
+        }
+    }
+
+    #[test]
+    fn parse_negative_table_default() {
+        let p = parse_src("table t { offset: int = -10, delta: float = -0.5 }");
+        assert!(matches!(p.tables[0].fields[0].default, Some(Literal::Int(-10))));
+        assert!(matches!(p.tables[0].fields[1].default, Some(Literal::Float(f)) if f == -0.5));
     }
 
     #[test]

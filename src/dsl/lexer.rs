@@ -81,10 +81,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Spanned>, VoltraError> {
                 tokens.push(Spanned { token: Token::StrLit(s), line });
             }
 
-            // Number literal
-            c if c.is_ascii_digit() || (c == '-' && chars.clone().nth(1).map(|d: char| d.is_ascii_digit()).unwrap_or(false)) => {
+            // Number literal — negative literals are NOT handled here; unary minus is parsed
+            c if c.is_ascii_digit() => {
                 let mut num = String::new();
-                if c == '-' { num.push('-'); chars.next(); }
                 while chars.peek().map(|&c: &char| c.is_ascii_digit()).unwrap_or(false) {
                     num.push(chars.next().unwrap());
                 }
@@ -277,8 +276,21 @@ mod tests {
 
     #[test]
     fn lex_negative_int() {
+        // Unary minus is parsed, not lexed — `-5` produces Minus + IntLit(5)
         let t = toks("-5");
-        assert!(t.contains(&Token::IntLit(-5)));
+        assert!(t.contains(&Token::Minus));
+        assert!(t.contains(&Token::IntLit(5)));
+        assert!(!t.contains(&Token::IntLit(-5)));
+    }
+
+    #[test]
+    fn lex_subtraction_not_ambiguous() {
+        // `a - 1` must produce three tokens, not collapse `-1` into IntLit(-1)
+        let t = toks("a - 1");
+        assert!(t.contains(&Token::Ident("a".into())));
+        assert!(t.contains(&Token::Minus));
+        assert!(t.contains(&Token::IntLit(1)));
+        assert!(!t.contains(&Token::IntLit(-1)));
     }
 
     #[test]
