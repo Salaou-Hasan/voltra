@@ -64,19 +64,61 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
     let mut min_wal_seq: u64 = 0;
     let mut initial_seq: u64 = 0;
 
+    // ── Optional disk persistence (opt-in via persistence_path) ───────────────
+    // Parity with run_server: when a disk store has rows it is authoritative —
+    // load from it, set the WAL replay floor to its last seq, and SKIP the
+    // snapshot. Off by default (persistence_path = None), in which case the
+    // WAL + snapshot remain the sole durability/recovery path and the block
+    // below behaves exactly as before. Paired with persist_deltas in the worker.
+    let persistence: Option<Arc<voltra::persistence::PersistenceEngine>> =
+        match &config.persistence_path {
+            Some(path) => match voltra::persistence::PersistenceEngine::open(path) {
+                Ok(pe) => {
+                    match pe.load_all(&tables) {
+                        Ok((rows, last_seq)) if rows > 0 => {
+                            min_wal_seq = last_seq;
+                            initial_seq = last_seq.saturating_add(1);
+                            log::info!(
+                                "[voltra] Loaded {} rows from disk store (last_seq={})",
+                                rows,
+                                last_seq
+                            );
+                        }
+                        Ok(_) => {
+                            log::info!("[voltra] Disk store empty; bootstrapping from snapshot+WAL")
+                        }
+                        Err(e) => log::warn!("[voltra] Disk store load failed: {}", e),
+                    }
+                    Some(Arc::new(pe))
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[voltra] Could not open disk store at {:?}: {}; continuing without it",
+                        path,
+                        e
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
     let snap_dir = config.snapshot_dir.clone();
-    if let Some((snap_path, _)) = find_latest_snapshot(&snap_dir) {
-        match load_snapshot(&snap_path, &tables) {
-            Ok(meta) => {
-                min_wal_seq = meta.last_sequence;
-                initial_seq = meta.last_sequence.saturating_add(1);
-                log::info!(
-                    "Snapshot loaded: {} rows, replaying WAL from seq > {}",
-                    meta.row_count,
-                    meta.last_sequence
-                );
+    // Skip the snapshot when the disk store already provided authoritative rows.
+    if initial_seq == 0 {
+        if let Some((snap_path, _)) = find_latest_snapshot(&snap_dir) {
+            match load_snapshot(&snap_path, &tables) {
+                Ok(meta) => {
+                    min_wal_seq = meta.last_sequence;
+                    initial_seq = meta.last_sequence.saturating_add(1);
+                    log::info!(
+                        "Snapshot loaded: {} rows, replaying WAL from seq > {}",
+                        meta.row_count,
+                        meta.last_sequence
+                    );
+                }
+                Err(e) => log::warn!("Failed to load snapshot: {} — replaying full WAL", e),
             }
-            Err(e) => log::warn!("Failed to load snapshot: {} — replaying full WAL", e),
         }
     }
 
@@ -602,6 +644,7 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
         let ttl_w = ttl_manager.clone();
         let tenant_w = tenant_registry.clone();
         let cluster_w = cluster_bus.clone();
+        let persist_w = persistence.clone();
         let snap_busy_w = snapshot_in_progress.clone();
         let mut rx_shutdown_w = shutdown_rx.clone();
         let metrics_w = metrics.clone();
@@ -707,6 +750,14 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                                 cluster_w.fanout_deltas(&deltas);
                             }
                             let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            // Opt-in disk store write-through (before `deltas` is moved into
+                            // the WAL entry). On a crash between here and the WAL write the row
+                            // is still in the disk store, which is loaded before WAL replay.
+                            if let Some(ref pe) = persist_w {
+                                if let Err(e) = pe.persist_deltas(&deltas, seq_num) {
+                                    log::warn!("[voltra] Disk persist failed: {}", e);
+                                }
+                            }
                             // `deltas` is moved into the WAL entry (its last use) — no
                             // per-call clone of the delta vec.
                             let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas);
