@@ -1,6 +1,6 @@
-use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey, pkcs8::EncodePrivateKey};
-use pkcs8::LineEnding;
+use ed25519_dalek::{pkcs8::DecodePrivateKey, pkcs8::EncodePrivateKey, SigningKey};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use pkcs8::LineEnding;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,8 +24,7 @@ pub struct LegacyClaims {
 }
 
 /// Supported authentication modes.
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub enum AuthMode {
     /// No authentication required (dev mode).
     #[default]
@@ -34,7 +33,10 @@ pub enum AuthMode {
     ApiKey(String),
     /// JWT with HMAC signing (HS256/HS384/HS512).
     /// The String is the shared secret.
-    JwtHmac { secret: String, algorithm: Algorithm },
+    JwtHmac {
+        secret: String,
+        algorithm: Algorithm,
+    },
     /// JWT with RSA public key verification (RS256/RS384/RS512).
     /// The String is the PEM-encoded public key.
     JwtRsa {
@@ -42,7 +44,6 @@ pub enum AuthMode {
         algorithm: Algorithm,
     },
 }
-
 
 /// Result of validating an auth token.
 #[derive(Clone, Debug)]
@@ -403,8 +404,9 @@ impl IdentityIssuer {
 
     /// Load from a PKCS8 PEM-encoded private key string.
     pub fn from_pkcs8_pem(pem: &str) -> crate::error::Result<Self> {
-        let signing_key = SigningKey::from_pkcs8_pem(pem)
-            .map_err(|e| crate::error::VoltraError::internal(format!("Ed25519 key parse error: {}", e)))?;
+        let signing_key = SigningKey::from_pkcs8_pem(pem).map_err(|e| {
+            crate::error::VoltraError::internal(format!("Ed25519 key parse error: {}", e))
+        })?;
         let kid = Self::compute_kid(&signing_key);
         Ok(IdentityIssuer { signing_key, kid })
     }
@@ -423,23 +425,37 @@ impl IdentityIssuer {
     ///
     /// `ttl_secs` controls how long the token is valid (from now).
     /// A `ttl_secs` of 0 sets `exp` to `u64::MAX / 2` (effectively unlimited).
-    pub fn issue(&self, identity: &str, roles: Vec<String>, ttl_secs: u64) -> crate::error::Result<String> {
+    pub fn issue(
+        &self,
+        identity: &str,
+        roles: Vec<String>,
+        ttl_secs: u64,
+    ) -> crate::error::Result<String> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         // Year 9999 in Unix seconds: safe upper bound (fits in i64/jsonwebtoken)
-        let exp = if ttl_secs == 0 { 253_402_300_799_u64 } else { now + ttl_secs };
+        let exp = if ttl_secs == 0 {
+            253_402_300_799_u64
+        } else {
+            now + ttl_secs
+        };
 
-        let claims = VoltraClaims { sub: identity.to_string(), roles, iat: now, exp };
+        let claims = VoltraClaims {
+            sub: identity.to_string(),
+            roles,
+            iat: now,
+            exp,
+        };
 
         // jsonwebtoken 9 requires the PEM bytes for EdDSA.
-        let pem = self
-            .signing_key
-            .to_pkcs8_pem(LineEnding::LF)
-            .map_err(|e| crate::error::VoltraError::internal(format!("PKCS8 encode error: {}", e)))?;
-        let key = EncodingKey::from_ed_pem(pem.as_bytes())
-            .map_err(|e| crate::error::VoltraError::internal(format!("JWT encoding key error: {}", e)))?;
+        let pem = self.signing_key.to_pkcs8_pem(LineEnding::LF).map_err(|e| {
+            crate::error::VoltraError::internal(format!("PKCS8 encode error: {}", e))
+        })?;
+        let key = EncodingKey::from_ed_pem(pem.as_bytes()).map_err(|e| {
+            crate::error::VoltraError::internal(format!("JWT encoding key error: {}", e))
+        })?;
 
         encode(&Header::new(Algorithm::EdDSA), &claims, &key)
             .map_err(|e| crate::error::VoltraError::internal(format!("JWT sign error: {}", e)))
@@ -451,8 +467,9 @@ impl IdentityIssuer {
     /// different key.
     pub fn verify(&self, token: &str) -> crate::error::Result<VoltraClaims> {
         let pub_pem = self.public_key_pem();
-        let key = DecodingKey::from_ed_pem(pub_pem.as_bytes())
-            .map_err(|e| crate::error::VoltraError::internal(format!("JWT decoding key error: {}", e)))?;
+        let key = DecodingKey::from_ed_pem(pub_pem.as_bytes()).map_err(|e| {
+            crate::error::VoltraError::internal(format!("JWT decoding key error: {}", e))
+        })?;
 
         let mut validation = Validation::new(Algorithm::EdDSA);
         validation.validate_aud = false;
@@ -469,10 +486,9 @@ impl IdentityIssuer {
 
     /// Save the private key to a PKCS8 PEM file.
     pub fn save_to_file(&self, path: &std::path::Path) -> crate::error::Result<()> {
-        let pem = self
-            .signing_key
-            .to_pkcs8_pem(LineEnding::LF)
-            .map_err(|e| crate::error::VoltraError::internal(format!("PKCS8 encode error: {}", e)))?;
+        let pem = self.signing_key.to_pkcs8_pem(LineEnding::LF).map_err(|e| {
+            crate::error::VoltraError::internal(format!("PKCS8 encode error: {}", e))
+        })?;
         std::fs::write(path, pem.as_bytes())
             .map_err(|e| crate::error::VoltraError::internal(format!("Write key file: {}", e)))?;
         Ok(())
@@ -575,7 +591,9 @@ mod tests {
         });
 
         // Generate a valid token
-        let token = validator.generate_token("player42", "player", 3600).unwrap();
+        let token = validator
+            .generate_token("player42", "player", 3600)
+            .unwrap();
         let result = validator.validate(&format!("Bearer {}", token));
 
         match result {
@@ -608,8 +626,8 @@ mod tests {
         let claims = LegacyClaims {
             sub: "expired_user".into(),
             role: "player".into(),
-            iat: now - 7200,  // issued 2 hours ago
-            exp: now - 3600,  // expired 1 hour ago
+            iat: now - 7200, // issued 2 hours ago
+            exp: now - 3600, // expired 1 hour ago
             metadata: None,
         };
 
@@ -655,11 +673,7 @@ mod tests {
 
         match result {
             AuthResult::Denied(reason) => {
-                assert!(
-                    reason.contains("JWT validation failed"),
-                    "Got: {}",
-                    reason
-                );
+                assert!(reason.contains("JWT validation failed"), "Got: {}", reason);
             }
             other => panic!("Expected Denied (wrong secret), got {:?}", other),
         }
@@ -675,11 +689,7 @@ mod tests {
         let result = validator.validate("Bearer not.a.valid.jwt.token");
         match result {
             AuthResult::Denied(reason) => {
-                assert!(
-                    reason.contains("JWT validation failed"),
-                    "Got: {}",
-                    reason
-                );
+                assert!(reason.contains("JWT validation failed"), "Got: {}", reason);
             }
             other => panic!("Expected Denied (malformed), got {:?}", other),
         }
@@ -693,9 +703,7 @@ mod tests {
             algorithm: Algorithm::HS256,
         });
 
-        let token = validator
-            .generate_token("alice", "admin", 7200)
-            .unwrap();
+        let token = validator.generate_token("alice", "admin", 7200).unwrap();
         let result = validator.validate(&format!("Bearer {}", token));
 
         match result {
@@ -833,7 +841,9 @@ mod tests {
         let result = validator.validate(&format!("Bearer {}", token));
 
         match result {
-            AuthResult::Authenticated { user_id, claims, .. } => {
+            AuthResult::Authenticated {
+                user_id, claims, ..
+            } => {
                 assert_eq!(user_id, "immortal");
                 assert_eq!(claims.exp, 0); // no expiry set
             }
@@ -880,12 +890,10 @@ mod tests {
 
         // Manually craft a token with exp in the past by directly constructing
         // VoltraClaims and encoding it (bypass the issuer's ttl logic).
-        use jsonwebtoken::{encode, Header, Algorithm, EncodingKey};
         use ed25519_dalek::pkcs8::EncodePrivateKey;
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
-        let pem = issuer.signing_key
-            .to_pkcs8_pem(LineEnding::LF)
-            .unwrap();
+        let pem = issuer.signing_key.to_pkcs8_pem(LineEnding::LF).unwrap();
         let key = EncodingKey::from_ed_pem(pem.as_bytes()).unwrap();
         let expired_claims = super::VoltraClaims {
             sub: "expired".into(),
@@ -928,9 +936,14 @@ mod tests {
         let issuer_b = super::IdentityIssuer::generate();
 
         // Token issued by A should be rejected by B.
-        let token = issuer_a.issue("charlie", vec!["spectator".into()], 3600).unwrap();
+        let token = issuer_a
+            .issue("charlie", vec!["spectator".into()], 3600)
+            .unwrap();
         let result = issuer_b.verify(&token);
-        assert!(result.is_err(), "Expected error: token from different issuer");
+        assert!(
+            result.is_err(),
+            "Expected error: token from different issuer"
+        );
     }
 
     #[test]
@@ -945,7 +958,11 @@ mod tests {
     #[test]
     fn test_identity_issuer_roles_roundtrip_multiple() {
         let issuer = super::IdentityIssuer::generate();
-        let roles = vec!["admin".to_string(), "moderator".to_string(), "player".to_string()];
+        let roles = vec![
+            "admin".to_string(),
+            "moderator".to_string(),
+            "player".to_string(),
+        ];
         let token = issuer.issue("dave", roles.clone(), 3600).unwrap();
         let claims = issuer.verify(&token).unwrap();
         assert_eq!(claims.roles, roles);

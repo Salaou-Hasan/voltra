@@ -100,4 +100,3 @@ impl From<rquickjs::Error> for VoltraError {
         VoltraError::ReducerError(format!("JS error: {}", err))
     }
 }
-

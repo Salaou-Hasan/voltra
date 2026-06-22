@@ -27,15 +27,15 @@
 // ============================================================================
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::sync::Arc;
+use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
 use voltra::{
     reducer::{increment_reducer, ReducerContext},
     subscriptions::{OutboundFrames, SubscriptionManager},
     table::TableStore,
     wal::BatchedWalWriter,
 };
-use std::sync::Arc;
-use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -79,23 +79,15 @@ fn bench_fanout_scaling(c: &mut Criterion) {
         let mgr = Arc::new(SubscriptionManager::new());
         let _rxs = register_n_subscribers(&mgr, n_subs);
 
-        group.bench_with_input(
-            BenchmarkId::new("subscribers", n_subs),
-            &n_subs,
-            |b, _| {
-                b.iter(|| {
-                    let mut ctx = ReducerContext::new(tables.clone(), 1_000);
-                    let _ = increment_reducer(
-                        black_box(&mut ctx),
-                        "hp".to_string(),
-                        black_box(1),
-                    )
-                    .unwrap();
-                    let deltas = ctx.commit().unwrap();
-                    mgr.publish_deltas(black_box(&deltas));
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("subscribers", n_subs), &n_subs, |b, _| {
+            b.iter(|| {
+                let mut ctx = ReducerContext::new(tables.clone(), 1_000);
+                let _ =
+                    increment_reducer(black_box(&mut ctx), "hp".to_string(), black_box(1)).unwrap();
+                let deltas = ctx.commit().unwrap();
+                mgr.publish_deltas(black_box(&deltas));
+            });
+        });
     }
 
     group.finish();
@@ -115,11 +107,10 @@ fn bench_full_pipeline_with_wal(c: &mut Criterion) {
         let _rxs = register_n_subscribers(&mgr, n_subs);
 
         // WAL with no-fsync so we measure batching overhead, not SSD latency.
-        let wal_path = std::env::temp_dir()
-            .join(format!("voltra_bench_s2_{}.wal", n_subs));
+        let wal_path = std::env::temp_dir().join(format!("voltra_bench_s2_{}.wal", n_subs));
         let _ = std::fs::remove_file(&wal_path);
         let wal = Arc::new(
-            BatchedWalWriter::open(&wal_path, 10, 512, /*unsafe_no_fsync=*/true).unwrap(),
+            BatchedWalWriter::open(&wal_path, 10, 512, /*unsafe_no_fsync=*/ true).unwrap(),
         );
         let seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
@@ -129,12 +120,8 @@ fn bench_full_pipeline_with_wal(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let mut ctx = ReducerContext::new(tables.clone(), 1_000);
-                    let _ = increment_reducer(
-                        black_box(&mut ctx),
-                        "hp".to_string(),
-                        black_box(1),
-                    )
-                    .unwrap();
+                    let _ = increment_reducer(black_box(&mut ctx), "hp".to_string(), black_box(1))
+                        .unwrap();
                     let deltas = ctx.commit().unwrap();
 
                     let s = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -193,10 +180,8 @@ fn bench_concurrent_producers(c: &mut Criterion) {
                                     let key = format!("c_{}", (tid * 16 + i as usize) % 128);
                                     let tbl2 = tbl.clone();
                                     let (deltas, _) = tokio::task::spawn_blocking(move || {
-                                        let mut ctx =
-                                            ReducerContext::new(tbl2, 1_000);
-                                        let _ = increment_reducer(&mut ctx, key, 1)
-                                            .unwrap();
+                                        let mut ctx = ReducerContext::new(tbl2, 1_000);
+                                        let _ = increment_reducer(&mut ctx, key, 1).unwrap();
                                         let deltas = ctx.commit().unwrap();
                                         (deltas, ())
                                     })
@@ -249,8 +234,7 @@ fn bench_predicate_fanout(c: &mut Criterion) {
         b.iter(|| {
             let mut ctx = ReducerContext::new(tables.clone(), 1_000);
             let _ =
-                increment_reducer(black_box(&mut ctx), "score".to_string(), black_box(1))
-                    .unwrap();
+                increment_reducer(black_box(&mut ctx), "score".to_string(), black_box(1)).unwrap();
             let deltas = ctx.commit().unwrap();
             mgr.publish_deltas(black_box(&deltas));
         });

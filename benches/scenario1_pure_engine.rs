@@ -25,11 +25,11 @@
 // ============================================================================
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::sync::Arc;
 use voltra::{
     reducer::{increment_reducer, ReducerContext},
     table::TableStore,
 };
-use std::sync::Arc;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -99,8 +99,7 @@ fn bench_batch_increment(c: &mut Criterion) {
                     for i in 0..n {
                         // 32 distinct counter names — realistic hot-key spread
                         let key = format!("counter_{}", i % 32);
-                        let _ =
-                            increment_reducer(&mut ctx, black_box(key), black_box(1)).unwrap();
+                        let _ = increment_reducer(&mut ctx, black_box(key), black_box(1)).unwrap();
                     }
                     ctx.commit().unwrap();
                 });
@@ -164,9 +163,15 @@ fn bench_parallel_throughput(c: &mut Criterion) {
     let cpus = num_cpus::get();
     let thread_counts: Vec<usize> = {
         let mut v = vec![1usize];
-        if cpus >= 2 { v.push(2); }
-        if cpus >= 4 { v.push(4); }
-        if cpus > 4  { v.push(cpus); }
+        if cpus >= 2 {
+            v.push(2);
+        }
+        if cpus >= 4 {
+            v.push(4);
+        }
+        if cpus > 4 {
+            v.push(cpus);
+        }
         v
     };
 
@@ -177,36 +182,31 @@ fn bench_parallel_throughput(c: &mut Criterion) {
 
         let tables = Arc::new(TableStore::new());
 
-        group.bench_with_input(
-            BenchmarkId::new("threads", threads),
-            &threads,
-            |b, &t| {
-                b.iter(|| {
-                    let barrier = Arc::new(std::sync::Barrier::new(t + 1));
-                    let mut handles = Vec::with_capacity(t);
+        group.bench_with_input(BenchmarkId::new("threads", threads), &threads, |b, &t| {
+            b.iter(|| {
+                let barrier = Arc::new(std::sync::Barrier::new(t + 1));
+                let mut handles = Vec::with_capacity(t);
 
-                    for tid in 0..t {
-                        let tbl = tables.clone();
-                        let bar = barrier.clone();
-                        handles.push(std::thread::spawn(move || {
-                            bar.wait(); // all threads start simultaneously
-                            for i in 0..iters_per_thread {
-                                // 256 distinct keys → realistic key spread
-                                let key =
-                                    format!("c_{}", (tid * 16 + i as usize) % 256);
-                                let mut ctx = ReducerContext::new(tbl.clone(), 1_000);
-                                let _ = increment_reducer(&mut ctx, key, 1).unwrap();
-                                ctx.commit().unwrap();
-                            }
-                        }));
-                    }
-                    barrier.wait(); // start line
-                    for h in handles {
-                        h.join().unwrap();
-                    }
-                });
-            },
-        );
+                for tid in 0..t {
+                    let tbl = tables.clone();
+                    let bar = barrier.clone();
+                    handles.push(std::thread::spawn(move || {
+                        bar.wait(); // all threads start simultaneously
+                        for i in 0..iters_per_thread {
+                            // 256 distinct keys → realistic key spread
+                            let key = format!("c_{}", (tid * 16 + i as usize) % 256);
+                            let mut ctx = ReducerContext::new(tbl.clone(), 1_000);
+                            let _ = increment_reducer(&mut ctx, key, 1).unwrap();
+                            ctx.commit().unwrap();
+                        }
+                    }));
+                }
+                barrier.wait(); // start line
+                for h in handles {
+                    h.join().unwrap();
+                }
+            });
+        });
     }
 
     group.finish();

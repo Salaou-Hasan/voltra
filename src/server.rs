@@ -53,9 +53,9 @@ const ADMIN_DASHBOARD_HTML: &str = include_str!("admin_dashboard.html");
 /// All fields are cheaply cloneable `Arc`s — safe to share across threads/tasks.
 pub struct ServerHandle {
     /// Read-only access to all in-memory tables (row counts, row data).
-    pub tables:        Arc<TableStore>,
+    pub tables: Arc<TableStore>,
     /// Subscription manager — exposes `active_connections()`.
-    pub subs:          Arc<SubscriptionManager>,
+    pub subs: Arc<SubscriptionManager>,
     /// Shared WAL byte counter — updated after every flush.
     pub wal_file_size: Arc<AtomicU64>,
 }
@@ -75,9 +75,9 @@ use crate::now_nanos;
 /// tokio::spawn(server_fut);
 /// // handle.tables.total_row_count(), etc.
 /// ```
-pub async fn run_server_with_handle(config: Config)
-    -> Result<(ServerHandle, impl std::future::Future<Output = Result<()>>)>
-{
+pub async fn run_server_with_handle(
+    config: Config,
+) -> Result<(ServerHandle, impl std::future::Future<Output = Result<()>>)> {
     use tokio::sync::oneshot;
     let (tx, rx) = oneshot::channel::<ServerHandle>();
     let fut = run_server_inner(config, Some(tx));
@@ -90,8 +90,9 @@ pub async fn run_server_with_handle(config: Config)
     })?;
     // Wrap the task back into a plain future the caller can await/drop.
     let server_fut = async move {
-        handle_task.await
-            .map_err(|e| crate::error::VoltraError::Internal(format!("Server task panicked: {e}")))?
+        handle_task.await.map_err(|e| {
+            crate::error::VoltraError::Internal(format!("Server task panicked: {e}"))
+        })?
     };
     Ok((handle, server_fut))
 }
@@ -143,7 +144,7 @@ async fn run_server_inner(
     }
 
     // ── Data structures ───────────────────────────────────────────────────────
-    let wal_path   = config.wal_path.clone();
+    let wal_path = config.wal_path.clone();
 
     // Apply eviction policy from config so embedded callers (sim, tests) can
     // configure LRU bounds without going through the main CLI binary.
@@ -156,7 +157,7 @@ async fn run_server_inner(
         },
         _ => crate::table::EvictionPolicy::None,
     };
-    let tables     = Arc::new(crate::table::TableStore::with_eviction(eviction_policy));
+    let tables = Arc::new(crate::table::TableStore::with_eviction(eviction_policy));
     let schema_reg = Arc::new(crate::schema::SchemaRegistry::new());
 
     let mut initial_seq = 0u64;
@@ -168,40 +169,36 @@ async fn run_server_inner(
     // initial_seq so WAL replay only applies entries that arrived after the
     // last redb commit, avoiding redundant replays.
     let persistence: Option<Arc<PersistenceEngine>> = match &config.persistence_path {
-        Some(path) => {
-            match PersistenceEngine::open(path) {
-                Ok(pe) => {
-                    match pe.load_all(&tables) {
-                        Ok((rows, last_seq)) => {
-                            if rows > 0 {
-                                initial_seq = last_seq;
-                                log::info!(
-                                    "[voltra] Loaded {} rows from disk store (last_seq={})",
-                                    rows,
-                                    last_seq
-                                );
-                            } else {
-                                log::info!(
-                                    "[voltra] Disk store is empty; will bootstrap from snapshot+WAL"
-                                );
-                            }
-                            Some(Arc::new(pe))
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "[voltra] Disk store load failed ({}); falling back to snapshot+WAL",
-                                e
-                            );
-                            None
-                        }
+        Some(path) => match PersistenceEngine::open(path) {
+            Ok(pe) => match pe.load_all(&tables) {
+                Ok((rows, last_seq)) => {
+                    if rows > 0 {
+                        initial_seq = last_seq;
+                        log::info!(
+                            "[voltra] Loaded {} rows from disk store (last_seq={})",
+                            rows,
+                            last_seq
+                        );
+                    } else {
+                        log::info!(
+                            "[voltra] Disk store is empty; will bootstrap from snapshot+WAL"
+                        );
                     }
+                    Some(Arc::new(pe))
                 }
                 Err(e) => {
-                    log::warn!("[voltra] Could not open disk store at {:?}: {}", path, e);
+                    log::warn!(
+                        "[voltra] Disk store load failed ({}); falling back to snapshot+WAL",
+                        e
+                    );
                     None
                 }
+            },
+            Err(e) => {
+                log::warn!("[voltra] Could not open disk store at {:?}: {}", path, e);
+                None
             }
-        }
+        },
         None => None,
     };
 
@@ -239,17 +236,18 @@ async fn run_server_inner(
             initial_seq = initial_seq.max(entry.header.sequence_number);
             replayed += 1;
         }
-        log::info!("[voltra] WAL replay complete ({} entries applied).", replayed);
+        log::info!(
+            "[voltra] WAL replay complete ({} entries applied).",
+            replayed
+        );
     }
 
-    let wal_writer = Arc::new(
-        BatchedWalWriter::open(
-            &wal_file,
-            config.fsync_interval_ms,
-            config.wal_batch_size,
-            false, // safe fsync
-        )?
-    );
+    let wal_writer = Arc::new(BatchedWalWriter::open(
+        &wal_file,
+        config.fsync_interval_ms,
+        config.wal_batch_size,
+        false, // safe fsync
+    )?);
 
     // Global WAL sequence counter — shared across all worker threads.
     let global_seq = Arc::new(AtomicU64::new(initial_seq));
@@ -258,42 +256,56 @@ async fn run_server_inner(
     let registry = Arc::new(ReducerRegistry::new()?);
 
     // ── Support services ──────────────────────────────────────────────────────
-    let subs               = Arc::new(SubscriptionManager::new());
+    let subs = Arc::new(SubscriptionManager::new());
     subs.start_tick_flusher(config.sub_tick_ms);
     let active_connections = Arc::new(AtomicUsize::new(0));
-    let metrics            = Arc::new(Metrics::new());
+    let metrics = Arc::new(Metrics::new());
 
     // ── Cluster bus (horizontal scaling) ──────────────────────────────────────
     // Reads VOLTRA_PEERS / VOLTRA_SHARD_ID / VOLTRA_SHARD_COUNT from env.
     // No-op (single-node) when VOLTRA_PEERS is unset — fanout_deltas() returns
     // immediately, so the embedded game server pays nothing in standalone mode.
     let my_shard_id: u32 = std::env::var("VOLTRA_SHARD_ID")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let shard_count: u32 = std::env::var("VOLTRA_SHARD_COUNT")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-    let cluster_bus = crate::cluster::ClusterBus::new(
-        crate::cluster::ClusterConfig::from_env(my_shard_id, shard_count)
-    );
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let cluster_bus = crate::cluster::ClusterBus::new(crate::cluster::ClusterConfig::from_env(
+        my_shard_id,
+        shard_count,
+    ));
     if cluster_bus.is_active() {
         log::info!(
             "[cluster] Active — shard {}/{}, {} peer(s)",
-            my_shard_id, shard_count, cluster_bus.peers.len()
+            my_shard_id,
+            shard_count,
+            cluster_bus.peers.len()
         );
-        println!("[voltra] Cluster mode — shard {}/{}, {} peer(s)",
-            my_shard_id, shard_count, cluster_bus.peers.len());
+        println!(
+            "[voltra] Cluster mode — shard {}/{}, {} peer(s)",
+            my_shard_id,
+            shard_count,
+            cluster_bus.peers.len()
+        );
     }
     crate::cluster::gossip::start_gossip(cluster_bus.clone(), shutdown_rx.clone());
     crate::cluster::fanout::start_fanout_retry(cluster_bus.clone(), shutdown_rx.clone());
 
     // Ed25519 identity issuer — load persisted key or generate a fresh one.
-    let identity_key_path  = wal_path
+    let identity_key_path = wal_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("identity_key.pem");
     let identity_issuer: Arc<IdentityIssuer> = if identity_key_path.exists() {
         match IdentityIssuer::load_from_file(&identity_key_path) {
-            Ok(iss) => { log::info!("[identity] Loaded key (kid={})", iss.kid); Arc::new(iss) }
-            Err(e)  => {
+            Ok(iss) => {
+                log::info!("[identity] Loaded key (kid={})", iss.kid);
+                Arc::new(iss)
+            }
+            Err(e) => {
                 log::warn!("[identity] Load failed ({}), generating new key", e);
                 let iss = IdentityIssuer::generate();
                 let _ = iss.save_to_file(&identity_key_path);
@@ -309,24 +321,24 @@ async fn run_server_inner(
         Arc::new(iss)
     };
 
-    let api_key            = config.api_key.clone();
-    let auth_validator     = Arc::new(AuthValidator::from_env());
-    let permissions        = Arc::new(config.permissions.clone());
-    let rate_limiter       = Arc::new(RateLimiterRegistry::new(RateLimiterConfig {
-        capacity:    config.rate_limit_capacity,
+    let api_key = config.api_key.clone();
+    let auth_validator = Arc::new(AuthValidator::from_env());
+    let permissions = Arc::new(config.permissions.clone());
+    let rate_limiter = Arc::new(RateLimiterRegistry::new(RateLimiterConfig {
+        capacity: config.rate_limit_capacity,
         refill_rate: config.rate_limit_refill_rate,
-        enabled:     config.rate_limit_capacity > 0,
+        enabled: config.rate_limit_capacity > 0,
     }));
-    let presence           = Arc::new(PresenceManager::new(
+    let presence = Arc::new(PresenceManager::new(
         config.presence_heartbeat_timeout_ms,
         config.presence_offline_timeout_ms,
     ));
-    let ttl_manager        = Arc::new(TtlManager::new());
-    let tls_config         = None; // set via [tls] TOML section if needed
+    let ttl_manager = Arc::new(TtlManager::new());
+    let tls_config = None; // set via [tls] TOML section if needed
 
     // ── Bounded reducer queue ─────────────────────────────────────────────────
     let queue_cap = config.reducer_queue_cap;
-    let (tx, rx)  = kanal::bounded_async::<PendingCall>(queue_cap);
+    let (tx, rx) = kanal::bounded_async::<PendingCall>(queue_cap);
 
     // Guards against overlapping snapshot tasks: save_snapshot() clones every
     // row into memory before serializing. If a snapshot takes longer than the
@@ -339,23 +351,27 @@ async fn run_server_inner(
     crate::spawn_memory_reclaimer(15);
 
     // ── Worker pool ───────────────────────────────────────────────────────────
-    let worker_count = if config.workers > 0 { config.workers } else { num_cpus::get().max(2) };
+    let worker_count = if config.workers > 0 {
+        config.workers
+    } else {
+        num_cpus::get().max(2)
+    };
 
     for _worker_id in 0..worker_count {
-        let rx_w        = rx.clone();
-        let tables_w    = tables.clone();
-        let subs_w      = subs.clone();
-        let registry_w  = registry.clone();
-        let wal_w       = wal_writer.clone();
-        let seq_w       = global_seq.clone();
-        let metrics_w   = metrics.clone();
-        let schema_w    = schema_reg.clone();
-        let ttl_w       = ttl_manager.clone();
-        let persist_w   = persistence.clone();
-        let cluster_w   = cluster_bus.clone();
-        let mut shut_w  = shutdown_rx.clone();
-        let snap_iv     = config.snapshot_interval;
-        let snap_dir_w  = config.snapshot_dir.clone();
+        let rx_w = rx.clone();
+        let tables_w = tables.clone();
+        let subs_w = subs.clone();
+        let registry_w = registry.clone();
+        let wal_w = wal_writer.clone();
+        let seq_w = global_seq.clone();
+        let metrics_w = metrics.clone();
+        let schema_w = schema_reg.clone();
+        let ttl_w = ttl_manager.clone();
+        let persist_w = persistence.clone();
+        let cluster_w = cluster_bus.clone();
+        let mut shut_w = shutdown_rx.clone();
+        let snap_iv = config.snapshot_interval;
+        let snap_dir_w = config.snapshot_dir.clone();
         let snap_busy_w = snapshot_in_progress.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -376,20 +392,17 @@ async fn run_server_inner(
                     }
                 }) {
                     Some(c) => c,
-                    None    => break,
+                    None => break,
                 };
 
                 // Build a micro-batch: drain up to DRAIN_LIMIT more calls that are
                 // already queued (non-blocking).  If the channel is empty we fall
                 // through immediately with a batch of 1.
-                let mut batch: smallvec::SmallVec<[PendingCall; 16]> =
-                    smallvec::smallvec![call];
+                let mut batch: smallvec::SmallVec<[PendingCall; 16]> = smallvec::smallvec![call];
                 for _ in 0..DRAIN_LIMIT {
                     // Zero-duration timeout = "give me one if available, otherwise skip"
-                    match rt.block_on(tokio::time::timeout(
-                        std::time::Duration::ZERO,
-                        rx_w.recv(),
-                    )) {
+                    match rt.block_on(tokio::time::timeout(std::time::Duration::ZERO, rx_w.recv()))
+                    {
                         Ok(Ok(extra)) => batch.push(extra),
                         _ => break,
                     }
@@ -397,160 +410,202 @@ async fn run_server_inner(
 
                 // ── Execute every call in the batch serially ──────────────────
                 for call in batch {
+                    let call_id = call.call_id;
 
-                let call_id = call.call_id;
-
-                // Replicas are read-only: reject reducer calls until promoted.
-                if crate::replication::is_replica() {
-                    let resp = ReducerResponse::error(
-                        call_id,
-                        "This node is a read-only replica.".to_string(),
-                    );
-                    if let Err(e) = call.response_tx.send(resp) {
-                        log::warn!("[voltra] Response delivery failed: {}", e);
+                    // Replicas are read-only: reject reducer calls until promoted.
+                    if crate::replication::is_replica() {
+                        let resp = ReducerResponse::error(
+                            call_id,
+                            "This node is a read-only replica.".to_string(),
+                        );
+                        if let Err(e) = call.response_tx.send(resp) {
+                            log::warn!("[voltra] Response delivery failed: {}", e);
+                        }
+                        continue;
                     }
-                    continue;
-                }
 
-                let ts      = now_nanos();
+                    let ts = now_nanos();
 
-                // Build execution context with schema validation + TTL support.
-                let mut ctx = ReducerContext::new(tables_w.clone(), ts)
-                    .with_schema(schema_w.clone())
-                    .with_ttl(ttl_w.clone());
-                ctx.caller_id   = call.caller_id.clone();
-                ctx.caller_role = call.caller_role.clone();
+                    // Build execution context with schema validation + TTL support.
+                    let mut ctx = ReducerContext::new(tables_w.clone(), ts)
+                        .with_schema(schema_w.clone())
+                        .with_ttl(ttl_w.clone());
+                    ctx.caller_id = call.caller_id.clone();
+                    ctx.caller_role = call.caller_role.clone();
 
-                // Execute with OCC conflict retry: if a concurrent worker
-                // committed a row this reducer read AND writes, the commit
-                // aborts and we re-execute against fresh state. This is what
-                // makes read-modify-write reducers lose zero updates. Heavy
-                // game simulations can legitimately race the same hot row many
-                // times, so retry generously before surfacing a conflict.
-                const MAX_CONFLICT_RETRIES: usize = 64;
-                let mut attempt = 0;
-                let response = loop {
-                    attempt += 1;
-                    let exec = registry_w.execute(&call.reducer_name, &mut ctx, &call.args);
+                    // Execute with OCC conflict retry: if a concurrent worker
+                    // committed a row this reducer read AND writes, the commit
+                    // aborts and we re-execute against fresh state. This is what
+                    // makes read-modify-write reducers lose zero updates. Heavy
+                    // game simulations can legitimately race the same hot row many
+                    // times, so retry generously before surfacing a conflict.
+                    const MAX_CONFLICT_RETRIES: usize = 64;
+                    let mut attempt = 0;
+                    let response = loop {
+                        attempt += 1;
+                        let exec = registry_w.execute(&call.reducer_name, &mut ctx, &call.args);
 
-                    break match exec {
-                    Err(e) => {
-                        ctx.rollback();
-                        metrics_w.reducer_errors_total.inc();
-                        ReducerResponse::error(call_id, e.to_string())
-                    }
-                    Ok(result_bytes) => {
-                        // Commit staged writes atomically.
-                        match ctx.commit() {
-                            Err(crate::error::VoltraError::TxnConflict(_))
-                                if attempt < MAX_CONFLICT_RETRIES =>
-                            {
-                                ctx.reset_for_retry();
-                                std::thread::yield_now();
-                                continue;
-                            }
+                        break match exec {
                             Err(e) => {
-                                log::error!(
-                                    "[voltra] Commit failed for '{}': {}",
-                                    call.reducer_name, e
-                                );
+                                ctx.rollback();
                                 metrics_w.reducer_errors_total.inc();
-                                ReducerResponse::error(call_id, format!("Commit error: {}", e))
+                                ReducerResponse::error(call_id, e.to_string())
                             }
-                            Ok(deltas) => {
-                                // Fan out live subscription updates — O(1) per subscriber.
-                                if !deltas.is_empty() {
-                                    subs_w.publish_deltas(&deltas);
-                                    // Replicate to cluster peers (no-op single-node).
-                                    cluster_w.fanout_deltas(&deltas);
-                                }
-
-                                let seq_num = seq_w.fetch_add(1, Ordering::Relaxed);
-
-                                // Write-through to disk store (non-fatal on failure).
-                                // Done BEFORE the WAL append below so `deltas` can be
-                                // handed to the WAL entry by value instead of cloning
-                                // the whole delta vec on every single call. On a crash
-                                // between this and the WAL write the row is still in the
-                                // disk store, which is loaded before WAL replay.
-                                if let Some(ref pe) = persist_w {
-                                    if !deltas.is_empty() {
-                                        if let Err(e) = pe.persist_deltas(&deltas, seq_num) {
-                                            log::warn!("[voltra] Disk persist failed: {}", e);
-                                        }
+                            Ok(result_bytes) => {
+                                // Commit staged writes atomically.
+                                match ctx.commit() {
+                                    Err(crate::error::VoltraError::TxnConflict(_))
+                                        if attempt < MAX_CONFLICT_RETRIES =>
+                                    {
+                                        ctx.reset_for_retry();
+                                        std::thread::yield_now();
+                                        continue;
                                     }
-                                }
+                                    Err(e) => {
+                                        log::error!(
+                                            "[voltra] Commit failed for '{}': {}",
+                                            call.reducer_name,
+                                            e
+                                        );
+                                        metrics_w.reducer_errors_total.inc();
+                                        ReducerResponse::error(
+                                            call_id,
+                                            format!("Commit error: {}", e),
+                                        )
+                                    }
+                                    Ok(deltas) => {
+                                        // Fan out live subscription updates — O(1) per subscriber.
+                                        if !deltas.is_empty() {
+                                            subs_w.publish_deltas(&deltas);
+                                            // Replicate to cluster peers (no-op single-node).
+                                            cluster_w.fanout_deltas(&deltas);
+                                        }
 
-                                // Append to WAL for crash recovery. `deltas` is moved in
-                                // (its last use) — no per-call clone of the delta vec.
-                                let entry = WalEntry::new(
-                                    ts,
-                                    seq_num,
-                                    call.reducer_name.clone(),
-                                    call.args.clone(),
-                                    deltas,
-                                );
-                                if let Err(e) = wal_w.append(&entry, seq_num) {
-                                    log::warn!("[voltra] WAL append failed: {}", e);
-                                } else {
-                                    metrics_w.wal_entries_written_total.inc();
-                                }
+                                        let seq_num = seq_w.fetch_add(1, Ordering::Relaxed);
 
-                                // Periodic snapshot + WAL rotation to bound WAL file size.
-                                // Skip if a snapshot is already in flight — overlapping
-                                // snapshots each clone the full dataset into memory and
-                                // would compound rather than bound memory usage.
-                                if snap_iv > 0 && (seq_num + 1).is_multiple_of(snap_iv)
-                                    && !snap_busy_w.swap(true, Ordering::AcqRel)
-                                {
-                                    let tbl2  = tables_w.clone();
-                                    let dir2  = snap_dir_w.clone();
-                                    let dir3  = snap_dir_w.clone();
-                                    let wal2  = wal_w.clone();
-                                    let busy2 = snap_busy_w.clone();
-                                    let ts2   = now_nanos();
-                                    tokio::spawn(async move {
-                                        let result = tokio::task::spawn_blocking(move || save_snapshot(&tbl2, &dir2, seq_num, ts2)).await;
-                                        match result {
-                                            Ok(Ok(())) => {
-                                                log::info!("[voltra] Snapshot at seq {}", seq_num);
-                                                if let Err(e) = wal2.truncate_before(seq_num) {
-                                                    log::error!("[voltra] WAL rotation failed: {}", e);
+                                        // Write-through to disk store (non-fatal on failure).
+                                        // Done BEFORE the WAL append below so `deltas` can be
+                                        // handed to the WAL entry by value instead of cloning
+                                        // the whole delta vec on every single call. On a crash
+                                        // between this and the WAL write the row is still in the
+                                        // disk store, which is loaded before WAL replay.
+                                        if let Some(ref pe) = persist_w {
+                                            if !deltas.is_empty() {
+                                                if let Err(e) = pe.persist_deltas(&deltas, seq_num)
+                                                {
+                                                    log::warn!(
+                                                        "[voltra] Disk persist failed: {}",
+                                                        e
+                                                    );
                                                 }
-                                                // Prune older snapshot files — only the latest is
-                                                // needed for recovery; without this, snapshots
-                                                // accumulate on disk indefinitely over long runs.
-                                                if let Ok(entries) = std::fs::read_dir(&dir3) {
-                                                    for entry in entries.flatten() {
-                                                        let name = entry.file_name();
-                                                        let name = name.to_string_lossy();
-                                                        if let Some(seq_str) = name.strip_prefix("voltra_snapshot_").and_then(|s| s.strip_suffix(".bin")) {
-                                                            if seq_str.parse::<u64>().map(|s| s < seq_num).unwrap_or(false) {
-                                                                let _ = std::fs::remove_file(entry.path());
+                                            }
+                                        }
+
+                                        // Append to WAL for crash recovery. `deltas` is moved in
+                                        // (its last use) — no per-call clone of the delta vec.
+                                        let entry = WalEntry::new(
+                                            ts,
+                                            seq_num,
+                                            call.reducer_name.clone(),
+                                            call.args.clone(),
+                                            deltas,
+                                        );
+                                        if let Err(e) = wal_w.append(&entry, seq_num) {
+                                            log::warn!("[voltra] WAL append failed: {}", e);
+                                        } else {
+                                            metrics_w.wal_entries_written_total.inc();
+                                        }
+
+                                        // Periodic snapshot + WAL rotation to bound WAL file size.
+                                        // Skip if a snapshot is already in flight — overlapping
+                                        // snapshots each clone the full dataset into memory and
+                                        // would compound rather than bound memory usage.
+                                        if snap_iv > 0
+                                            && (seq_num + 1).is_multiple_of(snap_iv)
+                                            && !snap_busy_w.swap(true, Ordering::AcqRel)
+                                        {
+                                            let tbl2 = tables_w.clone();
+                                            let dir2 = snap_dir_w.clone();
+                                            let dir3 = snap_dir_w.clone();
+                                            let wal2 = wal_w.clone();
+                                            let busy2 = snap_busy_w.clone();
+                                            let ts2 = now_nanos();
+                                            tokio::spawn(async move {
+                                                let result =
+                                                    tokio::task::spawn_blocking(move || {
+                                                        save_snapshot(&tbl2, &dir2, seq_num, ts2)
+                                                    })
+                                                    .await;
+                                                match result {
+                                                    Ok(Ok(())) => {
+                                                        log::info!(
+                                                            "[voltra] Snapshot at seq {}",
+                                                            seq_num
+                                                        );
+                                                        if let Err(e) =
+                                                            wal2.truncate_before(seq_num)
+                                                        {
+                                                            log::error!(
+                                                                "[voltra] WAL rotation failed: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                        // Prune older snapshot files — only the latest is
+                                                        // needed for recovery; without this, snapshots
+                                                        // accumulate on disk indefinitely over long runs.
+                                                        if let Ok(entries) =
+                                                            std::fs::read_dir(&dir3)
+                                                        {
+                                                            for entry in entries.flatten() {
+                                                                let name = entry.file_name();
+                                                                let name = name.to_string_lossy();
+                                                                if let Some(seq_str) = name
+                                                                    .strip_prefix(
+                                                                        "voltra_snapshot_",
+                                                                    )
+                                                                    .and_then(|s| {
+                                                                        s.strip_suffix(".bin")
+                                                                    })
+                                                                {
+                                                                    if seq_str
+                                                                        .parse::<u64>()
+                                                                        .map(|s| s < seq_num)
+                                                                        .unwrap_or(false)
+                                                                    {
+                                                                        let _ =
+                                                                            std::fs::remove_file(
+                                                                                entry.path(),
+                                                                            );
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
+                                                    Ok(Err(e)) => log::error!(
+                                                        "[voltra] Snapshot failed: {}",
+                                                        e
+                                                    ),
+                                                    Err(e) => log::error!(
+                                                        "[voltra] Snapshot panic: {}",
+                                                        e
+                                                    ),
                                                 }
-                                            }
-                                            Ok(Err(e)) => log::error!("[voltra] Snapshot failed: {}", e),
-                                            Err(e)     => log::error!("[voltra] Snapshot panic: {}", e),
+                                                busy2.store(false, Ordering::Release);
+                                            });
                                         }
-                                        busy2.store(false, Ordering::Release);
-                                    });
+
+                                        metrics_w.reducer_calls_total.inc();
+                                        ReducerResponse::success(call_id, result_bytes)
+                                    }
                                 }
-
-                                metrics_w.reducer_calls_total.inc();
-                                ReducerResponse::success(call_id, result_bytes)
                             }
-                        }
-                    }
+                        };
                     };
-                };
 
-                // Deliver response back to the waiting WebSocket handler.
-                if let Err(e) = call.response_tx.send(response) {
-                    log::warn!("[voltra] Response delivery failed: {}", e);
-                }
+                    // Deliver response back to the waiting WebSocket handler.
+                    if let Err(e) = call.response_tx.send(response) {
+                        log::warn!("[voltra] Response delivery failed: {}", e);
+                    }
                 } // end for call in batch
             }
         });
@@ -566,14 +621,20 @@ async fn run_server_inner(
         let tx_sched = tx.clone();
         let seq_sched = sched_seq.clone();
         let mut shutdown_sched = shutdown_rx.clone();
-        let args_bytes: Vec<u8> = sched.args_json.as_deref()
+        let args_bytes: Vec<u8> = sched
+            .args_json
+            .as_deref()
             .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
             .and_then(|v| rmp_serde::to_vec(&v).ok())
             .unwrap_or_default();
-        log::info!("[voltra] Scheduler: '{}' every {}ms", sched.reducer, sched.interval_ms);
+        log::info!(
+            "[voltra] Scheduler: '{}' every {}ms",
+            sched.reducer,
+            sched.interval_ms
+        );
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(
-                std::time::Duration::from_millis(sched.interval_ms.max(1)));
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_millis(sched.interval_ms.max(1)));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             ticker.tick().await; // consume the immediate first tick
             loop {
@@ -600,8 +661,8 @@ async fn run_server_inner(
     }
 
     // ── WebSocket listener ────────────────────────────────────────────────────
-    let host      = config.host.clone();
-    let port      = config.port;
+    let host = config.host.clone();
+    let port = config.port;
     let max_conns = config.max_connections;
 
     log::info!("[voltra] Listening on {}:{}", host, port);
@@ -664,8 +725,8 @@ async fn run_server_inner(
     // Send stats handle back to the caller (e.g. voltra-sim) before blocking.
     if let Some(tx) = handle_tx {
         let _ = tx.send(ServerHandle {
-            tables:        tables.clone(),
-            subs:          subs.clone(),
+            tables: tables.clone(),
+            subs: subs.clone(),
             wal_file_size: wal_writer.file_size_arc(),
         });
     }
@@ -733,7 +794,7 @@ fn admin_url_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[i+1..i+3]) {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
                 if let Ok(b) = u8::from_str_radix(hex, 16) {
                     out.push(b as char);
                     i += 3;
@@ -753,19 +814,29 @@ fn admin_url_decode(s: &str) -> String {
 fn embedded_memory_bytes() -> u64 {
     #[cfg(target_os = "windows")]
     {
-        #[allow(non_camel_case_types)] type HANDLE = *mut std::ffi::c_void;
-        #[allow(non_camel_case_types)] type DWORD = u32;
-        #[allow(non_camel_case_types)] type SIZE_T = usize;
+        #[allow(non_camel_case_types)]
+        type HANDLE = *mut std::ffi::c_void;
+        #[allow(non_camel_case_types)]
+        type DWORD = u32;
+        #[allow(non_camel_case_types)]
+        type SIZE_T = usize;
         #[repr(C)]
         struct PROCESS_MEMORY_COUNTERS {
-            cb: DWORD, page_fault_count: DWORD,
-            peak_working_set_size: SIZE_T, working_set_size: SIZE_T,
-            quota_peak_paged_pool_usage: SIZE_T, quota_paged_pool_usage: SIZE_T,
-            quota_peak_non_paged_pool_usage: SIZE_T, quota_non_paged_pool_usage: SIZE_T,
-            pagefile_usage: SIZE_T, peak_pagefile_usage: SIZE_T,
+            cb: DWORD,
+            page_fault_count: DWORD,
+            peak_working_set_size: SIZE_T,
+            working_set_size: SIZE_T,
+            quota_peak_paged_pool_usage: SIZE_T,
+            quota_paged_pool_usage: SIZE_T,
+            quota_peak_non_paged_pool_usage: SIZE_T,
+            quota_non_paged_pool_usage: SIZE_T,
+            pagefile_usage: SIZE_T,
+            peak_pagefile_usage: SIZE_T,
         }
         #[link(name = "kernel32")]
-        extern "system" { fn GetCurrentProcess() -> HANDLE; }
+        extern "system" {
+            fn GetCurrentProcess() -> HANDLE;
+        }
         #[link(name = "psapi")]
         extern "system" {
             fn GetProcessMemoryInfo(p: HANDLE, c: *mut PROCESS_MEMORY_COUNTERS, cb: DWORD) -> i32;
@@ -782,14 +853,20 @@ fn embedded_memory_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {
         if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
-            if let Some(pages) = s.split_whitespace().nth(1).and_then(|p| p.parse::<u64>().ok()) {
+            if let Some(pages) = s
+                .split_whitespace()
+                .nth(1)
+                .and_then(|p| p.parse::<u64>().ok())
+            {
                 return pages * 4096;
             }
         }
         0
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    { 0 }
+    {
+        0
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -812,8 +889,9 @@ async fn handle_embedded_admin(
 ) -> std::result::Result<Response<Body>, hyper::Error> {
     // Optional auth check — only if VOLTRA_API_KEY is set.
     let check_auth = |req: &Request<Body>| -> Option<Response<Body>> {
-        let Some(ref key) = api_key else { return None };
-        let ok = req.headers()
+        let key = api_key.as_ref()?;
+        let ok = req
+            .headers()
             .get(hyper::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .map(|v| v.trim_start_matches("Bearer ").trim() == key.as_str())
@@ -829,7 +907,6 @@ async fn handle_embedded_admin(
 
     let path = req.uri().path().to_string();
     let resp = match (req.method(), path.as_str()) {
-
         // ── Admin dashboard ───────────────────────────────────────────────────
         (&Method::GET, "/admin") | (&Method::GET, "/admin/") => {
             let mut r = Response::new(Body::from(ADMIN_DASHBOARD_HTML));
@@ -841,23 +918,21 @@ async fn handle_embedded_admin(
         }
 
         // ── Health check ──────────────────────────────────────────────────────
-        (&Method::GET, "/healthz") => {
-            admin_json(serde_json::json!({
-                "status": "ok",
-                "role": if crate::replication::is_replica() { "replica" } else { "primary" },
-                "replication_lag_entries": crate::replication::replication_lag(),
-                "total_rows": tables.total_row_count(),
-                "active_connections": subs.active_connections(),
-                "active_subscriptions": subs.active_subscriptions(),
-                "wal_sequence": global_seq.load(Ordering::Relaxed),
-                "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
-                "uptime_seconds": startup.elapsed().as_secs(),
-                "reducer_queue_depth": queue_tx.len(),
-                "memory_usage_bytes": embedded_memory_bytes(),
-                "presence_tracked": 0u64,
-                "ttl_active": 0u64,
-            }))
-        }
+        (&Method::GET, "/healthz") => admin_json(serde_json::json!({
+            "status": "ok",
+            "role": if crate::replication::is_replica() { "replica" } else { "primary" },
+            "replication_lag_entries": crate::replication::replication_lag(),
+            "total_rows": tables.total_row_count(),
+            "active_connections": subs.active_connections(),
+            "active_subscriptions": subs.active_subscriptions(),
+            "wal_sequence": global_seq.load(Ordering::Relaxed),
+            "wal_file_size_bytes": wal_writer.wal_file_size_bytes(),
+            "uptime_seconds": startup.elapsed().as_secs(),
+            "reducer_queue_depth": queue_tx.len(),
+            "memory_usage_bytes": embedded_memory_bytes(),
+            "presence_tracked": 0u64,
+            "ttl_active": 0u64,
+        })),
 
         // ── Prometheus metrics ────────────────────────────────────────────────
         (&Method::GET, "/metrics") => {
@@ -865,19 +940,24 @@ async fn handle_embedded_admin(
             let mut r = Response::new(Body::from(text));
             r.headers_mut().insert(
                 hyper::header::CONTENT_TYPE,
-                hyper::header::HeaderValue::from_static(
-                    "text/plain; version=0.0.4; charset=utf-8"
-                ),
+                hyper::header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
             );
             r
         }
 
         // ── Table stats ───────────────────────────────────────────────────────
         (&Method::GET, "/stats") => {
-            let table_list: Vec<_> = tables.list_tables().into_iter().map(|name| {
-                let count = tables.list_rows_with_keys(&name).map(|r| r.len()).unwrap_or(0);
-                serde_json::json!({ "name": name, "rows": count })
-            }).collect();
+            let table_list: Vec<_> = tables
+                .list_tables()
+                .into_iter()
+                .map(|name| {
+                    let count = tables
+                        .list_rows_with_keys(&name)
+                        .map(|r| r.len())
+                        .unwrap_or(0);
+                    serde_json::json!({ "name": name, "rows": count })
+                })
+                .collect();
             admin_json(serde_json::json!({
                 "tables": table_list,
                 "total_rows": tables.total_row_count(),
@@ -891,26 +971,44 @@ async fn handle_embedded_admin(
             let mut table_map = serde_json::Map::new();
             for table_name in schema_reg.list_tables() {
                 if let Some(schema) = schema_reg.get(table_name) {
-                    let cols: Vec<_> = schema.columns.iter().map(|c| serde_json::json!({
-                        "name": c.name,
-                        "type": c.type_str,
-                        "required": c.required,
-                        "default": c.default,
-                        "key": schema.primary_key.as_deref() == Some(&c.name),
-                    })).collect();
-                    let rows = tables.list_rows_with_keys(table_name).map(|r| r.len()).unwrap_or(0);
-                    table_map.insert(table_name.to_string(), serde_json::json!({
-                        "columns": cols,
-                        "primary_key": schema.primary_key,
-                        "rls": format!("{:?}", schema.rls),
-                        "rows": rows,
-                    }));
+                    let cols: Vec<_> = schema
+                        .columns
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "name": c.name,
+                                "type": c.type_str,
+                                "required": c.required,
+                                "default": c.default,
+                                "key": schema.primary_key.as_deref() == Some(&c.name),
+                            })
+                        })
+                        .collect();
+                    let rows = tables
+                        .list_rows_with_keys(table_name)
+                        .map(|r| r.len())
+                        .unwrap_or(0);
+                    table_map.insert(
+                        table_name.to_string(),
+                        serde_json::json!({
+                            "columns": cols,
+                            "primary_key": schema.primary_key,
+                            "rls": format!("{:?}", schema.rls),
+                            "rows": rows,
+                        }),
+                    );
                 }
             }
             for table_name in tables.list_tables() {
                 if !table_map.contains_key(&table_name) {
-                    let rows = tables.list_rows_with_keys(&table_name).map(|r| r.len()).unwrap_or(0);
-                    table_map.insert(table_name, serde_json::json!({ "columns": [], "rows": rows }));
+                    let rows = tables
+                        .list_rows_with_keys(&table_name)
+                        .map(|r| r.len())
+                        .unwrap_or(0);
+                    table_map.insert(
+                        table_name,
+                        serde_json::json!({ "columns": [], "rows": rows }),
+                    );
                 }
             }
             admin_json(serde_json::json!({
@@ -922,11 +1020,20 @@ async fn handle_embedded_admin(
 
         // ── Table list ────────────────────────────────────────────────────────
         (&Method::GET, "/tables") => {
-            let list: Vec<_> = tables.list_tables().into_iter().map(|name| {
-                let count = tables.list_rows_with_keys(&name).map(|r| r.len()).unwrap_or(0);
-                serde_json::json!({ "name": name, "rows": count })
-            }).collect();
-            admin_json(serde_json::json!({ "tables": list, "total_rows": tables.total_row_count() }))
+            let list: Vec<_> = tables
+                .list_tables()
+                .into_iter()
+                .map(|name| {
+                    let count = tables
+                        .list_rows_with_keys(&name)
+                        .map(|r| r.len())
+                        .unwrap_or(0);
+                    serde_json::json!({ "name": name, "rows": count })
+                })
+                .collect();
+            admin_json(
+                serde_json::json!({ "tables": list, "total_rows": tables.total_row_count() }),
+            )
         }
 
         // ── Rows of one table ({ row_key, data }) ─────────────────────────────
@@ -934,7 +1041,8 @@ async fn handle_embedded_admin(
             let table_name = admin_url_decode(p.trim_start_matches("/tables/"));
             match tables.list_rows_with_keys(&table_name) {
                 Ok(rows) => {
-                    let row_objs: Vec<_> = rows.into_iter()
+                    let row_objs: Vec<_> = rows
+                        .into_iter()
                         .map(|(key, data)| serde_json::json!({ "row_key": key, "data": data }))
                         .collect();
                     admin_json(serde_json::json!({
@@ -946,35 +1054,37 @@ async fn handle_embedded_admin(
         }
 
         // ── Cluster status + peer endpoints ───────────────────────────────────
-        (&Method::GET, "/cluster/health") => {
-            admin_json(serde_json::json!({
-                "ok": true,
-                "shard_id": cluster_bus.config.my_shard_id,
-            }))
-        }
-        (&Method::GET, "/cluster/peers") => {
-            admin_json(serde_json::json!({
-                "cluster_enabled": cluster_bus.is_active(),
-                "my_shard_id":     cluster_bus.config.my_shard_id,
-                "shard_count":     cluster_bus.config.shard_count,
-                "peers":           cluster_bus.peers_snapshot(),
-            }))
-        }
+        (&Method::GET, "/cluster/health") => admin_json(serde_json::json!({
+            "ok": true,
+            "shard_id": cluster_bus.config.my_shard_id,
+        })),
+        (&Method::GET, "/cluster/peers") => admin_json(serde_json::json!({
+            "cluster_enabled": cluster_bus.is_active(),
+            "my_shard_id":     cluster_bus.config.my_shard_id,
+            "shard_count":     cluster_bus.config.shard_count,
+            "peers":           cluster_bus.peers_snapshot(),
+        })),
         (&Method::POST, "/cluster/deltas") => {
-            let secret = req.headers().get("x-voltra-cluster-secret").and_then(|v| v.to_str().ok());
+            let secret = req
+                .headers()
+                .get("x-voltra-cluster-secret")
+                .and_then(|v| v.to_str().ok());
             if !cluster_bus.validate_secret(secret) {
                 let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED; return Ok(r);
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
             }
             let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_server_error(e.to_string())),
             };
             match crate::cluster::fanout::parse_delta_payload(&body_bytes) {
                 Err(e) => admin_bad_request(e.to_string()),
                 Ok(payload) => {
                     let row_deltas = crate::cluster::fanout::wire_to_row_deltas(payload.deltas);
                     let applied = row_deltas.len();
-                    match crate::cluster::ClusterBus::apply_peer_deltas(&row_deltas, &tables, &subs) {
+                    match crate::cluster::ClusterBus::apply_peer_deltas(&row_deltas, &tables, &subs)
+                    {
                         Ok(()) => admin_json(serde_json::json!({ "ok": true, "applied": applied })),
                         Err(e) => admin_server_error(e.to_string()),
                     }
@@ -982,26 +1092,39 @@ async fn handle_embedded_admin(
             }
         }
         (&Method::POST, "/cluster/call") => {
-            let secret = req.headers().get("x-voltra-cluster-secret").and_then(|v| v.to_str().ok());
+            let secret = req
+                .headers()
+                .get("x-voltra-cluster-secret")
+                .and_then(|v| v.to_str().ok());
             if !cluster_bus.validate_secret(secret) {
                 let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED; return Ok(r);
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
             }
             let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_server_error(e.to_string())),
             };
-            let pr: crate::cluster::proxy::ProxyCallRequest = match serde_json::from_slice(&body_bytes) {
-                Ok(r) => r, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
-            };
+            let pr: crate::cluster::proxy::ProxyCallRequest =
+                match serde_json::from_slice(&body_bytes) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+                };
             use base64::Engine as _;
             let args = match base64::engine::general_purpose::STANDARD.decode(&pr.args_b64) {
-                Ok(b) => b, Err(e) => return Ok(admin_bad_request(format!("Bad args_b64: {}", e))),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_bad_request(format!("Bad args_b64: {}", e))),
             };
             let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
             let call = PendingCall {
-                call_id: 0, reducer_name: pr.reducer_name, args,
-                caller_id: pr.caller_id, caller_role: pr.caller_role,
-                tenant_id: None, lobby_hint: None, response_tx: resp_tx,
+                call_id: 0,
+                reducer_name: pr.reducer_name,
+                args,
+                caller_id: pr.caller_id,
+                caller_role: pr.caller_role,
+                tenant_id: None,
+                lobby_hint: None,
+                response_tx: resp_tx,
             };
             if queue_tx.send(call).await.is_err() {
                 return Ok(admin_server_error("Reducer queue closed".into()));
@@ -1009,7 +1132,9 @@ async fn handle_embedded_admin(
             match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await {
                 Ok(Some(resp)) => {
                     if resp.success {
-                        let result_b64 = resp.result.as_deref()
+                        let result_b64 = resp
+                            .result
+                            .as_deref()
                             .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
                             .unwrap_or_default();
                         admin_json(serde_json::json!({ "ok": true, "result_b64": result_b64 }))
@@ -1021,20 +1146,26 @@ async fn handle_embedded_admin(
                     }
                 }
                 Ok(None) => admin_server_error("Worker dropped response channel".into()),
-                Err(_)   => admin_server_error("Proxied call timed out after 30s".into()),
+                Err(_) => admin_server_error("Proxied call timed out after 30s".into()),
             }
         }
         (&Method::POST, "/cluster/join") => {
-            let secret = req.headers().get("x-voltra-cluster-secret").and_then(|v| v.to_str().ok());
+            let secret = req
+                .headers()
+                .get("x-voltra-cluster-secret")
+                .and_then(|v| v.to_str().ok());
             if !cluster_bus.validate_secret(secret) {
                 let mut r = admin_json(serde_json::json!({ "error": "Unauthorized" }));
-                *r.status_mut() = StatusCode::UNAUTHORIZED; return Ok(r);
+                *r.status_mut() = StatusCode::UNAUTHORIZED;
+                return Ok(r);
             }
             let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_server_error(e.to_string())),
             };
             let node: crate::cluster::NodeInfo = match serde_json::from_slice(&body_bytes) {
-                Ok(n) => n, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+                Ok(n) => n,
+                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
             };
             cluster_bus.add_peer(node);
             admin_json(serde_json::json!({ "ok": true, "peers": cluster_bus.peers_snapshot() }))
@@ -1049,28 +1180,29 @@ async fn handle_embedded_admin(
                 let mut kv = pair.splitn(2, '=');
                 match (kv.next(), kv.next()) {
                     (Some("from_seq"), Some(v)) => from_seq = v.parse().unwrap_or(0),
-                    (Some("max"), Some(v))      => max = v.parse::<usize>().unwrap_or(2048).clamp(1, 8192),
+                    (Some("max"), Some(v)) => {
+                        max = v.parse::<usize>().unwrap_or(2048).clamp(1, 8192)
+                    }
                     _ => {}
                 }
             }
             let wal = wal_path.clone();
             let result = tokio::task::spawn_blocking(move || {
                 crate::replication::serve_wal_entries(&wal, from_seq, max)
-            }).await;
+            })
+            .await;
             match result {
                 Ok(Ok((entries, last_seq))) => admin_json(serde_json::json!({
                     "entries": crate::replication::encode_entries(&entries),
                     "last_seq": last_seq,
                 })),
                 Ok(Err(e)) => admin_server_error(e.to_string()),
-                Err(e)     => admin_server_error(format!("task: {}", e)),
+                Err(e) => admin_server_error(format!("task: {}", e)),
             }
         }
 
         // ── Replication status / promote ──────────────────────────────────────
-        (&Method::GET, "/replication/status") => {
-            admin_json(crate::replication::status_json())
-        }
+        (&Method::GET, "/replication/status") => admin_json(crate::replication::status_json()),
         (&Method::POST, "/replication/promote") => {
             let was_replica = crate::replication::is_replica();
             crate::replication::set_replica(false);
@@ -1086,10 +1218,12 @@ async fn handle_embedded_admin(
 
         // ── Backup now ────────────────────────────────────────────────────────
         (&Method::POST, "/backup") => {
-            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            if let Some(resp) = check_auth(&req) {
+                return Ok(resp);
+            }
             let Some(dir) = backup_dir.clone() else {
                 return Ok(admin_bad_request(
-                    "No backup directory configured. Set VOLTRA_BACKUP_DIR.".into()
+                    "No backup directory configured. Set VOLTRA_BACKUP_DIR.".into(),
                 ));
             };
             let tbl = tables.clone();
@@ -1100,7 +1234,8 @@ async fn handle_embedded_admin(
                 let path = crate::backup::backup_now(&tbl, &wal, &dir, last_seq)?;
                 let _ = crate::backup::rotate_backups(&dir, keep);
                 Ok::<_, crate::error::VoltraError>(path)
-            }).await;
+            })
+            .await;
             match result {
                 Ok(Ok(path)) => {
                     let meta = crate::backup::read_meta(&path);
@@ -1111,63 +1246,89 @@ async fn handle_embedded_admin(
                     }))
                 }
                 Ok(Err(e)) => admin_server_error(e.to_string()),
-                Err(e)     => admin_server_error(format!("task: {}", e)),
+                Err(e) => admin_server_error(format!("task: {}", e)),
             }
         }
 
         // ── Apply migration(s) ────────────────────────────────────────────────
         (&Method::POST, "/migrate") => {
-            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            if let Some(resp) = check_auth(&req) {
+                return Ok(resp);
+            }
             let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_server_error(e.to_string())),
             };
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+                Ok(v) => v,
+                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
             };
             let mig_arr = match payload.get("migrations").and_then(|v| v.as_array()) {
                 Some(a) => a.clone(),
                 None => return Ok(admin_bad_request("Expected {\"migrations\": [...]}".into())),
             };
-            let mut applied = 0usize; let mut skipped = 0usize; let mut errors: Vec<String> = Vec::new();
+            let mut applied = 0usize;
+            let mut skipped = 0usize;
+            let mut errors: Vec<String> = Vec::new();
             for entry in &mig_arr {
                 let filename = match entry.get("filename").and_then(|v| v.as_str()) {
                     Some(f) => f.to_string(),
-                    None => { errors.push("missing filename field".into()); skipped += 1; continue; }
+                    None => {
+                        errors.push("missing filename field".into());
+                        skipped += 1;
+                        continue;
+                    }
                 };
                 let content = match entry.get("content").and_then(|v| v.as_str()) {
                     Some(c) => c.to_string(),
-                    None => { errors.push(format!("{}: missing content field", filename)); skipped += 1; continue; }
+                    None => {
+                        errors.push(format!("{}: missing content field", filename));
+                        skipped += 1;
+                        continue;
+                    }
                 };
                 match crate::migrations::apply_migration_str(&filename, &content, &tables) {
-                    Ok(true)  => applied += 1,
+                    Ok(true) => applied += 1,
                     Ok(false) => skipped += 1,
-                    Err(e)    => { errors.push(format!("{}: {}", filename, e)); skipped += 1; }
+                    Err(e) => {
+                        errors.push(format!("{}: {}", filename, e));
+                        skipped += 1;
+                    }
                 }
             }
             let mut body = serde_json::json!({ "applied": applied, "skipped": skipped });
             if !errors.is_empty() {
                 body["errors"] = serde_json::Value::Array(
-                    errors.into_iter().map(serde_json::Value::String).collect());
+                    errors.into_iter().map(serde_json::Value::String).collect(),
+                );
             }
             admin_json(body)
         }
 
         // ── Invoke reducer ────────────────────────────────────────────────────
         (&Method::POST, "/admin/api/call") => {
-            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            if let Some(resp) = check_auth(&req) {
+                return Ok(resp);
+            }
             let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_server_error(e.to_string())),
             };
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+                Ok(v) => v,
+                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
             };
             let name = match payload.get("name").and_then(|v| v.as_str()) {
                 Some(n) if !n.is_empty() => n.to_string(),
                 _ => return Ok(admin_bad_request("Missing 'name' field".into())),
             };
-            let args_val = payload.get("args").cloned().unwrap_or(serde_json::json!([]));
+            let args_val = payload
+                .get("args")
+                .cloned()
+                .unwrap_or(serde_json::json!([]));
             let args_bytes = match rmp_serde::to_vec(&args_val) {
-                Ok(b) => b, Err(e) => return Ok(admin_bad_request(format!("Args encode: {}", e))),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_bad_request(format!("Args encode: {}", e))),
             };
             let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
             let call = PendingCall {
@@ -1185,7 +1346,9 @@ async fn handle_embedded_admin(
             }
             match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await {
                 Ok(Some(resp)) => {
-                    let result_json: serde_json::Value = resp.result.as_deref()
+                    let result_json: serde_json::Value = resp
+                        .result
+                        .as_deref()
                         .and_then(|b| rmp_serde::from_slice(b).ok())
                         .unwrap_or(serde_json::Value::Null);
                     admin_json(serde_json::json!({
@@ -1195,18 +1358,22 @@ async fn handle_embedded_admin(
                     }))
                 }
                 Ok(None) => admin_server_error("Worker dropped response channel".into()),
-                Err(_)   => admin_server_error("Reducer call timed out after 30s".into()),
+                Err(_) => admin_server_error("Reducer call timed out after 30s".into()),
             }
         }
 
         // ── SQL query ─────────────────────────────────────────────────────────
         (&Method::POST, "/admin/api/sql") => {
-            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            if let Some(resp) = check_auth(&req) {
+                return Ok(resp);
+            }
             let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_server_error(e.to_string())),
             };
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+                Ok(v) => v,
+                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
             };
             let query = match payload.get("query").and_then(|v| v.as_str()) {
                 Some(q) if !q.trim().is_empty() => q.to_string(),
@@ -1214,15 +1381,20 @@ async fn handle_embedded_admin(
             };
             let tbl = tables.clone();
             let result = tokio::task::spawn_blocking(move || -> std::result::Result<_, String> {
-                let stmt = crate::sql::parser::parse(&query)
-                    .map_err(|e| format!("Parse error: {}", e))?;
+                let stmt =
+                    crate::sql::parser::parse(&query).map_err(|e| format!("Parse error: {}", e))?;
                 let exec = crate::SqlExecutor::new(tbl);
-                exec.execute_statement(&stmt).map_err(|e| format!("Execution error: {}", e))
-            }).await;
+                exec.execute_statement(&stmt)
+                    .map_err(|e| format!("Execution error: {}", e))
+            })
+            .await;
             match result {
                 Ok(Ok(res)) => {
-                    let rows: Vec<serde_json::Value> =
-                        res.rows.into_iter().map(serde_json::Value::Object).collect();
+                    let rows: Vec<serde_json::Value> = res
+                        .rows
+                        .into_iter()
+                        .map(serde_json::Value::Object)
+                        .collect();
                     admin_json(serde_json::json!({
                         "columns": res.columns,
                         "rows": rows,
@@ -1236,20 +1408,25 @@ async fn handle_embedded_admin(
 
         // ── Upsert row (WAL + live fan-out) ──────────────────────────────────
         (&Method::POST, "/admin/api/row") => {
-            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            if let Some(resp) = check_auth(&req) {
+                return Ok(resp);
+            }
             let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_server_error(e.to_string())),
             };
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+                Ok(v) => v,
+                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
             };
             let (table, rkey, data) = match (
                 payload.get("table").and_then(|v| v.as_str()),
                 payload.get("key").and_then(|v| v.as_str()),
                 payload.get("data"),
             ) {
-                (Some(t), Some(k), Some(d)) if !t.is_empty() && !k.is_empty() =>
-                    (t.to_string(), k.to_string(), d.clone()),
+                (Some(t), Some(k), Some(d)) if !t.is_empty() && !k.is_empty() => {
+                    (t.to_string(), k.to_string(), d.clone())
+                }
                 _ => return Ok(admin_bad_request("Expected {table, key, data}".into())),
             };
             match tables.set_row(table.clone(), rkey.clone(), data) {
@@ -1257,8 +1434,13 @@ async fn handle_embedded_admin(
                     let deltas = vec![delta];
                     subs.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, Ordering::Relaxed);
-                    let entry = WalEntry::new(now_nanos(), seq,
-                        "__admin_set_row".to_string(), vec![], deltas);
+                    let entry = WalEntry::new(
+                        now_nanos(),
+                        seq,
+                        "__admin_set_row".to_string(),
+                        vec![],
+                        deltas,
+                    );
                     if let Err(e) = wal_writer.append(&entry, seq) {
                         log::warn!("[admin] WAL append failed: {}", e);
                     }
@@ -1270,14 +1452,17 @@ async fn handle_embedded_admin(
 
         // ── Delete row (WAL + live fan-out) ──────────────────────────────────
         (&Method::DELETE, "/admin/api/row") => {
-            if let Some(resp) = check_auth(&req) { return Ok(resp); }
+            if let Some(resp) = check_auth(&req) {
+                return Ok(resp);
+            }
             let query = req.uri().query().unwrap_or("");
-            let mut table = String::new(); let mut rkey = String::new();
+            let mut table = String::new();
+            let mut rkey = String::new();
             for pair in query.split('&') {
                 let mut kv = pair.splitn(2, '=');
                 match (kv.next(), kv.next()) {
                     (Some("table"), Some(v)) => table = admin_url_decode(v),
-                    (Some("key"),   Some(v)) => rkey  = admin_url_decode(v),
+                    (Some("key"), Some(v)) => rkey = admin_url_decode(v),
                     _ => {}
                 }
             }
@@ -1289,8 +1474,13 @@ async fn handle_embedded_admin(
                     let deltas = vec![delta];
                     subs.publish_deltas(&deltas);
                     let seq = global_seq.fetch_add(1, Ordering::Relaxed);
-                    let entry = WalEntry::new(now_nanos(), seq,
-                        "__admin_delete_row".to_string(), vec![], deltas);
+                    let entry = WalEntry::new(
+                        now_nanos(),
+                        seq,
+                        "__admin_delete_row".to_string(),
+                        vec![],
+                        deltas,
+                    );
                     if let Err(e) = wal_writer.append(&entry, seq) {
                         log::warn!("[admin] WAL append failed: {}", e);
                     }
@@ -1303,24 +1493,31 @@ async fn handle_embedded_admin(
         // ── Seed rows (no WAL, no fan-out — dev/test only) ───────────────────
         (&Method::POST, "/seed") => {
             let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                Ok(b) => b, Err(e) => return Ok(admin_server_error(e.to_string())),
+                Ok(b) => b,
+                Err(e) => return Ok(admin_server_error(e.to_string())),
             };
             let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v, Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
+                Ok(v) => v,
+                Err(e) => return Ok(admin_bad_request(format!("Invalid JSON: {}", e))),
             };
             let row_arr = match payload.get("rows").and_then(|v| v.as_array()) {
                 Some(a) => a.clone(),
                 None => return Ok(admin_bad_request("Expected {\"rows\": [...]}".into())),
             };
-            let mut written = 0usize; let mut skipped = 0usize;
+            let mut written = 0usize;
+            let mut skipped = 0usize;
             for item in &row_arr {
                 if let Some(triple) = item.as_array() {
                     if triple.len() == 3 {
-                        if let (Some(t), Some(k), Some(d)) = (
-                            triple[0].as_str(), triple[1].as_str(), Some(&triple[2])
-                        ) {
-                            if tables.set_row(t.to_string(), k.to_string(), d.clone()).is_ok() {
-                                written += 1; continue;
+                        if let (Some(t), Some(k), Some(d)) =
+                            (triple[0].as_str(), triple[1].as_str(), Some(&triple[2]))
+                        {
+                            if tables
+                                .set_row(t.to_string(), k.to_string(), d.clone())
+                                .is_ok()
+                            {
+                                written += 1;
+                                continue;
                             }
                         }
                     }
@@ -1372,32 +1569,45 @@ fn start_embedded_admin_server(
 ) {
     let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
         Ok(a) => a,
-        Err(e) => { log::warn!("[admin] invalid metrics address: {}", e); return; }
+        Err(e) => {
+            log::warn!("[admin] invalid metrics address: {}", e);
+            return;
+        }
     };
 
     tokio::spawn(async move {
         let make_svc = make_service_fn(move |_| {
-            let tbl   = tables.clone();
-            let sb    = subs.clone();
-            let reg   = registry.clone();
-            let sch   = schema_reg.clone();
-            let wal   = wal_writer.clone();
-            let seq   = global_seq.clone();
-            let met   = metrics.clone();
-            let qtx   = queue_tx.clone();
-            let akey  = api_key.clone();
-            let bdir  = backup_dir.clone();
+            let tbl = tables.clone();
+            let sb = subs.clone();
+            let reg = registry.clone();
+            let sch = schema_reg.clone();
+            let wal = wal_writer.clone();
+            let seq = global_seq.clone();
+            let met = metrics.clone();
+            let qtx = queue_tx.clone();
+            let akey = api_key.clone();
+            let bdir = backup_dir.clone();
             let bkeep = backup_keep;
             let wpath = wal_path.clone();
-            let cbus  = cluster_bus.clone();
+            let cbus = cluster_bus.clone();
             async move {
                 Ok::<_, hyper::Error>(service_fn(move |req| {
                     handle_embedded_admin(
                         req,
-                        tbl.clone(), sb.clone(), reg.clone(), sch.clone(),
-                        wal.clone(), seq.clone(), met.clone(),
-                        startup, qtx.clone(), akey.clone(),
-                        bdir.clone(), bkeep, wpath.clone(), cbus.clone(),
+                        tbl.clone(),
+                        sb.clone(),
+                        reg.clone(),
+                        sch.clone(),
+                        wal.clone(),
+                        seq.clone(),
+                        met.clone(),
+                        startup,
+                        qtx.clone(),
+                        akey.clone(),
+                        bdir.clone(),
+                        bkeep,
+                        wpath.clone(),
+                        cbus.clone(),
                     )
                 }))
             }
@@ -1406,14 +1616,19 @@ fn start_embedded_admin_server(
         let server = match Server::try_bind(&addr) {
             Ok(s) => s.serve(make_svc),
             Err(e) => {
-                log::warn!("[admin] could not bind metrics port {}: {} — admin console disabled", addr, e);
+                log::warn!(
+                    "[admin] could not bind metrics port {}: {} — admin console disabled",
+                    addr,
+                    e
+                );
                 return;
             }
         };
         log::info!("[admin] Admin console: http://{}/admin", addr);
         println!("[voltra] Admin console: http://{}/admin", addr);
-        let graceful = server
-            .with_graceful_shutdown(async move { let _ = shutdown_rx.changed().await; });
+        let graceful = server.with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+        });
         if let Err(e) = graceful.await {
             log::warn!("[admin] Metrics server error: {}", e);
         }

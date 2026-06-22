@@ -24,10 +24,8 @@ const DEFAULT_REDUCER_MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 /// Default maximum size of args bytes IN and result bytes OUT (1 MiB).
 const DEFAULT_REDUCER_MAX_IO_BYTES: usize = 1024 * 1024;
 
-static REDUCER_MAX_MEMORY_BYTES: AtomicUsize =
-    AtomicUsize::new(DEFAULT_REDUCER_MAX_MEMORY_BYTES);
-static REDUCER_MAX_IO_BYTES: AtomicUsize =
-    AtomicUsize::new(DEFAULT_REDUCER_MAX_IO_BYTES);
+static REDUCER_MAX_MEMORY_BYTES: AtomicUsize = AtomicUsize::new(DEFAULT_REDUCER_MAX_MEMORY_BYTES);
+static REDUCER_MAX_IO_BYTES: AtomicUsize = AtomicUsize::new(DEFAULT_REDUCER_MAX_IO_BYTES);
 
 /// Set the process-wide WASM linear-memory cap (in bytes) for reducer
 /// instances.  Typically called once from `main` via

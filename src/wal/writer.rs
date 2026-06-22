@@ -17,7 +17,10 @@ impl WalWriter {
         if let Some(parent) = path_ref.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new().create(true).append(true).open(path_ref)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path_ref)?;
 
         Ok(WalWriter {
             file: BufWriter::new(file),

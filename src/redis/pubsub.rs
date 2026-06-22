@@ -10,8 +10,15 @@ use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Clone, Debug)]
 pub enum PubMsg {
-    Message { channel: Bytes, payload: Bytes },
-    PMessage { pattern: Bytes, channel: Bytes, payload: Bytes },
+    Message {
+        channel: Bytes,
+        payload: Bytes,
+    },
+    PMessage {
+        pattern: Bytes,
+        channel: Bytes,
+        payload: Bytes,
+    },
 }
 
 #[derive(Default)]
@@ -22,7 +29,10 @@ pub struct PubSub {
 
 impl PubSub {
     pub fn subscribe(&self, conn_id: u64, channel: Bytes, tx: UnboundedSender<PubMsg>) {
-        self.channels.entry(channel).or_default().insert(conn_id, tx);
+        self.channels
+            .entry(channel)
+            .or_default()
+            .insert(conn_id, tx);
     }
 
     pub fn unsubscribe(&self, conn_id: u64, channel: &Bytes) {
@@ -33,7 +43,10 @@ impl PubSub {
     }
 
     pub fn psubscribe(&self, conn_id: u64, pattern: Bytes, tx: UnboundedSender<PubMsg>) {
-        self.patterns.entry(pattern).or_default().insert(conn_id, tx);
+        self.patterns
+            .entry(pattern)
+            .or_default()
+            .insert(conn_id, tx);
     }
 
     pub fn punsubscribe(&self, conn_id: u64, pattern: &Bytes) {
@@ -62,7 +75,10 @@ impl PubSub {
         if let Some(subs) = self.channels.get(channel) {
             for s in subs.iter() {
                 if s.value()
-                    .send(PubMsg::Message { channel: channel.clone(), payload: payload.clone() })
+                    .send(PubMsg::Message {
+                        channel: channel.clone(),
+                        payload: payload.clone(),
+                    })
                     .is_ok()
                 {
                     delivered += 1;
@@ -106,7 +122,10 @@ impl PubSub {
     }
 
     pub fn numpat(&self) -> usize {
-        self.patterns.iter().filter(|e| !e.value().is_empty()).count()
+        self.patterns
+            .iter()
+            .filter(|e| !e.value().is_empty())
+            .count()
     }
 }
 

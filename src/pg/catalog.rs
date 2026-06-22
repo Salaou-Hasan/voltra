@@ -34,7 +34,9 @@ pub struct TableDef {
 
 impl TableDef {
     pub fn column(&self, name: &str) -> Option<&ColumnDef> {
-        self.columns.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+        self.columns
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
     }
     pub fn alloc_rowid(&self) -> u64 {
         self.next_rowid.fetch_add(1, Ordering::Relaxed)
@@ -53,7 +55,10 @@ pub struct Catalog {
 impl Catalog {
     /// Rebuild the catalog from the store (after snapshot + AOF replay).
     pub fn load(store: &MvccStore) -> Self {
-        let cat = Catalog { tables: DashMap::new(), next_ns: AtomicU32::new(NS_PG_BASE) };
+        let cat = Catalog {
+            tables: DashMap::new(),
+            next_ns: AtomicU32::new(NS_PG_BASE),
+        };
         let ts = store.current_ts();
         store.for_each_visible(NS_PG_CATALOG, ts, |_key, datum| {
             if let Datum::Str(raw) = datum {
@@ -108,8 +113,8 @@ impl Catalog {
             columns,
             next_rowid: AtomicU64::new(1),
         });
-        let blob = serde_json::to_vec(def.as_ref())
-            .map_err(|e| format!("catalog encode failed: {e}"))?;
+        let blob =
+            serde_json::to_vec(def.as_ref()).map_err(|e| format!("catalog encode failed: {e}"))?;
         self.tables.insert(lname.clone(), def.clone());
         Ok((def, Bytes::from(lname.into_bytes()), Bytes::from(blob)))
     }
@@ -123,6 +128,11 @@ impl Catalog {
 // next_rowid is #[serde(skip)] — provide the Default it needs.
 impl Default for TableDef {
     fn default() -> Self {
-        Self { name: String::new(), ns: 0, columns: Vec::new(), next_rowid: AtomicU64::new(1) }
+        Self {
+            name: String::new(),
+            ns: 0,
+            columns: Vec::new(),
+            next_rowid: AtomicU64::new(1),
+        }
     }
 }

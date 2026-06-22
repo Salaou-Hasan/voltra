@@ -31,16 +31,16 @@
 
 pub mod fanout;
 pub mod gossip;
+pub mod lobby_route;
+pub mod migration;
 pub mod proxy;
 pub mod regions;
-pub mod lobby_route;
 pub mod ring;
-pub mod migration;
 
-pub use regions::{RegionRegistry, ClusterRegion};
-pub use lobby_route::{LobbyRouteRegistry, LobbyRoute};
-pub use ring::{ConsistentHashRing, SharedRing};
+pub use lobby_route::{LobbyRoute, LobbyRouteRegistry};
 pub use migration::{MigrationCoordinator, MigrationState, MigrationStatus};
+pub use regions::{ClusterRegion, RegionRegistry};
+pub use ring::{ConsistentHashRing, SharedRing};
 
 use std::env;
 use std::sync::{Arc, OnceLock};
@@ -50,9 +50,9 @@ use dashmap::DashMap;
 use reqwest::blocking::Client as BlockingClient;
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Result, VoltraError};
 use crate::subscriptions::SubscriptionManager;
 use crate::table::{RowDelta, TableStore};
-use crate::error::{VoltraError, Result};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lazy global HTTP client
@@ -92,7 +92,11 @@ pub struct PeerHealth {
 
 impl Default for PeerHealth {
     fn default() -> Self {
-        Self { healthy: true, last_seen: None, consecutive_failures: 0 }
+        Self {
+            healthy: true,
+            last_seen: None,
+            consecutive_failures: 0,
+        }
     }
 }
 
@@ -107,7 +111,10 @@ pub struct PeerEntry {
 
 impl PeerEntry {
     pub fn new(node: NodeInfo) -> Self {
-        Self { node, health: std::sync::Mutex::new(PeerHealth::default()) }
+        Self {
+            node,
+            health: std::sync::Mutex::new(PeerHealth::default()),
+        }
     }
 
     pub fn is_healthy(&self) -> bool {
@@ -153,17 +160,26 @@ impl ClusterConfig {
     pub fn from_env(my_shard_id: u32, shard_count: u32) -> Self {
         let cluster_secret = env::var("VOLTRA_CLUSTER_SECRET").ok();
         let gossip_interval_ms = env::var("VOLTRA_GOSSIP_INTERVAL_MS")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(5_000);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5_000);
         let http_timeout_ms = env::var("VOLTRA_CLUSTER_HTTP_TIMEOUT_MS")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2_000);
 
         let peers_raw = env::var("VOLTRA_PEERS").unwrap_or_default();
         let peers_raw = peers_raw.trim().to_string();
 
         if peers_raw.is_empty() {
             return ClusterConfig {
-                enabled: false, my_shard_id, shard_count, peers: vec![],
-                cluster_secret, gossip_interval_ms, http_timeout_ms,
+                enabled: false,
+                my_shard_id,
+                shard_count,
+                peers: vec![],
+                cluster_secret,
+                gossip_interval_ms,
+                http_timeout_ms,
             };
         }
 
@@ -177,33 +193,52 @@ impl ClusterConfig {
             );
         }
 
-        ClusterConfig { enabled, my_shard_id, shard_count, peers, cluster_secret, gossip_interval_ms, http_timeout_ms }
+        ClusterConfig {
+            enabled,
+            my_shard_id,
+            shard_count,
+            peers,
+            cluster_secret,
+            gossip_interval_ms,
+            http_timeout_ms,
+        }
     }
 
     pub(crate) fn parse_peers(raw: &str, my_shard_id: u32) -> Vec<NodeInfo> {
         let mut peers = Vec::new();
         for (idx, part) in raw.split(',').enumerate() {
             let part = part.trim();
-            if part.is_empty() { continue; }
+            if part.is_empty() {
+                continue;
+            }
             if let Some(eq) = part.find('=') {
                 let key = &part[..eq];
                 let url = part[eq + 1..].to_string();
                 if let Some(id_str) = key.strip_prefix("shard") {
                     if let Ok(shard_id) = id_str.parse::<u32>() {
                         if shard_id != my_shard_id {
-                            peers.push(NodeInfo { shard_id, metrics_url: url });
+                            peers.push(NodeInfo {
+                                shard_id,
+                                metrics_url: url,
+                            });
                         }
                         continue;
                     }
                 }
                 let shard_id = idx as u32;
                 if shard_id != my_shard_id {
-                    peers.push(NodeInfo { shard_id, metrics_url: url });
+                    peers.push(NodeInfo {
+                        shard_id,
+                        metrics_url: url,
+                    });
                 }
             } else {
                 let shard_id = idx as u32;
                 if shard_id != my_shard_id {
-                    peers.push(NodeInfo { shard_id, metrics_url: part.to_string() });
+                    peers.push(NodeInfo {
+                        shard_id,
+                        metrics_url: part.to_string(),
+                    });
                 }
             }
         }
@@ -241,7 +276,10 @@ impl ClusterBus {
     }
 
     pub fn secret_header(&self) -> Option<(&'static str, String)> {
-        self.config.cluster_secret.as_ref().map(|s| ("x-voltra-cluster-secret", s.clone()))
+        self.config
+            .cluster_secret
+            .as_ref()
+            .map(|s| ("x-voltra-cluster-secret", s.clone()))
     }
 
     pub fn mark_healthy(&self, shard_id: u32) {
@@ -254,7 +292,10 @@ impl ClusterBus {
         if let Some(entry) = self.peers.get(&shard_id) {
             let became_unhealthy = entry.mark_failure();
             if became_unhealthy {
-                log::warn!("[cluster] shard{} marked unhealthy after 3 consecutive failures", shard_id);
+                log::warn!(
+                    "[cluster] shard{} marked unhealthy after 3 consecutive failures",
+                    shard_id
+                );
             }
         }
     }
@@ -264,14 +305,17 @@ impl ClusterBus {
     }
 
     pub fn healthy_peers(&self) -> Vec<NodeInfo> {
-        self.peers.iter()
+        self.peers
+            .iter()
             .filter(|e| e.value().is_healthy())
             .map(|e| e.value().node.clone())
             .collect()
     }
 
     pub fn fanout_deltas(self: &Arc<Self>, deltas: &[RowDelta]) {
-        if !self.is_active() || deltas.is_empty() { return; }
+        if !self.is_active() || deltas.is_empty() {
+            return;
+        }
         fanout::fanout_to_peers(self, deltas);
     }
 
@@ -298,27 +342,35 @@ impl ClusterBus {
         let entry = self.peers.get(&target_shard_id);
         let node = match entry {
             Some(ref e) => e.value().node.clone(),
-            None => return Err(VoltraError::internal(format!(
-                "[cluster] No peer found for shard {}", target_shard_id
-            ))),
+            None => {
+                return Err(VoltraError::internal(format!(
+                    "[cluster] No peer found for shard {}",
+                    target_shard_id
+                )))
+            }
         };
         proxy::proxy_call(self, &node, reducer_name, args, caller_id, caller_role)
     }
 
     /// Register a new peer dynamically (for /cluster/join).
     pub fn add_peer(&self, node: NodeInfo) {
-        self.peers.entry(node.shard_id).or_insert_with(|| PeerEntry::new(node));
+        self.peers
+            .entry(node.shard_id)
+            .or_insert_with(|| PeerEntry::new(node));
     }
 
     /// All peers as a JSON-serializable snapshot.
     pub fn peers_snapshot(&self) -> Vec<serde_json::Value> {
-        self.peers.iter().map(|e| {
-            serde_json::json!({
-                "shard_id":    e.value().node.shard_id,
-                "metrics_url": e.value().node.metrics_url,
-                "healthy":     e.value().is_healthy(),
+        self.peers
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "shard_id":    e.value().node.shard_id,
+                    "metrics_url": e.value().node.metrics_url,
+                    "healthy":     e.value().is_healthy(),
+                })
             })
-        }).collect()
+            .collect()
     }
 }
 
@@ -333,7 +385,9 @@ unsafe impl Sync for ClusterBus {}
 /// Identical result on every node — deterministic shard assignment.
 /// For multi-cluster setups prefer `ConsistentHashRing` (ring.rs).
 pub fn shard_for_key(key: &str, shard_count: u32) -> u32 {
-    if shard_count <= 1 { return 0; }
+    if shard_count <= 1 {
+        return 0;
+    }
     let mut hash: u64 = 14_695_981_039_346_656_037;
     for byte in key.bytes() {
         hash ^= u64::from(byte);
@@ -374,7 +428,9 @@ pub fn cluster_shard_for_key(key: &str) -> u32 {
     }
     // Fallback to modulo shard routing.
     let shard_count: u32 = env::var("VOLTRA_SHARD_COUNT")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
     shard_for_key(key, shard_count)
 }
 
@@ -404,7 +460,10 @@ pub fn proxy_call_global(
 /// DSL builtin: count rows in a table across ALL clusters in the ring.
 /// Returns the sum of `count_rows` calls across all healthy peers plus self.
 pub fn region_count_rows_global(table: &str, local_count: i64) -> i64 {
-    let bus = match GLOBAL_CLUSTER_BUS.get() { Some(b) => b, None => return local_count };
+    let bus = match GLOBAL_CLUSTER_BUS.get() {
+        Some(b) => b,
+        None => return local_count,
+    };
     let client = bus.http_client();
     let mut total = local_count;
 
@@ -430,9 +489,18 @@ pub fn migrate_row_global(
     target_shard: u32,
     local_data: Option<serde_json::Value>,
 ) -> bool {
-    let bus = match GLOBAL_CLUSTER_BUS.get() { Some(b) => b, None => return false };
-    let data = match local_data { Some(d) => d, None => return false };
-    let my_cluster = GLOBAL_MY_CLUSTER_ID.get().map(|s| s.as_str()).unwrap_or("local");
+    let bus = match GLOBAL_CLUSTER_BUS.get() {
+        Some(b) => b,
+        None => return false,
+    };
+    let data = match local_data {
+        Some(d) => d,
+        None => return false,
+    };
+    let my_cluster = GLOBAL_MY_CLUSTER_ID
+        .get()
+        .map(|s| s.as_str())
+        .unwrap_or("local");
 
     let entry = bus.peers.get(&target_shard);
     let node = match entry {
@@ -442,7 +510,11 @@ pub fn migrate_row_global(
 
     let batch = migration::MigrateBatch {
         source_cluster: my_cluster.to_owned(),
-        rows: vec![migration::MigrateRow { table: table.to_owned(), key: key.to_owned(), data }],
+        rows: vec![migration::MigrateRow {
+            table: table.to_owned(),
+            key: key.to_owned(),
+            data,
+        }],
     };
 
     let url = format!("{}/cluster/receive", node.metrics_url);
@@ -542,8 +614,13 @@ mod tests {
     #[test]
     fn validate_secret_no_secret_configured_always_passes() {
         let cfg = ClusterConfig {
-            enabled: true, my_shard_id: 0, shard_count: 1, peers: vec![],
-            cluster_secret: None, gossip_interval_ms: 5000, http_timeout_ms: 2000,
+            enabled: true,
+            my_shard_id: 0,
+            shard_count: 1,
+            peers: vec![],
+            cluster_secret: None,
+            gossip_interval_ms: 5000,
+            http_timeout_ms: 2000,
         };
         let bus = ClusterBus::new(cfg);
         assert!(bus.validate_secret(None));
@@ -553,8 +630,13 @@ mod tests {
     #[test]
     fn validate_secret_correct_secret_passes() {
         let cfg = ClusterConfig {
-            enabled: true, my_shard_id: 0, shard_count: 1, peers: vec![],
-            cluster_secret: Some("s3cr3t".to_string()), gossip_interval_ms: 5000, http_timeout_ms: 2000,
+            enabled: true,
+            my_shard_id: 0,
+            shard_count: 1,
+            peers: vec![],
+            cluster_secret: Some("s3cr3t".to_string()),
+            gossip_interval_ms: 5000,
+            http_timeout_ms: 2000,
         };
         let bus = ClusterBus::new(cfg);
         assert!(bus.validate_secret(Some("s3cr3t")));
@@ -563,8 +645,13 @@ mod tests {
     #[test]
     fn validate_secret_wrong_secret_rejected() {
         let cfg = ClusterConfig {
-            enabled: true, my_shard_id: 0, shard_count: 1, peers: vec![],
-            cluster_secret: Some("s3cr3t".to_string()), gossip_interval_ms: 5000, http_timeout_ms: 2000,
+            enabled: true,
+            my_shard_id: 0,
+            shard_count: 1,
+            peers: vec![],
+            cluster_secret: Some("s3cr3t".to_string()),
+            gossip_interval_ms: 5000,
+            http_timeout_ms: 2000,
         };
         let bus = ClusterBus::new(cfg);
         assert!(!bus.validate_secret(None));
@@ -574,16 +661,28 @@ mod tests {
     #[test]
     fn healthy_peers_excludes_unhealthy_nodes() {
         let cfg = ClusterConfig {
-            enabled: true, my_shard_id: 0, shard_count: 3,
+            enabled: true,
+            my_shard_id: 0,
+            shard_count: 3,
             peers: vec![
-                NodeInfo { shard_id: 1, metrics_url: "http://node1:3001".to_string() },
-                NodeInfo { shard_id: 2, metrics_url: "http://node2:3001".to_string() },
+                NodeInfo {
+                    shard_id: 1,
+                    metrics_url: "http://node1:3001".to_string(),
+                },
+                NodeInfo {
+                    shard_id: 2,
+                    metrics_url: "http://node2:3001".to_string(),
+                },
             ],
-            cluster_secret: None, gossip_interval_ms: 5000, http_timeout_ms: 2000,
+            cluster_secret: None,
+            gossip_interval_ms: 5000,
+            http_timeout_ms: 2000,
         };
         let bus = ClusterBus::new(cfg);
         assert_eq!(bus.healthy_peers().len(), 2);
-        bus.mark_unhealthy(1); bus.mark_unhealthy(1); bus.mark_unhealthy(1);
+        bus.mark_unhealthy(1);
+        bus.mark_unhealthy(1);
+        bus.mark_unhealthy(1);
         assert_eq!(bus.healthy_peers().len(), 1);
         assert_eq!(bus.healthy_peers()[0].shard_id, 2);
     }
@@ -591,12 +690,21 @@ mod tests {
     #[test]
     fn mark_healthy_recovers_unhealthy_peer() {
         let cfg = ClusterConfig {
-            enabled: true, my_shard_id: 0, shard_count: 2,
-            peers: vec![NodeInfo { shard_id: 1, metrics_url: "http://node1:3001".to_string() }],
-            cluster_secret: None, gossip_interval_ms: 5000, http_timeout_ms: 2000,
+            enabled: true,
+            my_shard_id: 0,
+            shard_count: 2,
+            peers: vec![NodeInfo {
+                shard_id: 1,
+                metrics_url: "http://node1:3001".to_string(),
+            }],
+            cluster_secret: None,
+            gossip_interval_ms: 5000,
+            http_timeout_ms: 2000,
         };
         let bus = ClusterBus::new(cfg);
-        bus.mark_unhealthy(1); bus.mark_unhealthy(1); bus.mark_unhealthy(1);
+        bus.mark_unhealthy(1);
+        bus.mark_unhealthy(1);
+        bus.mark_unhealthy(1);
         assert_eq!(bus.healthy_peers().len(), 0);
         bus.mark_healthy(1);
         assert_eq!(bus.healthy_peers().len(), 1);

@@ -7,9 +7,7 @@
 
 use super::catalog::{rowid_key, Catalog, ColumnDef as CatColumn, TableDef};
 use super::types::{scalar_oid, scalar_to_text, ColType};
-use crate::mvcc::{
-    Datum, MvccStore, NsKey, Scalar, SnapshotGuard, WriteOp, NS_PG_CATALOG,
-};
+use crate::mvcc::{Datum, MvccStore, NsKey, Scalar, SnapshotGuard, WriteOp, NS_PG_CATALOG};
 use bytes::Bytes;
 use sqlparser::ast::{
     self, BinaryOperator, Expr, FunctionArg, FunctionArgExpr, GroupByExpr, Ident, JoinConstraint,
@@ -128,21 +126,56 @@ impl PgEngine {
             Statement::Query(q) => {
                 let rows = self.run_query(sess, &q, params)?;
                 let n = rows.rows.len();
-                Ok(ExecOut::Rows { cols: rows.cols, rows: rows.rows, tag: format!("SELECT {n}") })
+                Ok(ExecOut::Rows {
+                    cols: rows.cols,
+                    rows: rows.rows,
+                    tag: format!("SELECT {n}"),
+                })
             }
-            Statement::Insert { table_name, columns, source, returning, .. } => {
-                self.exec_insert(sess, table_name, columns, source, returning, params).await
+            Statement::Insert {
+                table_name,
+                columns,
+                source,
+                returning,
+                ..
+            } => {
+                self.exec_insert(sess, table_name, columns, source, returning, params)
+                    .await
             }
-            Statement::Update { table, assignments, selection, returning, .. } => {
-                self.exec_update(sess, table, assignments, selection, returning, params).await
+            Statement::Update {
+                table,
+                assignments,
+                selection,
+                returning,
+                ..
+            } => {
+                self.exec_update(sess, table, assignments, selection, returning, params)
+                    .await
             }
-            Statement::Delete { from, selection, returning, .. } => {
-                self.exec_delete(sess, from, selection, returning, params).await
+            Statement::Delete {
+                from,
+                selection,
+                returning,
+                ..
+            } => {
+                self.exec_delete(sess, from, selection, returning, params)
+                    .await
             }
-            Statement::CreateTable { name, columns, if_not_exists, .. } => {
-                self.exec_create_table(sess, name, columns, if_not_exists).await
+            Statement::CreateTable {
+                name,
+                columns,
+                if_not_exists,
+                ..
+            } => {
+                self.exec_create_table(sess, name, columns, if_not_exists)
+                    .await
             }
-            Statement::Drop { object_type, names, if_exists, .. } => {
+            Statement::Drop {
+                object_type,
+                names,
+                if_exists,
+                ..
+            } => {
                 if object_type != ast::ObjectType::Table {
                     return Err(format!("DROP {object_type} is not supported"));
                 }
@@ -154,7 +187,10 @@ impl PgEngine {
                 let def = self.resolve_def(&table_name)?;
                 let ts = self.snapshot_ts(sess);
                 self.store.for_each_visible(def.ns, ts, |key, _| {
-                    writes.push(WriteOp::Del { ns: def.ns, key: Bytes::copy_from_slice(key) });
+                    writes.push(WriteOp::Del {
+                        ns: def.ns,
+                        key: Bytes::copy_from_slice(key),
+                    });
                     keys.push(NsKey::new(def.ns, Bytes::copy_from_slice(key)));
                 });
                 self.apply_writes(sess, writes, keys).await?;
@@ -174,23 +210,23 @@ impl PgEngine {
                 });
                 Ok(ExecOut::Tag("BEGIN".into()))
             }
-            Statement::Commit { .. } => {
-                match sess.txn.take() {
-                    None => Ok(ExecOut::Tag("COMMIT".into())),
-                    Some(t) if t.aborted => Ok(ExecOut::Tag("ROLLBACK".into())),
-                    Some(t) => {
-                        if t.writes.is_empty() {
-                            return Ok(ExecOut::Tag("COMMIT".into()));
-                        }
-                        let read_ts = t.snap.ts;
-                        self.store
-                            .commit(read_ts, t.writes, t.conflict)
-                            .await
-                            .map_err(|e| format!("could not serialize access due to concurrent update: {e}"))?;
-                        Ok(ExecOut::Tag("COMMIT".into()))
+            Statement::Commit { .. } => match sess.txn.take() {
+                None => Ok(ExecOut::Tag("COMMIT".into())),
+                Some(t) if t.aborted => Ok(ExecOut::Tag("ROLLBACK".into())),
+                Some(t) => {
+                    if t.writes.is_empty() {
+                        return Ok(ExecOut::Tag("COMMIT".into()));
                     }
+                    let read_ts = t.snap.ts;
+                    self.store
+                        .commit(read_ts, t.writes, t.conflict)
+                        .await
+                        .map_err(|e| {
+                            format!("could not serialize access due to concurrent update: {e}")
+                        })?;
+                    Ok(ExecOut::Tag("COMMIT".into()))
                 }
-            }
+            },
             Statement::Rollback { .. } => {
                 sess.txn = None;
                 Ok(ExecOut::Tag("ROLLBACK".into()))
@@ -244,7 +280,11 @@ impl PgEngine {
                 ast::DataType::Custom(ref n, _) if object_name_str(n).eq_ignore_ascii_case("serial")
                     || object_name_str(n).eq_ignore_ascii_case("bigserial")
             );
-            let ctype = if serial { ColType::Int } else { ColType::from_sql(&c.data_type) };
+            let ctype = if serial {
+                ColType::Int
+            } else {
+                ColType::from_sql(&c.data_type)
+            };
             let mut not_null = false;
             let mut primary_key = false;
             for opt in &c.options {
@@ -302,7 +342,10 @@ impl PgEngine {
             }];
             let ts = self.store.current_ts();
             self.store.for_each_visible(def.ns, ts, |key, _| {
-                writes.push(WriteOp::Del { ns: def.ns, key: Bytes::copy_from_slice(key) });
+                writes.push(WriteOp::Del {
+                    ns: def.ns,
+                    key: Bytes::copy_from_slice(key),
+                });
             });
             self.store
                 .commit(ts, writes, Vec::new())
@@ -332,7 +375,10 @@ impl PgEngine {
         };
         for c in &target_cols {
             if def.column(c).is_none() {
-                return Err(format!("column \"{c}\" of relation \"{}\" does not exist", def.name));
+                return Err(format!(
+                    "column \"{c}\" of relation \"{}\" does not exist",
+                    def.name
+                ));
             }
         }
         let Some(source) = &source else {
@@ -341,7 +387,11 @@ impl PgEngine {
         // Evaluate the source rows (VALUES list or arbitrary SELECT).
         let value_rows: Vec<Vec<Scalar>> = match source.body.as_ref() {
             SetExpr::Values(values) => {
-                let env = QueryEnv { engine: self, sess, params };
+                let env = QueryEnv {
+                    engine: self,
+                    sess,
+                    params,
+                };
                 let mut rows = Vec::with_capacity(values.rows.len());
                 for row in &values.rows {
                     let mut out = Vec::with_capacity(row.len());
@@ -407,9 +457,11 @@ impl PgEngine {
         let returning = self.project_returning(sess, &def, &inserted, &returning, params)?;
         self.apply_writes(sess, writes, keys).await?;
         match returning {
-            Some(rows) => {
-                Ok(ExecOut::Rows { cols: rows.cols, rows: rows.rows, tag: format!("INSERT 0 {n}") })
-            }
+            Some(rows) => Ok(ExecOut::Rows {
+                cols: rows.cols,
+                rows: rows.rows,
+                tag: format!("INSERT 0 {n}"),
+            }),
             None => Ok(ExecOut::Tag(format!("INSERT 0 {n}"))),
         }
     }
@@ -432,7 +484,11 @@ impl PgEngine {
         let mut keys = Vec::new();
         let mut updated: Vec<(u64, RowMap)> = Vec::new();
         {
-            let env = QueryEnv { engine: self, sess, params };
+            let env = QueryEnv {
+                engine: self,
+                sess,
+                params,
+            };
             for (rowid, row) in rows {
                 let ctx = row_ctx(&def.name, &row);
                 if let Some(pred) = &selection {
@@ -474,9 +530,11 @@ impl PgEngine {
         let returning = self.project_returning(sess, &def, &updated, &returning, params)?;
         self.apply_writes(sess, writes, keys).await?;
         match returning {
-            Some(rows) => {
-                Ok(ExecOut::Rows { cols: rows.cols, rows: rows.rows, tag: format!("UPDATE {n}") })
-            }
+            Some(rows) => Ok(ExecOut::Rows {
+                cols: rows.cols,
+                rows: rows.rows,
+                tag: format!("UPDATE {n}"),
+            }),
             None => Ok(ExecOut::Tag(format!("UPDATE {n}"))),
         }
     }
@@ -504,7 +562,11 @@ impl PgEngine {
         let mut keys = Vec::new();
         let mut deleted: Vec<(u64, RowMap)> = Vec::new();
         {
-            let env = QueryEnv { engine: self, sess, params };
+            let env = QueryEnv {
+                engine: self,
+                sess,
+                params,
+            };
             for (rowid, row) in rows {
                 let ctx = row_ctx(&def.name, &row);
                 if let Some(pred) = &selection {
@@ -513,7 +575,10 @@ impl PgEngine {
                     }
                 }
                 let key = rowid_key(rowid);
-                writes.push(WriteOp::Del { ns: def.ns, key: key.clone() });
+                writes.push(WriteOp::Del {
+                    ns: def.ns,
+                    key: key.clone(),
+                });
                 keys.push(NsKey::new(def.ns, key));
                 deleted.push((rowid, row));
             }
@@ -522,9 +587,11 @@ impl PgEngine {
         let returning = self.project_returning(sess, &def, &deleted, &returning, params)?;
         self.apply_writes(sess, writes, keys).await?;
         match returning {
-            Some(rows) => {
-                Ok(ExecOut::Rows { cols: rows.cols, rows: rows.rows, tag: format!("DELETE {n}") })
-            }
+            Some(rows) => Ok(ExecOut::Rows {
+                cols: rows.cols,
+                rows: rows.rows,
+                tag: format!("DELETE {n}"),
+            }),
             None => Ok(ExecOut::Tag(format!("DELETE {n}"))),
         }
     }
@@ -540,7 +607,11 @@ impl PgEngine {
         let Some(items) = returning else {
             return Ok(None);
         };
-        let env = QueryEnv { engine: self, sess, params };
+        let env = QueryEnv {
+            engine: self,
+            sess,
+            params,
+        };
         let mut cols: Vec<(String, u32)> = Vec::new();
         let mut out_rows = Vec::with_capacity(rows.len());
         for (idx, (_, row)) in rows.iter().enumerate() {
@@ -586,7 +657,9 @@ impl PgEngine {
                             cols.push((c.name.clone(), c.ctype.oid()));
                         }
                     }
-                    SelectItem::UnnamedExpr(e) => cols.push((expr_label(e), super::types::OID_TEXT)),
+                    SelectItem::UnnamedExpr(e) => {
+                        cols.push((expr_label(e), super::types::OID_TEXT))
+                    }
                     SelectItem::ExprWithAlias { alias, .. } => {
                         cols.push((alias.value.clone(), super::types::OID_TEXT))
                     }
@@ -594,7 +667,10 @@ impl PgEngine {
                 }
             }
         }
-        Ok(Some(RowsOut { cols, rows: out_rows }))
+        Ok(Some(RowsOut {
+            cols,
+            rows: out_rows,
+        }))
     }
 
     // ── Write plumbing ───────────────────────────────────────────────────────
@@ -613,7 +689,12 @@ impl PgEngine {
             Some(t) => {
                 for w in &writes {
                     match w {
-                        WriteOp::Put { ns, key, value: Datum::Row(r), .. } => {
+                        WriteOp::Put {
+                            ns,
+                            key,
+                            value: Datum::Row(r),
+                            ..
+                        } => {
                             t.overlay.insert((*ns, key.clone()), Some(r.clone()));
                         }
                         WriteOp::Put { ns, key, .. } => {
@@ -638,7 +719,10 @@ impl PgEngine {
     }
 
     fn snapshot_ts(&self, sess: &Session) -> u64 {
-        sess.txn.as_ref().map(|t| t.snap.ts).unwrap_or_else(|| self.store.current_ts())
+        sess.txn
+            .as_ref()
+            .map(|t| t.snap.ts)
+            .unwrap_or_else(|| self.store.current_ts())
     }
 
     /// All visible rows of a table at the session snapshot, with txn overlay.
@@ -680,17 +764,16 @@ impl PgEngine {
 
     // ── SELECT ───────────────────────────────────────────────────────────────
 
-    fn run_query(
-        &self,
-        sess: &Session,
-        q: &Query,
-        params: &[Scalar],
-    ) -> Result<RowsOut, String> {
+    fn run_query(&self, sess: &Session, q: &Query, params: &[Scalar]) -> Result<RowsOut, String> {
         let select = match q.body.as_ref() {
             SetExpr::Select(s) => s,
             SetExpr::Values(values) => {
                 // bare VALUES (...) — used by some drivers.
-                let env = QueryEnv { engine: self, sess, params };
+                let env = QueryEnv {
+                    engine: self,
+                    sess,
+                    params,
+                };
                 let mut rows = Vec::new();
                 for r in &values.rows {
                     let mut out = Vec::new();
@@ -708,7 +791,11 @@ impl PgEngine {
             other => return Err(format!("query form not supported: {other}")),
         };
 
-        let env = QueryEnv { engine: self, sess, params };
+        let env = QueryEnv {
+            engine: self,
+            sess,
+            params,
+        };
         let base = self.resolve_from(sess, select, params)?;
 
         // WHERE
@@ -766,10 +853,9 @@ impl PgEngine {
                     match item {
                         SelectItem::UnnamedExpr(e) => {
                             let v = eval(&env, &rep, Some(grows), e)?;
-                            if (gi == 0 || cols.is_empty())
-                                && out.len() >= cols.len() {
-                                    cols.push((expr_label(e), scalar_oid(&v)));
-                                }
+                            if (gi == 0 || cols.is_empty()) && out.len() >= cols.len() {
+                                cols.push((expr_label(e), scalar_oid(&v)));
+                            }
                             out.push(v);
                         }
                         SelectItem::ExprWithAlias { expr, alias } => {
@@ -779,7 +865,9 @@ impl PgEngine {
                             }
                             out.push(v);
                         }
-                        _ => return Err("wildcard with GROUP BY/aggregates is not supported".into()),
+                        _ => {
+                            return Err("wildcard with GROUP BY/aggregates is not supported".into())
+                        }
                     }
                 }
                 out_rows.push(out);
@@ -881,8 +969,7 @@ impl PgEngine {
                                 }
                             }
                             Expr::Value(Value::Number(n, _)) => {
-                                let idx: usize =
-                                    n.parse().map_err(|_| "bad ORDER BY position")?;
+                                let idx: usize = n.parse().map_err(|_| "bad ORDER BY position")?;
                                 if idx == 0 || idx > out.len() {
                                     return Err("ORDER BY position out of range".into());
                                 }
@@ -947,7 +1034,10 @@ impl PgEngine {
             }
         }
 
-        Ok(RowsOut { cols, rows: out_rows })
+        Ok(RowsOut {
+            cols,
+            rows: out_rows,
+        })
     }
 
     /// Resolve FROM (0 or 1 relation + INNER/LEFT joins) into a row set.
@@ -958,7 +1048,10 @@ impl PgEngine {
         params: &[Scalar],
     ) -> Result<RowSet, String> {
         if select.from.is_empty() {
-            return Ok(RowSet { col_order: Vec::new(), rows: vec![HashMap::new()] });
+            return Ok(RowSet {
+                col_order: Vec::new(),
+                rows: vec![HashMap::new()],
+            });
         }
         if select.from.len() > 1 {
             return Err("comma joins are not supported — use explicit JOIN".into());
@@ -966,7 +1059,11 @@ impl PgEngine {
         let twj = &select.from[0];
         let mut current = self.relation_rows(sess, &twj.relation)?;
 
-        let env = QueryEnv { engine: self, sess, params };
+        let env = QueryEnv {
+            engine: self,
+            sess,
+            params,
+        };
         for join in &twj.joins {
             let right = self.relation_rows(sess, &join.relation)?;
             let (constraint, left_outer) = match &join.join_operator {
@@ -1007,7 +1104,10 @@ impl PgEngine {
             }
             let mut col_order = current.col_order;
             col_order.extend(right.col_order);
-            current = RowSet { col_order, rows: joined_rows };
+            current = RowSet {
+                col_order,
+                rows: joined_rows,
+            };
         }
         Ok(current)
     }
@@ -1044,7 +1144,10 @@ impl PgEngine {
             }
             out.push(ctx);
         }
-        Ok(RowSet { col_order, rows: out })
+        Ok(RowSet {
+            col_order,
+            rows: out,
+        })
     }
 
     /// information_schema / pg_catalog shims so SQL tools can introspect.
@@ -1073,10 +1176,16 @@ impl PgEngine {
             "information_schema.tables" => {
                 let tables = self.catalog.list();
                 Some(make(vec![
-                    ("table_catalog", tables.iter().map(|_| t("voltra")).collect()),
+                    (
+                        "table_catalog",
+                        tables.iter().map(|_| t("voltra")).collect(),
+                    ),
                     ("table_schema", tables.iter().map(|_| t("public")).collect()),
                     ("table_name", tables.iter().map(|d| t(&d.name)).collect()),
-                    ("table_type", tables.iter().map(|_| t("BASE TABLE")).collect()),
+                    (
+                        "table_type",
+                        tables.iter().map(|_| t("BASE TABLE")).collect(),
+                    ),
                 ]))
             }
             "information_schema.columns" => {
@@ -1150,7 +1259,10 @@ fn truthy(v: &Scalar) -> bool {
 }
 
 fn scalars_eq(a: &[Scalar], b: &[Scalar]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| scalar_cmp(x, y) == std::cmp::Ordering::Equal)
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| scalar_cmp(x, y) == std::cmp::Ordering::Equal)
 }
 
 /// Total order for sorting/equality: NULLs sort last, numerics unify.
@@ -1255,7 +1367,11 @@ fn eval(
         Expr::IsFalse(e) => Ok(Scalar::Bool(!truthy(&eval(env, ctx, group, e)?))),
         Expr::IsNotTrue(e) => Ok(Scalar::Bool(!truthy(&eval(env, ctx, group, e)?))),
         Expr::IsNotFalse(e) => Ok(Scalar::Bool(truthy(&eval(env, ctx, group, e)?))),
-        Expr::InList { expr, list, negated } => {
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => {
             let v = eval(env, ctx, group, expr)?;
             let mut found = false;
             for item in list {
@@ -1267,7 +1383,11 @@ fn eval(
             }
             Ok(Scalar::Bool(found != *negated))
         }
-        Expr::InSubquery { expr, subquery, negated } => {
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => {
             let v = eval(env, ctx, group, expr)?;
             let rs = env.engine.run_query(env.sess, subquery, env.params)?;
             let found = rs.rows.iter().any(|r| {
@@ -1289,7 +1409,12 @@ fn eval(
             let rs = env.engine.run_query(env.sess, subquery, env.params)?;
             Ok(Scalar::Bool(rs.rows.is_empty() == *negated))
         }
-        Expr::Between { expr, negated, low, high } => {
+        Expr::Between {
+            expr,
+            negated,
+            low,
+            high,
+        } => {
             let v = eval(env, ctx, group, expr)?;
             let lo = eval(env, ctx, group, low)?;
             let hi = eval(env, ctx, group, high)?;
@@ -1298,7 +1423,12 @@ fn eval(
                 && !v.is_null();
             Ok(Scalar::Bool(inside != *negated))
         }
-        Expr::Like { negated, expr, pattern, .. } => {
+        Expr::Like {
+            negated,
+            expr,
+            pattern,
+            ..
+        } => {
             let v = eval(env, ctx, group, expr)?;
             let p = eval(env, ctx, group, pattern)?;
             let m = like_match(
@@ -1308,7 +1438,12 @@ fn eval(
             );
             Ok(Scalar::Bool(m != *negated))
         }
-        Expr::ILike { negated, expr, pattern, .. } => {
+        Expr::ILike {
+            negated,
+            expr,
+            pattern,
+            ..
+        } => {
             let v = eval(env, ctx, group, expr)?;
             let p = eval(env, ctx, group, pattern)?;
             let m = like_match(
@@ -1318,11 +1453,18 @@ fn eval(
             );
             Ok(Scalar::Bool(m != *negated))
         }
-        Expr::Cast { expr, data_type, .. } => {
+        Expr::Cast {
+            expr, data_type, ..
+        } => {
             let v = eval(env, ctx, group, expr)?;
             Ok(ColType::from_sql(data_type).coerce(v))
         }
-        Expr::Case { operand, conditions, results, else_result } => {
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
             let base = match operand {
                 Some(o) => Some(eval(env, ctx, group, o)?),
                 None => None,
@@ -1344,7 +1486,12 @@ fn eval(
                 None => Ok(Scalar::Null),
             }
         }
-        Expr::Substring { expr, substring_from, substring_for, .. } => {
+        Expr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
             let s = scalar_to_text(&eval(env, ctx, group, expr)?).unwrap_or_default();
             let from = match substring_from {
                 Some(f) => match eval(env, ctx, group, f)? {
@@ -1385,7 +1532,8 @@ fn literal(env: &QueryEnv, v: &Value) -> Result<Scalar, String> {
                     .map_err(|_| format!("invalid number literal: {n}"))
             }
         }
-        Value::SingleQuotedString(s) | Value::DollarQuotedString(ast::DollarQuotedString { value: s, .. }) => {
+        Value::SingleQuotedString(s)
+        | Value::DollarQuotedString(ast::DollarQuotedString { value: s, .. }) => {
             Ok(Scalar::Text(s.clone()))
         }
         Value::EscapedStringLiteral(s) => Ok(Scalar::Text(s.clone())),
@@ -1414,16 +1562,18 @@ fn binop(op: &BinaryOperator, l: Scalar, r: Scalar) -> Result<Scalar, String> {
         BinaryOperator::NotEq => Ok(Scalar::Bool(
             !l.is_null() && !r.is_null() && scalar_cmp(&l, &r) != Equal,
         )),
-        BinaryOperator::Lt => Ok(Scalar::Bool(!l.is_null() && !r.is_null() && scalar_cmp(&l, &r) == Less)),
-        BinaryOperator::LtEq => {
-            Ok(Scalar::Bool(!l.is_null() && !r.is_null() && scalar_cmp(&l, &r) != Greater))
-        }
-        BinaryOperator::Gt => {
-            Ok(Scalar::Bool(!l.is_null() && !r.is_null() && scalar_cmp(&l, &r) == Greater))
-        }
-        BinaryOperator::GtEq => {
-            Ok(Scalar::Bool(!l.is_null() && !r.is_null() && scalar_cmp(&l, &r) != Less))
-        }
+        BinaryOperator::Lt => Ok(Scalar::Bool(
+            !l.is_null() && !r.is_null() && scalar_cmp(&l, &r) == Less,
+        )),
+        BinaryOperator::LtEq => Ok(Scalar::Bool(
+            !l.is_null() && !r.is_null() && scalar_cmp(&l, &r) != Greater,
+        )),
+        BinaryOperator::Gt => Ok(Scalar::Bool(
+            !l.is_null() && !r.is_null() && scalar_cmp(&l, &r) == Greater,
+        )),
+        BinaryOperator::GtEq => Ok(Scalar::Bool(
+            !l.is_null() && !r.is_null() && scalar_cmp(&l, &r) != Less,
+        )),
         BinaryOperator::StringConcat => {
             if l.is_null() || r.is_null() {
                 return Ok(Scalar::Null);
@@ -1434,8 +1584,11 @@ fn binop(op: &BinaryOperator, l: Scalar, r: Scalar) -> Result<Scalar, String> {
                 scalar_to_text(&r).unwrap_or_default()
             )))
         }
-        BinaryOperator::Plus | BinaryOperator::Minus | BinaryOperator::Multiply
-        | BinaryOperator::Divide | BinaryOperator::Modulo => {
+        BinaryOperator::Plus
+        | BinaryOperator::Minus
+        | BinaryOperator::Multiply
+        | BinaryOperator::Divide
+        | BinaryOperator::Modulo => {
             if l.is_null() || r.is_null() {
                 return Ok(Scalar::Null);
             }
@@ -1544,7 +1697,12 @@ fn eval_function(
                 let mut count = 0u64;
                 let mut all_int = true;
                 for r in rows {
-                    let v = eval(env, r, None, args.first().ok_or("aggregate needs an argument")?)?;
+                    let v = eval(
+                        env,
+                        r,
+                        None,
+                        args.first().ok_or("aggregate needs an argument")?,
+                    )?;
                     if v.is_null() {
                         continue;
                     }
@@ -1568,7 +1726,12 @@ fn eval_function(
             _ => {
                 let mut best: Option<Scalar> = None;
                 for r in rows {
-                    let v = eval(env, r, None, args.first().ok_or("aggregate needs an argument")?)?;
+                    let v = eval(
+                        env,
+                        r,
+                        None,
+                        args.first().ok_or("aggregate needs an argument")?,
+                    )?;
                     if v.is_null() {
                         continue;
                     }
@@ -1602,12 +1765,10 @@ fn eval_function(
     match name.as_str() {
         "LOWER" => Ok(Scalar::Text(text0().to_lowercase())),
         "UPPER" => Ok(Scalar::Text(text0().to_uppercase())),
-        "LENGTH" | "CHAR_LENGTH" | "CHARACTER_LENGTH" => {
-            match vals.first() {
-                Some(Scalar::Null) | None => Ok(Scalar::Null),
-                _ => Ok(Scalar::Int(text0().chars().count() as i64)),
-            }
-        }
+        "LENGTH" | "CHAR_LENGTH" | "CHARACTER_LENGTH" => match vals.first() {
+            Some(Scalar::Null) | None => Ok(Scalar::Null),
+            _ => Ok(Scalar::Int(text0().chars().count() as i64)),
+        },
         "CONCAT" => {
             let mut s = String::new();
             for v in &vals {
@@ -1617,7 +1778,10 @@ fn eval_function(
             }
             Ok(Scalar::Text(s))
         }
-        "COALESCE" => Ok(vals.into_iter().find(|v| !v.is_null()).unwrap_or(Scalar::Null)),
+        "COALESCE" => Ok(vals
+            .into_iter()
+            .find(|v| !v.is_null())
+            .unwrap_or(Scalar::Null)),
         "NULLIF" => {
             if vals.len() == 2 && scalar_cmp(&vals[0], &vals[1]) == std::cmp::Ordering::Equal {
                 Ok(Scalar::Null)
@@ -1653,10 +1817,14 @@ fn eval_function(
             }
         }
         "FLOOR" => Ok(Scalar::Int(
-            scalar_num(vals.first().unwrap_or(&Scalar::Null)).unwrap_or(0.0).floor() as i64,
+            scalar_num(vals.first().unwrap_or(&Scalar::Null))
+                .unwrap_or(0.0)
+                .floor() as i64,
         )),
         "CEIL" | "CEILING" => Ok(Scalar::Int(
-            scalar_num(vals.first().unwrap_or(&Scalar::Null)).unwrap_or(0.0).ceil() as i64,
+            scalar_num(vals.first().unwrap_or(&Scalar::Null))
+                .unwrap_or(0.0)
+                .ceil() as i64,
         )),
         "RANDOM" => {
             let seed = crate::mvcc::now_ms();

@@ -62,12 +62,15 @@ struct Out {
 
 impl Out {
     fn new() -> Self {
-        Self { buf: Vec::with_capacity(8 * 1024) }
+        Self {
+            buf: Vec::with_capacity(8 * 1024),
+        }
     }
     /// Append a typed message: tag byte + i32 length (incl. itself) + body.
     fn msg(&mut self, tag: u8, body: &[u8]) {
         self.buf.push(tag);
-        self.buf.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
+        self.buf
+            .extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
         self.buf.extend_from_slice(body);
     }
     fn auth_ok(&mut self) {
@@ -353,7 +356,13 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<PgCtx>) -> std::io::Result<()
                         rest = &rest[4..];
                     }
                 }
-                prepared.insert(name, Prepared { sql, param_oids: oids });
+                prepared.insert(
+                    name,
+                    Prepared {
+                        sql,
+                        param_oids: oids,
+                    },
+                );
                 out.parse_complete();
             }
             b'B' => {
@@ -365,7 +374,9 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<PgCtx>) -> std::io::Result<()
                 let portal_name = read_cstr(&mut rest).unwrap_or_default();
                 let stmt_name = read_cstr(&mut rest).unwrap_or_default();
                 let Some(stmt) = prepared.get(&stmt_name) else {
-                    out.error(&format!("prepared statement \"{stmt_name}\" does not exist"));
+                    out.error(&format!(
+                        "prepared statement \"{stmt_name}\" does not exist"
+                    ));
                     ext_failed = true;
                     continue;
                 };
@@ -407,7 +418,12 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<PgCtx>) -> std::io::Result<()
                 }
                 portals.insert(
                     portal_name,
-                    Portal { sql: stmt.sql.clone(), params, described: false, cached: None },
+                    Portal {
+                        sql: stmt.sql.clone(),
+                        params,
+                        described: false,
+                        cached: None,
+                    },
                 );
                 out.bind_complete();
             }
@@ -422,8 +438,11 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<PgCtx>) -> std::io::Result<()
                 if kind == b'S' {
                     match prepared.get(&name) {
                         Some(p) => {
-                            let oids: Vec<u32> =
-                                p.param_oids.iter().map(|o| if *o == 0 { OID_TEXT } else { *o }).collect();
+                            let oids: Vec<u32> = p
+                                .param_oids
+                                .iter()
+                                .map(|o| if *o == 0 { OID_TEXT } else { *o })
+                                .collect();
                             out.parameter_description(&oids);
                             match describe_columns(&ctx.engine, &p.sql) {
                                 Some(cols) if !cols.is_empty() => out.row_description(&cols),
@@ -442,10 +461,14 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<PgCtx>) -> std::io::Result<()
                         ext_failed = true;
                         continue;
                     };
-                    let results = ctx.engine.execute(&mut sess, &portal.sql, &portal.params).await;
+                    let results = ctx
+                        .engine
+                        .execute(&mut sess, &portal.sql, &portal.params)
+                        .await;
                     match results {
                         Ok(results) => {
-                            let has_rows = results.iter().any(|r| matches!(r, ExecOut::Rows { .. }));
+                            let has_rows =
+                                results.iter().any(|r| matches!(r, ExecOut::Rows { .. }));
                             if has_rows {
                                 for r in &results {
                                     if let ExecOut::Rows { cols, .. } = r {
@@ -480,7 +503,11 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<PgCtx>) -> std::io::Result<()
                 };
                 let results = match portal.cached.take() {
                     Some(r) => Ok(r),
-                    None => ctx.engine.execute(&mut sess, &portal.sql, &portal.params).await,
+                    None => {
+                        ctx.engine
+                            .execute(&mut sess, &portal.sql, &portal.params)
+                            .await
+                    }
                 };
                 match results {
                     Ok(results) => {
@@ -560,7 +587,9 @@ fn decode_param(raw: &[u8], fmt: i16, oid: u32) -> Scalar {
     if fmt == 1 {
         // Binary format for the common types.
         return match (oid, raw.len()) {
-            (OID_INT4, 4) => Scalar::Int(i32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as i64),
+            (OID_INT4, 4) => {
+                Scalar::Int(i32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as i64)
+            }
             (OID_INT8, 8) => Scalar::Int(i64::from_be_bytes([
                 raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
             ])),
@@ -573,8 +602,16 @@ fn decode_param(raw: &[u8], fmt: i16, oid: u32) -> Scalar {
     }
     let text = String::from_utf8_lossy(raw).into_owned();
     match oid {
-        OID_INT4 | OID_INT8 => text.trim().parse::<i64>().map(Scalar::Int).unwrap_or(Scalar::Text(text)),
-        OID_FLOAT8 => text.trim().parse::<f64>().map(Scalar::Float).unwrap_or(Scalar::Text(text)),
+        OID_INT4 | OID_INT8 => text
+            .trim()
+            .parse::<i64>()
+            .map(Scalar::Int)
+            .unwrap_or(Scalar::Text(text)),
+        OID_FLOAT8 => text
+            .trim()
+            .parse::<f64>()
+            .map(Scalar::Float)
+            .unwrap_or(Scalar::Text(text)),
         OID_BOOL => Scalar::Bool(matches!(text.as_str(), "t" | "true" | "1" | "on" | "yes")),
         _ => Scalar::Text(text),
     }
@@ -599,7 +636,12 @@ fn describe_columns(engine: &PgEngine, sql: &str) -> Option<Vec<(String, u32)>> 
     let def = match select.from.first() {
         Some(twj) => match &twj.relation {
             sqlparser::ast::TableFactor::Table { name, .. } => {
-                let n = name.0.iter().map(|i| i.value.to_lowercase()).collect::<Vec<_>>().join(".");
+                let n = name
+                    .0
+                    .iter()
+                    .map(|i| i.value.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(".");
                 engine.catalog.get(&n)
             }
             _ => None,

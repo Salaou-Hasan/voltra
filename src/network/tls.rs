@@ -12,10 +12,10 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::ServerConfig;
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 
 /// Load a TLS `ServerConfig` from PEM-encoded certificate chain and PKCS8
 /// private key files on disk.
@@ -33,10 +33,9 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerCo
         ))
     })?;
     let mut cert_reader = BufReader::new(cert_file);
-    let certs: Vec<CertificateDer<'static>> =
-        rustls_pemfile::certs(&mut cert_reader)
-            .collect::<std::io::Result<Vec<_>>>()
-            .map_err(|e| VoltraError::network_error(format!("TLS: failed to parse cert PEM: {}", e)))?;
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|e| VoltraError::network_error(format!("TLS: failed to parse cert PEM: {}", e)))?;
 
     if certs.is_empty() {
         return Err(VoltraError::network_error(
@@ -56,8 +55,9 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerCo
 
     // Try the generic private_key reader first (handles PKCS8 and RSA).
     let private_key: PrivateKeyDer<'static> = {
-        let result = rustls_pemfile::private_key(&mut key_reader)
-            .map_err(|e| VoltraError::network_error(format!("TLS: failed to parse key PEM: {}", e)))?;
+        let result = rustls_pemfile::private_key(&mut key_reader).map_err(|e| {
+            VoltraError::network_error(format!("TLS: failed to parse key PEM: {}", e))
+        })?;
         match result {
             Some(k) => k,
             None => {
@@ -99,15 +99,13 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerCo
 /// `load_tls_config` with a real certificate from a trusted CA (e.g. Let's
 /// Encrypt).
 pub fn generate_self_signed() -> (Vec<u8>, Vec<u8>) {
-    let subject_alt_names = vec![
-        "localhost".to_string(),
-        "127.0.0.1".to_string(),
-    ];
+    let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
 
     let cert = rcgen::generate_simple_self_signed(subject_alt_names)
         .expect("rcgen: failed to generate self-signed certificate");
 
-    let cert_pem = cert.serialize_pem()
+    let cert_pem = cert
+        .serialize_pem()
         .expect("rcgen: failed to serialize cert to PEM")
         .into_bytes();
     let key_pem = cert.serialize_private_key_pem().into_bytes();
@@ -139,14 +137,20 @@ mod tests {
 
         // Must be non-empty PEM blocks
         assert!(!cert_pem.is_empty(), "cert_pem is empty");
-        assert!(!key_pem.is_empty(),  "key_pem is empty");
+        assert!(!key_pem.is_empty(), "key_pem is empty");
 
         let cert_str = std::str::from_utf8(&cert_pem).expect("cert_pem is not UTF-8");
-        let key_str  = std::str::from_utf8(&key_pem).expect("key_pem is not UTF-8");
+        let key_str = std::str::from_utf8(&key_pem).expect("key_pem is not UTF-8");
 
-        assert!(cert_str.contains("-----BEGIN CERTIFICATE-----"),   "cert missing PEM header");
-        assert!(cert_str.contains("-----END CERTIFICATE-----"),     "cert missing PEM footer");
-        assert!(key_str.contains("PRIVATE KEY"),                    "key missing PEM header");
+        assert!(
+            cert_str.contains("-----BEGIN CERTIFICATE-----"),
+            "cert missing PEM header"
+        );
+        assert!(
+            cert_str.contains("-----END CERTIFICATE-----"),
+            "cert missing PEM footer"
+        );
+        assert!(key_str.contains("PRIVATE KEY"), "key missing PEM header");
     }
 
     // ── Test 2: load_tls_config succeeds with a valid self-signed cert ────────
@@ -156,7 +160,7 @@ mod tests {
         let (cert_pem, key_pem) = generate_self_signed();
 
         let cert_path = write_temp_pem("voltra_test_cert.pem", &cert_pem);
-        let key_path  = write_temp_pem("voltra_test_key.pem",  &key_pem);
+        let key_path = write_temp_pem("voltra_test_key.pem", &key_pem);
 
         let result = load_tls_config(&cert_path, &key_path);
         assert!(result.is_ok(), "load_tls_config failed: {:?}", result.err());
@@ -167,7 +171,7 @@ mod tests {
     #[test]
     fn test_load_tls_config_bad_cert_path_returns_error() {
         let (_cert_pem, key_pem) = generate_self_signed();
-        let key_path  = write_temp_pem("voltra_test_key2.pem", &key_pem);
+        let key_path = write_temp_pem("voltra_test_key2.pem", &key_pem);
 
         let missing_cert = std::path::Path::new("/nonexistent/path/cert.pem");
         let result = load_tls_config(missing_cert, &key_path);
@@ -176,7 +180,8 @@ mod tests {
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("TLS"),
-            "error message should mention TLS, got: {}", err_msg
+            "error message should mention TLS, got: {}",
+            err_msg
         );
     }
 

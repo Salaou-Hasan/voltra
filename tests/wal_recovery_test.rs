@@ -17,16 +17,16 @@
 // real-server integration tests are owned by Session 37/38 work).
 // ============================================================================
 
-use voltra::table::{RowDelta, TableStore};
-use voltra::wal::{
-    snapshot::{load_snapshot, save_snapshot, snapshot_path},
-    WalEntry, WalReader, WalWriter,
-};
 use serde_json::json;
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use voltra::table::{RowDelta, TableStore};
+use voltra::wal::{
+    snapshot::{load_snapshot, save_snapshot, snapshot_path},
+    WalEntry, WalReader, WalWriter,
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -260,11 +260,7 @@ fn snapshot_plus_wal_replay_applies_only_postsnapshot_entries() {
     // from the snapshot, 6..=15 from WAL replay).
     for seq in 1..=15u64 {
         let row = recovered.get_row("players", &format!("p{}", seq)).unwrap();
-        assert!(
-            row.is_some(),
-            "row p{} should exist after recovery",
-            seq
-        );
+        assert!(row.is_some(), "row p{} should exist after recovery", seq);
     }
 
     let _ = fs::remove_dir_all(&dir);
@@ -276,9 +272,16 @@ fn snapshot_roundtrip_preserves_rows_and_counters() {
     fs::create_dir_all(&dir).unwrap();
 
     let src = Arc::new(TableStore::new());
-    src.set_row("players".into(), "alice".into(), json!({ "hp": 200, "zone": "z1" })).unwrap();
-    src.set_row("players".into(), "bob".into(), json!({ "hp": 50 })).unwrap();
-    src.set_row("guilds".into(), "wolves".into(), json!({ "members": 3 })).unwrap();
+    src.set_row(
+        "players".into(),
+        "alice".into(),
+        json!({ "hp": 200, "zone": "z1" }),
+    )
+    .unwrap();
+    src.set_row("players".into(), "bob".into(), json!({ "hp": 50 }))
+        .unwrap();
+    src.set_row("guilds".into(), "wolves".into(), json!({ "members": 3 }))
+        .unwrap();
     src.set_counter("kills".into(), 42, 1).unwrap();
     src.set_counter("deaths".into(), 7, 1).unwrap();
 
@@ -291,7 +294,10 @@ fn snapshot_roundtrip_preserves_rows_and_counters() {
     assert_eq!(alice["hp"], 200);
     assert_eq!(alice["zone"], "z1");
     assert_eq!(dst.get_row("players", "bob").unwrap().unwrap()["hp"], 50);
-    assert_eq!(dst.get_row("guilds", "wolves").unwrap().unwrap()["members"], 3);
+    assert_eq!(
+        dst.get_row("guilds", "wolves").unwrap().unwrap()["members"],
+        3
+    );
     assert_eq!(dst.get_counter("kills").unwrap().unwrap().value, 42);
     assert_eq!(dst.get_counter("deaths").unwrap().unwrap().value, 7);
 
@@ -307,17 +313,25 @@ fn truncated_snapshot_is_rejected() {
 
     let src = Arc::new(TableStore::new());
     for i in 0..50 {
-        src.set_row("players".into(), format!("p{}", i), json!({ "n": i })).unwrap();
+        src.set_row("players".into(), format!("p{}", i), json!({ "n": i }))
+            .unwrap();
     }
     save_snapshot(&src, &dir, 5, 1).unwrap();
 
     let path = snapshot_path(&dir, 5);
     let len = fs::metadata(&path).unwrap().len();
-    OpenOptions::new().write(true).open(&path).unwrap()
-        .set_len(len / 2).unwrap(); // tear it in half
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(len / 2)
+        .unwrap(); // tear it in half
 
     let dst = Arc::new(TableStore::new());
-    assert!(load_snapshot(&path, &dst).is_err(), "truncated snapshot must be rejected, not partially loaded");
+    assert!(
+        load_snapshot(&path, &dst).is_err(),
+        "truncated snapshot must be rejected, not partially loaded"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

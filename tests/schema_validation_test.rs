@@ -11,9 +11,9 @@
 // platform.
 // ============================================================================
 
-use voltra::{ColumnDef, SchemaRegistry, TableSchema};
-use voltra::schema::RlsPolicy;
 use serde_json::json;
+use voltra::schema::RlsPolicy;
+use voltra::{ColumnDef, SchemaRegistry, TableSchema};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -80,10 +80,7 @@ fn required_string_column_missing_rejected() {
 fn required_string_column_null_rejected() {
     let reg = registry_with_players();
     let err = reg
-        .validate(
-            "players",
-            json!({ "id": null, "score": 5, "active": true }),
-        )
+        .validate("players", json!({ "id": null, "score": 5, "active": true }))
         .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("id"));
@@ -119,10 +116,7 @@ fn i64_column_rejects_string() {
 fn bool_column_rejects_integer() {
     let reg = registry_with_players();
     let err = reg
-        .validate(
-            "players",
-            json!({ "id": "p1", "score": 5, "active": 1 }),
-        )
+        .validate("players", json!({ "id": "p1", "score": 5, "active": 1 }))
         .unwrap_err();
     assert!(err.to_string().contains("active"));
     assert!(err.to_string().contains("bool"));
@@ -242,16 +236,10 @@ fn any_column_accepts_arbitrary_value() {
     assert!(r1.is_ok(), "{:?}", r1.err());
 
     // Array on an Any column
-    let r2 = reg.validate(
-        "events",
-        json!({ "event_id": "e2", "payload": [1, 2, 3] }),
-    );
+    let r2 = reg.validate("events", json!({ "event_id": "e2", "payload": [1, 2, 3] }));
     assert!(r2.is_ok(), "{:?}", r2.err());
 
     // Plain string on an Any column
-    let r3 = reg.validate(
-        "events",
-        json!({ "event_id": "e3", "payload": "hello" }),
-    );
+    let r3 = reg.validate("events", json!({ "event_id": "e3", "payload": "hello" }));
     assert!(r3.is_ok(), "{:?}", r3.err());
 }

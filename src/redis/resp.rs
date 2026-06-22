@@ -60,7 +60,10 @@ impl Resp {
         Resp::Error("ERR syntax error".into())
     }
     pub fn arity(cmd: &str) -> Resp {
-        Resp::Error(format!("ERR wrong number of arguments for '{}' command", cmd.to_lowercase()))
+        Resp::Error(format!(
+            "ERR wrong number of arguments for '{}' command",
+            cmd.to_lowercase()
+        ))
     }
 }
 
@@ -73,7 +76,11 @@ pub fn fmt_f64(f: f64) -> String {
     if f.is_nan() {
         "nan".into()
     } else if f.is_infinite() {
-        if f > 0.0 { "inf".into() } else { "-inf".into() }
+        if f > 0.0 {
+            "inf".into()
+        } else {
+            "-inf".into()
+        }
     } else if f == f.trunc() && f.abs() < 1e17 {
         format!("{}", f as i64)
     } else {
@@ -266,7 +273,10 @@ fn parse_array_command(buf: &[u8]) -> Result<Option<(Vec<Bytes>, usize)>, String
             return Ok(None);
         }
         if buf[pos] != b'$' {
-            return Err(format!("Protocol error: expected '$', got '{}'", buf[pos] as char));
+            return Err(format!(
+                "Protocol error: expected '$', got '{}'",
+                buf[pos] as char
+            ));
         }
         let lend = match find_crlf(buf, pos + 1) {
             Some(i) => i,

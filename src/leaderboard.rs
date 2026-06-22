@@ -184,7 +184,8 @@ impl LeaderboardEngine {
 
         // Check if player already has an entry
         if let Some(existing_key) = data.player_index.get(player_id) {
-            let existing_score = ScoreKey::decode_score(existing_key.encoded, &data.config.sort_order);
+            let existing_score =
+                ScoreKey::decode_score(existing_key.encoded, &data.config.sort_order);
             let dominated = match data.config.sort_order {
                 SortOrder::HighestFirst => score <= existing_score,
                 SortOrder::LowestFirst => score >= existing_score,
@@ -215,12 +216,18 @@ impl LeaderboardEngine {
             updated_at_ms: now_ms,
         };
         data.entries.insert(new_key.clone(), entry);
-        data.player_index.insert(player_id.to_string(), new_key.clone());
+        data.player_index
+            .insert(player_id.to_string(), new_key.clone());
 
         // Enforce max_entries cap
         while data.entries.len() > data.config.max_entries {
             // Remove the worst entry (last in BTree)
-            if let Some((worst_key, _)) = data.entries.iter().next_back().map(|(k, v)| (k.clone(), v.clone())) {
+            if let Some((worst_key, _)) = data
+                .entries
+                .iter()
+                .next_back()
+                .map(|(k, v)| (k.clone(), v.clone()))
+            {
                 data.player_index.remove(&worst_key.player_id);
                 data.entries.remove(&worst_key);
             } else {
@@ -409,9 +416,7 @@ impl LeaderboardEngine {
                 };
                 month_for(now_ms) > month_for(data.window_start_ms)
             }
-            TimeWindow::Custom(duration_ms) => {
-                now_ms >= data.window_start_ms + duration_ms
-            }
+            TimeWindow::Custom(duration_ms) => now_ms >= data.window_start_ms + duration_ms,
         };
 
         if expired {
@@ -443,10 +448,7 @@ impl LeaderboardEngine {
     /// Internal: compute the 1-indexed rank of a key within the BTree.
     fn compute_rank_internal(&self, data: &LeaderboardData, key: &ScoreKey) -> usize {
         // Count how many entries come before this key in BTree order
-        data.entries
-            .range(..key.clone())
-            .count()
-            + 1
+        data.entries.range(..key.clone()).count() + 1
     }
 }
 
@@ -470,7 +472,11 @@ fn compute_percentile(rank: usize, total: usize) -> f64 {
 mod tests {
     use super::*;
 
-    fn make_engine_with_board(name: &str, sort_order: SortOrder, max_entries: usize) -> LeaderboardEngine {
+    fn make_engine_with_board(
+        name: &str,
+        sort_order: SortOrder,
+        max_entries: usize,
+    ) -> LeaderboardEngine {
         let engine = LeaderboardEngine::new();
         engine.create_board(LeaderboardConfig {
             name: name.to_string(),
@@ -520,9 +526,15 @@ mod tests {
     fn test_top_returns_correct_order() {
         let engine = make_engine_with_board("top_test", SortOrder::HighestFirst, 100);
 
-        engine.submit_score("top_test", "c", 50.0, None, 1000).unwrap();
-        engine.submit_score("top_test", "a", 300.0, None, 2000).unwrap();
-        engine.submit_score("top_test", "b", 150.0, None, 3000).unwrap();
+        engine
+            .submit_score("top_test", "c", 50.0, None, 1000)
+            .unwrap();
+        engine
+            .submit_score("top_test", "a", 300.0, None, 2000)
+            .unwrap();
+        engine
+            .submit_score("top_test", "b", 150.0, None, 3000)
+            .unwrap();
 
         let top = engine.top("top_test", 3).unwrap();
         assert_eq!(top.len(), 3);
@@ -541,7 +553,9 @@ mod tests {
 
         engine.submit_score("hf", "low", 10.0, None, 1000).unwrap();
         engine.submit_score("hf", "mid", 50.0, None, 2000).unwrap();
-        engine.submit_score("hf", "high", 100.0, None, 3000).unwrap();
+        engine
+            .submit_score("hf", "high", 100.0, None, 3000)
+            .unwrap();
 
         let top = engine.top("hf", 3).unwrap();
         assert_eq!(top[0].1.player_id, "high");
@@ -553,9 +567,15 @@ mod tests {
     fn test_lowest_first_ordering() {
         let engine = make_engine_with_board("speedrun", SortOrder::LowestFirst, 100);
 
-        engine.submit_score("speedrun", "slow", 120.0, None, 1000).unwrap();
-        engine.submit_score("speedrun", "fast", 45.0, None, 2000).unwrap();
-        engine.submit_score("speedrun", "mid", 80.0, None, 3000).unwrap();
+        engine
+            .submit_score("speedrun", "slow", 120.0, None, 1000)
+            .unwrap();
+        engine
+            .submit_score("speedrun", "fast", 45.0, None, 2000)
+            .unwrap();
+        engine
+            .submit_score("speedrun", "mid", 80.0, None, 3000)
+            .unwrap();
 
         let top = engine.top("speedrun", 3).unwrap();
         assert_eq!(top[0].1.player_id, "fast");
@@ -568,8 +588,12 @@ mod tests {
     fn test_submit_improves_score() {
         let engine = make_engine_with_board("improve", SortOrder::HighestFirst, 100);
 
-        engine.submit_score("improve", "alice", 50.0, None, 1000).unwrap();
-        engine.submit_score("improve", "bob", 100.0, None, 2000).unwrap();
+        engine
+            .submit_score("improve", "alice", 50.0, None, 1000)
+            .unwrap();
+        engine
+            .submit_score("improve", "bob", 100.0, None, 2000)
+            .unwrap();
 
         // Alice improves her score
         let info = engine
@@ -649,8 +673,12 @@ mod tests {
     fn test_remove_player() {
         let engine = make_engine_with_board("remove", SortOrder::HighestFirst, 100);
 
-        engine.submit_score("remove", "alice", 100.0, None, 1000).unwrap();
-        engine.submit_score("remove", "bob", 200.0, None, 2000).unwrap();
+        engine
+            .submit_score("remove", "alice", 100.0, None, 1000)
+            .unwrap();
+        engine
+            .submit_score("remove", "bob", 200.0, None, 2000)
+            .unwrap();
 
         assert_eq!(engine.player_count("remove"), 2);
         assert!(engine.remove_player("remove", "alice"));
@@ -668,7 +696,13 @@ mod tests {
 
         for i in 1..=10 {
             engine
-                .submit_score("capped", &format!("p{}", i), i as f64 * 10.0, None, i * 1000)
+                .submit_score(
+                    "capped",
+                    &format!("p{}", i),
+                    i as f64 * 10.0,
+                    None,
+                    i * 1000,
+                )
                 .unwrap();
         }
 
@@ -718,8 +752,12 @@ mod tests {
         let engine = make_engine_with_board("ties", SortOrder::HighestFirst, 100);
 
         // Same score, different timestamps
-        engine.submit_score("ties", "late", 100.0, None, 5000).unwrap();
-        engine.submit_score("ties", "early", 100.0, None, 1000).unwrap();
+        engine
+            .submit_score("ties", "late", 100.0, None, 5000)
+            .unwrap();
+        engine
+            .submit_score("ties", "early", 100.0, None, 1000)
+            .unwrap();
 
         let top = engine.top("ties", 2).unwrap();
         // Earlier timestamp should get better rank
@@ -730,7 +768,9 @@ mod tests {
     #[test]
     fn test_nonexistent_board_returns_error() {
         let engine = LeaderboardEngine::new();
-        assert!(engine.submit_score("ghost", "alice", 100.0, None, 1000).is_err());
+        assert!(engine
+            .submit_score("ghost", "alice", 100.0, None, 1000)
+            .is_err());
         assert!(engine.top("ghost", 10).is_err());
         assert!(engine.get_rank("ghost", "alice").is_err());
     }
@@ -762,23 +802,29 @@ struct TopResponse {
 /// Pulls the top-N from every region, merges by score, writes to
 /// "global_leaderboard" table.  Runs on a configurable interval.
 pub struct LeaderboardAggregator {
-    engine:        Arc<LeaderboardEngine>,
-    regions:       Arc<crate::cluster::regions::RegionRegistry>,
+    engine: Arc<LeaderboardEngine>,
+    regions: Arc<crate::cluster::regions::RegionRegistry>,
     /// Name of the regional leaderboard board to aggregate.
-    board_name:    String,
+    board_name: String,
     interval_secs: u64,
-    top_n:         usize,
+    top_n: usize,
 }
 
 impl LeaderboardAggregator {
     pub fn new(
-        engine:        Arc<LeaderboardEngine>,
-        regions:       Arc<crate::cluster::regions::RegionRegistry>,
-        board_name:    String,
+        engine: Arc<LeaderboardEngine>,
+        regions: Arc<crate::cluster::regions::RegionRegistry>,
+        board_name: String,
         interval_secs: u64,
-        top_n:         usize,
+        top_n: usize,
     ) -> Arc<Self> {
-        Arc::new(Self { engine, regions, board_name, interval_secs, top_n })
+        Arc::new(Self {
+            engine,
+            regions,
+            board_name,
+            interval_secs,
+            top_n,
+        })
     }
 
     /// Spawn the background aggregation task.
@@ -815,7 +861,9 @@ impl LeaderboardAggregator {
 
         // Fetch from peer regions.
         for region in self.regions.peer_regions() {
-            if region.metrics_url.is_empty() { continue; }
+            if region.metrics_url.is_empty() {
+                continue;
+            }
             match self.fetch_from_region(&region).await {
                 Ok(entries) => all.extend(entries),
                 Err(e) => log::warn!("[leaderboard-agg] region '{}': {}", region.id, e),
@@ -844,10 +892,16 @@ impl LeaderboardAggregator {
 
         for (player_id, score, region) in &all {
             let meta = serde_json::json!({ "region": region });
-            let _ = self.engine.submit_score(&global_name, player_id, *score, Some(meta), now);
+            let _ = self
+                .engine
+                .submit_score(&global_name, player_id, *score, Some(meta), now);
         }
 
-        log::debug!("[leaderboard-agg] global '{}' updated: {} entries", global_name, all.len());
+        log::debug!(
+            "[leaderboard-agg] global '{}' updated: {} entries",
+            global_name,
+            all.len()
+        );
         Ok(())
     }
 
@@ -862,18 +916,21 @@ impl LeaderboardAggregator {
         let region_id = region.id.clone();
 
         let resp = tokio::task::spawn_blocking(move || {
-            reqwest::blocking::get(&url)
-                .and_then(|r| r.json::<TopResponse>())
+            reqwest::blocking::get(&url).and_then(|r| r.json::<TopResponse>())
         })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
 
-        Ok(resp.entries.into_iter().filter_map(|row| {
-            let player_id = row["player_id"].as_str()?.to_string();
-            let score     = row["score"].as_f64()?;
-            Some((player_id, score, region_id.clone()))
-        }).collect())
+        Ok(resp
+            .entries
+            .into_iter()
+            .filter_map(|row| {
+                let player_id = row["player_id"].as_str()?.to_string();
+                let score = row["score"].as_f64()?;
+                Some((player_id, score, region_id.clone()))
+            })
+            .collect())
     }
 }
 
@@ -884,12 +941,14 @@ pub fn http_top_entries(engine: &LeaderboardEngine, board: &str, n: usize) -> se
         Ok(entries) => {
             let rows: Vec<serde_json::Value> = entries
                 .into_iter()
-                .map(|(rank, e)| serde_json::json!({
-                    "rank":      rank,
-                    "player_id": e.player_id,
-                    "score":     e.score,
-                    "metadata":  e.metadata,
-                }))
+                .map(|(rank, e)| {
+                    serde_json::json!({
+                        "rank":      rank,
+                        "player_id": e.player_id,
+                        "score":     e.score,
+                        "metadata":  e.metadata,
+                    })
+                })
                 .collect();
             serde_json::json!({ "entries": rows })
         }

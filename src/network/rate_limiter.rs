@@ -98,9 +98,10 @@ impl RateLimiterRegistry {
             return true;
         }
 
-        let mut entry = self.buckets.entry(client_id.to_string()).or_insert_with(|| {
-            TokenBucket::new(self.config.capacity, self.config.refill_rate)
-        });
+        let mut entry = self
+            .buckets
+            .entry(client_id.to_string())
+            .or_insert_with(|| TokenBucket::new(self.config.capacity, self.config.refill_rate));
         entry.value_mut().try_consume()
     }
 
@@ -184,7 +185,7 @@ mod tests {
     #[test]
     fn test_token_bucket_refills_over_time() {
         let mut bucket = TokenBucket::new(10, 50.0); // 50 tokens/sec refill
-        // Exhaust all tokens
+                                                     // Exhaust all tokens
         for _ in 0..10 {
             bucket.try_consume();
         }
@@ -206,7 +207,7 @@ mod tests {
     #[test]
     fn test_token_bucket_does_not_exceed_capacity() {
         let mut bucket = TokenBucket::new(5, 100.0); // high refill rate
-        // Wait a bit to let refill try to go above capacity
+                                                     // Wait a bit to let refill try to go above capacity
         thread::sleep(Duration::from_millis(100));
         let available = bucket.available();
         assert!(
@@ -272,7 +273,10 @@ mod tests {
         assert!(!state.is_draining(), "should start as not draining");
 
         state.start_draining();
-        assert!(state.is_draining(), "should be draining after start_draining");
+        assert!(
+            state.is_draining(),
+            "should be draining after start_draining"
+        );
 
         // Idempotent — calling again should be fine
         state.start_draining();

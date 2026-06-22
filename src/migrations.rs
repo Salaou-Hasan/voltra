@@ -43,7 +43,7 @@
 //! - `remove_field` skips rows that don't have the field.
 //! - `rename_field` skips rows where `old_field` is absent.
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::table::TableStore;
 use serde::Deserialize;
 use serde_json::Value;
@@ -479,7 +479,9 @@ default = 0
             .expect("migration should be recorded in __migrations");
         assert_eq!(row["version"], 1);
         assert!(
-            row.get("applied_at").map(|v| v.as_u64().unwrap_or(0) > 0).unwrap_or(false),
+            row.get("applied_at")
+                .map(|v| v.as_u64().unwrap_or(0) > 0)
+                .unwrap_or(false),
             "applied_at should be a non-zero unix nanos value"
         );
 

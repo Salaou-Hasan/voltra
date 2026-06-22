@@ -24,8 +24,12 @@ impl XorShift {
         self.0 = x;
         x
     }
-    fn byte(&mut self) -> u8 { (self.next() & 0xFF) as u8 }
-    fn range(&mut self, max: usize) -> usize { (self.next() as usize) % max.max(1) }
+    fn byte(&mut self) -> u8 {
+        (self.next() & 0xFF) as u8
+    }
+    fn range(&mut self, max: usize) -> usize {
+        (self.next() as usize) % max.max(1)
+    }
 }
 
 const SEED: u64 = 0x5EED_CAFE_F00D_2026;
@@ -40,7 +44,12 @@ fn fuzz_decode_client_message_random_bytes_never_panics() {
         // Must not panic — Err is acceptable, Ok is acceptable (rare but
         // possible for tiny random buffers that happen to be valid msgpack).
         let result = std::panic::catch_unwind(|| decode_client_message(&buf));
-        assert!(result.is_ok(), "decode_client_message PANICKED on iteration {} (seed {:#x})", i, SEED);
+        assert!(
+            result.is_ok(),
+            "decode_client_message PANICKED on iteration {} (seed {:#x})",
+            i,
+            SEED
+        );
     }
 }
 
@@ -51,7 +60,12 @@ fn fuzz_decode_reducer_call_random_bytes_never_panics() {
         let len = rng.range(512);
         let buf: Vec<u8> = (0..len).map(|_| rng.byte()).collect();
         let result = std::panic::catch_unwind(|| decode_reducer_call(&buf));
-        assert!(result.is_ok(), "decode_reducer_call PANICKED on iteration {} (seed {:#x})", i, SEED);
+        assert!(
+            result.is_ok(),
+            "decode_reducer_call PANICKED on iteration {} (seed {:#x})",
+            i,
+            SEED
+        );
     }
 }
 
@@ -80,7 +94,12 @@ fn fuzz_bitflipped_valid_frames_never_panic() {
             let _ = decode_reducer_call(&mutated);
             let _ = decode_client_message(&mutated);
         });
-        assert!(result.is_ok(), "bit-flip decode PANICKED on iteration {} (seed {:#x})", i, SEED);
+        assert!(
+            result.is_ok(),
+            "bit-flip decode PANICKED on iteration {} (seed {:#x})",
+            i,
+            SEED
+        );
     }
 }
 
@@ -109,10 +128,10 @@ fn fuzz_oversized_length_claims_never_panic() {
     // MessagePack frames that CLAIM huge string/array/map lengths but carry
     // few actual bytes — the classic allocation-bomb vector.
     let nasty_frames: Vec<Vec<u8>> = vec![
-        vec![0xDB, 0xFF, 0xFF, 0xFF, 0xFF],             // str32 claiming 4 GiB
-        vec![0xDD, 0xFF, 0xFF, 0xFF, 0xFF],             // array32 claiming 4 G elements
-        vec![0xDF, 0xFF, 0xFF, 0xFF, 0xFF],             // map32 claiming 4 G pairs
-        vec![0xC6, 0xFF, 0xFF, 0xFF, 0xFF],             // bin32 claiming 4 GiB
+        vec![0xDB, 0xFF, 0xFF, 0xFF, 0xFF], // str32 claiming 4 GiB
+        vec![0xDD, 0xFF, 0xFF, 0xFF, 0xFF], // array32 claiming 4 G elements
+        vec![0xDF, 0xFF, 0xFF, 0xFF, 0xFF], // map32 claiming 4 G pairs
+        vec![0xC6, 0xFF, 0xFF, 0xFF, 0xFF], // bin32 claiming 4 GiB
         vec![0xDB, 0x7F, 0xFF, 0xFF, 0xFF, 0x41, 0x41], // str32 2 GiB with 2 bytes
     ];
     for (i, frame) in nasty_frames.iter().enumerate() {
@@ -129,8 +148,12 @@ fn fuzz_deeply_nested_json_args_never_panic() {
     // 1000-deep nested arrays in args — recursion-depth attack on any
     // recursive deserializer in the pipeline.
     let mut nested = String::new();
-    for _ in 0..1000 { nested.push('['); }
-    for _ in 0..1000 { nested.push(']'); }
+    for _ in 0..1000 {
+        nested.push('[');
+    }
+    for _ in 0..1000 {
+        nested.push(']');
+    }
     // Direct value parse (serde_json has its own depth limit — must Err, not stack-overflow).
     let result = std::panic::catch_unwind(|| {
         let _ = serde_json::from_str::<serde_json::Value>(&nested);
@@ -143,7 +166,10 @@ fn fuzz_wal_reader_random_bytes_never_panics() {
     let mut rng = XorShift(SEED ^ 0xDEAD_BEEF);
     for i in 0..200 {
         let path = std::env::temp_dir().join(format!(
-            "fuzz_wal_{}_{}_{}.bin", std::process::id(), i, rng.next()
+            "fuzz_wal_{}_{}_{}.bin",
+            std::process::id(),
+            i,
+            rng.next()
         ));
         let len = rng.range(4096);
         let garbage: Vec<u8> = (0..len).map(|_| rng.byte()).collect();
@@ -155,7 +181,12 @@ fn fuzz_wal_reader_random_bytes_never_panics() {
             }
         });
         std::fs::remove_file(&path).ok();
-        assert!(result.is_ok(), "WAL reader PANICKED on garbage file iteration {} (seed {:#x})", i, SEED);
+        assert!(
+            result.is_ok(),
+            "WAL reader PANICKED on garbage file iteration {} (seed {:#x})",
+            i,
+            SEED
+        );
     }
 }
 
@@ -163,13 +194,19 @@ fn fuzz_wal_reader_random_bytes_never_panics() {
 fn fuzz_wal_reader_corrupted_valid_file_never_panics() {
     // Valid WAL with 5 entries, then corrupt random bytes and re-read.
     let mut rng = XorShift(SEED ^ 0xFEED);
-    let base_path = std::env::temp_dir().join(format!(
-        "fuzz_wal_corrupt_base_{}.bin", std::process::id()
-    ));
+    let base_path =
+        std::env::temp_dir().join(format!("fuzz_wal_corrupt_base_{}.bin", std::process::id()));
     {
         let mut w = WalWriter::open(&base_path).unwrap();
         for seq in 1..=5u64 {
-            w.append(&WalEntry::new(1000 + seq, seq, "inc".into(), vec![1, 2, 3], vec![])).unwrap();
+            w.append(&WalEntry::new(
+                1000 + seq,
+                seq,
+                "inc".into(),
+                vec![1, 2, 3],
+                vec![],
+            ))
+            .unwrap();
         }
         w.fsync().unwrap();
     }
@@ -183,21 +220,27 @@ fn fuzz_wal_reader_corrupted_valid_file_never_panics() {
             let idx = rng.range(corrupted.len());
             corrupted[idx] ^= (1 << rng.range(8)) as u8;
         }
-        let path = std::env::temp_dir().join(format!(
-            "fuzz_wal_corrupt_{}_{}.bin", std::process::id(), i
-        ));
+        let path =
+            std::env::temp_dir().join(format!("fuzz_wal_corrupt_{}_{}.bin", std::process::id(), i));
         std::fs::write(&path, &corrupted).unwrap();
 
         let result = std::panic::catch_unwind(|| {
             if let Ok(mut reader) = WalReader::open(&path) {
                 if let Ok(entries) = reader.read_all_entries() {
                     // Checksum must catch payload corruption — verify never panics.
-                    for e in &entries { let _ = e.verify_checksum(); }
+                    for e in &entries {
+                        let _ = e.verify_checksum();
+                    }
                 }
             }
         });
         std::fs::remove_file(&path).ok();
-        assert!(result.is_ok(), "corrupted-WAL read PANICKED on iteration {} (seed {:#x})", i, SEED);
+        assert!(
+            result.is_ok(),
+            "corrupted-WAL read PANICKED on iteration {} (seed {:#x})",
+            i,
+            SEED
+        );
     }
 }
 
@@ -215,7 +258,12 @@ fn fuzz_replication_decode_garbage_never_panics() {
         let result = std::panic::catch_unwind(|| {
             let _ = voltra::replication::decode_entries(&strings);
         });
-        assert!(result.is_ok(), "replication decode PANICKED on iteration {} (seed {:#x})", i, SEED);
+        assert!(
+            result.is_ok(),
+            "replication decode PANICKED on iteration {} (seed {:#x})",
+            i,
+            SEED
+        );
     }
 }
 

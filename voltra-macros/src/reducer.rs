@@ -8,12 +8,11 @@ use syn::{parse_macro_input, FnArg, Ident, ItemFn, Pat};
 /// Entry point called from lib.rs.
 pub fn expand(item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
-    expand_inner(input)
-        .unwrap_or_else(|e| e.to_compile_error().into())
+    expand_inner(input).unwrap_or_else(|e| e.to_compile_error().into())
 }
 
 fn expand_inner(input: ItemFn) -> Result<TokenStream, syn::Error> {
-    let fn_name   = &input.sig.ident;
+    let fn_name = &input.sig.ident;
     // A raw identifier (e.g. `r#move`, emitted by the .vol codegen for reducers
     // named after Rust keywords) stringifies to "r#move". Strip the prefix so the
     // wire name, struct name, and inner-fn name are derived from the plain name
@@ -22,14 +21,11 @@ fn expand_inner(input: ItemFn) -> Result<TokenStream, syn::Error> {
         let s = fn_name.to_string();
         s.strip_prefix("r#").map(|s| s.to_string()).unwrap_or(s)
     };
-    let vis       = &input.vis;
-    let body      = &input.block;
+    let vis = &input.vis;
+    let body = &input.block;
 
     // ── Struct name: snake_case → PascalCase + "Reducer" ────────────────────
-    let struct_name = Ident::new(
-        &(to_pascal_case(&fn_name_s) + "Reducer"),
-        Span::call_site(),
-    );
+    let struct_name = Ident::new(&(to_pascal_case(&fn_name_s) + "Reducer"), Span::call_site());
 
     // ── Inner function name ──────────────────────────────────────────────────
     let inner_fn = Ident::new(
@@ -175,10 +171,10 @@ mod tests {
 
     #[test]
     fn pascal_case_basic() {
-        assert_eq!(to_pascal_case("attack"),         "Attack");
-        assert_eq!(to_pascal_case("deal_damage"),    "DealDamage");
-        assert_eq!(to_pascal_case("buy_item_now"),   "BuyItemNow");
-        assert_eq!(to_pascal_case("increment"),      "Increment");
-        assert_eq!(to_pascal_case("_leading"),       "Leading");
+        assert_eq!(to_pascal_case("attack"), "Attack");
+        assert_eq!(to_pascal_case("deal_damage"), "DealDamage");
+        assert_eq!(to_pascal_case("buy_item_now"), "BuyItemNow");
+        assert_eq!(to_pascal_case("increment"), "Increment");
+        assert_eq!(to_pascal_case("_leading"), "Leading");
     }
 }

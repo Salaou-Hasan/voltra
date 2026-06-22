@@ -32,7 +32,8 @@ pub fn start_gossip(bus: Arc<ClusterBus>, mut shutdown: watch::Receiver<()>) -> 
 
         log::info!(
             "[cluster/gossip] Started — pinging {} peer(s) every {}ms",
-            bus.config.peers.len(), interval_ms
+            bus.config.peers.len(),
+            interval_ms
         );
 
         loop {
@@ -48,7 +49,9 @@ pub fn start_gossip(bus: Arc<ClusterBus>, mut shutdown: watch::Receiver<()>) -> 
 }
 
 async fn ping_all_peers(bus: &Arc<ClusterBus>) {
-    let peers: Vec<_> = bus.peers.iter()
+    let peers: Vec<_> = bus
+        .peers
+        .iter()
         .map(|e| (*e.key(), e.value().node.clone()))
         .collect();
 
@@ -63,11 +66,19 @@ async fn ping_all_peers(bus: &Arc<ClusterBus>) {
             match req.send() {
                 Ok(resp) if resp.status().is_success() => {
                     bus_c.mark_healthy(shard_id);
-                    log::debug!("[cluster/gossip] shard{} OK ({})", shard_id, node.metrics_url);
+                    log::debug!(
+                        "[cluster/gossip] shard{} OK ({})",
+                        shard_id,
+                        node.metrics_url
+                    );
                 }
                 Ok(resp) => {
                     bus_c.mark_unhealthy(shard_id);
-                    log::warn!("[cluster/gossip] shard{} unhealthy — HTTP {}", shard_id, resp.status());
+                    log::warn!(
+                        "[cluster/gossip] shard{} unhealthy — HTTP {}",
+                        shard_id,
+                        resp.status()
+                    );
                 }
                 Err(e) => {
                     bus_c.mark_unhealthy(shard_id);

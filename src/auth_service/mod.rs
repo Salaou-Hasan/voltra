@@ -10,7 +10,7 @@
 // ============================================================================
 
 use crate::auth::IdentityIssuer;
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::persistent::{PersistentStore, UserRow};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,7 +28,12 @@ pub struct User {
 
 impl From<UserRow> for User {
     fn from(r: UserRow) -> Self {
-        User { id: r.id, email: r.email, role: r.role, created_at: r.created_at }
+        User {
+            id: r.id,
+            email: r.email,
+            role: r.role,
+            created_at: r.created_at,
+        }
     }
 }
 
@@ -47,7 +52,11 @@ impl AuthService {
         issuer: Arc<IdentityIssuer>,
         token_ttl_secs: u64,
     ) -> Self {
-        AuthService { store, issuer, token_ttl_secs }
+        AuthService {
+            store,
+            issuer,
+            token_ttl_secs,
+        }
     }
 
     /// Register a new user.  Returns the created `User` (no token — call login next).
@@ -76,7 +85,12 @@ impl AuthService {
         self.store.create_user(&id, &email, &hash, role, now)?;
         self.store.log_audit(Some(&id), "register", None)?;
 
-        Ok(User { id, email, role: role.to_owned(), created_at: now })
+        Ok(User {
+            id,
+            email,
+            role: role.to_owned(),
+            created_at: now,
+        })
     }
 
     /// Verify credentials and return `(User, jwt_token)`.
@@ -121,7 +135,10 @@ impl AuthService {
 
     /// Change password after verifying the old one.
     pub fn change_password(
-        &self, user_id: &str, old_password: &str, new_password: &str,
+        &self,
+        user_id: &str,
+        old_password: &str,
+        new_password: &str,
     ) -> Result<()> {
         if new_password.len() < 8 {
             return Err(VoltraError::invalid_argument(
@@ -139,8 +156,10 @@ impl AuthService {
         }
         let hash = bcrypt::hash(new_password, 10)
             .map_err(|e| VoltraError::internal(format!("bcrypt hash: {e}")))?;
-        self.store.update_password_hash(user_id, &hash, now_secs())?;
-        self.store.log_audit(Some(user_id), "change_password", None)?;
+        self.store
+            .update_password_hash(user_id, &hash, now_secs())?;
+        self.store
+            .log_audit(Some(user_id), "change_password", None)?;
         Ok(())
     }
 }
@@ -158,7 +177,11 @@ fn generate_id() -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos().hash(&mut h);
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .hash(&mut h);
     std::thread::current().id().hash(&mut h);
     format!("usr_{:016x}", h.finish())
 }
@@ -186,7 +209,9 @@ mod tests {
     #[test]
     fn register_and_login() {
         let svc = setup();
-        let user = svc.register("alice@example.com", "password123", "player").unwrap();
+        let user = svc
+            .register("alice@example.com", "password123", "player")
+            .unwrap();
         assert_eq!(user.email, "alice@example.com");
         assert_eq!(user.role, "player");
 
@@ -198,7 +223,8 @@ mod tests {
     #[test]
     fn login_wrong_password_fails() {
         let svc = setup();
-        svc.register("bob@example.com", "correct_horse", "player").unwrap();
+        svc.register("bob@example.com", "correct_horse", "player")
+            .unwrap();
         let err = svc.login("bob@example.com", "wrong").unwrap_err();
         assert!(err.to_string().contains("invalid email or password"));
     }
@@ -206,15 +232,19 @@ mod tests {
     #[test]
     fn duplicate_email_fails() {
         let svc = setup();
-        svc.register("carol@example.com", "password123", "player").unwrap();
-        let err = svc.register("carol@example.com", "password456", "player").unwrap_err();
+        svc.register("carol@example.com", "password123", "player")
+            .unwrap();
+        let err = svc
+            .register("carol@example.com", "password456", "player")
+            .unwrap_err();
         assert!(err.to_string().contains("already registered"));
     }
 
     #[test]
     fn verify_token_round_trip() {
         let svc = setup();
-        svc.register("dave@example.com", "password999", "admin").unwrap();
+        svc.register("dave@example.com", "password999", "admin")
+            .unwrap();
         let (user, token) = svc.login("dave@example.com", "password999").unwrap();
         let verified = svc.verify_token(&token).unwrap();
         assert_eq!(verified.id, user.id);
@@ -224,8 +254,11 @@ mod tests {
     #[test]
     fn change_password_works() {
         let svc = setup();
-        let user = svc.register("eve@example.com", "old_password", "player").unwrap();
-        svc.change_password(&user.id, "old_password", "new_password_123").unwrap();
+        let user = svc
+            .register("eve@example.com", "old_password", "player")
+            .unwrap();
+        svc.change_password(&user.id, "old_password", "new_password_123")
+            .unwrap();
         svc.login("eve@example.com", "new_password_123").unwrap();
         svc.login("eve@example.com", "old_password").unwrap_err();
     }
@@ -233,7 +266,9 @@ mod tests {
     #[test]
     fn short_password_rejected() {
         let svc = setup();
-        let err = svc.register("f@example.com", "short", "player").unwrap_err();
+        let err = svc
+            .register("f@example.com", "short", "player")
+            .unwrap_err();
         assert!(err.to_string().contains("8 characters"));
     }
 }

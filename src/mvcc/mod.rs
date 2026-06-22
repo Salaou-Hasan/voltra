@@ -145,7 +145,10 @@ pub struct NsKey {
 
 impl NsKey {
     pub fn new(ns: u32, key: impl Into<Bytes>) -> Self {
-        Self { ns, key: key.into() }
+        Self {
+            ns,
+            key: key.into(),
+        }
     }
 }
 
@@ -277,7 +280,10 @@ impl<'a> Writer<'a> {
     /// Latest committed value (linearizable read), with lazy-expiry semantics.
     /// Expired keys read as None and are auto-staged for deletion.
     pub fn get(&mut self, ns: u32, key: &Bytes) -> Option<Datum> {
-        let nk = NsKey { ns, key: key.clone() };
+        let nk = NsKey {
+            ns,
+            key: key.clone(),
+        };
         if let Some(staged) = self.overlay.get(&nk) {
             return staged.as_ref().and_then(|(d, exp)| {
                 if exp.map(|e| e <= self.now_ms).unwrap_or(false) {
@@ -308,7 +314,10 @@ impl<'a> Writer<'a> {
     /// Commit timestamp of the newest committed version of a key
     /// (0 = never written). Used for WATCH conflict detection.
     pub fn head_ts(&self, ns: u32, key: &Bytes) -> TxnId {
-        let nk = NsKey { ns, key: key.clone() };
+        let nk = NsKey {
+            ns,
+            key: key.clone(),
+        };
         self.inner.chains.get(&nk).map(|c| c.head_ts()).unwrap_or(0)
     }
 
@@ -323,7 +332,10 @@ impl<'a> Writer<'a> {
 
     /// Current TTL of a key in epoch ms (None = no expiry set).
     pub fn get_expiry(&self, ns: u32, key: &Bytes) -> Option<u64> {
-        let nk = NsKey { ns, key: key.clone() };
+        let nk = NsKey {
+            ns,
+            key: key.clone(),
+        };
         if let Some(staged) = self.overlay.get(&nk) {
             return staged.as_ref().and_then(|(_, e)| *e);
         }
@@ -339,29 +351,46 @@ impl<'a> Writer<'a> {
 
     /// Stage a write. Becomes visible to subsequent `get`s in this batch.
     pub fn put(&mut self, ns: u32, key: Bytes, value: Datum, expires_at_ms: Option<u64>) {
-        let nk = NsKey { ns, key: key.clone() };
-        self.overlay.insert(nk, Some((value.clone(), expires_at_ms)));
-        self.staged.push(WriteOp::Put { ns, key, value, expires_at_ms });
+        let nk = NsKey {
+            ns,
+            key: key.clone(),
+        };
+        self.overlay
+            .insert(nk, Some((value.clone(), expires_at_ms)));
+        self.staged.push(WriteOp::Put {
+            ns,
+            key,
+            value,
+            expires_at_ms,
+        });
     }
 
     /// Stage a deletion. Returns true if the key existed (visible) beforehand.
     pub fn del(&mut self, ns: u32, key: Bytes) -> bool {
         let existed = {
-            let nk = NsKey { ns, key: key.clone() };
+            let nk = NsKey {
+                ns,
+                key: key.clone(),
+            };
             match self.overlay.get(&nk) {
                 Some(v) => v.is_some(),
                 None => self
                     .inner
                     .chains
                     .get(&nk)
-                    .and_then(|c| c.versions.first().map(|v| {
-                        v.value.is_some()
-                            && !v.expires_at_ms.map(|e| e <= self.now_ms).unwrap_or(false)
-                    }))
+                    .and_then(|c| {
+                        c.versions.first().map(|v| {
+                            v.value.is_some()
+                                && !v.expires_at_ms.map(|e| e <= self.now_ms).unwrap_or(false)
+                        })
+                    })
                     .unwrap_or(false),
             }
         };
-        let nk = NsKey { ns, key: key.clone() };
+        let nk = NsKey {
+            ns,
+            key: key.clone(),
+        };
         self.overlay.insert(nk, None);
         self.staged.push(WriteOp::Del { ns, key });
         existed
@@ -379,8 +408,7 @@ impl<'a> Writer<'a> {
                 continue; // handled below from overlay
             }
             if let Some(v) = entry.value().versions.first() {
-                if v.value.is_some()
-                    && !v.expires_at_ms.map(|e| e <= self.now_ms).unwrap_or(false)
+                if v.value.is_some() && !v.expires_at_ms.map(|e| e <= self.now_ms).unwrap_or(false)
                 {
                     out.push(entry.key().key.clone());
                 }
@@ -468,7 +496,10 @@ pub struct MvccConfig {
 
 impl Default for MvccConfig {
     fn default() -> Self {
-        Self { data_dir: None, fsync: FsyncPolicy::EverySec }
+        Self {
+            data_dir: None,
+            fsync: FsyncPolicy::EverySec,
+        }
     }
 }
 
@@ -501,7 +532,10 @@ impl MvccStore {
 
             if let Some((snap_ts, entries)) = aof::load_snapshot(&snap_path)? {
                 for e in entries {
-                    let nk = NsKey { ns: e.ns, key: e.key };
+                    let nk = NsKey {
+                        ns: e.ns,
+                        key: e.key,
+                    };
                     inner.bump_count(nk.ns, 1);
                     if let Some(exp) = e.expires_at_ms {
                         inner.ttl_index.insert(nk.clone(), exp);
@@ -558,7 +592,10 @@ impl MvccStore {
                 .expect("spawn mvcc gc");
         }
 
-        Ok(Self { inner, tx: tx.to_async() })
+        Ok(Self {
+            inner,
+            tx: tx.to_async(),
+        })
     }
 
     /// In-memory store for tests.
@@ -581,12 +618,18 @@ impl MvccStore {
     pub fn pin_snapshot(&self) -> SnapshotGuard {
         let ts = self.current_ts();
         *self.inner.active_snapshots.lock().entry(ts).or_insert(0) += 1;
-        SnapshotGuard { inner: self.inner.clone(), ts }
+        SnapshotGuard {
+            inner: self.inner.clone(),
+            ts,
+        }
     }
 
     /// Read a key as of snapshot `ts`. Expired keys read as None.
     pub fn get_at(&self, ns: u32, key: &Bytes, ts: TxnId) -> Option<Datum> {
-        let nk = NsKey { ns, key: key.clone() };
+        let nk = NsKey {
+            ns,
+            key: key.clone(),
+        };
         let chain = self.inner.chains.get(&nk)?;
         let v = chain.visible_at(ts)?;
         if v.expires_at_ms.map(|e| e <= now_ms()).unwrap_or(false) {
@@ -602,7 +645,10 @@ impl MvccStore {
 
     /// Expiry (epoch ms) of a live key at the latest snapshot.
     pub fn get_expiry(&self, ns: u32, key: &Bytes) -> Option<u64> {
-        let nk = NsKey { ns, key: key.clone() };
+        let nk = NsKey {
+            ns,
+            key: key.clone(),
+        };
         let chain = self.inner.chains.get(&nk)?;
         let v = chain.visible_at(self.current_ts())?;
         v.value.as_ref()?;
@@ -620,7 +666,11 @@ impl MvccStore {
 
     /// Number of keys with a TTL in a namespace (INFO keyspace `expires=`).
     pub fn ttl_count(&self, ns: u32) -> u64 {
-        self.inner.ttl_index.iter().filter(|e| e.key().ns == ns).count() as u64
+        self.inner
+            .ttl_index
+            .iter()
+            .filter(|e| e.key().ns == ns)
+            .count() as u64
     }
 
     /// Visit every visible key/value in a namespace as of `ts`.
@@ -671,7 +721,12 @@ impl MvccStore {
     ) -> Result<TxnId, CommitError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx
-            .send(Batch::Commit(CommitRequest { read_ts, writes, conflict_keys, resp: resp_tx }))
+            .send(Batch::Commit(CommitRequest {
+                read_ts,
+                writes,
+                conflict_keys,
+                resp: resp_tx,
+            }))
             .await
             .map_err(|_| CommitError::Closed)?;
         resp_rx.await.map_err(|_| CommitError::Closed)?
@@ -712,13 +767,29 @@ pub fn now_ms() -> u64 {
 fn apply_ops(inner: &Inner, ops: &[WriteOp], ts: TxnId, min_active: TxnId) {
     for op in ops {
         match op {
-            WriteOp::Put { ns, key, value, expires_at_ms } => {
-                let nk = NsKey { ns: *ns, key: key.clone() };
+            WriteOp::Put {
+                ns,
+                key,
+                value,
+                expires_at_ms,
+            } => {
+                let nk = NsKey {
+                    ns: *ns,
+                    key: key.clone(),
+                };
                 let mut chain = inner.chains.entry(nk.clone()).or_default();
-                let was_live = chain.versions.first().map(|v| v.value.is_some()).unwrap_or(false);
+                let was_live = chain
+                    .versions
+                    .first()
+                    .map(|v| v.value.is_some())
+                    .unwrap_or(false);
                 chain.versions.insert(
                     0,
-                    Version { commit_ts: ts, value: Some(value.clone()), expires_at_ms: *expires_at_ms },
+                    Version {
+                        commit_ts: ts,
+                        value: Some(value.clone()),
+                        expires_at_ms: *expires_at_ms,
+                    },
                 );
                 chain.prune(min_active);
                 drop(chain);
@@ -735,10 +806,24 @@ fn apply_ops(inner: &Inner, ops: &[WriteOp], ts: TxnId, min_active: TxnId) {
                 }
             }
             WriteOp::Del { ns, key } => {
-                let nk = NsKey { ns: *ns, key: key.clone() };
+                let nk = NsKey {
+                    ns: *ns,
+                    key: key.clone(),
+                };
                 let mut chain = inner.chains.entry(nk.clone()).or_default();
-                let was_live = chain.versions.first().map(|v| v.value.is_some()).unwrap_or(false);
-                chain.versions.insert(0, Version { commit_ts: ts, value: None, expires_at_ms: None });
+                let was_live = chain
+                    .versions
+                    .first()
+                    .map(|v| v.value.is_some())
+                    .unwrap_or(false);
+                chain.versions.insert(
+                    0,
+                    Version {
+                        commit_ts: ts,
+                        value: None,
+                        expires_at_ms: None,
+                    },
+                );
                 chain.prune(min_active);
                 drop(chain);
                 if was_live {
@@ -812,7 +897,10 @@ fn sequencer_loop(
                     if !req.writes.is_empty() {
                         apply_ops(&inner, &req.writes, ts, min_active);
                         inner.last_commit.store(ts, Ordering::Release);
-                        records.push(aof::AofRecord { ts, ops: req.writes });
+                        records.push(aof::AofRecord {
+                            ts,
+                            ops: req.writes,
+                        });
                     }
                     let resp = req.resp;
                     after_commit.push(Box::new(move || {
@@ -922,7 +1010,10 @@ fn gc_loop(inner: Arc<Inner>, tx: kanal::Sender<Batch>) {
                     for nk in expired {
                         // Re-check under the sequencer: a writer may have
                         // refreshed the TTL since we sampled it.
-                        if w.get_expiry(nk.ns, &nk.key).map(|e| e <= w.now_ms()).unwrap_or(false) {
+                        if w.get_expiry(nk.ns, &nk.key)
+                            .map(|e| e <= w.now_ms())
+                            .unwrap_or(false)
+                        {
                             w.del(nk.ns, nk.key);
                         }
                     }
@@ -986,7 +1077,10 @@ mod tests {
 
         // New reads see v2, the pinned snapshot still sees v1.
         assert_eq!(as_str(&store.get(0, &b("k")).unwrap()), &b("v2"));
-        assert_eq!(as_str(&store.get_at(0, &b("k"), snap.ts).unwrap()), &b("v1"));
+        assert_eq!(
+            as_str(&store.get_at(0, &b("k"), snap.ts).unwrap()),
+            &b("v1")
+        );
         store.close();
     }
 
@@ -1023,7 +1117,12 @@ mod tests {
         let err = store
             .commit(
                 read_ts,
-                vec![WriteOp::Put { ns: 0, key: b("k"), value: sval("mine"), expires_at_ms: None }],
+                vec![WriteOp::Put {
+                    ns: 0,
+                    key: b("k"),
+                    value: sval("mine"),
+                    expires_at_ms: None,
+                }],
                 vec![NsKey::new(0, b("k"))],
             )
             .await
@@ -1040,7 +1139,12 @@ mod tests {
         let ts = store
             .commit(
                 read_ts,
-                vec![WriteOp::Put { ns: 0, key: b("a"), value: sval("1"), expires_at_ms: None }],
+                vec![WriteOp::Put {
+                    ns: 0,
+                    key: b("a"),
+                    value: sval("1"),
+                    expires_at_ms: None,
+                }],
                 vec![NsKey::new(0, b("a"))],
             )
             .await

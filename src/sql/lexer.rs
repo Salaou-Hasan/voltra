@@ -17,7 +17,7 @@
 //   - Comments: -- line comment (stripped)
 // ============================================================================
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -124,72 +124,72 @@ pub enum Token {
 /// recognised; otherwise return Token::Ident.
 fn keyword_or_ident(s: &str) -> Token {
     match s {
-        "select"   => Token::Select,
-        "from"     => Token::From,
-        "where"    => Token::Where,
-        "join"     => Token::Join,
-        "inner"    => Token::Inner,
-        "left"     => Token::Left,
-        "right"    => Token::Right,
-        "full"     => Token::Full,
-        "outer"    => Token::Outer,
-        "cross"    => Token::Cross,
-        "on"       => Token::On,
-        "as"       => Token::As,
-        "and"      => Token::And,
-        "or"       => Token::Or,
-        "not"      => Token::Not,
-        "in"       => Token::In,
-        "is"       => Token::Is,
-        "like"     => Token::Like,
-        "between"  => Token::Between,
-        "exists"   => Token::Exists,
-        "union"    => Token::Union,
-        "all"      => Token::All,
+        "select" => Token::Select,
+        "from" => Token::From,
+        "where" => Token::Where,
+        "join" => Token::Join,
+        "inner" => Token::Inner,
+        "left" => Token::Left,
+        "right" => Token::Right,
+        "full" => Token::Full,
+        "outer" => Token::Outer,
+        "cross" => Token::Cross,
+        "on" => Token::On,
+        "as" => Token::As,
+        "and" => Token::And,
+        "or" => Token::Or,
+        "not" => Token::Not,
+        "in" => Token::In,
+        "is" => Token::Is,
+        "like" => Token::Like,
+        "between" => Token::Between,
+        "exists" => Token::Exists,
+        "union" => Token::Union,
+        "all" => Token::All,
         "distinct" => Token::Distinct,
-        "group"    => Token::Group,
-        "by"       => Token::By,
-        "having"   => Token::Having,
-        "order"    => Token::Order,
-        "limit"    => Token::Limit,
-        "offset"   => Token::Offset,
-        "asc"      => Token::Asc,
-        "desc"     => Token::Desc,
-        "count"    => Token::Count,
-        "sum"      => Token::Sum,
-        "avg"      => Token::Avg,
-        "min"      => Token::Min,
-        "max"      => Token::Max,
-        "insert"   => Token::Insert,
-        "into"     => Token::Into,
-        "values"   => Token::Values,
-        "update"   => Token::Update,
-        "set"      => Token::Set,
-        "delete"   => Token::Delete,
-        "case"     => Token::Case,
-        "when"     => Token::When,
-        "then"     => Token::Then,
-        "else"     => Token::Else,
-        "end"      => Token::End,
-        "true"     => Token::BoolLit(true),
-        "false"    => Token::BoolLit(false),
-        "null"     => Token::Null,
+        "group" => Token::Group,
+        "by" => Token::By,
+        "having" => Token::Having,
+        "order" => Token::Order,
+        "limit" => Token::Limit,
+        "offset" => Token::Offset,
+        "asc" => Token::Asc,
+        "desc" => Token::Desc,
+        "count" => Token::Count,
+        "sum" => Token::Sum,
+        "avg" => Token::Avg,
+        "min" => Token::Min,
+        "max" => Token::Max,
+        "insert" => Token::Insert,
+        "into" => Token::Into,
+        "values" => Token::Values,
+        "update" => Token::Update,
+        "set" => Token::Set,
+        "delete" => Token::Delete,
+        "case" => Token::Case,
+        "when" => Token::When,
+        "then" => Token::Then,
+        "else" => Token::Else,
+        "end" => Token::End,
+        "true" => Token::BoolLit(true),
+        "false" => Token::BoolLit(false),
+        "null" => Token::Null,
         "coalesce" => Token::Coalesce,
-        "nullif"   => Token::Nullif,
-        "cast"     => Token::Cast,
+        "nullif" => Token::Nullif,
+        "cast" => Token::Cast,
         "substr" | "substring" => Token::SubStr,
-        "length"   => Token::Length,
-        "upper"    => Token::Upper,
-        "lower"    => Token::Lower,
-        "trim"     => Token::Trim,
-        "replace"  => Token::Replace,
-        "round"    => Token::Round,
-        "floor"    => Token::Floor,
+        "length" => Token::Length,
+        "upper" => Token::Upper,
+        "lower" => Token::Lower,
+        "trim" => Token::Trim,
+        "replace" => Token::Replace,
+        "round" => Token::Round,
+        "floor" => Token::Floor,
         "ceil" | "ceiling" => Token::Ceil,
-        "abs"      => Token::Abs,
-        "now"      => Token::Now,
-        "concat"   => Token::Concat,
-        other      => Token::Ident(other.to_string()),
+        "abs" => Token::Abs,
+        "now" => Token::Now,
+        "concat" => Token::Concat,
+        other => Token::Ident(other.to_string()),
     }
 }
 
@@ -200,7 +200,10 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
-        Lexer { input: input.as_bytes(), pos: 0 }
+        Lexer {
+            input: input.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -213,19 +216,27 @@ impl<'a> Lexer<'a> {
 
     fn advance(&mut self) -> Option<u8> {
         let ch = self.input.get(self.pos).copied();
-        if ch.is_some() { self.pos += 1; }
+        if ch.is_some() {
+            self.pos += 1;
+        }
         ch
     }
 
     fn skip_whitespace(&mut self) {
         while let Some(ch) = self.peek() {
-            if ch.is_ascii_whitespace() { self.pos += 1; } else { break; }
+            if ch.is_ascii_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
     }
 
     fn skip_line_comment(&mut self) {
         while let Some(ch) = self.advance() {
-            if ch == b'\n' { break; }
+            if ch == b'\n' {
+                break;
+            }
         }
     }
 
@@ -243,16 +254,17 @@ impl<'a> Lexer<'a> {
                         break;
                     }
                 }
-                Some(b'\\') => {
-                    match self.advance() {
-                        Some(b'n')  => s.push('\n'),
-                        Some(b't')  => s.push('\t'),
-                        Some(b'r')  => s.push('\r'),
-                        Some(b'\\') => s.push('\\'),
-                        Some(c)     => { s.push('\\'); s.push(c as char); }
-                        None => return Err(VoltraError::invalid_argument("Unterminated escape")),
+                Some(b'\\') => match self.advance() {
+                    Some(b'n') => s.push('\n'),
+                    Some(b't') => s.push('\t'),
+                    Some(b'r') => s.push('\r'),
+                    Some(b'\\') => s.push('\\'),
+                    Some(c) => {
+                        s.push('\\');
+                        s.push(c as char);
                     }
-                }
+                    None => return Err(VoltraError::invalid_argument("Unterminated escape")),
+                },
                 Some(ch) => s.push(ch as char),
             }
         }
@@ -263,7 +275,11 @@ impl<'a> Lexer<'a> {
         let mut s = String::new();
         loop {
             match self.advance() {
-                None => return Err(VoltraError::invalid_argument("Unterminated quoted identifier")),
+                None => {
+                    return Err(VoltraError::invalid_argument(
+                        "Unterminated quoted identifier",
+                    ))
+                }
                 Some(b'`') | Some(b'"') => break,
                 Some(ch) => s.push(ch as char),
             }
@@ -325,22 +341,25 @@ impl<'a> Lexer<'a> {
         loop {
             self.skip_whitespace();
             let ch = match self.peek() {
-                None => { tokens.push(Token::Eof); break; }
+                None => {
+                    tokens.push(Token::Eof);
+                    break;
+                }
                 Some(c) => c,
             };
             self.pos += 1;
 
             let tok = match ch {
                 b'\'' => self.read_string(b'\'')?,
-                b'"'  => self.read_quoted_ident()?,
-                b'`'  => self.read_quoted_ident()?,
-                b'('  => Token::LParen,
-                b')'  => Token::RParen,
-                b','  => Token::Comma,
-                b'.'  => Token::Dot,
-                b';'  => Token::Semi,
-                b'+'  => Token::Plus,
-                b'-'  => {
+                b'"' => self.read_quoted_ident()?,
+                b'`' => self.read_quoted_ident()?,
+                b'(' => Token::LParen,
+                b')' => Token::RParen,
+                b',' => Token::Comma,
+                b'.' => Token::Dot,
+                b';' => Token::Semi,
+                b'+' => Token::Plus,
+                b'-' => {
                     if self.peek() == Some(b'-') {
                         self.pos += 1;
                         self.skip_line_comment();
@@ -348,32 +367,55 @@ impl<'a> Lexer<'a> {
                     }
                     Token::Minus
                 }
-                b'*'  => Token::Star,
-                b'/'  => Token::Slash,
-                b'%'  => Token::Percent,
-                b'='  => Token::Eq,
-                b'!'  => {
-                    if self.peek() == Some(b'=') { self.pos += 1; Token::Ne }
-                    else { return Err(VoltraError::invalid_argument("Unexpected char '!'".to_string())) }
+                b'*' => Token::Star,
+                b'/' => Token::Slash,
+                b'%' => Token::Percent,
+                b'=' => Token::Eq,
+                b'!' => {
+                    if self.peek() == Some(b'=') {
+                        self.pos += 1;
+                        Token::Ne
+                    } else {
+                        return Err(VoltraError::invalid_argument(
+                            "Unexpected char '!'".to_string(),
+                        ));
+                    }
                 }
-                b'<'  => {
-                    if self.peek() == Some(b'=') { self.pos += 1; Token::Le }
-                    else if self.peek() == Some(b'>') { self.pos += 1; Token::Ne }
-                    else { Token::Lt }
+                b'<' => {
+                    if self.peek() == Some(b'=') {
+                        self.pos += 1;
+                        Token::Le
+                    } else if self.peek() == Some(b'>') {
+                        self.pos += 1;
+                        Token::Ne
+                    } else {
+                        Token::Lt
+                    }
                 }
-                b'>'  => {
-                    if self.peek() == Some(b'=') { self.pos += 1; Token::Ge }
-                    else { Token::Gt }
+                b'>' => {
+                    if self.peek() == Some(b'=') {
+                        self.pos += 1;
+                        Token::Ge
+                    } else {
+                        Token::Gt
+                    }
                 }
-                b'|'  => {
-                    if self.peek() == Some(b'|') { self.pos += 1; Token::Concat2 }
-                    else { return Err(VoltraError::invalid_argument("Expected '||'")); }
+                b'|' => {
+                    if self.peek() == Some(b'|') {
+                        self.pos += 1;
+                        Token::Concat2
+                    } else {
+                        return Err(VoltraError::invalid_argument("Expected '||'"));
+                    }
                 }
                 c if c.is_ascii_digit() => self.read_number(c),
                 c if c.is_ascii_alphabetic() || c == b'_' => self.read_ident(c),
-                other => return Err(VoltraError::invalid_argument(
-                    format!("Unexpected character: '{}'", other as char)
-                )),
+                other => {
+                    return Err(VoltraError::invalid_argument(format!(
+                        "Unexpected character: '{}'",
+                        other as char
+                    )))
+                }
             };
             tokens.push(tok);
         }

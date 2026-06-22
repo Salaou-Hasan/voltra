@@ -55,13 +55,27 @@ impl AofWriter {
     /// Open for appending (creates the file if missing).
     pub fn open(path: &Path, policy: FsyncPolicy) -> std::io::Result<Self> {
         let f = OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { w: BufWriter::with_capacity(256 * 1024, f), policy, last_sync: Instant::now(), dirty: false })
+        Ok(Self {
+            w: BufWriter::with_capacity(256 * 1024, f),
+            policy,
+            last_sync: Instant::now(),
+            dirty: false,
+        })
     }
 
     /// Truncate and start fresh (after a snapshot SAVE).
     pub fn truncate(path: &Path, policy: FsyncPolicy) -> std::io::Result<Self> {
-        let f = OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
-        Ok(Self { w: BufWriter::with_capacity(256 * 1024, f), policy, last_sync: Instant::now(), dirty: false })
+        let f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        Ok(Self {
+            w: BufWriter::with_capacity(256 * 1024, f),
+            policy,
+            last_sync: Instant::now(),
+            dirty: false,
+        })
     }
 
     /// Append a group of records and flush to the OS (one syscall per group).
@@ -162,8 +176,11 @@ pub fn save_snapshot(path: &Path, ts: u64, entries: &[SnapEntry]) -> std::io::Re
         let f = File::create(&tmp)?;
         let mut w = BufWriter::with_capacity(1024 * 1024, f);
         w.write_all(SNAP_MAGIC)?;
-        let body = rmp_serde::to_vec(&SnapFile { ts, entries: entries.to_vec() })
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let body = rmp_serde::to_vec(&SnapFile {
+            ts,
+            entries: entries.to_vec(),
+        })
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         w.write_all(&body)?;
         w.flush()?;
         w.get_ref().sync_data()?;
@@ -217,9 +234,17 @@ mod tests {
             w.append_records(&[
                 AofRecord {
                     ts: 1,
-                    ops: vec![WriteOp::Put { ns: 0, key: b("a"), value: Datum::Str(b("1")), expires_at_ms: None }],
+                    ops: vec![WriteOp::Put {
+                        ns: 0,
+                        key: b("a"),
+                        value: Datum::Str(b("1")),
+                        expires_at_ms: None,
+                    }],
                 },
-                AofRecord { ts: 2, ops: vec![WriteOp::Del { ns: 0, key: b("a") }] },
+                AofRecord {
+                    ts: 2,
+                    ops: vec![WriteOp::Del { ns: 0, key: b("a") }],
+                },
             ]);
             w.sync();
         }
@@ -246,7 +271,12 @@ mod tests {
         save_snapshot(
             &path,
             42,
-            &[SnapEntry { ns: 3, key: b("k"), value: Datum::Str(b("v")), expires_at_ms: Some(99) }],
+            &[SnapEntry {
+                ns: 3,
+                key: b("k"),
+                value: Datum::Str(b("v")),
+                expires_at_ms: Some(99),
+            }],
         )
         .unwrap();
         let (ts, entries) = load_snapshot(&path).unwrap().unwrap();

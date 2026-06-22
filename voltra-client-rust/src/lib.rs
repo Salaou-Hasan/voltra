@@ -37,6 +37,6 @@ pub mod error;
 pub mod protocol;
 pub mod types;
 
-pub use client::{ClientEvent, VoltraClient, ReconnectConfig, Subscription};
-pub use error::{VoltraError, Result};
+pub use client::{ClientEvent, ReconnectConfig, Subscription, VoltraClient};
+pub use error::{Result, VoltraError};
 pub use types::{ClientOptions, RowDiff};

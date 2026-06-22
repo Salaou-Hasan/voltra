@@ -20,14 +20,12 @@ pub struct ScheduledReducerConfig {
 ///
 /// - `Open`   (default): unlisted reducers are callable by any role (fail-open).
 /// - `Closed`: unlisted reducers are denied unless the caller is the scheduler.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PermissionsPolicy {
     #[default]
     Open,
     Closed,
 }
-
 
 /// Role-based access control configuration.
 ///
@@ -213,7 +211,6 @@ pub struct Config {
     pub sub_tick_ms: u64,
 
     // ── Multi-region ───────────────────────────────────────────────────────
-
     /// This node's region ID (e.g. "europe", "asia").
     /// Env: `VOLTRA_REGION`.  Default "default".
     pub region: String,
@@ -222,7 +219,6 @@ pub struct Config {
     pub regions: String,
 
     // ── Leaderboard aggregation ────────────────────────────────────────────
-
     /// Board name to aggregate globally.  Env: `VOLTRA_LEADERBOARD_BOARD`.
     pub leaderboard_board: String,
     /// Seconds between global aggregation runs.  0 = disabled.
@@ -233,7 +229,6 @@ pub struct Config {
     pub leaderboard_top_n: usize,
 
     // ── Post-match stat sync ───────────────────────────────────────────────
-
     /// How often (ms) the stat-sync queue is flushed to home regions.
     /// Env: `VOLTRA_STAT_SYNC_FLUSH_MS`.  Default 500.
     pub stat_sync_flush_ms: u64,
@@ -527,7 +522,11 @@ fn apply_server_section(cfg: &mut Config, server: Option<ConfigServer>) {
     if let Some(d) = s.snapshot_dir {
         cfg.snapshot_dir = PathBuf::from(d);
     }
-    if let Some(p) = s.permissions_default_policy.as_deref().and_then(parse_policy_str) {
+    if let Some(p) = s
+        .permissions_default_policy
+        .as_deref()
+        .and_then(parse_policy_str)
+    {
         cfg.permissions.default_policy = p;
     }
     if let Some(t) = s.sql_timeout_ms {
@@ -602,14 +601,14 @@ fn apply_scheduler_section(cfg: &mut Config, scheduler: Option<Vec<ConfigSchedul
     }
 }
 
-fn apply_permissions_section(
-    cfg: &mut Config,
-    permissions: Option<HashMap<String, Vec<String>>>,
-) {
+fn apply_permissions_section(cfg: &mut Config, permissions: Option<HashMap<String, Vec<String>>>) {
     if let Some(rules) = permissions {
         // Preserve any previously-applied default_policy.
         let policy = cfg.permissions.default_policy;
-        cfg.permissions = PermissionsConfig { rules, default_policy: policy };
+        cfg.permissions = PermissionsConfig {
+            rules,
+            default_policy: policy,
+        };
     }
 }
 
@@ -708,7 +707,10 @@ fn apply_env_overrides(cfg: &mut Config) {
     if let Ok(json) = env::var("VOLTRA_PERMISSIONS") {
         if let Ok(rules) = serde_json::from_str::<HashMap<String, Vec<String>>>(&json) {
             let policy = cfg.permissions.default_policy;
-            cfg.permissions = PermissionsConfig { rules, default_policy: policy };
+            cfg.permissions = PermissionsConfig {
+                rules,
+                default_policy: policy,
+            };
         }
     }
     if let Ok(v) = env::var("VOLTRA_PERMISSIONS_DEFAULT_POLICY") {
@@ -774,9 +776,10 @@ fn apply_env_overrides(cfg: &mut Config) {
     {
         cfg.eviction.max_bytes_total = b;
     }
-    if let Ok(c) = env::var("VOLTRA_REDUCER_QUEUE_CAP")
-        .and_then(|v| v.parse::<usize>().map_err(|_| std::env::VarError::NotPresent))
-    {
+    if let Ok(c) = env::var("VOLTRA_REDUCER_QUEUE_CAP").and_then(|v| {
+        v.parse::<usize>()
+            .map_err(|_| std::env::VarError::NotPresent)
+    }) {
         cfg.reducer_queue_cap = c.max(1);
     }
     if let Ok(v) = env::var("VOLTRA_TLS_ENABLED") {
@@ -819,14 +822,16 @@ fn apply_env_overrides(cfg: &mut Config) {
     {
         cfg.backup_interval_secs = i;
     }
-    if let Ok(k) = env::var("VOLTRA_BACKUP_KEEP")
-        .and_then(|v| v.parse::<usize>().map_err(|_| std::env::VarError::NotPresent))
-    {
+    if let Ok(k) = env::var("VOLTRA_BACKUP_KEEP").and_then(|v| {
+        v.parse::<usize>()
+            .map_err(|_| std::env::VarError::NotPresent)
+    }) {
         cfg.backup_keep = k.max(1);
     }
-    if let Ok(w) = env::var("VOLTRA_WORKERS")
-        .and_then(|v| v.parse::<usize>().map_err(|_| std::env::VarError::NotPresent))
-    {
+    if let Ok(w) = env::var("VOLTRA_WORKERS").and_then(|v| {
+        v.parse::<usize>()
+            .map_err(|_| std::env::VarError::NotPresent)
+    }) {
         cfg.workers = w;
     }
     if let Ok(p) = env::var("VOLTRA_REDIS_PORT")
@@ -868,9 +873,10 @@ fn apply_env_overrides(cfg: &mut Config) {
     {
         cfg.leaderboard_interval_secs = s;
     }
-    if let Ok(n) = env::var("VOLTRA_LEADERBOARD_TOP_N")
-        .and_then(|v| v.parse::<usize>().map_err(|_| std::env::VarError::NotPresent))
-    {
+    if let Ok(n) = env::var("VOLTRA_LEADERBOARD_TOP_N").and_then(|v| {
+        v.parse::<usize>()
+            .map_err(|_| std::env::VarError::NotPresent)
+    }) {
         cfg.leaderboard_top_n = n;
     }
     if let Ok(ms) = env::var("VOLTRA_STAT_SYNC_FLUSH_MS")
@@ -882,9 +888,15 @@ fn apply_env_overrides(cfg: &mut Config) {
 
 fn apply_eviction_section(cfg: &mut Config, eviction: Option<ConfigEviction>) {
     if let Some(e) = eviction {
-        if let Some(p) = e.policy { cfg.eviction.policy = p; }
-        if let Some(n) = e.max_rows_per_table { cfg.eviction.max_rows_per_table = n; }
-        if let Some(b) = e.max_bytes_total { cfg.eviction.max_bytes_total = b; }
+        if let Some(p) = e.policy {
+            cfg.eviction.policy = p;
+        }
+        if let Some(n) = e.max_rows_per_table {
+            cfg.eviction.max_rows_per_table = n;
+        }
+        if let Some(b) = e.max_bytes_total {
+            cfg.eviction.max_bytes_total = b;
+        }
     }
 }
 
@@ -928,8 +940,14 @@ mod tests {
     fn test_permissions_role_check() {
         let mut rules = HashMap::new();
         rules.insert("delete_player".to_string(), vec!["admin".to_string()]);
-        rules.insert("increment".to_string(), vec!["user".to_string(), "admin".to_string()]);
-        let p = PermissionsConfig { rules, default_policy: PermissionsPolicy::Open };
+        rules.insert(
+            "increment".to_string(),
+            vec!["user".to_string(), "admin".to_string()],
+        );
+        let p = PermissionsConfig {
+            rules,
+            default_policy: PermissionsPolicy::Open,
+        };
 
         assert!(p.is_allowed("delete_player", "admin"));
         assert!(!p.is_allowed("delete_player", "user"));
@@ -945,7 +963,10 @@ mod tests {
     fn test_permissions_scheduler_always_allowed() {
         let mut rules = HashMap::new();
         rules.insert("reset_scores".to_string(), vec!["admin".to_string()]);
-        let p = PermissionsConfig { rules, default_policy: PermissionsPolicy::Open };
+        let p = PermissionsConfig {
+            rules,
+            default_policy: PermissionsPolicy::Open,
+        };
         // Scheduler bypasses all role checks.
         assert!(p.is_allowed("reset_scores", "scheduler"));
     }
@@ -954,7 +975,10 @@ mod tests {
     fn test_permissions_empty_roles_blocks_all() {
         let mut rules = HashMap::new();
         rules.insert("disabled_reducer".to_string(), vec![]);
-        let p = PermissionsConfig { rules, default_policy: PermissionsPolicy::Open };
+        let p = PermissionsConfig {
+            rules,
+            default_policy: PermissionsPolicy::Open,
+        };
         assert!(!p.is_allowed("disabled_reducer", "admin"));
         assert!(!p.is_allowed("disabled_reducer", "user"));
         // Scheduler still gets through.

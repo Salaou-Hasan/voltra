@@ -30,7 +30,7 @@
 //   max_calls_per_sec  — token bucket refilled continuously; 0 = unlimited
 // ============================================================================
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::table::TableStore;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -164,14 +164,19 @@ impl TenantRegistry {
     ) -> Result<(TenantInfo, crate::table::RowDelta)> {
         let name = name.trim();
         if name.is_empty() {
-            return Err(VoltraError::invalid_argument("Tenant name must not be empty"));
+            return Err(VoltraError::invalid_argument(
+                "Tenant name must not be empty",
+            ));
         }
         if name.contains(':') {
-            return Err(VoltraError::invalid_argument("Tenant name must not contain ':'"));
+            return Err(VoltraError::invalid_argument(
+                "Tenant name must not contain ':'",
+            ));
         }
         if self.tenants.iter().any(|e| e.value().name == name) {
             return Err(VoltraError::invalid_argument(format!(
-                "Tenant '{}' already exists", name
+                "Tenant '{}' already exists",
+                name
             )));
         }
         let id = generate_id(name);
@@ -186,7 +191,9 @@ impl TenantRegistry {
         };
         let row = serde_json::to_value(&info)
             .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
-        let delta = self.tables.set_row(TENANTS_TABLE.to_string(), id.clone(), row)?;
+        let delta = self
+            .tables
+            .set_row(TENANTS_TABLE.to_string(), id.clone(), row)?;
         self.key_index.insert(api_key, id.clone());
         self.tenants.insert(id, info.clone());
         Ok((info, delta))
@@ -197,7 +204,8 @@ impl TenantRegistry {
     pub fn delete(&self, tenant_id: &str) -> Result<Vec<crate::table::RowDelta>> {
         let Some(info) = self.get(tenant_id) else {
             return Err(VoltraError::invalid_argument(format!(
-                "Unknown tenant '{}'", tenant_id
+                "Unknown tenant '{}'",
+                tenant_id
             )));
         };
         let mut deltas = Vec::new();
@@ -226,18 +234,23 @@ impl TenantRegistry {
 
     /// Per-tenant call rate check. `true` = allowed.
     pub fn check_rate(&self, tenant_id: &str) -> bool {
-        let Some(info) = self.tenants.get(tenant_id) else { return true; };
+        let Some(info) = self.tenants.get(tenant_id) else {
+            return true;
+        };
         let limit = info.max_calls_per_sec;
         drop(info);
         if limit == 0 {
             return true;
         }
-        let bucket = self.buckets.entry(tenant_id.to_string()).or_insert_with(|| {
-            parking_lot::Mutex::new(TokenBucket {
-                tokens: limit as f64,
-                last_refill: Instant::now(),
-            })
-        });
+        let bucket = self
+            .buckets
+            .entry(tenant_id.to_string())
+            .or_insert_with(|| {
+                parking_lot::Mutex::new(TokenBucket {
+                    tokens: limit as f64,
+                    last_refill: Instant::now(),
+                })
+            });
         let mut b = bucket.lock();
         let now = Instant::now();
         let elapsed = now.duration_since(b.last_refill).as_secs_f64();
@@ -269,7 +282,10 @@ impl TenantRegistry {
 
     /// Row quota for a tenant (0 = unlimited).
     pub fn row_quota(&self, tenant_id: &str) -> u64 {
-        self.tenants.get(tenant_id).map(|e| e.value().max_rows).unwrap_or(0)
+        self.tenants
+            .get(tenant_id)
+            .map(|e| e.value().max_rows)
+            .unwrap_or(0)
     }
 
     /// Summary JSON for the admin API (key masked except last 4 chars).
@@ -325,7 +341,15 @@ fn generate_id(name: &str) -> String {
         .chars()
         .take(24)
         .collect();
-    format!("{}-{}", if slug.is_empty() { "tenant".into() } else { slug }, random_hex(6))
+    format!(
+        "{}-{}",
+        if slug.is_empty() {
+            "tenant".into()
+        } else {
+            slug
+        },
+        random_hex(6)
+    )
 }
 
 fn random_hex(n: usize) -> String {
@@ -371,7 +395,10 @@ mod tests {
         assert!(info.api_key.starts_with("ndbt_"));
         assert_eq!(reg.resolve_key(&info.api_key), Some(info.id.clone()));
         // role-suffix form also resolves
-        assert_eq!(reg.resolve_key(&format!("{}:admin", info.api_key)), Some(info.id.clone()));
+        assert_eq!(
+            reg.resolve_key(&format!("{}:admin", info.api_key)),
+            Some(info.id.clone())
+        );
         // persisted to the system table
         let row = reg.tables.get_row(TENANTS_TABLE, &info.id).unwrap();
         assert!(row.is_some());
@@ -405,15 +432,23 @@ mod tests {
         let reg = registry();
         let (info, _) = reg.create("acme", 0, 0).unwrap();
         let phys = physical_table(&info.id, "players");
-        reg.tables.set_row(phys.clone(), "p1".into(), serde_json::json!({"hp": 1})).unwrap();
-        reg.tables.set_row(phys.clone(), "p2".into(), serde_json::json!({"hp": 2})).unwrap();
+        reg.tables
+            .set_row(phys.clone(), "p1".into(), serde_json::json!({"hp": 1}))
+            .unwrap();
+        reg.tables
+            .set_row(phys.clone(), "p2".into(), serde_json::json!({"hp": 2}))
+            .unwrap();
         assert_eq!(reg.tenant_row_count(&info.id), 2);
 
         let deltas = reg.delete(&info.id).unwrap();
         assert!(deltas.len() >= 3); // 2 data rows + tenant row
         assert_eq!(reg.resolve_key(&info.api_key), None);
         assert!(reg.tables.get_row(&phys, "p1").unwrap().is_none());
-        assert!(reg.tables.get_row(TENANTS_TABLE, &info.id).unwrap().is_none());
+        assert!(reg
+            .tables
+            .get_row(TENANTS_TABLE, &info.id)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -422,7 +457,9 @@ mod tests {
         let (info, _) = reg.create("acme", 0, 5).unwrap();
         let mut allowed = 0;
         for _ in 0..20 {
-            if reg.check_rate(&info.id) { allowed += 1; }
+            if reg.check_rate(&info.id) {
+                allowed += 1;
+            }
         }
         assert!(allowed <= 5, "burst exceeded bucket: {allowed}");
         // Refill after ~400ms at 5/s should grant ≥1 more.

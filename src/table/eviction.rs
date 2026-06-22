@@ -16,8 +16,7 @@ use std::time::Instant;
 
 // ── Eviction policy ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum EvictionPolicy {
     /// No eviction — rows accumulate without bound (default behaviour).
     #[default]
@@ -28,7 +27,6 @@ pub enum EvictionPolicy {
     /// The byte estimate is `sum over all rows of row_data.len()`.
     LruByteCap { max_bytes_total: usize },
 }
-
 
 // ── LRU access tracker ───────────────────────────────────────────────────────
 
@@ -84,11 +82,7 @@ impl LruTracker {
         candidates.sort_unstable_by_key(|(_, ts)| *ts);
 
         // Return up to `count` keys (oldest first).
-        candidates
-            .into_iter()
-            .take(count)
-            .map(|(k, _)| k)
-            .collect()
+        candidates.into_iter().take(count).map(|(k, _)| k).collect()
     }
 
     /// Return the total number of tracked (table, key) pairs across all tables.
@@ -184,7 +178,11 @@ mod tests {
         tracker.touch("items", "potion");
 
         let evicted = tracker.evict_oldest("items", 100);
-        assert_eq!(evicted.len(), 3, "should return all 3 even though 100 were requested");
+        assert_eq!(
+            evicted.len(),
+            3,
+            "should return all 3 even though 100 were requested"
+        );
         // All returned keys belong to the correct table.
         for (tbl, _) in &evicted {
             assert_eq!(tbl, "items");
@@ -218,7 +216,9 @@ mod tests {
     // 8. LruRowCap policy carries the configured cap correctly.
     #[test]
     fn lru_row_cap_stores_cap() {
-        let policy = EvictionPolicy::LruRowCap { max_rows_per_table: 500 };
+        let policy = EvictionPolicy::LruRowCap {
+            max_rows_per_table: 500,
+        };
         if let EvictionPolicy::LruRowCap { max_rows_per_table } = policy {
             assert_eq!(max_rows_per_table, 500);
         } else {

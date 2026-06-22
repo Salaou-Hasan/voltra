@@ -1,12 +1,13 @@
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::reducer::backend::ReducerBackend;
 use crate::reducer::context::ReducerContext;
 use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use wasmtime::{Caller, Engine, Instance, Linker, Module, PoolingAllocationConfig,
-               ResourceLimiter, Store};
+use wasmtime::{
+    Caller, Engine, Instance, Linker, Module, PoolingAllocationConfig, ResourceLimiter, Store,
+};
 
 // ── Thread-local ReducerContext pointer ───────────────────────────────────────
 //
@@ -140,8 +141,7 @@ pub fn shared_engine() -> &'static Engine {
 fn shared_linker() -> &'static Linker<WasmLimiter> {
     WASM_LINKER.get_or_init(|| {
         let mut linker: Linker<WasmLimiter> = Linker::new(shared_engine());
-        register_host_functions(&mut linker)
-            .expect("Failed to register WASM host functions");
+        register_host_functions(&mut linker).expect("Failed to register WASM host functions");
         linker
     })
 }
@@ -385,18 +385,13 @@ impl WasmReducerBackend {
             // (same Config, same Cranelift version).  `voltra build` always
             // produces the .cwasm alongside the .wasm in one step.
             unsafe { Module::deserialize_file(engine, &cwasm_path) }.map_err(|e| {
-                VoltraError::reducer_error(format!(
-                    "AOT load {:?}: {}",
-                    cwasm_path, e
-                ))
+                VoltraError::reducer_error(format!("AOT load {:?}: {}", cwasm_path, e))
             })?
         } else {
             let bytes = fs::read(&path)?;
             let wasm_bytes = if path.extension().and_then(|s| s.to_str()) == Some("wat") {
                 wat::parse_bytes(&bytes)
-                    .map_err(|e| {
-                        VoltraError::reducer_error(format!("WAT parse: {}", e))
-                    })?
+                    .map_err(|e| VoltraError::reducer_error(format!("WAT parse: {}", e)))?
                     .into_owned()
             } else {
                 bytes
@@ -453,12 +448,16 @@ impl WasmReducerBackend {
                 "WASM linear memory too small for args",
             ));
         }
-        mem_data[args_offset as usize..args_offset as usize + args.len()]
-            .copy_from_slice(args);
+        mem_data[args_offset as usize..args_offset as usize + args.len()].copy_from_slice(args);
 
-        let (result_ptr, result_len) =
-            call_reducer_typed(&instance, &mut store, &self.function_name, args_offset as i32, args.len() as i32)
-                .map_err(|e| VoltraError::reducer_error(format!("WASM call: {}", e)))?;
+        let (result_ptr, result_len) = call_reducer_typed(
+            &instance,
+            &mut store,
+            &self.function_name,
+            args_offset as i32,
+            args.len() as i32,
+        )
+        .map_err(|e| VoltraError::reducer_error(format!("WASM call: {}", e)))?;
 
         if result_len as usize > max_io {
             return Err(VoltraError::reducer_error(format!(
@@ -506,9 +505,8 @@ impl ReducerBackend for WasmReducerBackend {
 /// loads it with `Module::deserialize_file` — no JIT warmup at all.
 pub fn aot_compile(wasm_path: &Path) -> Result<PathBuf> {
     let engine = shared_engine();
-    let module = Module::from_file(engine, wasm_path).map_err(|e| {
-        VoltraError::reducer_error(format!("AOT read {:?}: {}", wasm_path, e))
-    })?;
+    let module = Module::from_file(engine, wasm_path)
+        .map_err(|e| VoltraError::reducer_error(format!("AOT read {:?}: {}", wasm_path, e)))?;
     let bytes = module
         .serialize()
         .map_err(|e| VoltraError::reducer_error(format!("AOT serialize: {}", e)))?;
@@ -641,7 +639,11 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
         crate::reducer::set_max_io_bytes(1024 * 1024);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().to_lowercase().contains("too large"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .to_lowercase()
+            .contains("too large"));
     }
 
     #[test]

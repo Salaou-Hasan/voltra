@@ -12,11 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use voltra::{
-    error::Result,
-    table::TableStore,
-    wal::WalReader,
-};
+use voltra::{error::Result, table::TableStore, wal::WalReader};
 
 pub mod admin;
 pub mod bench;
@@ -95,15 +91,30 @@ pub(crate) fn get_memory_usage_bytes() -> u64 {
     }
 }
 
-pub(crate) fn recover_from_wal(wal_path: &Path, tables: &Arc<TableStore>, min_seq: u64) -> Result<(usize, u64)> {
+pub(crate) fn recover_from_wal(
+    wal_path: &Path,
+    tables: &Arc<TableStore>,
+    min_seq: u64,
+) -> Result<(usize, u64)> {
     let mut reader = WalReader::open(wal_path)?;
     let entries = reader.read_all_entries()?;
-    let mut replayed = 0usize; let mut max_seq = min_seq;
+    let mut replayed = 0usize;
+    let mut max_seq = min_seq;
     for entry in &entries {
         max_seq = max_seq.max(entry.header.sequence_number);
-        if entry.header.sequence_number <= min_seq { continue; }
-        if !entry.verify_checksum() { log::warn!("WAL entry {} bad checksum, skipping", entry.header.sequence_number); continue; }
-        for delta in &entry.payload.deltas { tables.apply_delta(delta)?; }
+        if entry.header.sequence_number <= min_seq {
+            continue;
+        }
+        if !entry.verify_checksum() {
+            log::warn!(
+                "WAL entry {} bad checksum, skipping",
+                entry.header.sequence_number
+            );
+            continue;
+        }
+        for delta in &entry.payload.deltas {
+            tables.apply_delta(delta)?;
+        }
         replayed += 1;
     }
     Ok((replayed, max_seq))

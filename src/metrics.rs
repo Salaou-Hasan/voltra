@@ -9,9 +9,7 @@
 // cross-test pollution.
 // ============================================================================
 
-use prometheus::{
-    Histogram, HistogramOpts, IntCounter, IntGauge, Opts, Registry, TextEncoder,
-};
+use prometheus::{Histogram, HistogramOpts, IntCounter, IntGauge, Opts, Registry, TextEncoder};
 
 /// All Prometheus metrics exported by the Voltra server.
 ///
@@ -64,14 +62,16 @@ impl Metrics {
     pub fn new() -> Self {
         let registry = Registry::new();
 
-        let reducer_calls_total = IntCounter::with_opts(
-            Opts::new("voltra_reducer_calls_total", "Total successful reducer calls"),
-        )
+        let reducer_calls_total = IntCounter::with_opts(Opts::new(
+            "voltra_reducer_calls_total",
+            "Total successful reducer calls",
+        ))
         .expect("metric creation failed");
 
-        let reducer_errors_total = IntCounter::with_opts(
-            Opts::new("voltra_reducer_errors_total", "Total reducer errors"),
-        )
+        let reducer_errors_total = IntCounter::with_opts(Opts::new(
+            "voltra_reducer_errors_total",
+            "Total reducer errors",
+        ))
         .expect("metric creation failed");
 
         let reducer_duration_seconds = Histogram::with_opts(
@@ -146,17 +146,37 @@ impl Metrics {
         .expect("metric creation failed");
 
         // Register everything on the private registry.
-        registry.register(Box::new(reducer_calls_total.clone())).unwrap();
-        registry.register(Box::new(reducer_errors_total.clone())).unwrap();
-        registry.register(Box::new(reducer_duration_seconds.clone())).unwrap();
-        registry.register(Box::new(websocket_connections_active.clone())).unwrap();
-        registry.register(Box::new(websocket_connects_total.clone())).unwrap();
-        registry.register(Box::new(subscription_frames_dropped_total.clone())).unwrap();
-        registry.register(Box::new(slow_consumer_evictions_total.clone())).unwrap();
-        registry.register(Box::new(wal_entries_written_total.clone())).unwrap();
-        registry.register(Box::new(wal_queue_depth.clone())).unwrap();
+        registry
+            .register(Box::new(reducer_calls_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(reducer_errors_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(reducer_duration_seconds.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(websocket_connections_active.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(websocket_connects_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(subscription_frames_dropped_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(slow_consumer_evictions_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(wal_entries_written_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(wal_queue_depth.clone()))
+            .unwrap();
         registry.register(Box::new(rows_total.clone())).unwrap();
-        registry.register(Box::new(subscriptions_active.clone())).unwrap();
+        registry
+            .register(Box::new(subscriptions_active.clone()))
+            .unwrap();
         registry.register(Box::new(raft_log_index.clone())).unwrap();
         registry.register(Box::new(raft_is_leader.clone())).unwrap();
 

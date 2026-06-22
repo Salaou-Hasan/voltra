@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use futures::{SinkExt, StreamExt};
-use voltra_client::{VoltraClient, VoltraClientOptions};
-use voltra_client::types::{ClientMessage, ServerMessage};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::Message;
+use voltra_client::types::{ClientMessage, ServerMessage};
+use voltra_client::{VoltraClient, VoltraClientOptions};
 
 #[tokio::test]
 async fn sends_authorization_header_when_api_key_set() {
@@ -17,15 +17,18 @@ async fn sends_authorization_header_when_api_key_set() {
 
     tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let ws_stream = tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp: Response| {
-            let auth = req
-                .headers()
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            *seen_auth_s.lock().unwrap() = auth;
-            Ok(resp)
-        }).await.unwrap();
+        let ws_stream =
+            tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp: Response| {
+                let auth = req
+                    .headers()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                *seen_auth_s.lock().unwrap() = auth;
+                Ok(resp)
+            })
+            .await
+            .unwrap();
 
         let (mut w, mut r) = ws_stream.split();
         if let Some(Ok(Message::Binary(bytes))) = r.next().await {
@@ -53,7 +56,10 @@ async fn sends_authorization_header_when_api_key_set() {
     .await
     .unwrap();
 
-    let out = client.call_args("increment", &("score", 1i32)).await.unwrap();
+    let out = client
+        .call_args("increment", &("score", 1i32))
+        .await
+        .unwrap();
     assert!(out.is_some());
 
     assert_eq!(

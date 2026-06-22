@@ -8,14 +8,13 @@ use syn::{parse_macro_input, Fields, ItemStruct, LitStr};
 /// Entry point called from lib.rs.
 pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemStruct);
-    expand_inner(attr, input)
-        .unwrap_or_else(|e| e.to_compile_error().into())
+    expand_inner(attr, input).unwrap_or_else(|e| e.to_compile_error().into())
 }
 
 fn expand_inner(attr: TokenStream, input: ItemStruct) -> Result<TokenStream, syn::Error> {
     let struct_name = &input.ident;
-    let vis         = &input.vis;
-    let attrs       = &input.attrs;  // forward existing attributes (doc-comments, etc.)
+    let vis = &input.vis;
+    let attrs = &input.attrs; // forward existing attributes (doc-comments, etc.)
 
     // ── Parse table name from #[table(name = "players")] ────────────────────
     let table_name: LitStr = parse_table_name_attr(attr, struct_name)?;
@@ -35,7 +34,7 @@ fn expand_inner(attr: TokenStream, input: ItemStruct) -> Result<TokenStream, syn
     // We strip the original `derive` attr (if any) to avoid duplicates and
     // inject our own.
     let generics = &input.generics;
-    let fields   = &input.fields;
+    let fields = &input.fields;
 
     let expanded = quote! {
         #(#attrs)*
@@ -127,9 +126,9 @@ mod tests {
 
     #[test]
     fn snake_case_conversions() {
-        assert_eq!(to_snake_case("Player"),      "player");
+        assert_eq!(to_snake_case("Player"), "player");
         assert_eq!(to_snake_case("PlayerScore"), "player_score");
         assert_eq!(to_snake_case("LeaderBoard"), "leader_board");
-        assert_eq!(to_snake_case("HP"),          "h_p");
+        assert_eq!(to_snake_case("HP"), "h_p");
     }
 }

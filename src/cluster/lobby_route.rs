@@ -9,9 +9,9 @@
 // survive restarts without needing a separate DB.  In-memory DashMap is the
 // fast path; the table is the durable source of truth loaded on boot.
 
-use std::sync::Arc;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::table::TableStore;
 
@@ -71,9 +71,9 @@ impl LobbyRouteRegistry {
         // Slow path: check the persistent table (in case this node restarted).
         if let Ok(Some(row)) = self.tables.get_row("__lobby_routes", lobby_id) {
             let region_id = row["region_id"].as_str().unwrap_or("").to_string();
-            let ws_url    = row["ws_url"].as_str().unwrap_or("").to_string();
+            let ws_url = row["ws_url"].as_str().unwrap_or("").to_string();
             let route = LobbyRoute {
-                lobby_id:  lobby_id.to_string(),
+                lobby_id: lobby_id.to_string(),
                 region_id,
                 ws_url,
             };
@@ -99,12 +99,15 @@ impl LobbyRouteRegistry {
         if let Ok(rows) = self.tables.list_rows_with_keys("__lobby_routes") {
             for (key, row) in rows {
                 let region_id = row["region_id"].as_str().unwrap_or("").to_string();
-                let ws_url    = row["ws_url"].as_str().unwrap_or("").to_string();
-                self.routes.insert(key.clone(), LobbyRoute {
-                    lobby_id: key,
-                    region_id,
-                    ws_url,
-                });
+                let ws_url = row["ws_url"].as_str().unwrap_or("").to_string();
+                self.routes.insert(
+                    key.clone(),
+                    LobbyRoute {
+                        lobby_id: key,
+                        region_id,
+                        ws_url,
+                    },
+                );
             }
         }
     }
@@ -146,7 +149,7 @@ mod tests {
     fn len_counts_routes() {
         let reg = LobbyRouteRegistry::new(make_store());
         reg.register("1", "europe", "ws://eu:3000");
-        reg.register("2", "asia",   "ws://as:3000");
+        reg.register("2", "asia", "ws://as:3000");
         assert_eq!(reg.len(), 2);
     }
 
@@ -154,7 +157,7 @@ mod tests {
     fn register_overwrites_existing() {
         let reg = LobbyRouteRegistry::new(make_store());
         reg.register("5", "europe", "ws://eu:3000");
-        reg.register("5", "asia",   "ws://as:3000");
+        reg.register("5", "asia", "ws://as:3000");
         let r = reg.lookup("5").unwrap();
         assert_eq!(r.region_id, "asia");
     }

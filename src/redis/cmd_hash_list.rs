@@ -53,7 +53,11 @@ pub fn hget(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
         return Resp::arity("hget");
     }
     match read_hash(db, ns, &args[0]) {
-        Ok((h, _)) => h.get(&args[1]).cloned().map(Resp::Bulk).unwrap_or(Resp::Null),
+        Ok((h, _)) => h
+            .get(&args[1])
+            .cloned()
+            .map(Resp::Bulk)
+            .unwrap_or(Resp::Null),
         Err(e) => e,
     }
 }
@@ -367,7 +371,11 @@ pub fn pop(db: &mut dyn Db, ns: u32, args: &[Bytes], left: bool) -> Resp {
         Err(e) => return e,
     };
     if l.is_empty() {
-        return if count.is_some() { Resp::NullArray } else { Resp::Null };
+        return if count.is_some() {
+            Resp::NullArray
+        } else {
+            Resp::Null
+        };
     }
     let n = count.unwrap_or(1).min(l.len());
     let mut popped = Vec::with_capacity(n);
@@ -433,7 +441,10 @@ pub fn lindex(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
     if real < 0 || real >= l.len() as i64 {
         return Resp::Null;
     }
-    l.get(real as usize).cloned().map(Resp::Bulk).unwrap_or(Resp::Null)
+    l.get(real as usize)
+        .cloned()
+        .map(Resp::Bulk)
+        .unwrap_or(Resp::Null)
 }
 
 pub fn lset(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
@@ -582,7 +593,11 @@ fn do_lmove(
         Ok(v) => v,
         Err(e) => return e,
     };
-    let Some(val) = (if from_left { s.pop_front() } else { s.pop_back() }) else {
+    let Some(val) = (if from_left {
+        s.pop_front()
+    } else {
+        s.pop_back()
+    }) else {
         return Resp::Null;
     };
     if src == dst {

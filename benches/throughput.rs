@@ -23,13 +23,13 @@
 // ============================================================================
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 use voltra::{
     reducer::{increment_reducer, ReducerContext},
     subscriptions::{OutboundFrames, SubscriptionManager},
     table::{RowDelta, TableStore},
 };
-use std::sync::Arc;
-use tokio::sync::mpsc;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 

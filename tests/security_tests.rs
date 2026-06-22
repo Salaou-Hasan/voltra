@@ -61,7 +61,10 @@ fn listed_rule_overrides_open_default() {
 #[test]
 fn listed_rule_overrides_closed_default() {
     let mut rules = HashMap::new();
-    rules.insert("ping".to_string(), vec!["user".to_string(), "admin".to_string()]);
+    rules.insert(
+        "ping".to_string(),
+        vec!["user".to_string(), "admin".to_string()],
+    );
     let p = PermissionsConfig {
         rules,
         default_policy: PermissionsPolicy::Closed,

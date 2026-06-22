@@ -117,7 +117,10 @@ mod tests {
         let tmp_path = std::env::temp_dir().join(format!(
             "test_wal_partial_trailing_{}_{}.bin",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
         ));
         let _ = fs::remove_file(&tmp_path);
 
@@ -143,7 +146,9 @@ mod tests {
         }
 
         let mut reader = WalReader::open(&tmp_path).unwrap();
-        let entries = reader.read_all_entries().expect("partial tail must not error");
+        let entries = reader
+            .read_all_entries()
+            .expect("partial tail must not error");
         assert_eq!(entries.len(), 2, "should recover both complete entries");
         assert_eq!(entries[0].header.sequence_number, 1);
         assert_eq!(entries[1].header.sequence_number, 2);
@@ -158,13 +163,20 @@ mod tests {
         let tmp_path = std::env::temp_dir().join(format!(
             "test_wal_partial_len_prefix_{}_{}.bin",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
         ));
         let _ = fs::remove_file(&tmp_path);
 
         let mut writer = WalWriter::open(&tmp_path).unwrap();
-        writer.append(&WalEntry::new(1000, 1, "inc".to_string(), vec![1], vec![])).unwrap();
-        writer.append(&WalEntry::new(1001, 2, "inc".to_string(), vec![2], vec![])).unwrap();
+        writer
+            .append(&WalEntry::new(1000, 1, "inc".to_string(), vec![1], vec![]))
+            .unwrap();
+        writer
+            .append(&WalEntry::new(1001, 2, "inc".to_string(), vec![2], vec![]))
+            .unwrap();
         writer.fsync().unwrap();
         drop(writer);
 
@@ -177,7 +189,9 @@ mod tests {
         }
 
         let mut reader = WalReader::open(&tmp_path).unwrap();
-        let entries = reader.read_all_entries().expect("must not error on stub trailer");
+        let entries = reader
+            .read_all_entries()
+            .expect("must not error on stub trailer");
         assert_eq!(entries.len(), 2);
 
         let _ = fs::remove_file(&tmp_path);

@@ -33,7 +33,7 @@
 //   Args/result byte caps enforced here.
 // ============================================================================
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::reducer::backend::ReducerBackend;
 use crate::reducer::context::ReducerContext;
 use rquickjs::{context::EvalOptions, function::Func, Context, Ctx, Function, Object, Runtime};
@@ -140,7 +140,9 @@ fn ensure_runtime() -> Result<()> {
 
 fn host_get_raw(_ctx: Ctx<'_>, table: String, key: String) -> rquickjs::Result<Option<String>> {
     let ptr = CURRENT_CTX.with(|c| c.get());
-    if ptr.is_null() || table.is_empty() || key.is_empty() { return Ok(None); }
+    if ptr.is_null() || table.is_empty() || key.is_empty() {
+        return Ok(None);
+    }
     let rctx = unsafe { &mut *ptr };
     match rctx.get_row(&table, &key) {
         Ok(Some(v)) => Ok(Some(serde_json::to_string(&v).unwrap_or_default())),
@@ -150,7 +152,9 @@ fn host_get_raw(_ctx: Ctx<'_>, table: String, key: String) -> rquickjs::Result<O
 
 fn host_get_all_raw(_ctx: Ctx<'_>, table: String) -> rquickjs::Result<Option<String>> {
     let ptr = CURRENT_CTX.with(|c| c.get());
-    if ptr.is_null() || table.is_empty() { return Ok(None); }
+    if ptr.is_null() || table.is_empty() {
+        return Ok(None);
+    }
     let rctx = unsafe { &mut *ptr };
     match rctx.tables.list_rows_with_keys(&table) {
         Ok(rows) => {
@@ -161,16 +165,24 @@ fn host_get_all_raw(_ctx: Ctx<'_>, table: String) -> rquickjs::Result<Option<Str
     }
 }
 
-fn host_set_raw(_ctx: Ctx<'_>, table: String, key: String, json_str: String) -> rquickjs::Result<()> {
+fn host_set_raw(
+    _ctx: Ctx<'_>,
+    table: String,
+    key: String,
+    json_str: String,
+) -> rquickjs::Result<()> {
     let ptr = CURRENT_CTX.with(|c| c.get());
-    if ptr.is_null() || table.is_empty() || key.is_empty() { return Ok(()); }
+    if ptr.is_null() || table.is_empty() || key.is_empty() {
+        return Ok(());
+    }
     let rctx = unsafe { &mut *ptr };
     let json_val: Value = serde_json::from_str(&json_str).unwrap_or(Value::Null);
     if table == "counters" {
         if let Value::Number(n) = &json_val {
             let amount = n.as_i64().unwrap_or(0) as i32;
-            rctx.set_counter(key, amount)
-                .map_err(|e| rquickjs::Error::new_from_js_message("value", "counter", e.to_string()))?;
+            rctx.set_counter(key, amount).map_err(|e| {
+                rquickjs::Error::new_from_js_message("value", "counter", e.to_string())
+            })?;
             return Ok(());
         }
     }
@@ -181,14 +193,18 @@ fn host_set_raw(_ctx: Ctx<'_>, table: String, key: String, json_str: String) -> 
 
 fn host_delete(_ctx: Ctx<'_>, table: String, key: String) -> rquickjs::Result<()> {
     let ptr = CURRENT_CTX.with(|c| c.get());
-    if ptr.is_null() || table.is_empty() || key.is_empty() { return Ok(()); }
+    if ptr.is_null() || table.is_empty() || key.is_empty() {
+        return Ok(());
+    }
     let rctx = unsafe { &mut *ptr };
     let _ = rctx.delete_row(table, key);
     Ok(())
 }
 
 fn host_ai_generate_raw(_ctx: Ctx<'_>, prompt: String) -> rquickjs::Result<Option<String>> {
-    if prompt.is_empty() { return Ok(None); }
+    if prompt.is_empty() {
+        return Ok(None);
+    }
     let api_key = match std::env::var("ANTHROPIC_API_KEY") {
         Ok(k) => k,
         Err(_) => return Ok(None),
@@ -218,28 +234,35 @@ fn host_ai_generate_raw(_ctx: Ctx<'_>, prompt: String) -> rquickjs::Result<Optio
 // ── Context initialisation ────────────────────────────────────────────────────
 
 fn build_context(rt: &Runtime, script: &str) -> Result<Context> {
-    let ctx = Context::full(rt)
-        .map_err(|e| VoltraError::reducer_error(format!("QJS context: {}", e)))?;
+    let ctx =
+        Context::full(rt).map_err(|e| VoltraError::reducer_error(format!("QJS context: {}", e)))?;
 
     ctx.with(|c| -> Result<()> {
         let globals = c.globals();
 
         // Register raw host functions.
-        globals.set("__voltra_get_raw",        Func::from(host_get_raw))
+        globals
+            .set("__voltra_get_raw", Func::from(host_get_raw))
             .map_err(|e| VoltraError::reducer_error(format!("reg get_raw: {}", e)))?;
-        globals.set("__voltra_get_all_raw",    Func::from(host_get_all_raw))
+        globals
+            .set("__voltra_get_all_raw", Func::from(host_get_all_raw))
             .map_err(|e| VoltraError::reducer_error(format!("reg get_all_raw: {}", e)))?;
-        globals.set("__voltra_set_raw",        Func::from(host_set_raw))
+        globals
+            .set("__voltra_set_raw", Func::from(host_set_raw))
             .map_err(|e| VoltraError::reducer_error(format!("reg set_raw: {}", e)))?;
-        globals.set("__voltra_delete",         Func::from(host_delete))
+        globals
+            .set("__voltra_delete", Func::from(host_delete))
             .map_err(|e| VoltraError::reducer_error(format!("reg delete: {}", e)))?;
-        globals.set("__voltra_ai_generate_raw",Func::from(host_ai_generate_raw))
+        globals
+            .set("__voltra_ai_generate_raw", Func::from(host_ai_generate_raw))
             .map_err(|e| VoltraError::reducer_error(format!("reg ai_raw: {}", e)))?;
 
         // Seed identity globals.
-        globals.set("__voltra_caller_id",   "")
+        globals
+            .set("__voltra_caller_id", "")
             .map_err(|e| VoltraError::reducer_error(format!("seed caller_id: {}", e)))?;
-        globals.set("__voltra_caller_role", "")
+        globals
+            .set("__voltra_caller_role", "")
             .map_err(|e| VoltraError::reducer_error(format!("seed caller_role: {}", e)))?;
 
         // Load preamble (JSON bridge wrappers) then user script.
@@ -262,15 +285,19 @@ fn build_context(rt: &Runtime, script: &str) -> Result<Context> {
 
 pub struct V8ReducerBackend {
     script_key: String,
-    script:     String,
+    script: String,
     timeout_ms: u64,
 }
 
 impl V8ReducerBackend {
     pub fn from_file(path: PathBuf, timeout_ms: u64) -> Result<Self> {
         let script_key = path.to_string_lossy().into_owned();
-        let script     = std::fs::read_to_string(&path)?;
-        Ok(V8ReducerBackend { script_key, script, timeout_ms })
+        let script = std::fs::read_to_string(&path)?;
+        Ok(V8ReducerBackend {
+            script_key,
+            script,
+            timeout_ms,
+        })
     }
 
     fn run(&self, ctx: &mut ReducerContext, args_json: Value) -> Result<Value> {
@@ -365,7 +392,9 @@ impl ReducerBackend for V8ReducerBackend {
         let max_io = crate::reducer::max_io_bytes();
         if args.len() > max_io {
             return Err(VoltraError::reducer_error(format!(
-                "Reducer args too large: {} bytes (limit {})", args.len(), max_io
+                "Reducer args too large: {} bytes (limit {})",
+                args.len(),
+                max_io
             )));
         }
 
@@ -375,12 +404,14 @@ impl ReducerBackend for V8ReducerBackend {
             rmp_serde::from_slice(args).unwrap_or(Value::Array(vec![]))
         };
 
-        let result  = self.run(ctx, args_json)?;
+        let result = self.run(ctx, args_json)?;
         let encoded = rmp_serde::to_vec(&result)?;
 
         if encoded.len() > max_io {
             return Err(VoltraError::reducer_error(format!(
-                "Reducer result too large: {} bytes (limit {})", encoded.len(), max_io
+                "Reducer result too large: {} bytes (limit {})",
+                encoded.len(),
+                max_io
             )));
         }
         Ok(encoded)
@@ -408,14 +439,17 @@ mod tests {
 
     #[test]
     fn test_v8_counter_set_numeric() {
-        let path = write_tmp("test_qjs_counter.js", r#"
+        let path = write_tmp(
+            "test_qjs_counter.js",
+            r#"
 function reducer(args) {
     var cur = __voltra_get("counters", args[0]);
     var val = (cur ? cur.value : 0) + (args[1] || 1);
     __voltra_set("counters", args[0], val);
     return { ok: true, value: val };
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
         let mut ctx = make_ctx();
         let args = rmp_serde::to_vec(&serde_json::json!(["score", 5])).unwrap();
@@ -427,13 +461,16 @@ function reducer(args) {
 
     #[test]
     fn test_v8_set_and_get_json_object() {
-        let path = write_tmp("test_qjs_obj.js", r#"
+        let path = write_tmp(
+            "test_qjs_obj.js",
+            r#"
 function reducer(args) {
     __voltra_set("players", args[0], { hp: 200, status: "alive" });
     var p = __voltra_get("players", args[0]);
     return { ok: true, hp: p ? p.hp : -1, status: p ? p.status : "none" };
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
         let mut ctx = make_ctx();
         let args = rmp_serde::to_vec(&serde_json::json!(["alice"])).unwrap();
@@ -446,14 +483,17 @@ function reducer(args) {
 
     #[test]
     fn test_v8_empty_args_does_not_crash() {
-        let path = write_tmp("test_qjs_empty.js", r#"
+        let path = write_tmp(
+            "test_qjs_empty.js",
+            r#"
 function reducer(args) {
     var tick = __voltra_get("world_state", "tick") || { count: 0 };
     tick.count = (tick.count || 0) + 1;
     __voltra_set("world_state", "tick", tick);
     return { ok: true, tick: tick.count };
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
         let mut ctx = make_ctx();
         let res: Value = rmp_serde::from_slice(&backend.execute(&mut ctx, &[]).unwrap()).unwrap();
@@ -464,14 +504,17 @@ function reducer(args) {
 
     #[test]
     fn test_v8_delete_row() {
-        let path = write_tmp("test_qjs_del.js", r#"
+        let path = write_tmp(
+            "test_qjs_del.js",
+            r#"
 function reducer(args) {
     __voltra_set("items", "sword", { name: "sword" });
     __voltra_delete("items", "sword");
     var after = __voltra_get("items", "sword");
     return { deleted: after === null };
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
         let mut ctx = make_ctx();
         let args = rmp_serde::to_vec(&serde_json::json!([])).unwrap();
@@ -483,18 +526,21 @@ function reducer(args) {
 
     #[test]
     fn test_v8_caller_identity_accessible() {
-        let path = write_tmp("test_qjs_caller.js", r#"
+        let path = write_tmp(
+            "test_qjs_caller.js",
+            r#"
 function reducer(args) {
     return { caller_id: __voltra_caller_id, caller_role: __voltra_caller_role };
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
         let mut ctx = make_ctx();
-        ctx.caller_id   = "player-42".to_string();
+        ctx.caller_id = "player-42".to_string();
         ctx.caller_role = "admin".to_string();
         let args = rmp_serde::to_vec(&serde_json::json!([])).unwrap();
         let res: Value = rmp_serde::from_slice(&backend.execute(&mut ctx, &args).unwrap()).unwrap();
-        assert_eq!(res["caller_id"],   "player-42");
+        assert_eq!(res["caller_id"], "player-42");
         assert_eq!(res["caller_role"], "admin");
         std::fs::remove_file(&path).ok();
     }
@@ -511,19 +557,26 @@ function reducer(args) {
         let res = backend.execute(&mut ctx, &vec![0u8; 5 * 1024]);
         std::fs::remove_file(&path).ok();
         crate::reducer::set_max_io_bytes(1024 * 1024);
-        assert!(res.unwrap_err().to_string().to_lowercase().contains("too large"));
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .to_lowercase()
+            .contains("too large"));
     }
 
     #[test]
     fn test_v8_world_tick_pattern() {
-        let path = write_tmp("test_qjs_tick.js", r#"
+        let path = write_tmp(
+            "test_qjs_tick.js",
+            r#"
 function reducer(args) {
     var tick = __voltra_get("world_state", "tick") || { count: 0 };
     tick.count += 1;
     __voltra_set("world_state", "tick", tick);
     return { ok: true, tick: tick.count };
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
         let mut ctx = make_ctx();
         let res1: Value = rmp_serde::from_slice(&backend.execute(&mut ctx, &[]).unwrap()).unwrap();
@@ -537,11 +590,14 @@ function reducer(args) {
 
     #[test]
     fn test_v8_infinite_loop_killed_by_timeout() {
-        let path = write_tmp("test_qjs_infloop.js", r#"
+        let path = write_tmp(
+            "test_qjs_infloop.js",
+            r#"
 function reducer(args) {
     while (true) { }  // never returns
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 200).unwrap();
         let mut ctx = make_ctx();
         let t0 = std::time::Instant::now();
@@ -550,28 +606,40 @@ function reducer(args) {
         std::fs::remove_file(&path).ok();
 
         let err = res.unwrap_err().to_string();
-        assert!(err.contains("Reducer timeout"), "expected timeout error, got: {err}");
+        assert!(
+            err.contains("Reducer timeout"),
+            "expected timeout error, got: {err}"
+        );
         // Killed promptly — well under 5x the budget (generous CI margin).
-        assert!(elapsed.as_millis() < 1000, "took too long to kill: {elapsed:?}");
+        assert!(
+            elapsed.as_millis() < 1000,
+            "took too long to kill: {elapsed:?}"
+        );
     }
 
     #[test]
     fn test_v8_worker_survives_after_timeout() {
         // 1. Run an infinite-loop reducer → killed by deadline.
-        let bad_path = write_tmp("test_qjs_bad.js", r#"
+        let bad_path = write_tmp(
+            "test_qjs_bad.js",
+            r#"
 function reducer(args) { for(;;) {} }
-"#);
+"#,
+        );
         let bad = V8ReducerBackend::from_file(bad_path.clone(), 150).unwrap();
         let mut ctx1 = make_ctx();
         assert!(bad.execute(&mut ctx1, &[]).is_err());
 
         // 2. Same thread, same runtime: a healthy reducer must still work.
-        let good_path = write_tmp("test_qjs_good_after.js", r#"
+        let good_path = write_tmp(
+            "test_qjs_good_after.js",
+            r#"
 function reducer(args) {
     __voltra_set("recovery", "check", { alive: true });
     return { ok: true };
 }
-"#);
+"#,
+        );
         let good = V8ReducerBackend::from_file(good_path.clone(), 1000).unwrap();
         let mut ctx2 = make_ctx();
         let res: Value = rmp_serde::from_slice(&good.execute(&mut ctx2, &[]).unwrap()).unwrap();
@@ -592,33 +660,41 @@ function reducer(args) {
     fn test_v8_timeout_discards_staged_writes() {
         // A reducer that writes a row, then hangs: the write must NOT survive,
         // because the error path skips commit.
-        let path = write_tmp("test_qjs_partial.js", r#"
+        let path = write_tmp(
+            "test_qjs_partial.js",
+            r#"
 function reducer(args) {
     __voltra_set("partial", "row1", { x: 1 });
     while (true) { }
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 150).unwrap();
         let tables = Arc::new(TableStore::new());
         let mut ctx = ReducerContext::new(tables.clone(), 2000);
         assert!(backend.execute(&mut ctx, &[]).is_err());
         // Worker would call rollback / drop ctx here — simulate by dropping.
         drop(ctx);
-        assert!(tables.get_row("partial", "row1").unwrap().is_none(),
-            "staged write leaked through after timeout");
+        assert!(
+            tables.get_row("partial", "row1").unwrap().is_none(),
+            "staged write leaked through after timeout"
+        );
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn test_v8_fast_reducer_unaffected_by_deadline() {
         // Sanity: normal reducers complete fine with a tight-but-fair budget.
-        let path = write_tmp("test_qjs_fast.js", r#"
+        let path = write_tmp(
+            "test_qjs_fast.js",
+            r#"
 function reducer(args) {
     var total = 0;
     for (var i = 0; i < 1000; i++) total += i;
     return { total: total };
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
         let mut ctx = make_ctx();
         let res: Value = rmp_serde::from_slice(&backend.execute(&mut ctx, &[]).unwrap()).unwrap();
@@ -628,21 +704,24 @@ function reducer(args) {
 
     #[test]
     fn test_v8_caller_identity_updates_between_calls() {
-        let path = write_tmp("test_qjs_caller2.js", r#"
+        let path = write_tmp(
+            "test_qjs_caller2.js",
+            r#"
 function reducer(args) {
     return { caller_id: __voltra_caller_id, caller_role: __voltra_caller_role };
 }
-"#);
+"#,
+        );
         let backend = V8ReducerBackend::from_file(path.clone(), 1000).unwrap();
 
         let mut ctx1 = make_ctx();
-        ctx1.caller_id   = "alice".to_string();
+        ctx1.caller_id = "alice".to_string();
         ctx1.caller_role = "admin".to_string();
         let r1: Value = rmp_serde::from_slice(&backend.execute(&mut ctx1, &[]).unwrap()).unwrap();
         assert_eq!(r1["caller_id"], "alice");
 
         let mut ctx2 = make_ctx();
-        ctx2.caller_id   = "bob".to_string();
+        ctx2.caller_id = "bob".to_string();
         ctx2.caller_role = "player".to_string();
         let r2: Value = rmp_serde::from_slice(&backend.execute(&mut ctx2, &[]).unwrap()).unwrap();
         assert_eq!(r2["caller_id"], "bob");

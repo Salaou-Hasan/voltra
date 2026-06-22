@@ -11,15 +11,15 @@
 
 use futures::{SinkExt, StreamExt};
 use hdrhistogram::Histogram;
-use voltra::network::message::{
-    ClientMessage, ReducerCall, ReducerResponse, ServerMessage, SqlQuery,
-};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
+use voltra::network::message::{
+    ClientMessage, ReducerCall, ReducerResponse, ServerMessage, SqlQuery,
+};
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────
 
@@ -84,7 +84,6 @@ struct IncrementArgs {
     name: String,
     delta: i32,
 }
-
 
 async fn client_workload_write(
     client_id: usize,
@@ -167,7 +166,8 @@ async fn client_workload_read(
         if let Ok(Some(Ok(Message::Binary(bytes)))) =
             tokio::time::timeout(Duration::from_secs(5), ws.next()).await
         {
-            if let Ok(ServerMessage::SqlResult(r)) = rmp_serde::from_slice::<ServerMessage>(&bytes) {
+            if let Ok(ServerMessage::SqlResult(r)) = rmp_serde::from_slice::<ServerMessage>(&bytes)
+            {
                 if r.success {
                     let us = t0.elapsed().as_micros() as u64;
                     if let Ok(mut h) = latencies.lock() {
@@ -203,7 +203,10 @@ async fn client_workload_broadcast(
     // a subscription notification here.  (The old "players WHERE zone='north'"
     // query never received notifications because no writes targeted that table.)
     let query = "counters".to_string();
-    let subscribe = ClientMessage::Subscribe { subscription_id, query };
+    let subscribe = ClientMessage::Subscribe {
+        subscription_id,
+        query,
+    };
     let subscribe_frame = rmp_serde::to_vec(&subscribe).unwrap();
     if ws.send(Message::Binary(subscribe_frame)).await.is_err() {
         let _ = ws.close(None).await;
@@ -218,11 +221,8 @@ async fn client_workload_broadcast(
             break;
         }
 
-        let next_msg = tokio::time::timeout(
-            remaining.min(Duration::from_millis(250)),
-            ws.next(),
-        )
-        .await;
+        let next_msg =
+            tokio::time::timeout(remaining.min(Duration::from_millis(250)), ws.next()).await;
 
         let Some(Ok(Message::Binary(bytes))) = next_msg.ok().flatten() else {
             continue;
@@ -370,7 +370,8 @@ async fn main() {
                             let wall = prev_t.elapsed().as_secs_f64();
                             if wall > 0.0 {
                                 let delta_cpu_ms = (kern_ms - prev_k) + (user_ms - prev_u);
-                                let cpu_percent = (delta_cpu_ms / 1000.0) / wall * 100.0 / (cores_for_norm as f64);
+                                let cpu_percent = (delta_cpu_ms / 1000.0) / wall * 100.0
+                                    / (cores_for_norm as f64);
                                 stats.lock().unwrap().update_cpu(cpu_percent);
                             }
                         }
@@ -395,14 +396,22 @@ async fn main() {
         // Warmup (write only, keep quick)
         {
             let warmup_calls = (calls_per_client / 10).max(10);
-            println!("Warmup (write): {} calls/client (clients capped at 4)…", warmup_calls);
+            println!(
+                "Warmup (write): {} calls/client (clients capped at 4)…",
+                warmup_calls
+            );
 
             let warm_hist = Arc::new(Mutex::new(Histogram::<u64>::new(3).unwrap()));
             let mut handles = Vec::new();
             for id in 0..num_clients.min(4) {
                 let url = ws_url.clone();
                 let hist = warm_hist.clone();
-                handles.push(tokio::spawn(client_workload_write(id, warmup_calls, url, hist)));
+                handles.push(tokio::spawn(client_workload_write(
+                    id,
+                    warmup_calls,
+                    url,
+                    hist,
+                )));
             }
             for h in handles {
                 let _ = h.await;
@@ -472,11 +481,7 @@ async fn main() {
             let notif = broadcast_notifications.clone();
             let sub_id = format!("bench_sub_{}_north", client_id);
             sub_handles.push(tokio::spawn(client_workload_broadcast(
-                client_id,
-                sub_id,
-                url,
-                stop_at,
-                notif,
+                client_id, sub_id, url, stop_at, notif,
             )));
         }
 
@@ -513,15 +518,21 @@ async fn main() {
 
         println!(
             "Read benchmark TPS: {:.0} (success={} in {:.3}s)",
-            read_tps, read_success, read_elapsed.as_secs_f64()
+            read_tps,
+            read_success,
+            read_elapsed.as_secs_f64()
         );
         println!(
             "Write benchmark TPS: {:.0} (success={} in {:.3}s)",
-            write_tps, write_success, write_elapsed.as_secs_f64()
+            write_tps,
+            write_success,
+            write_elapsed.as_secs_f64()
         );
         println!(
             "Broadcast benchmark TPS: {:.0} (pushed={} in {:.0}s)",
-            broadcast_tps, pushed, broadcast_duration.as_secs_f64()
+            broadcast_tps,
+            pushed,
+            broadcast_duration.as_secs_f64()
         );
 
         // Latency detail for first run only (keeps output readable during scaling)
@@ -560,7 +571,11 @@ impl CpuMemStats {
     fn update_cpu(&mut self, cpu_percent: f64) {
         if cpu_percent.is_finite() {
             // Maintain avg via incremental mean is out of scope; track last+peak.
-            self.cpu_avg = if self.cpu_avg == 0.0 { cpu_percent } else { (self.cpu_avg + cpu_percent) / 2.0 };
+            self.cpu_avg = if self.cpu_avg == 0.0 {
+                cpu_percent
+            } else {
+                (self.cpu_avg + cpu_percent) / 2.0
+            };
             self.cpu_peak = self.cpu_peak.max(cpu_percent);
         }
     }
@@ -581,7 +596,14 @@ fn sample_proc_windows(pid: u32) -> std::result::Result<(f64, f64, f64), ()> {
     let pid_s = pid.to_string();
 
     let ws_out = Command::new("wmic")
-        .args(["process", "where", &format!("ProcessId={}", pid_s), "get", "WorkingSetSize", "/value"])
+        .args([
+            "process",
+            "where",
+            &format!("ProcessId={}", pid_s),
+            "get",
+            "WorkingSetSize",
+            "/value",
+        ])
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -637,7 +659,11 @@ fn print_latency_hist(label: &str, hist: &Histogram<u64>) {
         let us = hist.value_at_percentile(*pct);
         println!("  p{:<5}: {:>6} µs ({:.2} ms)", pct, us, us as f64 / 1000.0);
     }
-    println!("  max:    {:>6} µs ({:.2} ms)", hist.max(), hist.max() as f64 / 1000.0);
+    println!(
+        "  max:    {:>6} µs ({:.2} ms)",
+        hist.max(),
+        hist.max() as f64 / 1000.0
+    );
 }
 
 async fn seed_players_over_ws(ws_url: &str) {
@@ -667,7 +693,7 @@ async fn seed_players_over_ws(ws_url: &str) {
         let _ = ws.send(Message::Binary(frame)).await;
 
         // Read one response (ignore content)
-        if let Ok(Some(Ok(Message::Binary(bytes)))) = 
+        if let Ok(Some(Ok(Message::Binary(bytes)))) =
             tokio::time::timeout(Duration::from_secs(5), ws.next()).await
         {
             let _ = rmp_serde::from_slice::<ServerMessage>(&bytes);
@@ -692,10 +718,7 @@ async fn broadcast_writer_loop(ws_url: String, stop_at: Instant) {
     while Instant::now() < stop_at {
         let target = i % 50;
         let id = format!("bench_player_{}", target);
-        let sql = format!(
-            "UPDATE players SET score = score + 1 WHERE id = '{}' ",
-            id
-        );
+        let sql = format!("UPDATE players SET score = score + 1 WHERE id = '{}' ", id);
         let query_id = 20_000_000 + i as u64;
         let msg = ClientMessage::SqlQuery(SqlQuery { query_id, sql });
         let frame = rmp_serde::to_vec(&msg).unwrap();
@@ -704,7 +727,7 @@ async fn broadcast_writer_loop(ws_url: String, stop_at: Instant) {
         }
 
         // Drain response quickly (don’t block too long)
-        if let Ok(Some(Ok(Message::Binary(_bytes)))) = 
+        if let Ok(Some(Ok(Message::Binary(_bytes)))) =
             tokio::time::timeout(Duration::from_millis(100), ws.next()).await
         {
             // ignore payload

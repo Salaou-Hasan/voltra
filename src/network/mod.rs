@@ -5,11 +5,12 @@ pub mod tls;
 pub mod websocket;
 
 pub use message::{
-    ClientMessage, ReducerCall, ReducerResponse, ServerMessage,
-    SqlQuery, SqlResult,
+    ClientMessage, ReducerCall, ReducerResponse, ServerMessage, SqlQuery, SqlResult,
     SubscriptionBody, SubscriptionDiff, SubscriptionRoute,
 };
-pub use protocol::{decode_client_message, decode_reducer_call, encode_message, encode_server_message};
+pub use protocol::{
+    decode_client_message, decode_reducer_call, encode_message, encode_server_message,
+};
 pub use rate_limiter::{RateLimiterConfig, RateLimiterRegistry, ShutdownState, TokenBucket};
 pub use websocket::{start_listener, PendingCall};
 
@@ -46,7 +47,9 @@ impl Default for InlineRegistry {
 
 impl InlineRegistry {
     pub fn new() -> Self {
-        Self { table: HashMap::new() }
+        Self {
+            table: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, name: impl Into<String>, f: InlineFn) {
@@ -69,13 +72,14 @@ pub fn build_inline_registry() -> Arc<InlineRegistry> {
     let mut r = InlineRegistry::new();
 
     // Pre-encode the response once — zero allocation per call at runtime.
-    let ping_bytes: Vec<u8> = rmp_serde::to_vec(&serde_json::json!({ "ok": true }))
-        .unwrap_or_default();
+    let ping_bytes: Vec<u8> =
+        rmp_serde::to_vec(&serde_json::json!({ "ok": true })).unwrap_or_default();
     let ping_bytes = Arc::new(ping_bytes);
 
-    r.register("stress_ping", Arc::new(move |_args: &[u8]| {
-        (*ping_bytes).clone()
-    }));
+    r.register(
+        "stress_ping",
+        Arc::new(move |_args: &[u8]| (*ping_bytes).clone()),
+    );
 
     Arc::new(r)
 }

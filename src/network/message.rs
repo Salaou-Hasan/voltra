@@ -69,12 +69,31 @@ pub struct SqlResult {
 }
 
 impl SqlResult {
-    pub fn ok(query_id: u64, columns: Vec<String>, rows: Vec<serde_json::Value>, rows_affected: usize) -> Self {
-        SqlResult { query_id, success: true, columns, rows, rows_affected, error: None }
+    pub fn ok(
+        query_id: u64,
+        columns: Vec<String>,
+        rows: Vec<serde_json::Value>,
+        rows_affected: usize,
+    ) -> Self {
+        SqlResult {
+            query_id,
+            success: true,
+            columns,
+            rows,
+            rows_affected,
+            error: None,
+        }
     }
 
     pub fn err(query_id: u64, error: String) -> Self {
-        SqlResult { query_id, success: false, columns: vec![], rows: vec![], rows_affected: 0, error: Some(error) }
+        SqlResult {
+            query_id,
+            success: false,
+            columns: vec![],
+            rows: vec![],
+            rows_affected: 0,
+            error: Some(error),
+        }
     }
 }
 
@@ -151,7 +170,9 @@ pub enum ServerMessage {
     SubscriptionBody(SubscriptionBody),
     /// Response to a `ClientMessage::SqlQuery`.
     SqlResult(SqlResult),
-    Error { message: String },
+    Error {
+        message: String,
+    },
     /// One frame per tick carrying all matching row diffs for this client.
     /// `payload` is a MsgPack-encoded `Vec<SubscriptionDiff>`.
     /// When `compressed = true`, `payload` is zstd-compressed before MsgPack encoding.

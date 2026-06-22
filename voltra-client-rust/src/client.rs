@@ -26,7 +26,7 @@ use tokio_tungstenite::{
 };
 
 use crate::{
-    error::{VoltraError, Result},
+    error::{Result, VoltraError},
     protocol::{decode_server_frame, encode_args, encode_client_message},
     types::{ClientMessage, ClientOptions, ReducerCall, RowCache, RowDiff, ServerMessage},
 };
@@ -107,8 +107,7 @@ pub enum ClientEvent {
 ///
 /// Unlike `FnOnce`, these can be called multiple times so the cache can be
 /// re-computed after any layer is removed (see TODO-036).
-pub type OptimisticMutation =
-    Arc<dyn Fn(CacheSnapshot) -> CacheSnapshot + Send + Sync + 'static>;
+pub type OptimisticMutation = Arc<dyn Fn(CacheSnapshot) -> CacheSnapshot + Send + Sync + 'static>;
 
 enum Command {
     Call {
@@ -383,13 +382,11 @@ impl VoltraClient {
             .map_err(|_| VoltraError::ConnectionClosed)?;
 
         // 3. Await the network result.
-        let result = tokio::time::timeout(
-            Duration::from_millis(self.opts.call_timeout_ms),
-            inner_rx,
-        )
-        .await
-        .map_err(|_| VoltraError::Timeout(self.opts.call_timeout_ms))?
-        .map_err(|_| VoltraError::ConnectionClosed)??;
+        let result =
+            tokio::time::timeout(Duration::from_millis(self.opts.call_timeout_ms), inner_rx)
+                .await
+                .map_err(|_| VoltraError::Timeout(self.opts.call_timeout_ms))?
+                .map_err(|_| VoltraError::ConnectionClosed)??;
 
         Ok(result)
     }
@@ -451,9 +448,7 @@ type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn make_ws_connection(url: &str, api_key: Option<&str>) -> Result<WsStream> {
-    let mut request = url
-        .into_client_request()
-        .map_err(VoltraError::WebSocket)?;
+    let mut request = url.into_client_request().map_err(VoltraError::WebSocket)?;
     if let Some(key) = api_key {
         request.headers_mut().insert(
             "authorization",
@@ -483,8 +478,7 @@ async fn run_connection_with_reconnect(
     api_key: Option<String>,
 ) {
     // Track all active subscriptions: sub_id → (query, diff sender).
-    let mut active_subs: HashMap<String, (String, mpsc::UnboundedSender<RowDiff>)> =
-        HashMap::new();
+    let mut active_subs: HashMap<String, (String, mpsc::UnboundedSender<RowDiff>)> = HashMap::new();
     // Calls buffered while the connection is down: (call_id, reducer, args, reply).
     let mut pending_queue: Vec<(u64, String, Vec<u8>, oneshot::Sender<Result<Vec<u8>>>)> =
         Vec::new();
@@ -573,9 +567,7 @@ async fn run_connection_with_reconnect(
     }
 }
 
-fn drain_pending_queue(
-    queue: &mut Vec<(u64, String, Vec<u8>, oneshot::Sender<Result<Vec<u8>>>)>,
-) {
+fn drain_pending_queue(queue: &mut Vec<(u64, String, Vec<u8>, oneshot::Sender<Result<Vec<u8>>>)>) {
     for (_, _, _, reply) in queue.drain(..) {
         let _ = reply.send(Err(VoltraError::ConnectionClosed));
     }
@@ -826,7 +818,10 @@ fn dispatch_message(
             log::warn!("[voltra-client] Server error: {}", message);
         }
 
-        ServerMessage::BatchUpdate { compressed, payload } => {
+        ServerMessage::BatchUpdate {
+            compressed,
+            payload,
+        } => {
             let raw = if compressed {
                 match zstd::decode_all(payload.as_slice()) {
                     Ok(out) => out,
@@ -839,14 +834,13 @@ fn dispatch_message(
                 payload
             };
 
-            let diffs: Vec<crate::types::SubscriptionDiffWire> =
-                match rmp_serde::from_slice(&raw) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        log::warn!("[voltra-client] BatchUpdate decode failed: {}", e);
-                        return;
-                    }
-                };
+            let diffs: Vec<crate::types::SubscriptionDiffWire> = match rmp_serde::from_slice(&raw) {
+                Ok(d) => d,
+                Err(e) => {
+                    log::warn!("[voltra-client] BatchUpdate decode failed: {}", e);
+                    return;
+                }
+            };
 
             for diff in diffs {
                 let row_diff = RowDiff {
@@ -881,9 +875,7 @@ fn apply_to_base(
     operation: &str,
     row_data: Option<serde_json::Value>,
 ) {
-    let table = base
-        .entry(table_name.to_string())
-        .or_insert_with(HashMap::new);
+    let table = base.entry(table_name.to_string()).or_default();
     if operation == "delete" {
         table.remove(row_key);
     } else if operation == "patch" {

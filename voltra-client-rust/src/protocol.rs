@@ -1,4 +1,4 @@
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::types::{ClientMessage, ReducerResponse, ServerMessage};
 
 /// Encode a `ClientMessage` to MessagePack bytes.

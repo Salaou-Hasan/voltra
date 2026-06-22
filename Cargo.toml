@@ -9,6 +9,28 @@ version = "2.0.5"
 edition = "2021"
 description = "Voltra — high-throughput in-memory game backend (WebSocket, Redis & Postgres wire, WAL-durable)"
 
+# Clippy: deny warnings in CI, but allow advisory lints that are intentional here.
+# - too_many_arguments / type_complexity: server bootstrap fns thread many subsystems by design.
+# - result_large_err: VoltraError is a wide enum; boxing every Result is not worth it.
+# - upper_case_acronyms: Windows FFI types (HANDLE, DWORD, SIZE_T) must keep their names.
+# - len_without_is_empty / should_implement_trait / enum_variant_names: deliberate API shapes.
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+result_large_err = "allow"
+upper_case_acronyms = "allow"
+len_without_is_empty = "allow"
+should_implement_trait = "allow"
+enum_variant_names = "allow"
+# Advisory / false-positive lints (the flagged code is intentional or clearer as-is):
+field_reassign_with_default = "allow"  # WebSocketConfig is #[non_exhaustive] — struct-literal form won't compile
+needless_range_loop = "allow"          # the index addresses two parallel slices
+only_used_in_recursion = "allow"
+manual_checked_ops = "allow"           # explicit `if d > 0` guards read clearer than checked_div
+unnecessary_unwrap = "allow"           # guarded by an earlier is_some in the same condition
+doc_lazy_continuation = "allow"
+missing_const_for_thread_local = "allow"  # false-positive: HashMap::new() is not const
+
 [dependencies]
 socket2 = { version = "0.5", features = ["all"] }
 core_affinity = "0.8"

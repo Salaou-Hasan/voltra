@@ -258,7 +258,7 @@ impl Report {
             self.success_pct()
         ));
 
-        if self.hist.len() > 0 {
+        if !self.hist.is_empty() {
             out.push_str("## Latency Distribution\n\n");
             out.push_str("| Percentile | μs | ms |\n|---|---|---|\n");
 

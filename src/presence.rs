@@ -16,8 +16,8 @@ pub enum PresenceStatus {
 pub struct PresenceEntry {
     pub user_id: String,
     pub status: PresenceStatus,
-    pub last_heartbeat: u64, // Unix timestamp ms
-    pub connected_at: u64,   // Unix timestamp ms
+    pub last_heartbeat: u64,                 // Unix timestamp ms
+    pub connected_at: u64,                   // Unix timestamp ms
     pub metadata: Option<serde_json::Value>, // custom data (current room, character, etc.)
 }
 
@@ -66,12 +66,7 @@ impl PresenceManager {
 
     /// Register a user as online with an explicit timestamp.
     /// Used internally and in tests where time must be controlled.
-    pub fn set_online_at(
-        &self,
-        user_id: &str,
-        now_ms: u64,
-        metadata: Option<serde_json::Value>,
-    ) {
+    pub fn set_online_at(&self, user_id: &str, now_ms: u64, metadata: Option<serde_json::Value>) {
         self.entries.insert(
             user_id.to_string(),
             PresenceEntry {
@@ -169,8 +164,7 @@ impl PresenceManager {
             let elapsed = now_ms.saturating_sub(entry.last_heartbeat);
             if elapsed >= self.offline_timeout_ms {
                 to_remove.push(entry.user_id.clone());
-            } else if elapsed >= self.heartbeat_timeout_ms
-                && entry.status == PresenceStatus::Online
+            } else if elapsed >= self.heartbeat_timeout_ms && entry.status == PresenceStatus::Online
             {
                 to_idle.push(entry.user_id.clone());
             }

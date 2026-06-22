@@ -21,9 +21,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::table::RowDelta;
-use crate::error::{VoltraError, Result};
 use super::ClusterBus;
+use crate::error::{Result, VoltraError};
+use crate::table::RowDelta;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Retry state
@@ -40,11 +40,15 @@ pub struct FanoutRetryState {
 
 impl FanoutRetryState {
     fn new() -> Self {
-        FanoutRetryState { queues: DashMap::new() }
+        FanoutRetryState {
+            queues: DashMap::new(),
+        }
     }
 
     fn push_back(&self, shard_id: u32, payload: Arc<Vec<u8>>) {
-        let entry = self.queues.entry(shard_id)
+        let entry = self
+            .queues
+            .entry(shard_id)
             .or_insert_with(|| Mutex::new(VecDeque::with_capacity(64)));
         let mut q = entry.lock().expect("retry queue poisoned");
         if q.len() >= MAX_RETRY_QUEUE_LEN {
@@ -54,7 +58,9 @@ impl FanoutRetryState {
     }
 
     fn push_front(&self, shard_id: u32, payload: Arc<Vec<u8>>) {
-        let entry = self.queues.entry(shard_id)
+        let entry = self
+            .queues
+            .entry(shard_id)
             .or_insert_with(|| Mutex::new(VecDeque::with_capacity(64)));
         let mut q = entry.lock().expect("retry queue poisoned");
         if q.len() >= MAX_RETRY_QUEUE_LEN {
@@ -64,14 +70,17 @@ impl FanoutRetryState {
     }
 
     fn drain_front(&self, shard_id: u32, n: usize) -> Vec<Arc<Vec<u8>>> {
-        let Some(entry) = self.queues.get(&shard_id) else { return vec![] };
+        let Some(entry) = self.queues.get(&shard_id) else {
+            return vec![];
+        };
         let mut q = entry.lock().expect("retry queue poisoned");
         let take = q.len().min(n);
         q.drain(0..take).collect()
     }
 
     pub fn pending(&self, shard_id: u32) -> usize {
-        self.queues.get(&shard_id)
+        self.queues
+            .get(&shard_id)
             .map(|e| e.lock().map(|q| q.len()).unwrap_or(0))
             .unwrap_or(0)
     }
@@ -80,13 +89,20 @@ impl FanoutRetryState {
 static RETRY_STATE: OnceLock<Arc<FanoutRetryState>> = OnceLock::new();
 
 pub fn retry_state() -> Arc<FanoutRetryState> {
-    RETRY_STATE.get_or_init(|| Arc::new(FanoutRetryState::new())).clone()
+    RETRY_STATE
+        .get_or_init(|| Arc::new(FanoutRetryState::new()))
+        .clone()
 }
 
-fn try_post_with_backoff(bus: &Arc<ClusterBus>, url: &str, payload: &[u8]) -> std::result::Result<(), String> {
+fn try_post_with_backoff(
+    bus: &Arc<ClusterBus>,
+    url: &str,
+    payload: &[u8],
+) -> std::result::Result<(), String> {
     let mut last_err: Option<String> = None;
     for (i, _) in RETRY_BACKOFF_MS.iter().enumerate() {
-        let mut req = bus.http_client()
+        let mut req = bus
+            .http_client()
             .post(url)
             .header("Content-Type", "application/json")
             .body(payload.to_vec());
@@ -95,8 +111,12 @@ fn try_post_with_backoff(bus: &Arc<ClusterBus>, url: &str, payload: &[u8]) -> st
         }
         match req.send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
-            Ok(resp) => { last_err = Some(format!("HTTP {}", resp.status())); }
-            Err(e) => { last_err = Some(e.to_string()); }
+            Ok(resp) => {
+                last_err = Some(format!("HTTP {}", resp.status()));
+            }
+            Err(e) => {
+                last_err = Some(e.to_string());
+            }
         }
         if i + 1 < RETRY_BACKOFF_MS.len() {
             std::thread::sleep(Duration::from_millis(RETRY_BACKOFF_MS[i]));
@@ -129,36 +149,63 @@ pub struct DeltaPayload {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn row_deltas_to_wire(deltas: &[RowDelta]) -> Vec<WireDelta> {
-    deltas.iter().map(|d| {
-        if d.operation == "delete" {
-            WireDelta { table: d.table_name.clone(), row_key: d.row_key.clone(), op: "delete".to_string(), data_b64: None }
-        } else {
-            let data_b64 = d.row_data_value().and_then(|v| {
-                rmp_serde::to_vec_named(&v).ok().map(|b| B64.encode(&b))
-            });
-            WireDelta { table: d.table_name.clone(), row_key: d.row_key.clone(), op: "set".to_string(), data_b64 }
-        }
-    }).collect()
+    deltas
+        .iter()
+        .map(|d| {
+            if d.operation == "delete" {
+                WireDelta {
+                    table: d.table_name.clone(),
+                    row_key: d.row_key.clone(),
+                    op: "delete".to_string(),
+                    data_b64: None,
+                }
+            } else {
+                let data_b64 = d
+                    .row_data_value()
+                    .and_then(|v| rmp_serde::to_vec_named(&v).ok().map(|b| B64.encode(&b)));
+                WireDelta {
+                    table: d.table_name.clone(),
+                    row_key: d.row_key.clone(),
+                    op: "set".to_string(),
+                    data_b64,
+                }
+            }
+        })
+        .collect()
 }
 
 pub fn wire_to_row_deltas(wire: Vec<WireDelta>) -> Vec<RowDelta> {
-    wire.into_iter().filter_map(|w| {
-        if w.op == "delete" {
-            Some(RowDelta {
-                table_name: w.table, operation: "delete".to_string(), row_key: w.row_key,
-                row_id: 0, shard_id: 0, payload_arc: None, row_data: None,
-                counter_add_amount: 0, counter_add_timestamp: 0,
-            })
-        } else {
-            let bytes = w.data_b64.as_deref().and_then(|b| B64.decode(b).ok())?;
-            let data: serde_json::Value = rmp_serde::from_slice(&bytes).ok()?;
-            Some(RowDelta {
-                table_name: w.table, operation: "update".to_string(), row_key: w.row_key,
-                row_id: 0, shard_id: 0, payload_arc: None, row_data: Some(data),
-                counter_add_amount: 0, counter_add_timestamp: 0,
-            })
-        }
-    }).collect()
+    wire.into_iter()
+        .filter_map(|w| {
+            if w.op == "delete" {
+                Some(RowDelta {
+                    table_name: w.table,
+                    operation: "delete".to_string(),
+                    row_key: w.row_key,
+                    row_id: 0,
+                    shard_id: 0,
+                    payload_arc: None,
+                    row_data: None,
+                    counter_add_amount: 0,
+                    counter_add_timestamp: 0,
+                })
+            } else {
+                let bytes = w.data_b64.as_deref().and_then(|b| B64.decode(b).ok())?;
+                let data: serde_json::Value = rmp_serde::from_slice(&bytes).ok()?;
+                Some(RowDelta {
+                    table_name: w.table,
+                    operation: "update".to_string(),
+                    row_key: w.row_key,
+                    row_id: 0,
+                    shard_id: 0,
+                    payload_arc: None,
+                    row_data: Some(data),
+                    counter_add_amount: 0,
+                    counter_add_timestamp: 0,
+                })
+            }
+        })
+        .collect()
 }
 
 pub fn parse_delta_payload(body: &[u8]) -> Result<DeltaPayload> {
@@ -173,15 +220,23 @@ pub fn parse_delta_payload(body: &[u8]) -> Result<DeltaPayload> {
 
 pub fn fanout_to_peers(bus: &Arc<ClusterBus>, deltas: &[RowDelta]) {
     let wire_deltas = row_deltas_to_wire(deltas);
-    if wire_deltas.is_empty() { return; }
+    if wire_deltas.is_empty() {
+        return;
+    }
 
     let from_shard = bus.config.my_shard_id;
     let wire_count = wire_deltas.len();
-    let payload = DeltaPayload { from_shard, deltas: wire_deltas };
+    let payload = DeltaPayload {
+        from_shard,
+        deltas: wire_deltas,
+    };
 
     let payload_json = match serde_json::to_vec(&payload) {
         Ok(j) => Arc::new(j),
-        Err(e) => { log::error!("[cluster/fanout] Serialise deltas failed: {}", e); return; }
+        Err(e) => {
+            log::error!("[cluster/fanout] Serialise deltas failed: {}", e);
+            return;
+        }
     };
 
     let state = retry_state();
@@ -195,12 +250,17 @@ pub fn fanout_to_peers(bus: &Arc<ClusterBus>, deltas: &[RowDelta]) {
             let url = format!("{}/cluster/deltas", peer_c.metrics_url);
             match try_post_with_backoff(&bus_c, &url, &json_c) {
                 Ok(()) => {
-                    log::debug!("[cluster/fanout] shard{} accepted {} delta(s)", peer_c.shard_id, wire_count);
+                    log::debug!(
+                        "[cluster/fanout] shard{} accepted {} delta(s)",
+                        peer_c.shard_id,
+                        wire_count
+                    );
                 }
                 Err(reason) => {
                     log::warn!(
                         "[cluster/fanout] shard{} delivery failed ({}) — queuing for retry",
-                        peer_c.shard_id, reason
+                        peer_c.shard_id,
+                        reason
                     );
                     bus_c.mark_unhealthy(peer_c.shard_id);
                     state_c.push_back(peer_c.shard_id, json_c);
@@ -214,7 +274,10 @@ pub fn fanout_to_peers(bus: &Arc<ClusterBus>, deltas: &[RowDelta]) {
 // Background retry task
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn start_fanout_retry(bus: Arc<ClusterBus>, mut shutdown: watch::Receiver<()>) -> JoinHandle<()> {
+pub fn start_fanout_retry(
+    bus: Arc<ClusterBus>,
+    mut shutdown: watch::Receiver<()>,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         if !bus.is_active() {
             log::debug!("[cluster/fanout] Single-node mode — retry loop disabled");
@@ -239,16 +302,26 @@ pub fn start_fanout_retry(bus: Arc<ClusterBus>, mut shutdown: watch::Receiver<()
 
 async fn drain_all_peers(bus: &Arc<ClusterBus>) {
     let state = retry_state();
-    let peers: Vec<_> = bus.peers.iter()
+    let peers: Vec<_> = bus
+        .peers
+        .iter()
         .map(|e| (*e.key(), e.value().node.clone(), e.value().is_healthy()))
         .collect();
 
     for (shard_id, node, healthy) in peers {
-        if !healthy { continue; }
+        if !healthy {
+            continue;
+        }
         let batch = state.drain_front(shard_id, DRAIN_BATCH);
-        if batch.is_empty() { continue; }
+        if batch.is_empty() {
+            continue;
+        }
 
-        log::info!("[cluster/fanout] draining {} queued payload(s) for shard{}", batch.len(), shard_id);
+        log::info!(
+            "[cluster/fanout] draining {} queued payload(s) for shard{}",
+            batch.len(),
+            shard_id
+        );
 
         let bus_c = bus.clone();
         let state_c = state.clone();
@@ -257,10 +330,17 @@ async fn drain_all_peers(bus: &Arc<ClusterBus>) {
             for payload in batch {
                 match try_post_with_backoff(&bus_c, &url, &payload) {
                     Ok(()) => {
-                        log::debug!("[cluster/fanout] retry drained 1 payload for shard{}", shard_id);
+                        log::debug!(
+                            "[cluster/fanout] retry drained 1 payload for shard{}",
+                            shard_id
+                        );
                     }
                     Err(reason) => {
-                        log::warn!("[cluster/fanout] retry POST to shard{} failed ({}) — requeueing", shard_id, reason);
+                        log::warn!(
+                            "[cluster/fanout] retry POST to shard{} failed ({}) — requeueing",
+                            shard_id,
+                            reason
+                        );
                         bus_c.mark_unhealthy(shard_id);
                         state_c.push_front(shard_id, payload);
                         break;
@@ -283,17 +363,29 @@ mod tests {
 
     fn make_set_delta(table: &str, key: &str, data: serde_json::Value) -> RowDelta {
         RowDelta {
-            table_name: table.to_string(), operation: "update".to_string(), row_key: key.to_string(),
-            row_id: 1, shard_id: 0, payload_arc: None, row_data: Some(data),
-            counter_add_amount: 0, counter_add_timestamp: 0,
+            table_name: table.to_string(),
+            operation: "update".to_string(),
+            row_key: key.to_string(),
+            row_id: 1,
+            shard_id: 0,
+            payload_arc: None,
+            row_data: Some(data),
+            counter_add_amount: 0,
+            counter_add_timestamp: 0,
         }
     }
 
     fn make_delete_delta(table: &str, key: &str) -> RowDelta {
         RowDelta {
-            table_name: table.to_string(), operation: "delete".to_string(), row_key: key.to_string(),
-            row_id: 1, shard_id: 0, payload_arc: None, row_data: None,
-            counter_add_amount: 0, counter_add_timestamp: 0,
+            table_name: table.to_string(),
+            operation: "delete".to_string(),
+            row_key: key.to_string(),
+            row_id: 1,
+            shard_id: 0,
+            payload_arc: None,
+            row_data: None,
+            counter_add_amount: 0,
+            counter_add_timestamp: 0,
         }
     }
 
@@ -333,8 +425,10 @@ mod tests {
     #[test]
     fn wire_to_row_deltas_drops_invalid_base64() {
         let bad = WireDelta {
-            table: "players".to_string(), row_key: "x".to_string(),
-            op: "set".to_string(), data_b64: Some("!!!not_valid_base64!!!".to_string()),
+            table: "players".to_string(),
+            row_key: "x".to_string(),
+            op: "set".to_string(),
+            data_b64: Some("!!!not_valid_base64!!!".to_string()),
         };
         let restored = wire_to_row_deltas(vec![bad]);
         assert!(restored.is_empty());

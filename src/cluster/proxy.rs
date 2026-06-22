@@ -13,8 +13,8 @@ use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{VoltraError, Result};
 use super::{ClusterBus, NodeInfo};
+use crate::error::{Result, VoltraError};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProxyCallRequest {
@@ -35,7 +35,6 @@ pub struct ProxyCallResponse {
     pub error: Option<String>,
 }
 
-
 pub fn proxy_call(
     bus: &Arc<ClusterBus>,
     peer: &NodeInfo,
@@ -54,11 +53,11 @@ pub fn proxy_call(
         target_shard_id: Some(peer.shard_id),
     };
 
-    let body_json = serde_json::to_vec(&req_body).map_err(|e| {
-        VoltraError::internal(format!("[cluster/proxy] Serialise error: {}", e))
-    })?;
+    let body_json = serde_json::to_vec(&req_body)
+        .map_err(|e| VoltraError::internal(format!("[cluster/proxy] Serialise error: {}", e)))?;
 
-    let mut req = bus.http_client()
+    let mut req = bus
+        .http_client()
         .post(&url)
         .header("Content-Type", "application/json")
         .body(body_json);
@@ -68,12 +67,17 @@ pub fn proxy_call(
     }
 
     let resp = req.send().map_err(|e| {
-        VoltraError::network_error(format!("[cluster/proxy] shard{} unreachable: {}", peer.shard_id, e))
+        VoltraError::network_error(format!(
+            "[cluster/proxy] shard{} unreachable: {}",
+            peer.shard_id, e
+        ))
     })?;
 
     if !resp.status().is_success() {
         return Err(VoltraError::network_error(format!(
-            "[cluster/proxy] shard{} returned HTTP {}", peer.shard_id, resp.status()
+            "[cluster/proxy] shard{} returned HTTP {}",
+            peer.shard_id,
+            resp.status()
         )));
     }
 
@@ -83,12 +87,13 @@ pub fn proxy_call(
 
     if !resp_body.ok {
         return Err(VoltraError::internal(
-            resp_body.error.unwrap_or_else(|| "Unknown proxy error".to_string())
+            resp_body
+                .error
+                .unwrap_or_else(|| "Unknown proxy error".to_string()),
         ));
     }
 
     let result_b64 = resp_body.result_b64.unwrap_or_default();
-    B64.decode(&result_b64).map_err(|e| {
-        VoltraError::internal(format!("[cluster/proxy] Base64 decode result: {}", e))
-    })
+    B64.decode(&result_b64)
+        .map_err(|e| VoltraError::internal(format!("[cluster/proxy] Base64 decode result: {}", e)))
 }

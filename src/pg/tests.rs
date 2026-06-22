@@ -8,11 +8,15 @@ fn engine() -> PgEngine {
 }
 
 async fn exec(e: &PgEngine, s: &mut Session, sql: &str) -> Vec<ExecOut> {
-    e.execute(s, sql, &[]).await.unwrap_or_else(|err| panic!("SQL failed: {sql}\n{err}"))
+    e.execute(s, sql, &[])
+        .await
+        .unwrap_or_else(|err| panic!("SQL failed: {sql}\n{err}"))
 }
 
 async fn exec_err(e: &PgEngine, s: &mut Session, sql: &str) -> String {
-    e.execute(s, sql, &[]).await.expect_err(&format!("expected error: {sql}"))
+    e.execute(s, sql, &[])
+        .await
+        .expect_err(&format!("expected error: {sql}"))
 }
 
 fn rows_of(out: &[ExecOut]) -> &[Vec<Scalar>] {
@@ -59,7 +63,12 @@ async fn create_insert_select_roundtrip() {
 async fn where_and_expressions() {
     let e = engine();
     let mut s = Session::default();
-    exec(&e, &mut s, "CREATE TABLE items (name TEXT, qty BIGINT, price DOUBLE PRECISION)").await;
+    exec(
+        &e,
+        &mut s,
+        "CREATE TABLE items (name TEXT, qty BIGINT, price DOUBLE PRECISION)",
+    )
+    .await;
     exec(
         &e,
         &mut s,
@@ -67,10 +76,20 @@ async fn where_and_expressions() {
     )
     .await;
 
-    let out = exec(&e, &mut s, "SELECT name FROM items WHERE qty > 1 AND price < 60 ORDER BY name").await;
+    let out = exec(
+        &e,
+        &mut s,
+        "SELECT name FROM items WHERE qty > 1 AND price < 60 ORDER BY name",
+    )
+    .await;
     assert_eq!(rows_of(&out), &[vec![t("potion")]]);
 
-    let out = exec(&e, &mut s, "SELECT name FROM items WHERE name LIKE 's%' ORDER BY name").await;
+    let out = exec(
+        &e,
+        &mut s,
+        "SELECT name FROM items WHERE name LIKE 's%' ORDER BY name",
+    )
+    .await;
     assert_eq!(rows_of(&out), &[vec![t("shield")], vec![t("sword")]]);
 
     let out = exec(&e, &mut s, "SELECT name, qty * price AS total FROM items WHERE qty BETWEEN 2 AND 25 ORDER BY total DESC").await;
@@ -78,7 +97,12 @@ async fn where_and_expressions() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0][0], t("sword"));
 
-    let out = exec(&e, &mut s, "SELECT name FROM items WHERE name IN ('sword', 'potion') ORDER BY name").await;
+    let out = exec(
+        &e,
+        &mut s,
+        "SELECT name FROM items WHERE name IN ('sword', 'potion') ORDER BY name",
+    )
+    .await;
     assert_eq!(rows_of(&out).len(), 2);
     e.store.close();
 }
@@ -88,9 +112,19 @@ async fn update_delete_returning() {
     let e = engine();
     let mut s = Session::default();
     exec(&e, &mut s, "CREATE TABLE p (id BIGINT, hp BIGINT)").await;
-    exec(&e, &mut s, "INSERT INTO p VALUES (1, 100), (2, 50), (3, 10)").await;
+    exec(
+        &e,
+        &mut s,
+        "INSERT INTO p VALUES (1, 100), (2, 50), (3, 10)",
+    )
+    .await;
 
-    let out = exec(&e, &mut s, "UPDATE p SET hp = hp - 10 WHERE hp > 20 RETURNING id, hp").await;
+    let out = exec(
+        &e,
+        &mut s,
+        "UPDATE p SET hp = hp - 10 WHERE hp > 20 RETURNING id, hp",
+    )
+    .await;
     assert_eq!(tag_of(&out), "UPDATE 2");
     assert_eq!(rows_of(&out).len(), 2);
 
@@ -106,7 +140,12 @@ async fn update_delete_returning() {
 async fn aggregates_and_group_by() {
     let e = engine();
     let mut s = Session::default();
-    exec(&e, &mut s, "CREATE TABLE scores (player TEXT, zone TEXT, points BIGINT)").await;
+    exec(
+        &e,
+        &mut s,
+        "CREATE TABLE scores (player TEXT, zone TEXT, points BIGINT)",
+    )
+    .await;
     exec(
         &e,
         &mut s,
@@ -114,7 +153,12 @@ async fn aggregates_and_group_by() {
     )
     .await;
 
-    let out = exec(&e, &mut s, "SELECT COUNT(*), SUM(points), AVG(points), MIN(points), MAX(points) FROM scores").await;
+    let out = exec(
+        &e,
+        &mut s,
+        "SELECT COUNT(*), SUM(points), AVG(points), MIN(points), MAX(points) FROM scores",
+    )
+    .await;
     assert_eq!(
         rows_of(&out),
         &[vec![i(5), i(75), Scalar::Float(15.0), i(5), i(25)]]
@@ -146,9 +190,24 @@ async fn joins_inner_and_left() {
     let e = engine();
     let mut s = Session::default();
     exec(&e, &mut s, "CREATE TABLE users (id BIGINT, name TEXT)").await;
-    exec(&e, &mut s, "CREATE TABLE orders (user_id BIGINT, item TEXT)").await;
-    exec(&e, &mut s, "INSERT INTO users VALUES (1,'alice'),(2,'bob'),(3,'carol')").await;
-    exec(&e, &mut s, "INSERT INTO orders VALUES (1,'sword'),(1,'shield'),(2,'potion')").await;
+    exec(
+        &e,
+        &mut s,
+        "CREATE TABLE orders (user_id BIGINT, item TEXT)",
+    )
+    .await;
+    exec(
+        &e,
+        &mut s,
+        "INSERT INTO users VALUES (1,'alice'),(2,'bob'),(3,'carol')",
+    )
+    .await;
+    exec(
+        &e,
+        &mut s,
+        "INSERT INTO orders VALUES (1,'sword'),(1,'shield'),(2,'potion')",
+    )
+    .await;
 
     let out = exec(
         &e,
@@ -234,10 +293,20 @@ async fn aborted_txn_rejects_until_rollback() {
 async fn not_null_and_serial() {
     let e = engine();
     let mut s = Session::default();
-    exec(&e, &mut s, "CREATE TABLE u (id SERIAL, email TEXT NOT NULL)").await;
+    exec(
+        &e,
+        &mut s,
+        "CREATE TABLE u (id SERIAL, email TEXT NOT NULL)",
+    )
+    .await;
     let err = exec_err(&e, &mut s, "INSERT INTO u (email) VALUES (NULL)").await;
     assert!(err.contains("not-null"), "got: {err}");
-    exec(&e, &mut s, "INSERT INTO u (email) VALUES ('a@b.c'), ('d@e.f')").await;
+    exec(
+        &e,
+        &mut s,
+        "INSERT INTO u (email) VALUES ('a@b.c'), ('d@e.f')",
+    )
+    .await;
     let out = exec(&e, &mut s, "SELECT id FROM u ORDER BY id").await;
     assert_eq!(rows_of(&out), &[vec![i(1)], vec![i(2)]]);
     e.store.close();
@@ -247,7 +316,12 @@ async fn not_null_and_serial() {
 async fn scalar_functions_and_case() {
     let e = engine();
     let mut s = Session::default();
-    let out = exec(&e, &mut s, "SELECT UPPER('abc'), LENGTH('hello'), COALESCE(NULL, 'x'), 2 + 3 * 4").await;
+    let out = exec(
+        &e,
+        &mut s,
+        "SELECT UPPER('abc'), LENGTH('hello'), COALESCE(NULL, 'x'), 2 + 3 * 4",
+    )
+    .await;
     assert_eq!(rows_of(&out), &[vec![t("ABC"), i(5), t("x"), i(14)]]);
 
     let out = exec(
@@ -275,7 +349,12 @@ async fn subqueries() {
     exec(&e, &mut s, "INSERT INTO a VALUES (1),(2),(3)").await;
     exec(&e, &mut s, "INSERT INTO b VALUES (2),(3),(4)").await;
 
-    let out = exec(&e, &mut s, "SELECT v FROM a WHERE v IN (SELECT v FROM b) ORDER BY v").await;
+    let out = exec(
+        &e,
+        &mut s,
+        "SELECT v FROM a WHERE v IN (SELECT v FROM b) ORDER BY v",
+    )
+    .await;
     assert_eq!(rows_of(&out), &[vec![i(2)], vec![i(3)]]);
 
     let out = exec(&e, &mut s, "SELECT (SELECT MAX(v) FROM b)").await;
@@ -301,7 +380,12 @@ async fn information_schema_shims() {
     let e = engine();
     let mut s = Session::default();
     exec(&e, &mut s, "CREATE TABLE t1 (a BIGINT, b TEXT)").await;
-    let out = exec(&e, &mut s, "SELECT table_name FROM information_schema.tables").await;
+    let out = exec(
+        &e,
+        &mut s,
+        "SELECT table_name FROM information_schema.tables",
+    )
+    .await;
     assert_eq!(rows_of(&out), &[vec![t("t1")]]);
     let out = exec(
         &e,
@@ -321,9 +405,13 @@ async fn params_via_placeholders() {
     let e = engine();
     let mut s = Session::default();
     exec(&e, &mut s, "CREATE TABLE pp (k TEXT, v BIGINT)").await;
-    e.execute(&mut s, "INSERT INTO pp VALUES ($1, $2)", &[t("key1"), i(42)])
-        .await
-        .unwrap();
+    e.execute(
+        &mut s,
+        "INSERT INTO pp VALUES ($1, $2)",
+        &[t("key1"), i(42)],
+    )
+    .await
+    .unwrap();
     let out = e
         .execute(&mut s, "SELECT v FROM pp WHERE k = $1", &[t("key1")])
         .await
@@ -360,7 +448,12 @@ async fn catalog_survives_restart() {
         let e = PgEngine::new(store);
         let mut s = Session::default();
         exec(&e, &mut s, "CREATE TABLE persisted (id SERIAL, name TEXT)").await;
-        exec(&e, &mut s, "INSERT INTO persisted (name) VALUES ('x'), ('y')").await;
+        exec(
+            &e,
+            &mut s,
+            "INSERT INTO persisted (name) VALUES ('x'), ('y')",
+        )
+        .await;
         e.store.barrier().await;
         e.store.close();
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -377,7 +470,12 @@ async fn catalog_survives_restart() {
         assert_eq!(rows_of(&out), &[vec![t("x")], vec![t("y")]]);
         // Rowid counter resumed: next insert gets id 3.
         exec(&e, &mut s, "INSERT INTO persisted (name) VALUES ('z')").await;
-        let out = exec(&e, &mut s, "SELECT id FROM persisted ORDER BY id DESC LIMIT 1").await;
+        let out = exec(
+            &e,
+            &mut s,
+            "SELECT id FROM persisted ORDER BY id DESC LIMIT 1",
+        )
+        .await;
         assert_eq!(rows_of(&out), &[vec![i(3)]]);
         e.store.close();
     }
@@ -438,7 +536,8 @@ mod wire {
             // Scan frames for ReadyForQuery.
             let mut i = 0;
             while i + 5 <= all.len() {
-                let len = i32::from_be_bytes([all[i + 1], all[i + 2], all[i + 3], all[i + 4]]) as usize;
+                let len =
+                    i32::from_be_bytes([all[i + 1], all[i + 2], all[i + 3], all[i + 4]]) as usize;
                 if i + 1 + len > all.len() {
                     break;
                 }
@@ -470,9 +569,17 @@ mod wire {
         let mut sock = startup(port).await;
 
         let r = simple_query(&mut sock, "CREATE TABLE wt (id BIGINT, name TEXT)").await;
-        assert!(contains(&r, b"CREATE TABLE"), "missing tag: {:?}", String::from_utf8_lossy(&r));
+        assert!(
+            contains(&r, b"CREATE TABLE"),
+            "missing tag: {:?}",
+            String::from_utf8_lossy(&r)
+        );
 
-        let r = simple_query(&mut sock, "INSERT INTO wt VALUES (1, 'hello'), (2, 'world')").await;
+        let r = simple_query(
+            &mut sock,
+            "INSERT INTO wt VALUES (1, 'hello'), (2, 'world')",
+        )
+        .await;
         assert!(contains(&r, b"INSERT 0 2"));
 
         let r = simple_query(&mut sock, "SELECT name FROM wt ORDER BY id").await;
@@ -484,7 +591,11 @@ mod wire {
         assert_eq!(r[0], b'E');
 
         // Multi-statement.
-        let r = simple_query(&mut sock, "BEGIN; UPDATE wt SET name = 'x' WHERE id = 1; COMMIT").await;
+        let r = simple_query(
+            &mut sock,
+            "BEGIN; UPDATE wt SET name = 'x' WHERE id = 1; COMMIT",
+        )
+        .await;
         assert!(contains(&r, b"BEGIN") && contains(&r, b"UPDATE 1") && contains(&r, b"COMMIT"));
 
         store.close();
@@ -533,7 +644,11 @@ mod wire {
 
         sock.write_all(&msg).await.unwrap();
         let r = read_until_ready(&mut sock).await;
-        assert!(contains(&r, b"INSERT 0 1"), "got: {:?}", String::from_utf8_lossy(&r));
+        assert!(
+            contains(&r, b"INSERT 0 1"),
+            "got: {:?}",
+            String::from_utf8_lossy(&r)
+        );
 
         let r = simple_query(&mut sock, "SELECT v FROM ep WHERE k = 'alpha'").await;
         assert!(contains(&r, b"7"));

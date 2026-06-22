@@ -1,4 +1,4 @@
-﻿// src/stat_sync.rs â€” Post-match cross-region stat write-back
+// src/stat_sync.rs â€” Post-match cross-region stat write-back
 //
 // When a player on region A plays a match that runs on region B (lobby-
 // authoritative routing), the match result needs to be written back to
@@ -50,19 +50,19 @@ pub struct StatSyncBatch {
 #[derive(Deserialize)]
 pub struct StatSyncResponse {
     pub written: usize,
-    pub errors:  usize,
+    pub errors: usize,
 }
 
 pub struct StatSyncQueue {
-    tx:      flume::Sender<StatSyncJob>,
+    tx: flume::Sender<StatSyncJob>,
 }
 
 impl StatSyncQueue {
     /// Create the queue and spawn the background flush worker.
     pub fn new(
-        tables:    Arc<TableStore>,
-        regions:   Arc<RegionRegistry>,
-        flush_ms:  u64,
+        tables: Arc<TableStore>,
+        regions: Arc<RegionRegistry>,
+        flush_ms: u64,
         shutdown: watch::Receiver<()>,
     ) -> Arc<Self> {
         let (tx, rx) = flume::unbounded::<StatSyncJob>();
@@ -88,9 +88,9 @@ impl StatSyncQueue {
 }
 
 async fn flush_loop(
-    rx:       flume::Receiver<StatSyncJob>,
-    tables:   Arc<TableStore>,
-    regions:  Arc<RegionRegistry>,
+    rx: flume::Receiver<StatSyncJob>,
+    tables: Arc<TableStore>,
+    regions: Arc<RegionRegistry>,
     flush_ms: u64,
     mut shutdown: watch::Receiver<()>,
 ) {
@@ -138,7 +138,12 @@ async fn flush_loop(
 fn apply_local(tables: &TableStore, jobs: &[StatSyncJob]) {
     for job in jobs {
         if let Err(e) = tables.set_row(job.table.clone(), job.key.clone(), job.data.clone()) {
-            log::warn!("[stat-sync] Local write failed for {}/{}: {}", job.table, job.key, e);
+            log::warn!(
+                "[stat-sync] Local write failed for {}/{}: {}",
+                job.table,
+                job.key,
+                e
+            );
         }
     }
 }
@@ -147,7 +152,10 @@ async fn send_batch(url: String, jobs: Vec<StatSyncJob>) {
     let payload = StatSyncBatch { jobs };
     let body = match serde_json::to_vec(&payload) {
         Ok(b) => b,
-        Err(e) => { log::warn!("[stat-sync] Serialize error: {}", e); return; }
+        Err(e) => {
+            log::warn!("[stat-sync] Serialize error: {}", e);
+            return;
+        }
     };
 
     const MAX_ATTEMPTS: u32 = 3;
@@ -155,7 +163,7 @@ async fn send_batch(url: String, jobs: Vec<StatSyncJob>) {
 
     for attempt in 0..MAX_ATTEMPTS {
         let body_clone = body.clone();
-        let url_clone  = url.clone();
+        let url_clone = url.clone();
         let result = tokio::task::spawn_blocking(move || {
             reqwest::blocking::Client::new()
                 .post(&url_clone)
@@ -164,20 +172,35 @@ async fn send_batch(url: String, jobs: Vec<StatSyncJob>) {
                 .timeout(Duration::from_secs(5))
                 .send()
                 .and_then(|r| r.json::<StatSyncResponse>())
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(resp)) => {
                 if resp.errors > 0 {
-                    log::warn!("[stat-sync] Remote wrote {} ok, {} errors", resp.written, resp.errors);
+                    log::warn!(
+                        "[stat-sync] Remote wrote {} ok, {} errors",
+                        resp.written,
+                        resp.errors
+                    );
                 }
                 return;
             }
             Ok(Err(e)) => {
-                log::warn!("[stat-sync] Attempt {}/{}: {}", attempt + 1, MAX_ATTEMPTS, e);
+                log::warn!(
+                    "[stat-sync] Attempt {}/{}: {}",
+                    attempt + 1,
+                    MAX_ATTEMPTS,
+                    e
+                );
             }
             Err(e) => {
-                log::warn!("[stat-sync] Task panic attempt {}/{}: {}", attempt + 1, MAX_ATTEMPTS, e);
+                log::warn!(
+                    "[stat-sync] Task panic attempt {}/{}: {}",
+                    attempt + 1,
+                    MAX_ATTEMPTS,
+                    e
+                );
             }
         }
 
@@ -185,7 +208,11 @@ async fn send_batch(url: String, jobs: Vec<StatSyncJob>) {
             tokio::time::sleep(Duration::from_millis(delays[attempt as usize])).await;
         }
     }
-    log::warn!("[stat-sync] Dropping batch to {} after {} failed attempts", url, MAX_ATTEMPTS);
+    log::warn!(
+        "[stat-sync] Dropping batch to {} after {} failed attempts",
+        url,
+        MAX_ATTEMPTS
+    );
 }
 
 /// HTTP handler for POST /cluster/stat-sync.
@@ -197,7 +224,7 @@ pub fn handle_stat_sync(tables: &TableStore, body: &[u8]) -> serde_json::Value {
     };
 
     let mut written = 0usize;
-    let mut errors  = 0usize;
+    let mut errors = 0usize;
 
     for job in &batch.jobs {
         match tables.set_row(job.table.clone(), job.key.clone(), job.data.clone()) {
@@ -220,14 +247,12 @@ mod tests {
     #[test]
     fn apply_local_writes_rows() {
         let tables = TableStore::new();
-        let jobs = vec![
-            StatSyncJob {
-                home_region: "europe".to_string(),
-                table: "players".to_string(),
-                key: "alice".to_string(),
-                data: serde_json::json!({ "xp": 500 }),
-            },
-        ];
+        let jobs = vec![StatSyncJob {
+            home_region: "europe".to_string(),
+            table: "players".to_string(),
+            key: "alice".to_string(),
+            data: serde_json::json!({ "xp": 500 }),
+        }];
         apply_local(&tables, &jobs);
         let row = tables.get_row("players", "alice").unwrap().unwrap();
         assert_eq!(row["xp"], 500);
@@ -237,14 +262,12 @@ mod tests {
     fn handle_stat_sync_applies_batch() {
         let tables = TableStore::new();
         let batch = StatSyncBatch {
-            jobs: vec![
-                StatSyncJob {
-                    home_region: "europe".to_string(),
-                    table: "stats".to_string(),
-                    key: "bob".to_string(),
-                    data: serde_json::json!({ "kills": 10 }),
-                },
-            ],
+            jobs: vec![StatSyncJob {
+                home_region: "europe".to_string(),
+                table: "stats".to_string(),
+                key: "bob".to_string(),
+                data: serde_json::json!({ "kills": 10 }),
+            }],
         };
         let body = serde_json::to_vec(&batch).unwrap();
         let result = handle_stat_sync(&tables, &body);

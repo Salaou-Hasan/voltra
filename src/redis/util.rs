@@ -169,7 +169,10 @@ mod tests {
     fn float_parsing() {
         assert_eq!(parse_f64(&Bytes::from_static(b"3.5")), Some(3.5));
         assert_eq!(parse_f64(&Bytes::from_static(b"+inf")), Some(f64::INFINITY));
-        assert_eq!(parse_f64(&Bytes::from_static(b"-inf")), Some(f64::NEG_INFINITY));
+        assert_eq!(
+            parse_f64(&Bytes::from_static(b"-inf")),
+            Some(f64::NEG_INFINITY)
+        );
         assert_eq!(parse_f64(&Bytes::from_static(b"nan")), None);
         assert_eq!(parse_f64(&Bytes::from_static(b"abc")), None);
     }

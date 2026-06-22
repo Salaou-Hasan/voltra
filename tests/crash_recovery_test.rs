@@ -12,19 +12,23 @@
 // ============================================================================
 
 use futures::{SinkExt, StreamExt};
-use voltra::network::message::ReducerCall;
 use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
+use voltra::network::message::ReducerCall;
 
 // ── Shared harness (mirrors integration.rs) ──────────────────────────────────
 
 fn server_binary_path() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let file_name = if cfg!(windows) { "voltra.exe" } else { "voltra" };
+    let file_name = if cfg!(windows) {
+        "voltra.exe"
+    } else {
+        "voltra"
+    };
     manifest_dir.join("target").join("debug").join(file_name)
 }
 
@@ -50,7 +54,7 @@ fn spawn_server_on_wal(port: u16, wal_path: &PathBuf, snapshot_dir: &PathBuf) ->
         .env("VOLTRA_WAL_PATH", wal_path)
         .env("VOLTRA_SNAPSHOT_DIR", snapshot_dir)
         .env("VOLTRA_BLOB_PATH", blob_dir)
-        .env("VOLTRA_UNSAFE_NO_FSYNC", "true")  // faster for tests
+        .env("VOLTRA_UNSAFE_NO_FSYNC", "true") // faster for tests
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
@@ -94,10 +98,18 @@ struct IncrArgs {
     delta: i32,
 }
 
-async fn call_increment(ws: &mut tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>
->, call_id: u64, name: &str, delta: i32) {
-    let args = IncrArgs { name: name.to_string(), delta };
+async fn call_increment(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    call_id: u64,
+    name: &str,
+    delta: i32,
+) {
+    let args = IncrArgs {
+        name: name.to_string(),
+        delta,
+    };
     let mut args_buf = Vec::new();
     args.serialize(&mut Serializer::new(&mut args_buf)).unwrap();
 
@@ -109,7 +121,9 @@ async fn call_increment(ws: &mut tokio_tungstenite::WebSocketStream<
     let mut call_buf = Vec::new();
     call.serialize(&mut Serializer::new(&mut call_buf)).unwrap();
 
-    ws.send(Message::Binary(call_buf)).await.expect("send increment");
+    ws.send(Message::Binary(call_buf))
+        .await
+        .expect("send increment");
     // Drain the response
     ws.next().await.expect("response").expect("ws error");
 }
@@ -209,11 +223,13 @@ async fn crash_recovery_no_torn_paired_writes() {
         let ws_url = format!("ws://127.0.0.1:{}", port);
         wait_for_ready(&ws_url, Duration::from_secs(8)).await;
 
-        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("connect");
+        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("connect");
 
         let mut call_id = 1u64;
         for _ in 0..pairs {
-            call_increment(&mut ws, call_id,     "counter_a", 1).await;
+            call_increment(&mut ws, call_id, "counter_a", 1).await;
             call_id += 1;
             call_increment(&mut ws, call_id, "counter_b", 1).await;
             call_id += 1;
@@ -247,8 +263,13 @@ async fn crash_recovery_no_torn_paired_writes() {
     assert!(
         (a - b).abs() <= 1,
         "counter_a={} and counter_b={} differ by more than 1 — indicates a torn write",
-        a, b
+        a,
+        b
     );
 
-    assert!(a >= 1, "Expected at least 1 write to survive crash recovery, got a={}", a);
+    assert!(
+        a >= 1,
+        "Expected at least 1 write to survive crash recovery, got a={}",
+        a
+    );
 }

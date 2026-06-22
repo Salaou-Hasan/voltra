@@ -20,11 +20,11 @@
 
 use super::ast::*;
 use super::lexer::Token;
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 
 pub struct Parser {
     tokens: Vec<Token>,
-    pos:    usize,
+    pos: usize,
 }
 
 impl Parser {
@@ -44,7 +44,9 @@ impl Parser {
 
     fn advance(&mut self) -> Token {
         let tok = self.tokens.get(self.pos).cloned().unwrap_or(Token::Eof);
-        if self.pos < self.tokens.len() { self.pos += 1; }
+        if self.pos < self.tokens.len() {
+            self.pos += 1;
+        }
         tok
     }
 
@@ -54,7 +56,9 @@ impl Parser {
             Ok(())
         } else {
             Err(VoltraError::invalid_argument(format!(
-                "Expected {:?} but got {:?}", expected, self.peek()
+                "Expected {:?} but got {:?}",
+                expected,
+                self.peek()
             )))
         }
     }
@@ -65,18 +69,19 @@ impl Parser {
         match self.advance() {
             Token::Ident(s) => Ok(s),
             // Allow aggregate keywords used as bare column/alias names
-            Token::Count  => Ok("count".into()),
-            Token::Sum    => Ok("sum".into()),
-            Token::Avg    => Ok("avg".into()),
-            Token::Min    => Ok("min".into()),
-            Token::Max    => Ok("max".into()),
+            Token::Count => Ok("count".into()),
+            Token::Sum => Ok("sum".into()),
+            Token::Avg => Ok("avg".into()),
+            Token::Min => Ok("min".into()),
+            Token::Max => Ok("max".into()),
             // Other contextually-safe keywords
-            Token::Now    => Ok("now".into()),
+            Token::Now => Ok("now".into()),
             Token::Length => Ok("length".into()),
-            Token::Upper  => Ok("upper".into()),
-            Token::Lower  => Ok("lower".into()),
+            Token::Upper => Ok("upper".into()),
+            Token::Lower => Ok("lower".into()),
             other => Err(VoltraError::invalid_argument(format!(
-                "Expected identifier, got {:?}", other
+                "Expected identifier, got {:?}",
+                other
             ))),
         }
     }
@@ -94,7 +99,8 @@ impl Parser {
             Token::Update => Ok(Statement::Update(self.parse_update()?)),
             Token::Delete => Ok(Statement::Delete(self.parse_delete()?)),
             other => Err(VoltraError::invalid_argument(format!(
-                "Expected SELECT/INSERT/UPDATE/DELETE, got {:?}", other
+                "Expected SELECT/INSERT/UPDATE/DELETE, got {:?}",
+                other
             ))),
         }
     }
@@ -170,21 +176,36 @@ impl Parser {
         let union = if self.peek() == &Token::Union {
             self.pos += 1;
             let all = self.peek() == &Token::All;
-            if all { self.pos += 1; }
+            if all {
+                self.pos += 1;
+            }
             let rhs = self.parse_select()?;
             Some((all, Box::new(rhs)))
         } else {
             None
         };
 
-        Ok(SelectStmt { distinct, columns, from, joins, where_, group_by, having, order_by, limit, offset, union })
+        Ok(SelectStmt {
+            distinct,
+            columns,
+            from,
+            joins,
+            where_,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+            union,
+        })
     }
 
     fn parse_usize(&mut self, ctx: &str) -> Result<usize> {
         match self.advance() {
             Token::Integer(n) if n >= 0 => Ok(n as usize),
             other => Err(VoltraError::invalid_argument(format!(
-                "{} requires a non-negative integer, got {:?}", ctx, other
+                "{} requires a non-negative integer, got {:?}",
+                ctx, other
             ))),
         }
     }
@@ -228,8 +249,11 @@ impl Parser {
             None
         };
         Ok(match alias {
-            Some(a) => Expr::Alias { expr: Box::new(expr), alias: a },
-            None    => expr,
+            Some(a) => Expr::Alias {
+                expr: Box::new(expr),
+                alias: a,
+            },
+            None => expr,
         })
     }
 
@@ -256,7 +280,10 @@ impl Parser {
             } else {
                 self.expect_ident()?
             };
-            return Ok(TableRef::Subquery { query: Box::new(query), alias });
+            return Ok(TableRef::Subquery {
+                query: Box::new(query),
+                alias,
+            });
         }
         let name = self.expect_ident()?;
         let alias = if self.peek() == &Token::As {
@@ -274,31 +301,40 @@ impl Parser {
         let mut joins = Vec::new();
         loop {
             let kind = match self.peek() {
-                Token::Join         => { self.pos += 1; JoinKind::Inner }
-                Token::Inner        => {
+                Token::Join => {
+                    self.pos += 1;
+                    JoinKind::Inner
+                }
+                Token::Inner => {
                     self.pos += 1;
                     self.eat(&Token::Join)?;
                     JoinKind::Inner
                 }
-                Token::Left         => {
+                Token::Left => {
                     self.pos += 1;
-                    if self.peek() == &Token::Outer { self.pos += 1; }
+                    if self.peek() == &Token::Outer {
+                        self.pos += 1;
+                    }
                     self.eat(&Token::Join)?;
                     JoinKind::Left
                 }
-                Token::Right        => {
+                Token::Right => {
                     self.pos += 1;
-                    if self.peek() == &Token::Outer { self.pos += 1; }
+                    if self.peek() == &Token::Outer {
+                        self.pos += 1;
+                    }
                     self.eat(&Token::Join)?;
                     JoinKind::Right
                 }
-                Token::Full         => {
+                Token::Full => {
                     self.pos += 1;
-                    if self.peek() == &Token::Outer { self.pos += 1; }
+                    if self.peek() == &Token::Outer {
+                        self.pos += 1;
+                    }
                     self.eat(&Token::Join)?;
                     JoinKind::Full
                 }
-                Token::Cross        => {
+                Token::Cross => {
                     self.pos += 1;
                     self.eat(&Token::Join)?;
                     JoinKind::Cross
@@ -331,22 +367,38 @@ impl Parser {
     fn parse_order_by_item(&mut self) -> Result<OrderByItem> {
         let expr = self.parse_expr()?;
         let asc = match self.peek() {
-            Token::Asc  => { self.pos += 1; true }
-            Token::Desc => { self.pos += 1; false }
-            _           => true,
+            Token::Asc => {
+                self.pos += 1;
+                true
+            }
+            Token::Desc => {
+                self.pos += 1;
+                false
+            }
+            _ => true,
         };
         // NULLS FIRST / NULLS LAST
         let nulls_first = if matches!(self.peek(), Token::Ident(s) if s == "nulls") {
             self.pos += 1;
             match self.peek().clone() {
-                Token::Ident(s) if s == "first" => { self.pos += 1; Some(true) }
-                Token::Ident(s) if s == "last"  => { self.pos += 1; Some(false) }
+                Token::Ident(s) if s == "first" => {
+                    self.pos += 1;
+                    Some(true)
+                }
+                Token::Ident(s) if s == "last" => {
+                    self.pos += 1;
+                    Some(false)
+                }
                 _ => None,
             }
         } else {
             None
         };
-        Ok(OrderByItem { expr, asc, nulls_first })
+        Ok(OrderByItem {
+            expr,
+            asc,
+            nulls_first,
+        })
     }
 
     // ── Expression parser (Pratt / recursive-descent) ─────────────────────────
@@ -369,7 +421,11 @@ impl Parser {
         while self.peek() == &Token::Or {
             self.pos += 1;
             let right = self.parse_and()?;
-            left = Expr::BinaryOp { left: Box::new(left), op: BinOp::Or, right: Box::new(right) };
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinOp::Or,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -379,7 +435,11 @@ impl Parser {
         while self.peek() == &Token::And {
             self.pos += 1;
             let right = self.parse_not()?;
-            left = Expr::BinaryOp { left: Box::new(left), op: BinOp::And, right: Box::new(right) };
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinOp::And,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -388,7 +448,10 @@ impl Parser {
         if self.peek() == &Token::Not {
             self.pos += 1;
             let expr = self.parse_not()?;
-            return Ok(Expr::UnaryOp { op: UnaryOp::Not, expr: Box::new(expr) });
+            return Ok(Expr::UnaryOp {
+                op: UnaryOp::Not,
+                expr: Box::new(expr),
+            });
         }
         self.parse_comparison()
     }
@@ -400,9 +463,14 @@ impl Parser {
         if self.peek() == &Token::Is {
             self.pos += 1;
             let negated = self.peek() == &Token::Not;
-            if negated { self.pos += 1; }
+            if negated {
+                self.pos += 1;
+            }
             self.eat(&Token::Null)?;
-            return Ok(Expr::IsNull { expr: Box::new(left), negated });
+            return Ok(Expr::IsNull {
+                expr: Box::new(left),
+                negated,
+            });
         }
 
         // [NOT] BETWEEN … AND …
@@ -418,7 +486,9 @@ impl Parser {
             self.eat(&Token::And)?;
             let high = self.parse_add()?;
             return Ok(Expr::Between {
-                expr: Box::new(left), low: Box::new(low), high: Box::new(high),
+                expr: Box::new(left),
+                low: Box::new(low),
+                high: Box::new(high),
                 negated: negated_between,
             });
         }
@@ -433,7 +503,11 @@ impl Parser {
         if self.peek() == &Token::Like {
             self.pos += 1;
             let pattern = self.parse_add()?;
-            return Ok(Expr::Like { expr: Box::new(left), pattern: Box::new(pattern), negated: negated_like });
+            return Ok(Expr::Like {
+                expr: Box::new(left),
+                pattern: Box::new(pattern),
+                negated: negated_like,
+            });
         }
 
         // [NOT] IN (list | subquery)
@@ -449,40 +523,56 @@ impl Parser {
             if self.peek() == &Token::Select {
                 let query = self.parse_select()?;
                 self.eat(&Token::RParen)?;
-                return Ok(Expr::InSubquery { expr: Box::new(left), query: Box::new(query), negated: negated_in });
+                return Ok(Expr::InSubquery {
+                    expr: Box::new(left),
+                    query: Box::new(query),
+                    negated: negated_in,
+                });
             }
             let list = self.parse_expr_list()?;
             self.eat(&Token::RParen)?;
-            return Ok(Expr::InList { expr: Box::new(left), list, negated: negated_in });
+            return Ok(Expr::InList {
+                expr: Box::new(left),
+                list,
+                negated: negated_in,
+            });
         }
 
         // Standard comparison operators
         let op = match self.peek() {
-            Token::Eq    => BinOp::Eq,
-            Token::Ne    => BinOp::Ne,
-            Token::Lt    => BinOp::Lt,
-            Token::Le    => BinOp::Le,
-            Token::Gt    => BinOp::Gt,
-            Token::Ge    => BinOp::Ge,
-            _            => return Ok(left),
+            Token::Eq => BinOp::Eq,
+            Token::Ne => BinOp::Ne,
+            Token::Lt => BinOp::Lt,
+            Token::Le => BinOp::Le,
+            Token::Gt => BinOp::Gt,
+            Token::Ge => BinOp::Ge,
+            _ => return Ok(left),
         };
         self.pos += 1;
         let right = self.parse_add()?;
-        Ok(Expr::BinaryOp { left: Box::new(left), op, right: Box::new(right) })
+        Ok(Expr::BinaryOp {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        })
     }
 
     fn parse_add(&mut self) -> Result<Expr> {
         let mut left = self.parse_mul()?;
         loop {
             let op = match self.peek() {
-                Token::Plus    => BinOp::Add,
-                Token::Minus   => BinOp::Sub,
+                Token::Plus => BinOp::Add,
+                Token::Minus => BinOp::Sub,
                 Token::Concat2 => BinOp::Concat,
                 _ => break,
             };
             self.pos += 1;
             let right = self.parse_mul()?;
-            left = Expr::BinaryOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -491,23 +581,48 @@ impl Parser {
         let mut left = self.parse_unary()?;
         loop {
             let op = match self.peek() {
-                Token::Star    => BinOp::Mul,
-                Token::Slash   => BinOp::Div,
+                Token::Star => BinOp::Mul,
+                Token::Slash => BinOp::Div,
                 Token::Percent => BinOp::Mod,
                 _ => break,
             };
             self.pos += 1;
             let right = self.parse_unary()?;
-            left = Expr::BinaryOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
 
     fn parse_unary(&mut self) -> Result<Expr> {
         match self.peek() {
-            Token::Minus => { self.pos += 1; let e = self.parse_unary()?; Ok(Expr::UnaryOp { op: UnaryOp::Neg, expr: Box::new(e) }) }
-            Token::Plus  => { self.pos += 1; let e = self.parse_unary()?; Ok(Expr::UnaryOp { op: UnaryOp::Pos, expr: Box::new(e) }) }
-            Token::Not   => { self.pos += 1; let e = self.parse_unary()?; Ok(Expr::UnaryOp { op: UnaryOp::Not, expr: Box::new(e) }) }
+            Token::Minus => {
+                self.pos += 1;
+                let e = self.parse_unary()?;
+                Ok(Expr::UnaryOp {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(e),
+                })
+            }
+            Token::Plus => {
+                self.pos += 1;
+                let e = self.parse_unary()?;
+                Ok(Expr::UnaryOp {
+                    op: UnaryOp::Pos,
+                    expr: Box::new(e),
+                })
+            }
+            Token::Not => {
+                self.pos += 1;
+                let e = self.parse_unary()?;
+                Ok(Expr::UnaryOp {
+                    op: UnaryOp::Not,
+                    expr: Box::new(e),
+                })
+            }
             _ => self.parse_primary(),
         }
     }
@@ -515,11 +630,26 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr> {
         match self.peek().clone() {
             // ── Literals ──────────────────────────────────────────────────────
-            Token::Integer(n)      => { self.pos += 1; Ok(Expr::Literal(serde_json::json!(n))) }
-            Token::Float(f)        => { self.pos += 1; Ok(Expr::Literal(serde_json::json!(f))) }
-            Token::StringLit(s)    => { self.pos += 1; Ok(Expr::Literal(serde_json::Value::String(s))) }
-            Token::BoolLit(b)      => { self.pos += 1; Ok(Expr::Literal(serde_json::json!(b))) }
-            Token::Null            => { self.pos += 1; Ok(Expr::Literal(serde_json::Value::Null)) }
+            Token::Integer(n) => {
+                self.pos += 1;
+                Ok(Expr::Literal(serde_json::json!(n)))
+            }
+            Token::Float(f) => {
+                self.pos += 1;
+                Ok(Expr::Literal(serde_json::json!(f)))
+            }
+            Token::StringLit(s) => {
+                self.pos += 1;
+                Ok(Expr::Literal(serde_json::Value::String(s)))
+            }
+            Token::BoolLit(b) => {
+                self.pos += 1;
+                Ok(Expr::Literal(serde_json::json!(b)))
+            }
+            Token::Null => {
+                self.pos += 1;
+                Ok(Expr::Literal(serde_json::Value::Null))
+            }
 
             // ── Parenthesised expression or subquery ──────────────────────────
             Token::LParen => {
@@ -540,7 +670,10 @@ impl Parser {
                 self.eat(&Token::LParen)?;
                 let query = self.parse_select()?;
                 self.eat(&Token::RParen)?;
-                Ok(Expr::Exists { query: Box::new(query), negated: false })
+                Ok(Expr::Exists {
+                    query: Box::new(query),
+                    negated: false,
+                })
             }
 
             // ── CASE expression ───────────────────────────────────────────────
@@ -548,27 +681,27 @@ impl Parser {
 
             // ── Aggregate functions ───────────────────────────────────────────
             Token::Count => self.parse_aggregate(AggFunc::Count),
-            Token::Sum   => self.parse_aggregate(AggFunc::Sum),
-            Token::Avg   => self.parse_aggregate(AggFunc::Avg),
-            Token::Min   => self.parse_aggregate(AggFunc::Min),
-            Token::Max   => self.parse_aggregate(AggFunc::Max),
+            Token::Sum => self.parse_aggregate(AggFunc::Sum),
+            Token::Avg => self.parse_aggregate(AggFunc::Avg),
+            Token::Min => self.parse_aggregate(AggFunc::Min),
+            Token::Max => self.parse_aggregate(AggFunc::Max),
 
             // ── Scalar functions ──────────────────────────────────────────────
-            Token::Upper    => self.parse_scalar_fn("upper"),
-            Token::Lower    => self.parse_scalar_fn("lower"),
-            Token::Length   => self.parse_scalar_fn("length"),
-            Token::Trim     => self.parse_scalar_fn("trim"),
-            Token::Replace  => self.parse_scalar_fn("replace"),
-            Token::Round    => self.parse_scalar_fn("round"),
-            Token::Floor    => self.parse_scalar_fn("floor"),
-            Token::Ceil     => self.parse_scalar_fn("ceil"),
-            Token::Abs      => self.parse_scalar_fn("abs"),
+            Token::Upper => self.parse_scalar_fn("upper"),
+            Token::Lower => self.parse_scalar_fn("lower"),
+            Token::Length => self.parse_scalar_fn("length"),
+            Token::Trim => self.parse_scalar_fn("trim"),
+            Token::Replace => self.parse_scalar_fn("replace"),
+            Token::Round => self.parse_scalar_fn("round"),
+            Token::Floor => self.parse_scalar_fn("floor"),
+            Token::Ceil => self.parse_scalar_fn("ceil"),
+            Token::Abs => self.parse_scalar_fn("abs"),
             Token::Coalesce => self.parse_scalar_fn("coalesce"),
-            Token::Nullif   => self.parse_scalar_fn("nullif"),
-            Token::SubStr   => self.parse_scalar_fn("substr"),
-            Token::Now      => self.parse_scalar_fn("now"),
-            Token::Concat   => self.parse_scalar_fn("concat"),
-            Token::Cast     => self.parse_cast(),
+            Token::Nullif => self.parse_scalar_fn("nullif"),
+            Token::SubStr => self.parse_scalar_fn("substr"),
+            Token::Now => self.parse_scalar_fn("now"),
+            Token::Concat => self.parse_scalar_fn("concat"),
+            Token::Cast => self.parse_cast(),
 
             // ── Identifier / qualified column ─────────────────────────────────
             Token::Ident(name) => {
@@ -581,7 +714,10 @@ impl Parser {
                         return Ok(Expr::Wildcard { table: Some(name) });
                     }
                     let col = self.expect_ident()?;
-                    return Ok(Expr::Column { table: Some(name), name: col });
+                    return Ok(Expr::Column {
+                        table: Some(name),
+                        name: col,
+                    });
                 }
                 if self.peek() == &Token::LParen {
                     // Unknown function call
@@ -598,7 +734,8 @@ impl Parser {
             }
 
             other => Err(VoltraError::invalid_argument(format!(
-                "Unexpected token in expression: {:?}", other
+                "Unexpected token in expression: {:?}",
+                other
             ))),
         }
     }
@@ -631,14 +768,20 @@ impl Parser {
         };
 
         self.eat(&Token::End)?;
-        Ok(Expr::Case { operand, branches, else_ })
+        Ok(Expr::Case {
+            operand,
+            branches,
+            else_,
+        })
     }
 
     fn parse_aggregate(&mut self, func: AggFunc) -> Result<Expr> {
         self.pos += 1; // consume func name token
         self.eat(&Token::LParen)?;
         let distinct = self.peek() == &Token::Distinct;
-        if distinct { self.pos += 1; }
+        if distinct {
+            self.pos += 1;
+        }
 
         let arg = if self.peek() == &Token::Star && matches!(func, AggFunc::Count) {
             self.pos += 1;
@@ -647,7 +790,11 @@ impl Parser {
             Some(Box::new(self.parse_expr()?))
         };
         self.eat(&Token::RParen)?;
-        Ok(Expr::Aggregate { func, distinct, arg })
+        Ok(Expr::Aggregate {
+            func,
+            distinct,
+            arg,
+        })
     }
 
     fn parse_scalar_fn(&mut self, name: &str) -> Result<Expr> {
@@ -659,7 +806,10 @@ impl Parser {
             self.parse_expr_list()?
         };
         self.eat(&Token::RParen)?;
-        Ok(Expr::Function { name: name.to_string(), args })
+        Ok(Expr::Function {
+            name: name.to_string(),
+            args,
+        })
     }
 
     fn parse_cast(&mut self) -> Result<Expr> {
@@ -705,10 +855,18 @@ impl Parser {
             let row = self.parse_expr_list()?;
             self.eat(&Token::RParen)?;
             all_values.push(row);
-            if self.peek() == &Token::Comma { self.pos += 1; } else { break; }
+            if self.peek() == &Token::Comma {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
 
-        Ok(InsertStmt { table, columns, values: all_values })
+        Ok(InsertStmt {
+            table,
+            columns,
+            values: all_values,
+        })
     }
 
     // ── UPDATE ────────────────────────────────────────────────────────────────
@@ -731,7 +889,11 @@ impl Parser {
             self.eat(&Token::Eq)?;
             let val = self.parse_expr()?;
             sets.push((col, val));
-            if self.peek() == &Token::Comma { self.pos += 1; } else { break; }
+            if self.peek() == &Token::Comma {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
         let where_ = if self.peek() == &Token::Where {
             self.pos += 1;
@@ -739,7 +901,12 @@ impl Parser {
         } else {
             None
         };
-        Ok(UpdateStmt { table, alias, sets, where_ })
+        Ok(UpdateStmt {
+            table,
+            alias,
+            sets,
+            where_,
+        })
     }
 
     // ── DELETE ────────────────────────────────────────────────────────────────
@@ -765,7 +932,9 @@ pub fn parse(sql: &str) -> Result<Statement> {
     let mut parser = Parser::new(tokens);
     let stmt = parser.parse_statement()?;
     // Allow trailing semicolons
-    if parser.peek() == &Token::Semi { parser.pos += 1; }
+    if parser.peek() == &Token::Semi {
+        parser.pos += 1;
+    }
     Ok(stmt)
 }
 
@@ -773,7 +942,8 @@ pub fn parse_select(sql: &str) -> Result<SelectStmt> {
     match parse(sql)? {
         Statement::Select(s) => Ok(s),
         other => Err(VoltraError::invalid_argument(format!(
-            "Expected SELECT statement, got {:?}", std::mem::discriminant(&other)
+            "Expected SELECT statement, got {:?}",
+            std::mem::discriminant(&other)
         ))),
     }
 }
@@ -791,7 +961,13 @@ mod tests {
     #[test]
     fn select_star() {
         let s = sel("SELECT * FROM players");
-        assert_eq!(s.from[0], TableRef::Named { name: "players".into(), alias: None });
+        assert_eq!(
+            s.from[0],
+            TableRef::Named {
+                name: "players".into(),
+                alias: None
+            }
+        );
         assert_eq!(s.columns[0], Expr::Wildcard { table: None });
     }
 
@@ -815,7 +991,11 @@ mod tests {
     fn select_aggregate_count_star() {
         let s = sel("SELECT COUNT(*) FROM players");
         match &s.columns[0] {
-            Expr::Aggregate { func: AggFunc::Count, arg: None, .. } => {}
+            Expr::Aggregate {
+                func: AggFunc::Count,
+                arg: None,
+                ..
+            } => {}
             other => panic!("expected COUNT(*), got {:?}", other),
         }
     }

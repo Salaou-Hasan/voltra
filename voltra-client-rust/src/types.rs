@@ -71,7 +71,9 @@ pub enum ServerMessage {
     SubscriptionDiff(SubscriptionDiffWire),
     SubscriptionRoute(SubscriptionRoute),
     SubscriptionBody(SubscriptionBody),
-    Error { message: String },
+    Error {
+        message: String,
+    },
     /// Batched tick update: one frame per tick with all row diffs for this client.
     /// `payload` is a MsgPack-encoded `Vec<SubscriptionDiffWire>`.
     /// When `compressed = true`, `payload` is zstd-compressed before encoding.

@@ -11,7 +11,7 @@
 //     At 1000 logins/sec this is well within capacity; game reducers never wait.
 // ============================================================================
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -97,7 +97,12 @@ impl PersistentStore {
     // ── Users ─────────────────────────────────────────────────────────────────
 
     pub fn create_user(
-        &self, id: &str, email: &str, hash: &str, role: &str, now: i64,
+        &self,
+        id: &str,
+        email: &str,
+        hash: &str,
+        role: &str,
+        now: i64,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -126,11 +131,21 @@ impl PersistentStore {
             .map_err(|e| VoltraError::internal(e.to_string()))?
         {
             Ok(Some(UserRow {
-                id: row.get(0).map_err(|e| VoltraError::internal(e.to_string()))?,
-                email: row.get(1).map_err(|e| VoltraError::internal(e.to_string()))?,
-                role: row.get(2).map_err(|e| VoltraError::internal(e.to_string()))?,
-                password_hash: row.get(3).map_err(|e| VoltraError::internal(e.to_string()))?,
-                created_at: row.get(4).map_err(|e| VoltraError::internal(e.to_string()))?,
+                id: row
+                    .get(0)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
+                email: row
+                    .get(1)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
+                role: row
+                    .get(2)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
+                password_hash: row
+                    .get(3)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
+                created_at: row
+                    .get(4)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
             }))
         } else {
             Ok(None)
@@ -154,11 +169,21 @@ impl PersistentStore {
             .map_err(|e| VoltraError::internal(e.to_string()))?
         {
             Ok(Some(UserRow {
-                id: row.get(0).map_err(|e| VoltraError::internal(e.to_string()))?,
-                email: row.get(1).map_err(|e| VoltraError::internal(e.to_string()))?,
-                role: row.get(2).map_err(|e| VoltraError::internal(e.to_string()))?,
-                password_hash: row.get(3).map_err(|e| VoltraError::internal(e.to_string()))?,
-                created_at: row.get(4).map_err(|e| VoltraError::internal(e.to_string()))?,
+                id: row
+                    .get(0)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
+                email: row
+                    .get(1)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
+                role: row
+                    .get(2)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
+                password_hash: row
+                    .get(3)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
+                created_at: row
+                    .get(4)
+                    .map_err(|e| VoltraError::internal(e.to_string()))?,
             }))
         } else {
             Ok(None)
@@ -179,7 +204,12 @@ impl PersistentStore {
 
     /// Upsert a character row.  The `data` field stores the full game-state JSON.
     pub fn save_character(
-        &self, id: &str, user_id: &str, name: &str, data: &Value, now: i64,
+        &self,
+        id: &str,
+        user_id: &str,
+        name: &str,
+        data: &Value,
+        now: i64,
     ) -> Result<()> {
         let data_str = data.to_string();
         let conn = self.conn.lock().unwrap();
@@ -208,16 +238,18 @@ impl PersistentStore {
             .next()
             .map_err(|e| VoltraError::internal(e.to_string()))?
         {
-            let s: String = row.get(0).map_err(|e| VoltraError::internal(e.to_string()))?;
-            Ok(Some(serde_json::from_str(&s).unwrap_or(Value::Object(Default::default()))))
+            let s: String = row
+                .get(0)
+                .map_err(|e| VoltraError::internal(e.to_string()))?;
+            Ok(Some(
+                serde_json::from_str(&s).unwrap_or(Value::Object(Default::default())),
+            ))
         } else {
             Ok(None)
         }
     }
 
-    pub fn list_characters_for_user(
-        &self, user_id: &str,
-    ) -> Result<Vec<CharacterSummary>> {
+    pub fn list_characters_for_user(&self, user_id: &str) -> Result<Vec<CharacterSummary>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -244,7 +276,13 @@ impl PersistentStore {
     // ── Item Catalog ──────────────────────────────────────────────────────────
 
     pub fn upsert_catalog_item(
-        &self, id: &str, name: &str, item_type: &str, stats: &Value, price: i64, now: i64,
+        &self,
+        id: &str,
+        name: &str,
+        item_type: &str,
+        stats: &Value,
+        price: i64,
+        now: i64,
     ) -> Result<()> {
         let stats_str = stats.to_string();
         let conn = self.conn.lock().unwrap();
@@ -266,9 +304,7 @@ impl PersistentStore {
     pub fn get_catalog_item(&self, id: &str) -> Result<Option<Value>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare(
-                "SELECT id, name, item_type, stats, price FROM item_catalog WHERE id = ?1",
-            )
+            .prepare("SELECT id, name, item_type, stats, price FROM item_catalog WHERE id = ?1")
             .map_err(|e| VoltraError::internal(format!("prepare: {e}")))?;
         let mut rows = stmt
             .query(params![id])
@@ -277,18 +313,23 @@ impl PersistentStore {
             .next()
             .map_err(|e| VoltraError::internal(e.to_string()))?
         {
-            let stats_str: String =
-                row.get(3).map_err(|e| VoltraError::internal(e.to_string()))?;
+            let stats_str: String = row
+                .get(3)
+                .map_err(|e| VoltraError::internal(e.to_string()))?;
             let stats: Value =
                 serde_json::from_str(&stats_str).unwrap_or(Value::Object(Default::default()));
-            let id_val: String =
-                row.get(0).map_err(|e| VoltraError::internal(e.to_string()))?;
-            let name: String =
-                row.get(1).map_err(|e| VoltraError::internal(e.to_string()))?;
-            let itype: String =
-                row.get(2).map_err(|e| VoltraError::internal(e.to_string()))?;
-            let price: i64 =
-                row.get(4).map_err(|e| VoltraError::internal(e.to_string()))?;
+            let id_val: String = row
+                .get(0)
+                .map_err(|e| VoltraError::internal(e.to_string()))?;
+            let name: String = row
+                .get(1)
+                .map_err(|e| VoltraError::internal(e.to_string()))?;
+            let itype: String = row
+                .get(2)
+                .map_err(|e| VoltraError::internal(e.to_string()))?;
+            let price: i64 = row
+                .get(4)
+                .map_err(|e| VoltraError::internal(e.to_string()))?;
             Ok(Some(serde_json::json!({
                 "id": id_val, "name": name, "type": itype, "stats": stats, "price": price
             })))
@@ -302,17 +343,14 @@ impl PersistentStore {
         // Fetch all rows and filter in-memory — avoids rusqlite MappedRows
         // lifetime issues when branching on query params.
         let mut stmt = conn
-            .prepare(
-                "SELECT id, name, item_type, stats, price FROM item_catalog ORDER BY name",
-            )
+            .prepare("SELECT id, name, item_type, stats, price FROM item_catalog ORDER BY name")
             .map_err(|e| VoltraError::internal(format!("prepare: {e}")))?;
-        let raw: Vec<(String, String, String, String, i64)> =
-            match stmt.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-            }) {
-                Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
-                Err(e) => return Err(VoltraError::internal(e.to_string())),
-            };
+        let raw: Vec<(String, String, String, String, i64)> = match stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        }) {
+            Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+            Err(e) => return Err(VoltraError::internal(e.to_string())),
+        };
         let itype_filter = item_type.map(|s| s.to_owned());
         let tuples: Vec<(String, String, String, String, i64)> = raw
             .into_iter()
@@ -331,7 +369,10 @@ impl PersistentStore {
     // ── Audit log ─────────────────────────────────────────────────────────────
 
     pub fn log_audit(
-        &self, user_id: Option<&str>, action: &str, data: Option<&Value>,
+        &self,
+        user_id: Option<&str>,
+        action: &str,
+        data: Option<&Value>,
     ) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -367,11 +408,9 @@ impl PersistentStore {
                     let json_val = match val {
                         rusqlite::types::Value::Null => Value::Null,
                         rusqlite::types::Value::Integer(n) => Value::Number(n.into()),
-                        rusqlite::types::Value::Real(f) => {
-                            serde_json::Number::from_f64(f)
-                                .map(Value::Number)
-                                .unwrap_or(Value::Null)
-                        }
+                        rusqlite::types::Value::Real(f) => serde_json::Number::from_f64(f)
+                            .map(Value::Number)
+                            .unwrap_or(Value::Null),
                         rusqlite::types::Value::Text(s) => Value::String(s),
                         rusqlite::types::Value::Blob(b) => {
                             use base64::Engine as _;
@@ -494,8 +533,12 @@ mod tests {
     #[test]
     fn audit_log_inserts() {
         let db = open_tmp();
-        db.log_audit(Some("u1"), "login", Some(&serde_json::json!({"ip": "1.2.3.4"})))
-            .unwrap();
+        db.log_audit(
+            Some("u1"),
+            "login",
+            Some(&serde_json::json!({"ip": "1.2.3.4"})),
+        )
+        .unwrap();
         db.log_audit(None, "server_start", None).unwrap();
     }
 

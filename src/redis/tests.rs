@@ -15,7 +15,10 @@ struct TestDb {
 
 impl TestDb {
     fn new() -> Self {
-        Self { map: HashMap::new(), now: 1_000_000 }
+        Self {
+            map: HashMap::new(),
+            now: 1_000_000,
+        }
     }
 }
 
@@ -183,7 +186,10 @@ fn expire_and_persist() {
 #[test]
 fn hash_family() {
     let mut db = TestDb::new();
-    assert_eq!(run(&mut db, "HSET", &["h", "f1", "v1", "f2", "v2"]), Resp::Int(2));
+    assert_eq!(
+        run(&mut db, "HSET", &["h", "f1", "v1", "f2", "v2"]),
+        Resp::Int(2)
+    );
     assert_eq!(run(&mut db, "HGET", &["h", "f1"]), bulk("v1"));
     assert_eq!(run(&mut db, "HLEN", &["h"]), Resp::Int(2));
     assert_eq!(run(&mut db, "HEXISTS", &["h", "f2"]), Resp::Int(1));
@@ -208,7 +214,10 @@ fn list_family() {
     );
     assert_eq!(run(&mut db, "LPOP", &["l"]), bulk("z"));
     assert_eq!(run(&mut db, "RPOP", &["l"]), bulk("c"));
-    assert_eq!(run(&mut db, "LINSERT", &["l", "BEFORE", "b", "x"]), Resp::Int(3));
+    assert_eq!(
+        run(&mut db, "LINSERT", &["l", "BEFORE", "b", "x"]),
+        Resp::Int(3)
+    );
     assert_eq!(
         run(&mut db, "LRANGE", &["l", "0", "-1"]),
         Resp::Array(vec![bulk("a"), bulk("x"), bulk("b")])
@@ -225,8 +234,14 @@ fn list_family() {
 fn lmove_between_lists() {
     let mut db = TestDb::new();
     run(&mut db, "RPUSH", &["src", "1", "2", "3"]);
-    assert_eq!(run(&mut db, "LMOVE", &["src", "dst", "RIGHT", "LEFT"]), bulk("3"));
-    assert_eq!(run(&mut db, "LRANGE", &["dst", "0", "-1"]), Resp::Array(vec![bulk("3")]));
+    assert_eq!(
+        run(&mut db, "LMOVE", &["src", "dst", "RIGHT", "LEFT"]),
+        bulk("3")
+    );
+    assert_eq!(
+        run(&mut db, "LRANGE", &["dst", "0", "-1"]),
+        Resp::Array(vec![bulk("3")])
+    );
     assert_eq!(run(&mut db, "RPOPLPUSH", &["src", "dst"]), bulk("2"));
     assert_eq!(
         run(&mut db, "LRANGE", &["dst", "0", "-1"]),
@@ -237,7 +252,10 @@ fn lmove_between_lists() {
 #[test]
 fn set_family() {
     let mut db = TestDb::new();
-    assert_eq!(run(&mut db, "SADD", &["s", "a", "b", "c", "a"]), Resp::Int(3));
+    assert_eq!(
+        run(&mut db, "SADD", &["s", "a", "b", "c", "a"]),
+        Resp::Int(3)
+    );
     assert_eq!(run(&mut db, "SCARD", &["s"]), Resp::Int(3));
     assert_eq!(run(&mut db, "SISMEMBER", &["s", "a"]), Resp::Int(1));
     assert_eq!(
@@ -253,7 +271,10 @@ fn set_family() {
     );
     assert_eq!(run(&mut db, "SINTERCARD", &["2", "s", "s2"]), Resp::Int(1));
     // SUNIONSTORE
-    assert_eq!(run(&mut db, "SUNIONSTORE", &["dst", "s", "s2"]), Resp::Int(3));
+    assert_eq!(
+        run(&mut db, "SUNIONSTORE", &["dst", "s", "s2"]),
+        Resp::Int(3)
+    );
     assert_eq!(run(&mut db, "SMOVE", &["s2", "s", "d"]), Resp::Int(1));
     assert_eq!(run(&mut db, "SISMEMBER", &["s", "d"]), Resp::Int(1));
 }
@@ -261,7 +282,10 @@ fn set_family() {
 #[test]
 fn zset_family() {
     let mut db = TestDb::new();
-    assert_eq!(run(&mut db, "ZADD", &["z", "1", "a", "2", "b", "3", "c"]), Resp::Int(3));
+    assert_eq!(
+        run(&mut db, "ZADD", &["z", "1", "a", "2", "b", "3", "c"]),
+        Resp::Int(3)
+    );
     assert_eq!(run(&mut db, "ZCARD", &["z"]), Resp::Int(3));
     assert_eq!(run(&mut db, "ZSCORE", &["z", "b"]), bulk("2"));
     assert_eq!(run(&mut db, "ZRANK", &["z", "c"]), Resp::Int(2));
@@ -295,10 +319,19 @@ fn zadd_options() {
     assert_eq!(run(&mut db, "ZADD", &["z", "NX", "9", "m"]), Resp::Int(0));
     assert_eq!(run(&mut db, "ZSCORE", &["z", "m"]), bulk("5"));
     // GT: only if greater
-    assert_eq!(run(&mut db, "ZADD", &["z", "GT", "CH", "3", "m"]), Resp::Int(0));
-    assert_eq!(run(&mut db, "ZADD", &["z", "GT", "CH", "9", "m"]), Resp::Int(1));
+    assert_eq!(
+        run(&mut db, "ZADD", &["z", "GT", "CH", "3", "m"]),
+        Resp::Int(0)
+    );
+    assert_eq!(
+        run(&mut db, "ZADD", &["z", "GT", "CH", "9", "m"]),
+        Resp::Int(1)
+    );
     // XX: only existing
-    assert_eq!(run(&mut db, "ZADD", &["z", "XX", "1", "newbie"]), Resp::Int(0));
+    assert_eq!(
+        run(&mut db, "ZADD", &["z", "XX", "1", "newbie"]),
+        Resp::Int(0)
+    );
     assert_eq!(run(&mut db, "ZCARD", &["z"]), Resp::Int(1));
     // INCR mode returns new score
     assert_eq!(run(&mut db, "ZADD", &["z", "INCR", "1", "m"]), bulk("10"));
@@ -307,7 +340,11 @@ fn zadd_options() {
 #[test]
 fn zpop_and_remrange() {
     let mut db = TestDb::new();
-    run(&mut db, "ZADD", &["z", "1", "a", "2", "b", "3", "c", "4", "d"]);
+    run(
+        &mut db,
+        "ZADD",
+        &["z", "1", "a", "2", "b", "3", "c", "4", "d"],
+    );
     assert_eq!(
         run(&mut db, "ZPOPMIN", &["z"]),
         Resp::Array(vec![bulk("a"), bulk("1")])
@@ -316,7 +353,10 @@ fn zpop_and_remrange() {
         run(&mut db, "ZPOPMAX", &["z"]),
         Resp::Array(vec![bulk("d"), bulk("4")])
     );
-    assert_eq!(run(&mut db, "ZREMRANGEBYSCORE", &["z", "-inf", "2"]), Resp::Int(1));
+    assert_eq!(
+        run(&mut db, "ZREMRANGEBYSCORE", &["z", "-inf", "2"]),
+        Resp::Int(1)
+    );
     assert_eq!(run(&mut db, "ZCARD", &["z"]), Resp::Int(1));
 }
 
@@ -325,11 +365,21 @@ fn zstore_union_inter() {
     let mut db = TestDb::new();
     run(&mut db, "ZADD", &["z1", "1", "a", "2", "b"]);
     run(&mut db, "ZADD", &["z2", "10", "b", "20", "c"]);
-    assert_eq!(run(&mut db, "ZUNIONSTORE", &["dst", "2", "z1", "z2"]), Resp::Int(3));
-    assert_eq!(run(&mut db, "ZSCORE", &["dst", "b"]), bulk("12")); // 2 + 10
-    assert_eq!(run(&mut db, "ZINTERSTORE", &["dst2", "2", "z1", "z2"]), Resp::Int(1));
     assert_eq!(
-        run(&mut db, "ZUNIONSTORE", &["dst3", "2", "z1", "z2", "WEIGHTS", "2", "1"]),
+        run(&mut db, "ZUNIONSTORE", &["dst", "2", "z1", "z2"]),
+        Resp::Int(3)
+    );
+    assert_eq!(run(&mut db, "ZSCORE", &["dst", "b"]), bulk("12")); // 2 + 10
+    assert_eq!(
+        run(&mut db, "ZINTERSTORE", &["dst2", "2", "z1", "z2"]),
+        Resp::Int(1)
+    );
+    assert_eq!(
+        run(
+            &mut db,
+            "ZUNIONSTORE",
+            &["dst3", "2", "z1", "z2", "WEIGHTS", "2", "1"]
+        ),
         Resp::Int(3)
     );
     assert_eq!(run(&mut db, "ZSCORE", &["dst3", "b"]), bulk("14")); // 2*2 + 10
@@ -374,9 +424,14 @@ fn write_classification_is_complete() {
         "GETDEL", "GETEX", "SETBIT", "LMOVE", "SPOP", "ZINCRBY",
     ] {
         assert!(is_write(cmd), "{cmd} must be classified as a write");
-        assert!(super::engine::is_data_command(cmd), "{cmd} must be a data command");
+        assert!(
+            super::engine::is_data_command(cmd),
+            "{cmd} must be a data command"
+        );
     }
-    for cmd in ["GET", "MGET", "KEYS", "SCAN", "HGETALL", "LRANGE", "SMEMBERS", "ZRANGE", "TTL"] {
+    for cmd in [
+        "GET", "MGET", "KEYS", "SCAN", "HGETALL", "LRANGE", "SMEMBERS", "ZRANGE", "TTL",
+    ] {
         assert!(!is_write(cmd), "{cmd} must NOT be a write");
     }
 }
@@ -430,8 +485,14 @@ mod server {
         let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
 
         assert_eq!(send_recv(&mut sock, &cmd(&["PING"])).await, b"+PONG\r\n");
-        assert_eq!(send_recv(&mut sock, &cmd(&["SET", "k", "hello"])).await, b"+OK\r\n");
-        assert_eq!(send_recv(&mut sock, &cmd(&["GET", "k"])).await, b"$5\r\nhello\r\n");
+        assert_eq!(
+            send_recv(&mut sock, &cmd(&["SET", "k", "hello"])).await,
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            send_recv(&mut sock, &cmd(&["GET", "k"])).await,
+            b"$5\r\nhello\r\n"
+        );
         assert_eq!(send_recv(&mut sock, &cmd(&["DEL", "k"])).await, b":1\r\n");
         store.close();
     }
@@ -456,8 +517,14 @@ mod server {
         let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
 
         assert_eq!(send_recv(&mut sock, &cmd(&["MULTI"])).await, b"+OK\r\n");
-        assert_eq!(send_recv(&mut sock, &cmd(&["SET", "a", "1"])).await, b"+QUEUED\r\n");
-        assert_eq!(send_recv(&mut sock, &cmd(&["INCR", "a"])).await, b"+QUEUED\r\n");
+        assert_eq!(
+            send_recv(&mut sock, &cmd(&["SET", "a", "1"])).await,
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(
+            send_recv(&mut sock, &cmd(&["INCR", "a"])).await,
+            b"+QUEUED\r\n"
+        );
         let reply = send_recv(&mut sock, &cmd(&["EXEC"])).await;
         assert_eq!(reply, b"*2\r\n+OK\r\n:2\r\n");
         store.close();
@@ -470,15 +537,24 @@ mod server {
         let mut c2 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
 
         send_recv(&mut c1, &cmd(&["SET", "balance", "100"])).await;
-        assert_eq!(send_recv(&mut c1, &cmd(&["WATCH", "balance"])).await, b"+OK\r\n");
+        assert_eq!(
+            send_recv(&mut c1, &cmd(&["WATCH", "balance"])).await,
+            b"+OK\r\n"
+        );
         // Intruder writes the watched key.
-        assert_eq!(send_recv(&mut c2, &cmd(&["SET", "balance", "999"])).await, b"+OK\r\n");
+        assert_eq!(
+            send_recv(&mut c2, &cmd(&["SET", "balance", "999"])).await,
+            b"+OK\r\n"
+        );
 
         send_recv(&mut c1, &cmd(&["MULTI"])).await;
         send_recv(&mut c1, &cmd(&["SET", "balance", "50"])).await;
         // EXEC must abort: RESP2 null array.
         assert_eq!(send_recv(&mut c1, &cmd(&["EXEC"])).await, b"*-1\r\n");
-        assert_eq!(send_recv(&mut c1, &cmd(&["GET", "balance"])).await, b"$3\r\n999\r\n");
+        assert_eq!(
+            send_recv(&mut c1, &cmd(&["GET", "balance"])).await,
+            b"$3\r\n999\r\n"
+        );
         store.close();
     }
 
@@ -513,7 +589,10 @@ mod server {
         assert!(denied.starts_with(b"-NOAUTH"));
         let wrong = send_recv(&mut sock, &cmd(&["AUTH", "nope"])).await;
         assert!(wrong.starts_with(b"-WRONGPASS"));
-        assert_eq!(send_recv(&mut sock, &cmd(&["AUTH", "s3cret"])).await, b"+OK\r\n");
+        assert_eq!(
+            send_recv(&mut sock, &cmd(&["AUTH", "s3cret"])).await,
+            b"+OK\r\n"
+        );
         assert_eq!(send_recv(&mut sock, &cmd(&["PING"])).await, b"+PONG\r\n");
         store.close();
     }
@@ -524,7 +603,11 @@ mod server {
         let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
 
         let reply = send_recv(&mut sock, &cmd(&["HELLO", "3"])).await;
-        assert!(reply.starts_with(b"%7\r\n"), "expected RESP3 map, got {:?}", String::from_utf8_lossy(&reply));
+        assert!(
+            reply.starts_with(b"%7\r\n"),
+            "expected RESP3 map, got {:?}",
+            String::from_utf8_lossy(&reply)
+        );
         // RESP3 null is `_`
         let nil = send_recv(&mut sock, &cmd(&["GET", "missing"])).await;
         assert_eq!(nil, b"_\r\n");
@@ -563,7 +646,10 @@ mod sequencer {
 
     fn rcmd(store: &MvccStore, cmd: &str, args: &[&str]) -> Resp {
         let a: Vec<Bytes> = args.iter().map(|s| b(s)).collect();
-        let mut snap = SnapDb { store, ts: store.current_ts() };
+        let mut snap = SnapDb {
+            store,
+            ts: store.current_ts(),
+        };
         dispatch_data(&mut snap, 0, cmd, &a)
     }
 

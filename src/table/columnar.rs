@@ -9,7 +9,6 @@
 ///
 /// Indexes are automatically maintained alongside row writes via apply_delta_batch.
 /// They are optional per-column (controlled by schema.toml `indexed = true`).
-
 use crate::error::Result;
 use dashmap::DashMap;
 use serde_json::Value;
@@ -49,7 +48,7 @@ impl ColumnIndex {
         let field_str = self.value_to_key(field_value);
         self.buckets
             .entry(field_str)
-            .or_insert_with(DashMap::new)
+            .or_default()
             .insert(row_key.to_string(), ());
         Ok(())
     }
@@ -64,7 +63,8 @@ impl ColumnIndex {
             bucket.remove(row_key);
         }
         // Drop the bucket if it's now empty
-        self.buckets.remove_if(&field_str, |_, bucket| bucket.is_empty());
+        self.buckets
+            .remove_if(&field_str, |_, bucket| bucket.is_empty());
         Ok(())
     }
 
@@ -279,15 +279,25 @@ mod tests {
         idx.insert(&Value::String("alive".to_string()), "p2").ok();
         idx.insert(&Value::String("dead".to_string()), "p3").ok();
 
-        assert_eq!(idx.distinct_value_count(), 2);  // alive, dead
-        assert_eq!(idx.indexed_row_count(), 3);      // 2 alive + 1 dead
+        assert_eq!(idx.distinct_value_count(), 2); // alive, dead
+        assert_eq!(idx.indexed_row_count(), 3); // 2 alive + 1 dead
     }
 
     #[test]
     fn test_intersect_results_multiple_columns() {
-        let status_results = vec!["p1".to_string(), "p2".to_string(), "p3".to_string(), "p5".to_string()];
+        let status_results = vec![
+            "p1".to_string(),
+            "p2".to_string(),
+            "p3".to_string(),
+            "p5".to_string(),
+        ];
         let zone_results = vec!["p1".to_string(), "p3".to_string(), "p4".to_string()];
-        let level_results = vec!["p1".to_string(), "p2".to_string(), "p3".to_string(), "p6".to_string()];
+        let level_results = vec![
+            "p1".to_string(),
+            "p2".to_string(),
+            "p3".to_string(),
+            "p6".to_string(),
+        ];
 
         let intersection = intersect_results(&[status_results, zone_results, level_results]);
 

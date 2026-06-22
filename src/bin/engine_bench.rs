@@ -1,3 +1,8 @@
+use std::{
+    sync::{Arc, Barrier},
+    thread,
+    time::Duration,
+};
 /// engine_bench — Raw Voltra engine benchmark (no network, no WAL, no templates)
 ///
 /// Measures:
@@ -11,13 +16,7 @@
 ///   3. Hybrid (50% reads, 50% full RMW, 24 threads)
 ///
 /// Each test runs for 3 seconds then prints results.
-
 use voltra::{reducer::ReducerContext, table::TableStore};
-use std::{
-    sync::{Arc, Barrier},
-    thread,
-    time::{Duration, Instant},
-};
 
 const DURATION: Duration = Duration::from_secs(3);
 const THREAD_COUNT: usize = 24;
@@ -161,7 +160,9 @@ fn rmw_tps(tables: Arc<TableStore>, threads: usize) -> u64 {
                 while !stp.load(std::sync::atomic::Ordering::Relaxed) {
                     let key = format!("row_{}", base + (i % slab_sz));
                     let mut ctx = ReducerContext::new(tbl.clone(), i as u64);
-                    let cur = ctx.get_row("bench", &key).unwrap()
+                    let cur = ctx
+                        .get_row("bench", &key)
+                        .unwrap()
                         .and_then(|v| v["v"].as_i64())
                         .unwrap_or(0);
                     ctx.set_row(
@@ -248,7 +249,9 @@ fn hybrid_tps(tables: Arc<TableStore>, threads: usize) -> (u64, u64) {
             while !stp.load(std::sync::atomic::Ordering::Relaxed) {
                 let key = format!("row_{}", base + (i % slab_sz));
                 let mut ctx = ReducerContext::new(tbl.clone(), i as u64);
-                let cur = ctx.get_row("bench", &key).unwrap()
+                let cur = ctx
+                    .get_row("bench", &key)
+                    .unwrap()
                     .and_then(|v| v["v"].as_i64())
                     .unwrap_or(0);
                 ctx.set_row(
@@ -304,9 +307,16 @@ fn main() {
     let cpus = num_cpus::get();
     println!();
     println!("  Voltra Raw Engine Benchmark");
-    println!("  {} logical CPUs | {} threads for parallel tests | {} sec per test",
-        cpus, THREAD_COUNT, DURATION.as_secs());
-    println!("  Key space: {} distinct rows | No WAL | No network | No templates", KEY_SPACE);
+    println!(
+        "  {} logical CPUs | {} threads for parallel tests | {} sec per test",
+        cpus,
+        THREAD_COUNT,
+        DURATION.as_secs()
+    );
+    println!(
+        "  Key space: {} distinct rows | No WAL | No network | No templates",
+        KEY_SPACE
+    );
 
     // ── 1. SINGLE THREAD ──────────────────────────────────────────────────────
     header("MODE 1 — Single Thread");
@@ -332,7 +342,10 @@ fn main() {
     row("Full TPS  (1 thread):", &fmt(st_rmw));
 
     // ── 2. 24 THREADS PARALLEL ───────────────────────────────────────────────
-    header(&format!("MODE 2 — {} Threads Parallel (Aggregate)", THREAD_COUNT));
+    header(&format!(
+        "MODE 2 — {} Threads Parallel (Aggregate)",
+        THREAD_COUNT
+    ));
 
     print!("  Writes    ... ");
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -353,11 +366,21 @@ fn main() {
     row("Write TPS (aggregate):", &fmt(mt_write));
     row("Read TPS  (aggregate):", &fmt(mt_read));
     row("Full TPS  (aggregate):", &fmt(mt_rmw));
-    row("Write scale vs 1-thread:", &format!("{:.1}x", mt_write as f64 / st_write as f64));
-    row("Read  scale vs 1-thread:", &format!("{:.1}x", mt_read  as f64 / st_read  as f64));
+    row(
+        "Write scale vs 1-thread:",
+        &format!("{:.1}x", mt_write as f64 / st_write as f64),
+    );
+    row(
+        "Read  scale vs 1-thread:",
+        &format!("{:.1}x", mt_read as f64 / st_read as f64),
+    );
 
     // ── 3. HYBRID (12 reader + 12 writer threads) ────────────────────────────
-    header(&format!("MODE 3 — Hybrid ({} reader + {} writer threads)", THREAD_COUNT/2, THREAD_COUNT - THREAD_COUNT/2));
+    header(&format!(
+        "MODE 3 — Hybrid ({} reader + {} writer threads)",
+        THREAD_COUNT / 2,
+        THREAD_COUNT - THREAD_COUNT / 2
+    ));
 
     print!("  Running   ... ");
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -372,10 +395,31 @@ fn main() {
 
     // ── SUMMARY ───────────────────────────────────────────────────────────────
     header("SUMMARY");
-    println!("  {:^18}  {:>12}  {:>12}  {:>12}", "Mode", "Writes/s", "Reads/s", "Full TPS");
+    println!(
+        "  {:^18}  {:>12}  {:>12}  {:>12}",
+        "Mode", "Writes/s", "Reads/s", "Full TPS"
+    );
     println!("  {:─<18}  {:─>12}  {:─>12}  {:─>12}", "", "", "", "");
-    println!("  {:18}  {:>12}  {:>12}  {:>12}", "Single thread", fmt(st_write), fmt(st_read), fmt(st_rmw));
-    println!("  {:18}  {:>12}  {:>12}  {:>12}", "24 threads", fmt(mt_write), fmt(mt_read), fmt(mt_rmw));
-    println!("  {:18}  {:>12}  {:>12}  {:>12}", "Hybrid (12+12)", fmt(hy_write), fmt(hy_read), fmt(hy_total));
+    println!(
+        "  {:18}  {:>12}  {:>12}  {:>12}",
+        "Single thread",
+        fmt(st_write),
+        fmt(st_read),
+        fmt(st_rmw)
+    );
+    println!(
+        "  {:18}  {:>12}  {:>12}  {:>12}",
+        "24 threads",
+        fmt(mt_write),
+        fmt(mt_read),
+        fmt(mt_rmw)
+    );
+    println!(
+        "  {:18}  {:>12}  {:>12}  {:>12}",
+        "Hybrid (12+12)",
+        fmt(hy_write),
+        fmt(hy_read),
+        fmt(hy_total)
+    );
     println!();
 }

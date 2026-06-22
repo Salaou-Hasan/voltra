@@ -68,7 +68,11 @@ impl RedisCtx {
 }
 
 /// Bind and serve. Returns only on listener error.
-pub async fn start_redis_listener(host: String, port: u16, ctx: Arc<RedisCtx>) -> std::io::Result<()> {
+pub async fn start_redis_listener(
+    host: String,
+    port: u16,
+    ctx: Arc<RedisCtx>,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind((host.as_str(), port)).await?;
     log::info!("[redis] RESP listener on {host}:{port}");
     serve(listener, ctx).await
@@ -238,13 +242,21 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
     }
 
     // ── MULTI queueing ───────────────────────────────────────────────────────
-    if conn.multi.is_some() && !matches!(cmd.as_str(), "EXEC" | "DISCARD" | "MULTI" | "WATCH" | "RESET" | "QUIT") {
+    if conn.multi.is_some()
+        && !matches!(
+            cmd.as_str(),
+            "EXEC" | "DISCARD" | "MULTI" | "WATCH" | "RESET" | "QUIT"
+        )
+    {
         if is_data_command(&cmd) || cmd == "PUBLISH" {
             conn.multi.as_mut().unwrap().push((cmd, rest.to_vec()));
             reply_frames.push(Resp::Simple("QUEUED".into()));
         } else {
             conn.multi_error = true;
-            reply_frames.push(Resp::err(format!("ERR unknown command '{}'", cmd.to_lowercase())));
+            reply_frames.push(Resp::err(format!(
+                "ERR unknown command '{}'",
+                cmd.to_lowercase()
+            )));
         }
         for f in reply_frames {
             encode(out, &f, conn.proto);
@@ -258,7 +270,10 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
             if conn.proto == 2 && conn.in_subscribe_mode() {
                 reply_frames.push(Resp::Push(vec![
                     Resp::bulk_str("pong"),
-                    rest.first().cloned().map(Resp::Bulk).unwrap_or(Resp::bulk_str("")),
+                    rest.first()
+                        .cloned()
+                        .map(Resp::Bulk)
+                        .unwrap_or(Resp::bulk_str("")),
                 ]));
             } else if let Some(msg) = rest.first() {
                 reply_frames.push(Resp::Bulk(msg.clone()));
@@ -276,16 +291,14 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
             reply_frames.push(Resp::ok());
             quit = true;
         }
-        "SELECT" => {
-            match rest.first().and_then(parse_i64) {
-                Some(n) if (0..16).contains(&n) => {
-                    conn.db = n as u32;
-                    reply_frames.push(Resp::ok());
-                }
-                Some(_) => reply_frames.push(Resp::err("ERR DB index is out of range")),
-                None => reply_frames.push(Resp::not_int()),
+        "SELECT" => match rest.first().and_then(parse_i64) {
+            Some(n) if (0..16).contains(&n) => {
+                conn.db = n as u32;
+                reply_frames.push(Resp::ok());
             }
-        }
+            Some(_) => reply_frames.push(Resp::err("ERR DB index is out of range")),
+            None => reply_frames.push(Resp::not_int()),
+        },
         "AUTH" => {
             let supplied = match rest.len() {
                 1 => Some((None, lossy(&rest[0]))),
@@ -336,7 +349,11 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
                                 conn.authenticated = true;
                             }
                             None => {}
-                            _ => auth_err = Some("WRONGPASS invalid username-password pair or user is disabled."),
+                            _ => {
+                                auth_err = Some(
+                                    "WRONGPASS invalid username-password pair or user is disabled.",
+                                )
+                            }
                         }
                         i += 3;
                     }
@@ -420,52 +437,56 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
             conn.watch.clear();
             reply_frames.push(Resp::ok());
         }
-        "EXEC" => {
-            match conn.multi.take() {
-                None => reply_frames.push(Resp::err("ERR EXEC without MULTI")),
-                Some(_) if conn.multi_error => {
-                    conn.multi_error = false;
-                    conn.watch.clear();
-                    reply_frames.push(Resp::err("EXECABORT Transaction discarded because of previous errors."));
-                }
-                Some(queued) => {
-                    let watch = std::mem::take(&mut conn.watch);
-                    let watch_ts = conn.watch_ts;
-                    let dbi = conn.db;
-                    let ps = ctx.pubsub.clone();
-                    let (tx, rx) = oneshot::channel();
-                    let sent = ctx
-                        .store
-                        .apply(move |w: &mut Writer| {
-                            for (ns, key) in &watch {
-                                if w.head_ts(*ns, key) > watch_ts {
-                                    return Box::new(move || {
-                                        let _ = tx.send(Resp::NullArray);
-                                    });
-                                }
-                            }
-                            let mut results = Vec::with_capacity(queued.len());
-                            for (c, a) in queued {
-                                if c == "PUBLISH" {
-                                    let n = if a.len() == 2 { ps.publish(&a[0], &a[1]) } else { 0 };
-                                    results.push(Resp::Int(n as i64));
-                                } else {
-                                    results.push(dispatch_data(w, dbi, &c, &a));
-                                }
-                            }
-                            Box::new(move || {
-                                let _ = tx.send(Resp::Array(results));
-                            })
-                        })
-                        .await;
-                    let r = match sent {
-                        Ok(()) => rx.await.unwrap_or(Resp::err("ERR store closed")),
-                        Err(_) => Resp::err("ERR store closed"),
-                    };
-                    reply_frames.push(r);
-                }
+        "EXEC" => match conn.multi.take() {
+            None => reply_frames.push(Resp::err("ERR EXEC without MULTI")),
+            Some(_) if conn.multi_error => {
+                conn.multi_error = false;
+                conn.watch.clear();
+                reply_frames.push(Resp::err(
+                    "EXECABORT Transaction discarded because of previous errors.",
+                ));
             }
-        }
+            Some(queued) => {
+                let watch = std::mem::take(&mut conn.watch);
+                let watch_ts = conn.watch_ts;
+                let dbi = conn.db;
+                let ps = ctx.pubsub.clone();
+                let (tx, rx) = oneshot::channel();
+                let sent = ctx
+                    .store
+                    .apply(move |w: &mut Writer| {
+                        for (ns, key) in &watch {
+                            if w.head_ts(*ns, key) > watch_ts {
+                                return Box::new(move || {
+                                    let _ = tx.send(Resp::NullArray);
+                                });
+                            }
+                        }
+                        let mut results = Vec::with_capacity(queued.len());
+                        for (c, a) in queued {
+                            if c == "PUBLISH" {
+                                let n = if a.len() == 2 {
+                                    ps.publish(&a[0], &a[1])
+                                } else {
+                                    0
+                                };
+                                results.push(Resp::Int(n as i64));
+                            } else {
+                                results.push(dispatch_data(w, dbi, &c, &a));
+                            }
+                        }
+                        Box::new(move || {
+                            let _ = tx.send(Resp::Array(results));
+                        })
+                    })
+                    .await;
+                let r = match sent {
+                    Ok(()) => rx.await.unwrap_or(Resp::err("ERR store closed")),
+                    Err(_) => Resp::err("ERR store closed"),
+                };
+                reply_frames.push(r);
+            }
+        },
         // ── pub/sub ──────────────────────────────────────────────────────────
         "SUBSCRIBE" | "PSUBSCRIBE" => {
             if rest.is_empty() {
@@ -475,14 +496,20 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
                 for ch in rest {
                     if pattern_mode {
                         conn.psubs.insert(ch.clone());
-                        ctx.pubsub.psubscribe(conn.id, ch.clone(), conn.push_tx.clone());
+                        ctx.pubsub
+                            .psubscribe(conn.id, ch.clone(), conn.push_tx.clone());
                     } else {
                         conn.subs.insert(ch.clone());
-                        ctx.pubsub.subscribe(conn.id, ch.clone(), conn.push_tx.clone());
+                        ctx.pubsub
+                            .subscribe(conn.id, ch.clone(), conn.push_tx.clone());
                     }
                     let total = (conn.subs.len() + conn.psubs.len()) as i64;
                     reply_frames.push(Resp::Push(vec![
-                        Resp::bulk_str(if pattern_mode { "psubscribe" } else { "subscribe" }),
+                        Resp::bulk_str(if pattern_mode {
+                            "psubscribe"
+                        } else {
+                            "subscribe"
+                        }),
                         Resp::Bulk(ch.clone()),
                         Resp::Int(total),
                     ]));
@@ -502,7 +529,11 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
             };
             if targets.is_empty() {
                 reply_frames.push(Resp::Push(vec![
-                    Resp::bulk_str(if pattern_mode { "punsubscribe" } else { "unsubscribe" }),
+                    Resp::bulk_str(if pattern_mode {
+                        "punsubscribe"
+                    } else {
+                        "unsubscribe"
+                    }),
                     Resp::Null,
                     Resp::Int((conn.subs.len() + conn.psubs.len()) as i64),
                 ]));
@@ -517,7 +548,11 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
                 }
                 let total = (conn.subs.len() + conn.psubs.len()) as i64;
                 reply_frames.push(Resp::Push(vec![
-                    Resp::bulk_str(if pattern_mode { "punsubscribe" } else { "unsubscribe" }),
+                    Resp::bulk_str(if pattern_mode {
+                        "punsubscribe"
+                    } else {
+                        "unsubscribe"
+                    }),
                     Resp::Bulk(ch),
                     Resp::Int(total),
                 ]));
@@ -564,8 +599,13 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
             if rest.len() != 3 {
                 reply_frames.push(Resp::arity("brpoplpush"));
             } else {
-                let remapped =
-                    vec![rest[0].clone(), rest[1].clone(), Bytes::from_static(b"RIGHT"), Bytes::from_static(b"LEFT"), rest[2].clone()];
+                let remapped = vec![
+                    rest[0].clone(),
+                    rest[1].clone(),
+                    Bytes::from_static(b"RIGHT"),
+                    Bytes::from_static(b"LEFT"),
+                    rest[2].clone(),
+                ];
                 reply_frames.push(blocking_lmove(ctx, conn.db, &remapped).await);
             }
         }
@@ -601,7 +641,9 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
                 "JMAP" | "SET-ACTIVE-EXPIRE" | "QUICKLIST-PACKED-THRESHOLD" | "CHANGE-REPL-ID" => {
                     reply_frames.push(Resp::ok())
                 }
-                _ => reply_frames.push(Resp::err(format!("ERR DEBUG subcommand '{sub}' not supported"))),
+                _ => reply_frames.push(Resp::err(format!(
+                    "ERR DEBUG subcommand '{sub}' not supported"
+                ))),
             }
         }
         "SAVE" | "BGSAVE" | "BGREWRITEAOF" => {
@@ -618,7 +660,9 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
                 (_, Err(e)) => Resp::err(format!("ERR save failed: {e}")),
             });
         }
-        "LASTSAVE" => reply_frames.push(Resp::Int(ctx.last_save_secs.load(Ordering::Relaxed) as i64)),
+        "LASTSAVE" => {
+            reply_frames.push(Resp::Int(ctx.last_save_secs.load(Ordering::Relaxed) as i64))
+        }
         "WAIT" => reply_frames.push(Resp::Int(0)),
         "MEMORY" => {
             let sub = rest.first().map(upper).unwrap_or_default();
@@ -637,11 +681,15 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
                     None => reply_frames.push(Resp::arity("memory|usage")),
                 },
                 "DOCTOR" => reply_frames.push(Resp::bulk_str("Sam, I detected no memory issues.")),
-                _ => reply_frames.push(Resp::err(format!("ERR MEMORY subcommand '{sub}' not supported"))),
+                _ => reply_frames.push(Resp::err(format!(
+                    "ERR MEMORY subcommand '{sub}' not supported"
+                ))),
             }
         }
         "SHUTDOWN" => {
-            reply_frames.push(Resp::err("ERR SHUTDOWN is disabled — Voltra manages this process lifecycle"));
+            reply_frames.push(Resp::err(
+                "ERR SHUTDOWN is disabled — Voltra manages this process lifecycle",
+            ));
         }
         "SLOWLOG" => {
             let sub = rest.first().map(upper).unwrap_or_default();
@@ -656,7 +704,9 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
             let sub = rest.first().map(upper).unwrap_or_default();
             match sub.as_str() {
                 "WHOAMI" => reply_frames.push(Resp::bulk_str("default")),
-                "LIST" => reply_frames.push(Resp::Array(vec![Resp::bulk_str("user default on nopass ~* &* +@all")])),
+                "LIST" => reply_frames.push(Resp::Array(vec![Resp::bulk_str(
+                    "user default on nopass ~* &* +@all",
+                )])),
                 "CAT" => reply_frames.push(Resp::Array(vec![])),
                 _ => reply_frames.push(Resp::err("ERR Unknown ACL subcommand")),
             }
@@ -688,7 +738,10 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
                     Err(_) => Resp::err("ERR store closed"),
                 }
             } else {
-                let mut snap = SnapDb { store: &ctx.store, ts: ctx.store.current_ts() };
+                let mut snap = SnapDb {
+                    store: &ctx.store,
+                    ts: ctx.store.current_ts(),
+                };
                 dispatch_data(&mut snap, conn.db, &cmd, rest)
             };
             reply_frames.push(r);
@@ -732,7 +785,12 @@ async fn blocking_pop(ctx: &Arc<RedisCtx>, dbi: u32, args: &[Bytes], left: bool)
             .apply(move |w: &mut Writer| {
                 let mut result = Resp::NullArray;
                 for k in &keys_try {
-                    let pop = dispatch_data(w, dbi, if left { "LPOP" } else { "RPOP" }, std::slice::from_ref(k));
+                    let pop = dispatch_data(
+                        w,
+                        dbi,
+                        if left { "LPOP" } else { "RPOP" },
+                        std::slice::from_ref(k),
+                    );
                     if let Resp::Bulk(v) = pop {
                         result = Resp::Array(vec![Resp::Bulk(k.clone()), Resp::Bulk(v)]);
                         break;
@@ -810,7 +868,8 @@ async fn blocking_lmove(ctx: &Arc<RedisCtx>, dbi: u32, args: &[Bytes]) -> Resp {
 
 fn info_reply(ctx: &Arc<RedisCtx>, args: &[Bytes]) -> Resp {
     let section = args.first().map(upper).unwrap_or_default();
-    let want = |s: &str| section.is_empty() || section == "ALL" || section == "EVERYTHING" || section == s;
+    let want =
+        |s: &str| section.is_empty() || section == "ALL" || section == "EVERYTHING" || section == s;
     let uptime = ctx.started.elapsed().as_secs();
     let mut s = String::new();
     if want("SERVER") {
@@ -857,7 +916,10 @@ fn info_reply(ctx: &Arc<RedisCtx>, args: &[Bytes]) -> Resp {
         for db in 0..16u32 {
             let n = ctx.store.ns_len(db);
             if n > 0 {
-                s.push_str(&format!("db{db}:keys={n},expires={},avg_ttl=0\r\n", ctx.store.ttl_count(db)));
+                s.push_str(&format!(
+                    "db{db}:keys={n},expires={},avg_ttl=0\r\n",
+                    ctx.store.ttl_count(db)
+                ));
             }
         }
         s.push_str("\r\n");
@@ -884,7 +946,9 @@ fn config_reply(args: &[Bytes]) -> Resp {
             for pat in &args[1..] {
                 for (k, v) in defaults {
                     if util::glob_match(pat, &Bytes::copy_from_slice(k.as_bytes()))
-                        && !pairs.iter().any(|(pk, _)| matches!(pk, Resp::Bulk(b) if b == k.as_bytes()))
+                        && !pairs
+                            .iter()
+                            .any(|(pk, _)| matches!(pk, Resp::Bulk(b) if b == k.as_bytes()))
                     {
                         pairs.push((Resp::bulk_str(*k), Resp::bulk_str(*v)));
                     }
@@ -892,7 +956,7 @@ fn config_reply(args: &[Bytes]) -> Resp {
             }
             Resp::Map(pairs)
         }
-        "SET" => Resp::ok(),       // accepted and ignored — Voltra config governs
+        "SET" => Resp::ok(), // accepted and ignored — Voltra config governs
         "RESETSTAT" => Resp::ok(),
         "REWRITE" => Resp::ok(),
         _ => Resp::err(format!("ERR Unknown CONFIG subcommand '{sub}'")),
@@ -909,7 +973,9 @@ fn client_reply(conn: &mut Conn, args: &[Bytes]) -> Resp {
                 conn.name = lossy(n);
                 Resp::ok()
             }
-            Some(_) => Resp::err("ERR Client names cannot contain spaces, newlines or special characters."),
+            Some(_) => {
+                Resp::err("ERR Client names cannot contain spaces, newlines or special characters.")
+            }
             None => Resp::arity("client|setname"),
         },
         "SETINFO" => Resp::ok(), // lib-name / lib-ver from client SDKs

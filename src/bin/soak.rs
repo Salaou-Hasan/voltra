@@ -20,13 +20,13 @@
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use hdrhistogram::Histogram;
-use voltra::network::message::{ClientMessage, ReducerCall};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
+use voltra::network::message::{ClientMessage, ReducerCall};
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "voltra-soak", about = "Voltra sustained-load soak test")]
@@ -78,7 +78,10 @@ struct Args {
 }
 
 #[derive(Serialize)]
-struct IncArgs { name: String, delta: i32 }
+struct IncArgs {
+    name: String,
+    delta: i32,
+}
 
 #[derive(Debug, Clone)]
 struct HealthSample {
@@ -93,14 +96,16 @@ async fn sample_health(metrics_url: &str) -> Option<HealthSample> {
     let resp = reqwest::Client::new()
         .get(format!("{}/healthz", metrics_url))
         .timeout(Duration::from_secs(5))
-        .send().await.ok()?;
+        .send()
+        .await
+        .ok()?;
     let v: serde_json::Value = resp.json().await.ok()?;
     Some(HealthSample {
         memory_bytes: v["memory_usage_bytes"].as_u64().unwrap_or(0),
-        queue_depth:  v["reducer_queue_depth"].as_u64().unwrap_or(0),
-        wal_bytes:    v["wal_file_size_bytes"].as_u64().unwrap_or(0),
-        total_rows:   v["total_rows"].as_u64().unwrap_or(0),
-        connections:  v["active_connections"].as_u64().unwrap_or(0),
+        queue_depth: v["reducer_queue_depth"].as_u64().unwrap_or(0),
+        wal_bytes: v["wal_file_size_bytes"].as_u64().unwrap_or(0),
+        total_rows: v["total_rows"].as_u64().unwrap_or(0),
+        connections: v["active_connections"].as_u64().unwrap_or(0),
     })
 }
 
@@ -116,7 +121,8 @@ async fn soak_client(
     let inc_args = rmp_serde::to_vec(&IncArgs {
         name: format!("soak_counter_{}", client_id % 16),
         delta: 1,
-    }).unwrap_or_default();
+    })
+    .unwrap_or_default();
 
     let tick = if args.rate_per_client > 0 {
         Some(Duration::from_micros(1_000_000 / args.rate_per_client))
@@ -166,7 +172,10 @@ async fn soak_client(
             });
             let frame = match rmp_serde::to_vec(&msg) {
                 Ok(b) => b,
-                Err(_) => { errors.fetch_add(1, Ordering::Relaxed); continue; }
+                Err(_) => {
+                    errors.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
             };
 
             let t0 = Instant::now();
@@ -179,7 +188,9 @@ async fn soak_client(
                 Ok(Some(Ok(Message::Binary(_) | Message::Text(_)))) => {
                     success.fetch_add(1, Ordering::Relaxed);
                     let us = t0.elapsed().as_micros() as u64;
-                    if let Ok(mut h) = hist.lock() { let _ = h.record(us); }
+                    if let Ok(mut h) = hist.lock() {
+                        let _ = h.record(us);
+                    }
                 }
                 Ok(Some(Ok(_))) => {} // ping/pong/close frames — ignore
                 _ => {
@@ -191,7 +202,9 @@ async fn soak_client(
 
             if let Some(t) = tick {
                 let spent = t0.elapsed();
-                if spent < t { tokio::time::sleep(t - spent).await; }
+                if spent < t {
+                    tokio::time::sleep(t - spent).await;
+                }
             }
         }
         let _ = ws.close(None).await;
@@ -207,18 +220,28 @@ async fn main() {
     let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
     let start = Instant::now();
 
-    println!("voltra-soak: {} clients × {} calls/s for {}s against {}",
-        args.clients, args.rate_per_client, args.duration_secs, args.url);
+    println!(
+        "voltra-soak: {} clients × {} calls/s for {}s against {}",
+        args.clients, args.rate_per_client, args.duration_secs, args.url
+    );
 
     let success = Arc::new(AtomicU64::new(0));
-    let errors  = Arc::new(AtomicU64::new(0));
+    let errors = Arc::new(AtomicU64::new(0));
     let reconnects = Arc::new(AtomicUsize::new(0));
-    let hist = Arc::new(Mutex::new(Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap()));
+    let hist = Arc::new(Mutex::new(
+        Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap(),
+    ));
 
     let mut handles = Vec::new();
     for cid in 0..args.clients {
         handles.push(tokio::spawn(soak_client(
-            cid, args.clone(), success.clone(), errors.clone(), hist.clone(), deadline, reconnects.clone(),
+            cid,
+            args.clone(),
+            success.clone(),
+            errors.clone(),
+            hist.clone(),
+            deadline,
+            reconnects.clone(),
         )));
         // Stagger connections to avoid a thundering herd on connect.
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -236,7 +259,8 @@ async fn main() {
         let s_now = success.load(Ordering::Relaxed);
         let e_now = errors.load(Ordering::Relaxed);
         let window_tps = (s_now - last_success) as f64 / last_t.elapsed().as_secs_f64();
-        last_success = s_now; last_t = Instant::now();
+        last_success = s_now;
+        last_t = Instant::now();
 
         let health = sample_health(&args.metrics_url).await;
         match &health {
@@ -245,19 +269,32 @@ async fn main() {
                     elapsed, s_now, e_now, window_tps,
                     h.memory_bytes as f64 / 1e6, h.queue_depth,
                     h.wal_bytes as f64 / 1e6, h.total_rows);
-                csv_lines.push(format!("{},{},{},{:.0},{},{},{},{},{}",
-                    elapsed, s_now, e_now, window_tps,
-                    h.memory_bytes, h.queue_depth, h.wal_bytes, h.total_rows, h.connections));
+                csv_lines.push(format!(
+                    "{},{},{},{:.0},{},{},{},{},{}",
+                    elapsed,
+                    s_now,
+                    e_now,
+                    window_tps,
+                    h.memory_bytes,
+                    h.queue_depth,
+                    h.wal_bytes,
+                    h.total_rows,
+                    h.connections
+                ));
                 samples.push(h.clone());
             }
             None => {
-                println!("[{:>6}s] ok={:>10} err={:>6} tps={:>8.0} (healthz UNREACHABLE)",
-                    elapsed, s_now, e_now, window_tps);
+                println!(
+                    "[{:>6}s] ok={:>10} err={:>6} tps={:>8.0} (healthz UNREACHABLE)",
+                    elapsed, s_now, e_now, window_tps
+                );
             }
         }
     }
 
-    for h in handles { let _ = h.await; }
+    for h in handles {
+        let _ = h.await;
+    }
 
     // ── Final report ──────────────────────────────────────────────────────────
     let total_s = success.load(Ordering::Relaxed);
@@ -265,18 +302,35 @@ async fn main() {
     let elapsed = start.elapsed();
     let error_pct = if total_s + total_e > 0 {
         100.0 * total_e as f64 / (total_s + total_e) as f64
-    } else { 100.0 };
+    } else {
+        100.0
+    };
 
     println!("\n══════════════ SOAK REPORT ══════════════");
     println!("Duration:        {:.0}s", elapsed.as_secs_f64());
-    println!("Total calls:     {} ok, {} errors ({:.3}% error rate)", total_s, total_e, error_pct);
-    println!("Average TPS:     {:.0}", total_s as f64 / elapsed.as_secs_f64());
+    println!(
+        "Total calls:     {} ok, {} errors ({:.3}% error rate)",
+        total_s, total_e, error_pct
+    );
+    println!(
+        "Average TPS:     {:.0}",
+        total_s as f64 / elapsed.as_secs_f64()
+    );
     println!("Reconnects:      {}", reconnects.load(Ordering::Relaxed));
     if let Ok(h) = hist.lock() {
-        if h.len() > 0 {
-            println!("Latency p50:     {:.2} ms", h.value_at_quantile(0.50) as f64 / 1000.0);
-            println!("Latency p99:     {:.2} ms", h.value_at_quantile(0.99) as f64 / 1000.0);
-            println!("Latency p99.9:   {:.2} ms", h.value_at_quantile(0.999) as f64 / 1000.0);
+        if !h.is_empty() {
+            println!(
+                "Latency p50:     {:.2} ms",
+                h.value_at_quantile(0.50) as f64 / 1000.0
+            );
+            println!(
+                "Latency p99:     {:.2} ms",
+                h.value_at_quantile(0.99) as f64 / 1000.0
+            );
+            println!(
+                "Latency p99.9:   {:.2} ms",
+                h.value_at_quantile(0.999) as f64 / 1000.0
+            );
             println!("Latency max:     {:.2} ms", h.max() as f64 / 1000.0);
         }
     }
@@ -287,18 +341,27 @@ async fn main() {
         if first.memory_bytes > 0 {
             let growth_pct = 100.0 * (last.memory_bytes as f64 - first.memory_bytes as f64)
                 / first.memory_bytes as f64;
-            println!("Memory first→last: {:.1}MB → {:.1}MB ({:+.1}%)",
-                first.memory_bytes as f64 / 1e6, last.memory_bytes as f64 / 1e6, growth_pct);
+            println!(
+                "Memory first→last: {:.1}MB → {:.1}MB ({:+.1}%)",
+                first.memory_bytes as f64 / 1e6,
+                last.memory_bytes as f64 / 1e6,
+                growth_pct
+            );
             if growth_pct > args.max_memory_growth_pct {
-                println!("FAIL: memory grew {:.1}% (threshold {:.1}%) — possible leak",
-                    growth_pct, args.max_memory_growth_pct);
+                println!(
+                    "FAIL: memory grew {:.1}% (threshold {:.1}%) — possible leak",
+                    growth_pct, args.max_memory_growth_pct
+                );
                 failed = true;
             }
         }
     }
 
     if error_pct > args.max_error_pct {
-        println!("FAIL: error rate {:.3}% exceeds threshold {:.1}%", error_pct, args.max_error_pct);
+        println!(
+            "FAIL: error rate {:.3}% exceeds threshold {:.1}%",
+            error_pct, args.max_error_pct
+        );
         failed = true;
     }
 

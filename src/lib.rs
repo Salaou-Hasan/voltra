@@ -1,49 +1,49 @@
 pub mod auth;
 pub mod auth_service;
 pub mod backup;
+pub mod cli;
 pub mod cluster;
 pub mod compression;
-pub mod dsl;
-pub mod metrics;
-pub mod tenant;
-pub mod cli;
 pub mod config;
+pub mod dsl;
 pub mod error;
 pub mod leaderboard;
+pub mod metrics;
 pub mod migrations;
 pub mod mvcc;
 pub mod network;
-pub mod redis;
 pub mod persistence;
 pub mod persistent;
 pub mod pg;
 pub mod presence;
+pub mod redis;
 pub mod reducer;
 pub mod replication;
 pub mod runtime;
-pub mod stat_sync;
 pub mod schema;
+pub mod server;
 pub mod sql;
+pub mod stat_sync;
 pub mod subscriptions;
 pub mod table;
+pub mod tenant;
 pub mod ttl;
-pub mod wal;
-pub mod server;
 pub mod updater;
+pub mod wal;
 pub mod worker_pool;
 
-pub use error::{VoltraError, Result};
-pub use tenant::{TenantRegistry, TenantInfo, physical_table, logical_table};
+pub use error::{Result, VoltraError};
 pub use network::{
     start_listener, ClientMessage, PendingCall, ReducerCall, ReducerResponse, ServerMessage,
     SubscriptionDiff,
 };
-pub use server::{run_server, run_server_blocking, run_server_with_handle, ServerHandle};
 pub use reducer::{increment_reducer, IncrementResult, ReducerContext, ReducerRegistry};
-pub use schema::{SchemaRegistry, TableSchema, ColumnDef, ColumnType};
+pub use schema::{ColumnDef, ColumnType, SchemaRegistry, TableSchema};
+pub use server::{run_server, run_server_blocking, run_server_with_handle, ServerHandle};
 pub use sql::{Executor as SqlExecutor, QueryResult as SqlQueryResult};
 pub use subscriptions::{ClientId, SubscriptionManager};
 pub use table::TableStore;
+pub use tenant::{logical_table, physical_table, TenantInfo, TenantRegistry};
 pub use wal::{SnapshotMeta, WalEntry, WalReader, WalWriter};
 
 // ── Memory reclamation ──────────────────────────────────────────────────────
@@ -73,7 +73,9 @@ pub fn spawn_memory_reclaimer(interval_secs: u64) {
             // SAFETY: mi_collect is a thread-safe, side-effect-only call into the
             // mimalloc runtime. `force = true` reclaims abandoned segments and
             // decommits cached pages back to the OS.
-            unsafe { libmimalloc_sys::mi_collect(true); }
+            unsafe {
+                libmimalloc_sys::mi_collect(true);
+            }
         }
     });
 }

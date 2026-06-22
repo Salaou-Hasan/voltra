@@ -16,7 +16,10 @@ pub(crate) async fn cmd_drain(metrics_url: &str, enable: bool) -> Result<()> {
         client.post(&url).send().await
     } else {
         client.delete(&url).send().await
-    }.map_err(|e| voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e)))?;
+    }
+    .map_err(|e| {
+        voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e))
+    })?;
 
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
     let draining = body["draining"].as_bool().unwrap_or(enable);
@@ -24,12 +27,21 @@ pub(crate) async fn cmd_drain(metrics_url: &str, enable: bool) -> Result<()> {
     let msg = body["message"].as_str().unwrap_or("");
 
     if draining {
-        println!("⚠  Server is DRAINING — {} active connection(s) still live", conns);
+        println!(
+            "⚠  Server is DRAINING — {} active connection(s) still live",
+            conns
+        );
         println!("   {}", msg);
-        println!("   Poll GET {}/admin/api/drain until active_connections=0,", metrics_url);
+        println!(
+            "   Poll GET {}/admin/api/drain until active_connections=0,",
+            metrics_url
+        );
         println!("   then restart / apply fix, then: voltra undrain");
     } else {
-        println!("✓  Drain disabled — server accepting connections normally ({} active)", conns);
+        println!(
+            "✓  Drain disabled — server accepting connections normally ({} active)",
+            conns
+        );
         println!("   {}", msg);
     }
     Ok(())
@@ -37,9 +49,13 @@ pub(crate) async fn cmd_drain(metrics_url: &str, enable: bool) -> Result<()> {
 
 pub(crate) async fn cmd_backup(metrics_url: &str) -> Result<()> {
     let url = format!("{}/backup", metrics_url);
-    let resp = reqwest::Client::new().post(&url).send().await.map_err(|e| {
-        voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e))
-    })?;
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| {
+            voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e))
+        })?;
     let status = resp.status();
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
     if status.is_success() {
@@ -61,7 +77,9 @@ pub(crate) fn cmd_list_backups(dir: &Path) {
     }
     println!("{:<24} {:>12} {:>10}  PATH", "CREATED", "SEQ", "ROWS");
     for (path, ts, seq) in &backups {
-        let rows = voltra::backup::read_meta(path).map(|m| m.row_count).unwrap_or(0);
+        let rows = voltra::backup::read_meta(path)
+            .map(|m| m.row_count)
+            .unwrap_or(0);
         let dt = chrono_like_fmt(*ts);
         println!("{:<24} {:>12} {:>10}  {}", dt, seq, rows, path.display());
     }
@@ -73,7 +91,13 @@ pub(crate) fn chrono_like_fmt(unix_secs: u64) -> String {
         match m {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
             4 | 6 | 9 | 11 => 30,
-            _ => if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 29 } else { 28 },
+            _ => {
+                if (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400) {
+                    29
+                } else {
+                    28
+                }
+            }
         }
     };
     let secs = unix_secs % 86_400;
@@ -81,26 +105,52 @@ pub(crate) fn chrono_like_fmt(unix_secs: u64) -> String {
     let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
     let mut year = 1970u64;
     loop {
-        let yd = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
-        if days < yd { break; }
-        days -= yd; year += 1;
+        let yd =
+            if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) {
+                366
+            } else {
+                365
+            };
+        if days < yd {
+            break;
+        }
+        days -= yd;
+        year += 1;
     }
     let mut month = 1u64;
     loop {
         let md = days_in_month(year, month);
-        if days < md { break; }
-        days -= md; month += 1;
+        if days < md {
+            break;
+        }
+        days -= md;
+        month += 1;
     }
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", year, month, days + 1, h, m, s)
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        year,
+        month,
+        days + 1,
+        h,
+        m,
+        s
+    )
 }
 
 pub(crate) async fn cmd_promote(metrics_url: &str) -> Result<()> {
     let url = format!("{}/replication/promote", metrics_url);
-    let resp = reqwest::Client::new().post(&url).send().await.map_err(|e| {
-        voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e))
-    })?;
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| {
+            voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e))
+        })?;
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
-    println!("{}", serde_json::to_string_pretty(&body).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&body).unwrap_or_default()
+    );
     Ok(())
 }
 
@@ -109,9 +159,13 @@ pub(crate) async fn cmd_generate(metrics_url: &str, lang: &str, out: &Path) -> R
     let url = format!("{}/schema", metrics_url);
     let schema: serde_json::Value = reqwest::Client::new()
         .get(&url)
-        .send().await
-        .map_err(|e| voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e)))?
-        .json().await
+        .send()
+        .await
+        .map_err(|e| {
+            voltra::error::VoltraError::network_error(format!("Cannot reach {}: {}", url, e))
+        })?
+        .json()
+        .await
         .map_err(|e| voltra::error::VoltraError::internal(format!("Invalid schema JSON: {}", e)))?;
 
     std::fs::create_dir_all(out).map_err(|e| {
@@ -130,9 +184,10 @@ pub(crate) async fn cmd_generate(metrics_url: &str, lang: &str, out: &Path) -> R
             generate_gdscript(&tables, &reducers, version, out)?;
         }
         other => {
-            return Err(voltra::error::VoltraError::invalid_argument(
-                format!("Unknown --lang '{}'. Supported: typescript, gdscript", other)
-            ));
+            return Err(voltra::error::VoltraError::invalid_argument(format!(
+                "Unknown --lang '{}'. Supported: typescript, gdscript",
+                other
+            )));
         }
     }
     Ok(())
@@ -161,13 +216,15 @@ pub(crate) fn col_type_to_gd(type_str: &str) -> &'static str {
 }
 
 pub(crate) fn snake_to_pascal(s: &str) -> String {
-    s.split('_').map(|w| {
-        let mut c = w.chars();
-        match c.next() {
-            None => String::new(),
-            Some(f) => f.to_uppercase().to_string() + c.as_str(),
-        }
-    }).collect()
+    s.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().to_string() + c.as_str(),
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn generate_typescript(
@@ -205,10 +262,15 @@ pub(crate) fn generate_typescript(
         version
     );
     for r in reducers {
-        let name = match r.as_str() { Some(s) => s, None => continue };
+        let name = match r.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
         // camelCase = PascalCase with a lowercased first character.
         let mut camel = snake_to_pascal(name);
-        if let Some(f) = camel.get_mut(0..1) { f.make_ascii_lowercase(); }
+        if let Some(f) = camel.get_mut(0..1) {
+            f.make_ascii_lowercase();
+        }
         reducers_ts.push_str(&format!(
             "  {}: (db: VoltraClient, ...args: unknown[]) => db.call('{}', args),\n",
             camel, name
@@ -218,8 +280,16 @@ pub(crate) fn generate_typescript(
 
     write_generated(out, "tables.ts", &tables_ts)?;
     write_generated(out, "reducers.ts", &reducers_ts)?;
-    println!("TypeScript: wrote {}/tables.ts and {}/reducers.ts", out.display(), out.display());
-    println!("  {} table type(s), {} reducer(s)", tables.len(), reducers.len());
+    println!(
+        "TypeScript: wrote {}/tables.ts and {}/reducers.ts",
+        out.display(),
+        out.display()
+    );
+    println!(
+        "  {} table type(s), {} reducer(s)",
+        tables.len(),
+        reducers.len()
+    );
     Ok(())
 }
 
@@ -260,7 +330,10 @@ pub(crate) fn generate_gdscript(
         version
     );
     for r in reducers {
-        let name = match r.as_str() { Some(s) => s, None => continue };
+        let name = match r.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
         reducers_gd.push_str(&format!(
             "static func {}(db, args: Array = []):\n\treturn await db.call_reducer(\"{}\", args)\n\n",
             name, name
@@ -269,8 +342,16 @@ pub(crate) fn generate_gdscript(
 
     write_generated(out, "tables.gd", &tables_gd)?;
     write_generated(out, "reducers.gd", &reducers_gd)?;
-    println!("GDScript: wrote {}/tables.gd and {}/reducers.gd", out.display(), out.display());
-    println!("  {} table class(es), {} reducer(s)", tables.len(), reducers.len());
+    println!(
+        "GDScript: wrote {}/tables.gd and {}/reducers.gd",
+        out.display(),
+        out.display()
+    );
+    println!(
+        "  {} table class(es), {} reducer(s)",
+        tables.len(),
+        reducers.len()
+    );
     Ok(())
 }
 
@@ -291,16 +372,19 @@ pub(crate) async fn cmd_cluster_status(metrics_url: &str) -> Result<()> {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         eprintln!("Server returned HTTP {}: {}", status, body);
-        return Err(voltra::error::VoltraError::network_error(format!("HTTP {}", status)));
+        return Err(voltra::error::VoltraError::network_error(format!(
+            "HTTP {}",
+            status
+        )));
     }
 
     let data: serde_json::Value = resp.json().await.map_err(|e| {
         voltra::error::VoltraError::internal(format!("Invalid JSON response: {}", e))
     })?;
 
-    let my_shard    = data["my_shard_id"].as_u64().unwrap_or(0);
+    let my_shard = data["my_shard_id"].as_u64().unwrap_or(0);
     let shard_count = data["shard_count"].as_u64().unwrap_or(1);
-    let enabled     = data["cluster_enabled"].as_bool().unwrap_or(false);
+    let enabled = data["cluster_enabled"].as_bool().unwrap_or(false);
 
     println!();
     if !enabled {
@@ -328,13 +412,17 @@ pub(crate) async fn cmd_cluster_status(metrics_url: &str) -> Result<()> {
             println!("  No peers registered.");
         }
         Some(peers) => {
-            println!("  {:<8}  {:<38}  {}", "Shard", "Metrics URL", "Health");
+            println!("  {:<8}  {:<38}  Health", "Shard", "Metrics URL");
             println!("  {}", "─".repeat(62));
             for peer in peers {
-                let shard_id   = peer["shard_id"].as_u64().unwrap_or(0);
-                let url_str    = peer["metrics_url"].as_str().unwrap_or("?");
-                let healthy    = peer["healthy"].as_bool().unwrap_or(false);
-                let health_str = if healthy { "✓ healthy" } else { "✗ unreachable" };
+                let shard_id = peer["shard_id"].as_u64().unwrap_or(0);
+                let url_str = peer["metrics_url"].as_str().unwrap_or("?");
+                let healthy = peer["healthy"].as_bool().unwrap_or(false);
+                let health_str = if healthy {
+                    "✓ healthy"
+                } else {
+                    "✗ unreachable"
+                };
                 println!("  {:<8}  {:<38}  {}", shard_id, url_str, health_str);
             }
         }
@@ -350,19 +438,26 @@ pub(crate) async fn cmd_cluster_status(metrics_url: &str) -> Result<()> {
 
 pub(crate) fn is_game_project(cwd: &Path) -> Option<String> {
     let cargo_path = cwd.join("Cargo.toml");
-    if !cargo_path.exists() { return None; }
+    if !cargo_path.exists() {
+        return None;
+    }
     let content = std::fs::read_to_string(&cargo_path).ok()?;
     // Must DEPEND on the `voltra` crate (dependency key exactly "voltra"),
     // not merely contain the substring — otherwise sibling crates like
     // voltra-console (which depend on wry/tao, not voltra) get misdetected.
-    if content.contains("name = \"voltra\"") { return None; } // the engine itself
+    if content.contains("name = \"voltra\"") {
+        return None;
+    } // the engine itself
     let depends_on_voltra = content.lines().any(|l| {
         let t = l.trim_start();
         t.starts_with("voltra ") || t.starts_with("voltra=") || t.starts_with("voltra.")
     });
-    if !depends_on_voltra { return None; }
+    if !depends_on_voltra {
+        return None;
+    }
     // Extract package name
-    content.lines()
+    content
+        .lines()
         .find(|l| l.trim_start().starts_with("name") && l.contains('"'))
         .and_then(|l| l.split('"').nth(1))
         .map(|s| s.to_string())
@@ -388,8 +483,12 @@ pub(crate) fn print_banner() {
     ];
     // cyan → blue → violet, one stop per row
     const COLORS: [(u8, u8, u8); 6] = [
-        (34, 211, 238), (44, 178, 241), (54, 146, 244),
-        (72, 116, 244), (98, 87, 241), (124, 58, 237),
+        (34, 211, 238),
+        (44, 178, 241),
+        (54, 146, 244),
+        (72, 116, 244),
+        (98, 87, 241),
+        (124, 58, 237),
     ];
     let color = std::env::var_os("NO_COLOR").is_none();
 
@@ -402,7 +501,10 @@ pub(crate) fn print_banner() {
             println!("   {line}");
         }
     }
-    let tag = format!("the in-memory database for games · v{}", env!("CARGO_PKG_VERSION"));
+    let tag = format!(
+        "the in-memory database for games · v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     if color {
         println!("   \x1b[38;2;138;147;166m{tag}\x1b[0m\n");
     } else {
@@ -420,7 +522,9 @@ pub(crate) fn cmd_start_project(cwd: &Path, pkg_name: &str) -> Result<()> {
         .map_err(|e| voltra::error::VoltraError::internal(format!("cargo build: {e}")))?;
 
     if !build.success() {
-        return Err(voltra::error::VoltraError::internal("cargo build --release failed"));
+        return Err(voltra::error::VoltraError::internal(
+            "cargo build --release failed",
+        ));
     }
 
     let bin_name = if cfg!(windows) {
@@ -430,9 +534,10 @@ pub(crate) fn cmd_start_project(cwd: &Path, pkg_name: &str) -> Result<()> {
     };
     let bin = cwd.join("target").join("release").join(&bin_name);
     if !bin.exists() {
-        return Err(voltra::error::VoltraError::internal(
-            format!("Binary not found at {}", bin.display()),
-        ));
+        return Err(voltra::error::VoltraError::internal(format!(
+            "Binary not found at {}",
+            bin.display()
+        )));
     }
 
     println!("[voltra] Starting {}…", pkg_name);
@@ -445,7 +550,9 @@ pub(crate) fn cmd_start_project(cwd: &Path, pkg_name: &str) -> Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(voltra::error::VoltraError::internal(format!("{pkg_name} exited with non-zero status")))
+        Err(voltra::error::VoltraError::internal(format!(
+            "{pkg_name} exited with non-zero status"
+        )))
     }
 }
 
@@ -492,7 +599,8 @@ mod start_detection_tests {
     use std::fs;
 
     fn proj(label: &str, cargo: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("voltra_isgame_{}_{}", label, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("voltra_isgame_{}_{}", label, std::process::id()));
         let _ = fs::create_dir_all(&dir);
         fs::write(dir.join("Cargo.toml"), cargo).unwrap();
         dir
@@ -508,14 +616,20 @@ mod start_detection_tests {
 
     #[test]
     fn game_with_voltra_dep_is_detected() {
-        let d = proj("game", "[package]\nname = \"mygame\"\n\n[dependencies]\nvoltra = { path = \"../voltra\" }\n");
+        let d = proj(
+            "game",
+            "[package]\nname = \"mygame\"\n\n[dependencies]\nvoltra = { path = \"../voltra\" }\n",
+        );
         assert_eq!(is_game_project(&d).as_deref(), Some("mygame"));
         let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
     fn engine_itself_is_not_a_game_project() {
-        let d = proj("engine", "[package]\nname = \"voltra\"\nversion = \"2.0.3\"\n");
+        let d = proj(
+            "engine",
+            "[package]\nname = \"voltra\"\nversion = \"2.0.3\"\n",
+        );
         assert_eq!(is_game_project(&d), None);
         let _ = fs::remove_dir_all(&d);
     }

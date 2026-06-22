@@ -9,9 +9,9 @@
 // Clients use GET /cluster/lobby-route?lobby_id=X to discover which region
 // hosts a given lobby, then reconnect directly to that region's ws_url.
 
-use std::env;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use std::env;
 
 /// A single named region in the cluster.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -48,7 +48,9 @@ impl RegionRegistry {
         if let Ok(raw) = env::var("VOLTRA_REGIONS") {
             for entry in raw.split(',') {
                 let entry = entry.trim();
-                if entry.is_empty() { continue; }
+                if entry.is_empty() {
+                    continue;
+                }
                 // Format: id=ws_url|metrics_url
                 if let Some((id, urls)) = entry.split_once('=') {
                     let id = id.trim().to_string();
@@ -57,7 +59,14 @@ impl RegionRegistry {
                     } else {
                         (urls.trim().to_string(), String::new())
                     };
-                    regions.insert(id.clone(), ClusterRegion { id, ws_url, metrics_url });
+                    regions.insert(
+                        id.clone(),
+                        ClusterRegion {
+                            id,
+                            ws_url,
+                            metrics_url,
+                        },
+                    );
                 }
             }
         }
@@ -114,7 +123,9 @@ mod tests {
         let regions: DashMap<String, ClusterRegion> = DashMap::new();
         for entry in regions_str.split(',') {
             let entry = entry.trim();
-            if entry.is_empty() { continue; }
+            if entry.is_empty() {
+                continue;
+            }
             if let Some((id, urls)) = entry.split_once('=') {
                 let id = id.trim().to_string();
                 let (ws_url, metrics_url) = if let Some((w, m)) = urls.split_once('|') {
@@ -122,10 +133,20 @@ mod tests {
                 } else {
                     (urls.trim().to_string(), String::new())
                 };
-                regions.insert(id.clone(), ClusterRegion { id, ws_url, metrics_url });
+                regions.insert(
+                    id.clone(),
+                    ClusterRegion {
+                        id,
+                        ws_url,
+                        metrics_url,
+                    },
+                );
             }
         }
-        RegionRegistry { my_region: my.to_string(), regions }
+        RegionRegistry {
+            my_region: my.to_string(),
+            regions,
+        }
     }
 
     #[test]
@@ -136,13 +157,19 @@ mod tests {
 
     #[test]
     fn two_regions_is_multi() {
-        let r = make_registry("europe", "europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001");
+        let r = make_registry(
+            "europe",
+            "europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001",
+        );
         assert!(r.is_multi_region());
     }
 
     #[test]
     fn peer_regions_excludes_self() {
-        let r = make_registry("europe", "europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001");
+        let r = make_registry(
+            "europe",
+            "europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001",
+        );
         let peers = r.peer_regions();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].id, "asia");
@@ -150,7 +177,10 @@ mod tests {
 
     #[test]
     fn ws_url_lookup() {
-        let r = make_registry("europe", "europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001");
+        let r = make_registry(
+            "europe",
+            "europe=ws://eu:3000|http://eu:3001,asia=ws://as:3000|http://as:3001",
+        );
         assert_eq!(r.ws_url_for("asia"), Some("ws://as:3000".to_string()));
         assert_eq!(r.ws_url_for("africa"), None);
     }
@@ -158,7 +188,10 @@ mod tests {
     #[test]
     fn metrics_url_lookup() {
         let r = make_registry("europe", "europe=ws://eu:3000|http://eu:3001");
-        assert_eq!(r.metrics_url_for("europe"), Some("http://eu:3001".to_string()));
+        assert_eq!(
+            r.metrics_url_for("europe"),
+            Some("http://eu:3001".to_string())
+        );
     }
 
     #[test]

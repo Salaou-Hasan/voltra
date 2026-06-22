@@ -33,24 +33,32 @@ fn latest_tag() -> Option<String> {
         .call()
         .ok()?;
     let json: serde_json::Value = resp.into_json().ok()?;
-    json["tag_name"].as_str().map(|s| s.trim_start_matches('v').to_string())
+    json["tag_name"]
+        .as_str()
+        .map(|s| s.trim_start_matches('v').to_string())
 }
 
 fn version_newer(latest: &str) -> bool {
     fn parse(v: &str) -> (u64, u64, u64) {
         let parts: Vec<u64> = v.split('.').filter_map(|p| p.parse().ok()).collect();
-        (parts.first().copied().unwrap_or(0),
-         parts.get(1).copied().unwrap_or(0),
-         parts.get(2).copied().unwrap_or(0))
+        (
+            parts.first().copied().unwrap_or(0),
+            parts.get(1).copied().unwrap_or(0),
+            parts.get(2).copied().unwrap_or(0),
+        )
     }
     parse(latest) > parse(CURRENT_VERSION)
 }
 
 fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
     let asset = asset_name(bin);
-    let url   = format!("https://github.com/{RELEASES_REPO}/releases/download/v{tag}/{asset}");
-    let dest  = install_dir().join(if cfg!(windows) { format!("{bin}.exe") } else { bin.to_string() });
-    let tmp   = dest.with_extension("tmp");
+    let url = format!("https://github.com/{RELEASES_REPO}/releases/download/v{tag}/{asset}");
+    let dest = install_dir().join(if cfg!(windows) {
+        format!("{bin}.exe")
+    } else {
+        bin.to_string()
+    });
+    let tmp = dest.with_extension("tmp");
 
     println!("  Downloading {asset} …");
 
@@ -81,8 +89,9 @@ fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
     #[cfg(windows)]
     windows_replace(&tmp, &dest)?;
     #[cfg(not(windows))]
-    fs::rename(&tmp, &dest)
-        .map_err(|e| crate::error::VoltraError::internal(format!("replace {}: {e}", dest.display())))?;
+    fs::rename(&tmp, &dest).map_err(|e| {
+        crate::error::VoltraError::internal(format!("replace {}: {e}", dest.display()))
+    })?;
 
     println!("    ✓ {}", dest.display());
     Ok(())
@@ -107,9 +116,9 @@ fn windows_replace(tmp: &std::path::Path, dest: &std::path::Path) -> crate::erro
     let _ = fs::remove_file(&old); // clear stale .old from a previous run
     let tier1 = (|| -> std::io::Result<()> {
         if dest.exists() {
-            fs::rename(dest, &old)?;   // rename running exe (allowed by Windows)
+            fs::rename(dest, &old)?; // rename running exe (allowed by Windows)
         }
-        fs::rename(tmp, dest)?;        // place new binary
+        fs::rename(tmp, dest)?; // place new binary
         let _ = fs::remove_file(&old);
         Ok(())
     })();
@@ -125,9 +134,9 @@ fn windows_replace(tmp: &std::path::Path, dest: &std::path::Path) -> crate::erro
     // Write a .cmd that waits 2 s (for this process to exit), copies the new
     // binary over the old one, then deletes itself.
     let batch = std::env::temp_dir().join("_voltra_update.cmd");
-    let tmp_w  = tmp.to_string_lossy().replace('/', "\\");
+    let tmp_w = tmp.to_string_lossy().replace('/', "\\");
     let dest_w = dest.to_string_lossy().replace('/', "\\");
-    let bat_w  = batch.to_string_lossy().replace('/', "\\");
+    let bat_w = batch.to_string_lossy().replace('/', "\\");
     let script = format!(
         "@echo off\r\n\
          timeout /t 2 /nobreak >nul\r\n\
@@ -196,7 +205,9 @@ pub fn cmd_update(check_only: bool) -> crate::error::Result<()> {
 pub fn check_and_hint() {
     if let Some(tag) = latest_tag() {
         if version_newer(&tag) {
-            eprintln!("[voltra] Update available: v{CURRENT_VERSION} → v{tag}  (run `voltra update`)");
+            eprintln!(
+                "[voltra] Update available: v{CURRENT_VERSION} → v{tag}  (run `voltra update`)"
+            );
         }
     }
 }
@@ -213,12 +224,16 @@ fn home_install_dir() -> PathBuf {
 /// Copy the running binary to a stable location and add it to PATH.
 pub fn cmd_install() -> crate::error::Result<()> {
     use crate::error::VoltraError;
-    let exe = std::env::current_exe()
-        .map_err(|e| VoltraError::internal(format!("current exe: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| VoltraError::internal(format!("current exe: {e}")))?;
     let dir = home_install_dir();
     fs::create_dir_all(&dir)
         .map_err(|e| VoltraError::internal(format!("create {}: {e}", dir.display())))?;
-    let dest = dir.join(if cfg!(windows) { "voltra.exe" } else { "voltra" });
+    let dest = dir.join(if cfg!(windows) {
+        "voltra.exe"
+    } else {
+        "voltra"
+    });
 
     if exe != dest {
         fs::copy(&exe, &dest)
@@ -250,7 +265,10 @@ fn add_to_path(dir: &std::path::Path) {
             println!("  Added to PATH. Open a NEW terminal, then run: voltra -h");
         }
         Ok(_) => println!("  Already on PATH. Run: voltra -h"),
-        Err(e) => println!("  Couldn't edit PATH ({e}). Add this folder yourself: {}", dir.display()),
+        Err(e) => println!(
+            "  Couldn't edit PATH ({e}). Add this folder yourself: {}",
+            dir.display()
+        ),
     }
 }
 

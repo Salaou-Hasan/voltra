@@ -15,8 +15,8 @@ jobs:
           toolchain: "stable"
       - name: Run lib tests
         run: cargo test --lib
-      - name: Run Raft consensus tests
-        run: cargo test --test raft_consensus_test
+      - name: Run binary tests
+        run: cargo test --bin voltra
 
   build:
     name: Build release

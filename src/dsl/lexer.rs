@@ -7,22 +7,59 @@ use super::error::VoltraError;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Keywords
-    Table, Reducer, Let, If, Else, Delete, Return, Error,
-    For, In, While, Break, Continue,
+    Table,
+    Reducer,
+    Let,
+    If,
+    Else,
+    Delete,
+    Return,
+    Error,
+    For,
+    In,
+    While,
+    Break,
+    Continue,
     // Built-in type names
-    TStr, TInt, TFloat, TBool,
+    TStr,
+    TInt,
+    TFloat,
+    TBool,
     // Punctuation
-    LBrace, RBrace, LParen, RParen, LBracket, RBracket,
-    Comma, Colon, Dot,
+    LBrace,
+    RBrace,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    Comma,
+    Colon,
+    Dot,
     // Operators
-    Eq,                                     // =
-    EqEq, BangEq,                           // == !=
-    Lt, Gt, LtEq, GtEq,                    // < > <= >=
-    LtLt, GtGt,                             // << >>
-    AmpAmp, PipePipe, Bang,                 // && || !
-    Amp, Pipe, Caret,                       // & | ^  (bitwise)
-    Plus, Minus, Star, Slash, Percent,      // + - * / %
-    PlusEq, MinusEq, StarEq, SlashEq,      // += -= *= /=
+    Eq, // =
+    EqEq,
+    BangEq, // == !=
+    Lt,
+    Gt,
+    LtEq,
+    GtEq, // < > <= >=
+    LtLt,
+    GtGt, // << >>
+    AmpAmp,
+    PipePipe,
+    Bang, // && || !
+    Amp,
+    Pipe,
+    Caret, // & | ^  (bitwise)
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent, // + - * / %
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq, // += -= *= /=
     // Literals
     IntLit(i64),
     FloatLit(f64),
@@ -37,19 +74,24 @@ pub enum Token {
 #[derive(Debug, Clone)]
 pub struct Spanned {
     pub token: Token,
-    pub line:  usize,
+    pub line: usize,
 }
 
 pub fn tokenize(src: &str) -> Result<Vec<Spanned>, VoltraError> {
     let mut tokens = Vec::new();
-    let mut chars  = src.chars().peekable();
-    let mut line   = 1usize;
+    let mut chars = src.chars().peekable();
+    let mut line = 1usize;
 
     while let Some(&ch) = chars.peek() {
         match ch {
             // Whitespace (not newlines — newlines don't matter in this grammar)
-            ' ' | '\t' | '\r' => { chars.next(); }
-            '\n' => { line += 1; chars.next(); }
+            ' ' | '\t' | '\r' => {
+                chars.next();
+            }
+            '\n' => {
+                line += 1;
+                chars.next();
+            }
 
             // Line comment
             '/' if chars.clone().nth(1) == Some('/') => {
@@ -64,153 +106,381 @@ pub fn tokenize(src: &str) -> Result<Vec<Spanned>, VoltraError> {
                 let mut s = String::new();
                 loop {
                     match chars.next() {
-                        Some('"')  => break,
+                        Some('"') => break,
                         Some('\\') => match chars.next() {
-                            Some('n')  => s.push('\n'),
-                            Some('t')  => s.push('\t'),
+                            Some('n') => s.push('\n'),
+                            Some('t') => s.push('\t'),
                             Some('\\') => s.push('\\'),
-                            Some('"')  => s.push('"'),
-                            Some(c)    => s.push(c),
-                            None => return Err(VoltraError { line, message: "unterminated string escape".into() }),
+                            Some('"') => s.push('"'),
+                            Some(c) => s.push(c),
+                            None => {
+                                return Err(VoltraError {
+                                    line,
+                                    message: "unterminated string escape".into(),
+                                })
+                            }
                         },
-                        Some('\n') => return Err(VoltraError { line, message: "unterminated string literal".into() }),
-                        Some(c)    => s.push(c),
-                        None => return Err(VoltraError { line, message: "unterminated string literal".into() }),
+                        Some('\n') => {
+                            return Err(VoltraError {
+                                line,
+                                message: "unterminated string literal".into(),
+                            })
+                        }
+                        Some(c) => s.push(c),
+                        None => {
+                            return Err(VoltraError {
+                                line,
+                                message: "unterminated string literal".into(),
+                            })
+                        }
                     }
                 }
-                tokens.push(Spanned { token: Token::StrLit(s), line });
+                tokens.push(Spanned {
+                    token: Token::StrLit(s),
+                    line,
+                });
             }
 
             // Number literal — negative literals are NOT handled here; unary minus is parsed
             c if c.is_ascii_digit() => {
                 let mut num = String::new();
-                while chars.peek().map(|&c: &char| c.is_ascii_digit()).unwrap_or(false) {
+                while chars
+                    .peek()
+                    .map(|&c: &char| c.is_ascii_digit())
+                    .unwrap_or(false)
+                {
                     num.push(chars.next().unwrap());
                 }
-                if chars.peek() == Some(&'.') && chars.clone().nth(1).map(|c: char| c.is_ascii_digit()).unwrap_or(false) {
+                if chars.peek() == Some(&'.')
+                    && chars
+                        .clone()
+                        .nth(1)
+                        .map(|c: char| c.is_ascii_digit())
+                        .unwrap_or(false)
+                {
                     num.push(chars.next().unwrap()); // '.'
-                    while chars.peek().map(|&c: &char| c.is_ascii_digit()).unwrap_or(false) {
+                    while chars
+                        .peek()
+                        .map(|&c: &char| c.is_ascii_digit())
+                        .unwrap_or(false)
+                    {
                         num.push(chars.next().unwrap());
                     }
-                    let f: f64 = num.parse().map_err(|_| VoltraError { line, message: format!("invalid float: {}", num) })?;
-                    tokens.push(Spanned { token: Token::FloatLit(f), line });
+                    let f: f64 = num.parse().map_err(|_| VoltraError {
+                        line,
+                        message: format!("invalid float: {}", num),
+                    })?;
+                    tokens.push(Spanned {
+                        token: Token::FloatLit(f),
+                        line,
+                    });
                 } else {
-                    let i: i64 = num.parse().map_err(|_| VoltraError { line, message: format!("invalid integer: {}", num) })?;
-                    tokens.push(Spanned { token: Token::IntLit(i), line });
+                    let i: i64 = num.parse().map_err(|_| VoltraError {
+                        line,
+                        message: format!("invalid integer: {}", num),
+                    })?;
+                    tokens.push(Spanned {
+                        token: Token::IntLit(i),
+                        line,
+                    });
                 }
             }
 
             // Identifier or keyword
             c if c.is_alphabetic() || c == '_' => {
                 let mut ident = String::new();
-                while chars.peek().map(|&c: &char| c.is_alphanumeric() || c == '_').unwrap_or(false) {
+                while chars
+                    .peek()
+                    .map(|&c: &char| c.is_alphanumeric() || c == '_')
+                    .unwrap_or(false)
+                {
                     ident.push(chars.next().unwrap());
                 }
                 let tok = match ident.as_str() {
-                    "table"   => Token::Table,
+                    "table" => Token::Table,
                     "reducer" => Token::Reducer,
-                    "let"     => Token::Let,
-                    "if"      => Token::If,
-                    "else"    => Token::Else,
-                    "delete"  => Token::Delete,
-                    "return"  => Token::Return,
-                    "error"   => Token::Error,
-                    "for"      => Token::For,
-                    "in"       => Token::In,
-                    "while"    => Token::While,
-                    "break"    => Token::Break,
+                    "let" => Token::Let,
+                    "if" => Token::If,
+                    "else" => Token::Else,
+                    "delete" => Token::Delete,
+                    "return" => Token::Return,
+                    "error" => Token::Error,
+                    "for" => Token::For,
+                    "in" => Token::In,
+                    "while" => Token::While,
+                    "break" => Token::Break,
                     "continue" => Token::Continue,
-                    "str"     => Token::TStr,
-                    "int"     => Token::TInt,
-                    "float"   => Token::TFloat,
-                    "bool"    => Token::TBool,
-                    "true"    => Token::BoolLit(true),
-                    "false"   => Token::BoolLit(false),
-                    _         => Token::Ident(ident),
+                    "str" => Token::TStr,
+                    "int" => Token::TInt,
+                    "float" => Token::TFloat,
+                    "bool" => Token::TBool,
+                    "true" => Token::BoolLit(true),
+                    "false" => Token::BoolLit(false),
+                    _ => Token::Ident(ident),
                 };
                 tokens.push(Spanned { token: tok, line });
             }
 
             // Two-character operators
             '=' if chars.clone().nth(1) == Some('=') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::EqEq, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::EqEq,
+                    line,
+                });
             }
             '!' if chars.clone().nth(1) == Some('=') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::BangEq, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::BangEq,
+                    line,
+                });
             }
             '<' if chars.clone().nth(1) == Some('<') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::LtLt, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::LtLt,
+                    line,
+                });
             }
             '<' if chars.clone().nth(1) == Some('=') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::LtEq, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::LtEq,
+                    line,
+                });
             }
             '>' if chars.clone().nth(1) == Some('>') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::GtGt, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::GtGt,
+                    line,
+                });
             }
             '>' if chars.clone().nth(1) == Some('=') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::GtEq, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::GtEq,
+                    line,
+                });
             }
             '&' if chars.clone().nth(1) == Some('&') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::AmpAmp, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::AmpAmp,
+                    line,
+                });
             }
             '|' if chars.clone().nth(1) == Some('|') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::PipePipe, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::PipePipe,
+                    line,
+                });
             }
             '+' if chars.clone().nth(1) == Some('=') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::PlusEq, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::PlusEq,
+                    line,
+                });
             }
             '-' if chars.clone().nth(1) == Some('=') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::MinusEq, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::MinusEq,
+                    line,
+                });
             }
             '*' if chars.clone().nth(1) == Some('=') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::StarEq, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::StarEq,
+                    line,
+                });
             }
             '/' if chars.clone().nth(1) == Some('=') => {
-                chars.next(); chars.next();
-                tokens.push(Spanned { token: Token::SlashEq, line });
+                chars.next();
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::SlashEq,
+                    line,
+                });
             }
 
             // Single-character tokens
-            '{' => { chars.next(); tokens.push(Spanned { token: Token::LBrace,   line }); }
-            '}' => { chars.next(); tokens.push(Spanned { token: Token::RBrace,   line }); }
-            '(' => { chars.next(); tokens.push(Spanned { token: Token::LParen,   line }); }
-            ')' => { chars.next(); tokens.push(Spanned { token: Token::RParen,   line }); }
-            '[' => { chars.next(); tokens.push(Spanned { token: Token::LBracket, line }); }
-            ']' => { chars.next(); tokens.push(Spanned { token: Token::RBracket, line }); }
-            ',' => { chars.next(); tokens.push(Spanned { token: Token::Comma,    line }); }
-            ':' => { chars.next(); tokens.push(Spanned { token: Token::Colon,    line }); }
-            '.' => { chars.next(); tokens.push(Spanned { token: Token::Dot,      line }); }
-            '=' => { chars.next(); tokens.push(Spanned { token: Token::Eq,       line }); }
-            '<' => { chars.next(); tokens.push(Spanned { token: Token::Lt,       line }); }
-            '>' => { chars.next(); tokens.push(Spanned { token: Token::Gt,       line }); }
-            '!' => { chars.next(); tokens.push(Spanned { token: Token::Bang,     line }); }
-            '+' => { chars.next(); tokens.push(Spanned { token: Token::Plus,     line }); }
-            '-' => { chars.next(); tokens.push(Spanned { token: Token::Minus,    line }); }
-            '*' => { chars.next(); tokens.push(Spanned { token: Token::Star,     line }); }
-            '/' => { chars.next(); tokens.push(Spanned { token: Token::Slash,    line }); }
-            '%' => { chars.next(); tokens.push(Spanned { token: Token::Percent,  line }); }
-            '&' => { chars.next(); tokens.push(Spanned { token: Token::Amp,      line }); }
-            '|' => { chars.next(); tokens.push(Spanned { token: Token::Pipe,     line }); }
-            '^' => { chars.next(); tokens.push(Spanned { token: Token::Caret,    line }); }
+            '{' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::LBrace,
+                    line,
+                });
+            }
+            '}' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::RBrace,
+                    line,
+                });
+            }
+            '(' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::LParen,
+                    line,
+                });
+            }
+            ')' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::RParen,
+                    line,
+                });
+            }
+            '[' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::LBracket,
+                    line,
+                });
+            }
+            ']' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::RBracket,
+                    line,
+                });
+            }
+            ',' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Comma,
+                    line,
+                });
+            }
+            ':' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Colon,
+                    line,
+                });
+            }
+            '.' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Dot,
+                    line,
+                });
+            }
+            '=' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Eq,
+                    line,
+                });
+            }
+            '<' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Lt,
+                    line,
+                });
+            }
+            '>' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Gt,
+                    line,
+                });
+            }
+            '!' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Bang,
+                    line,
+                });
+            }
+            '+' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Plus,
+                    line,
+                });
+            }
+            '-' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Minus,
+                    line,
+                });
+            }
+            '*' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Star,
+                    line,
+                });
+            }
+            '/' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Slash,
+                    line,
+                });
+            }
+            '%' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Percent,
+                    line,
+                });
+            }
+            '&' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Amp,
+                    line,
+                });
+            }
+            '|' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Pipe,
+                    line,
+                });
+            }
+            '^' => {
+                chars.next();
+                tokens.push(Spanned {
+                    token: Token::Caret,
+                    line,
+                });
+            }
 
             other => {
-                return Err(VoltraError { line, message: format!("unexpected character: {:?}", other) });
+                return Err(VoltraError {
+                    line,
+                    message: format!("unexpected character: {:?}", other),
+                });
             }
         }
     }
 
-    tokens.push(Spanned { token: Token::Eof, line });
+    tokens.push(Spanned {
+        token: Token::Eof,
+        line,
+    });
     Ok(tokens)
 }
 
@@ -219,7 +489,11 @@ mod tests {
     use super::*;
 
     fn toks(src: &str) -> Vec<Token> {
-        tokenize(src).unwrap().into_iter().map(|s| s.token).collect()
+        tokenize(src)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.token)
+            .collect()
     }
 
     #[test]
@@ -271,7 +545,9 @@ mod tests {
         assert!(t.contains(&Token::Let));
         assert!(t.contains(&Token::If));
         // Comment content should NOT appear
-        assert!(!t.iter().any(|tok| matches!(tok, Token::Ident(s) if s == "this")));
+        assert!(!t
+            .iter()
+            .any(|tok| matches!(tok, Token::Ident(s) if s == "this")));
     }
 
     #[test]

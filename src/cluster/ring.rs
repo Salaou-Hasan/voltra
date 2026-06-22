@@ -15,9 +15,9 @@
 //   let owner = ring.get_cluster("player:alice"); // → "cluster-europe"
 // ============================================================================
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
-use serde::{Deserialize, Serialize};
 
 /// Default virtual nodes per cluster (higher = more uniform distribution).
 const DEFAULT_VNODES: u32 = 160;
@@ -95,7 +95,10 @@ impl ConsistentHashRing {
         }
         let hash = fnv1a(key);
         // Walk clockwise: find first virtual node >= hash.
-        let owner = self.ring.range(hash..).next()
+        let owner = self
+            .ring
+            .range(hash..)
+            .next()
             .or_else(|| self.ring.iter().next());
         owner.map(|(_, cluster)| cluster.as_str())
     }
@@ -141,7 +144,9 @@ impl ConsistentHashRing {
     /// Useful for capacity planning.
     pub fn estimated_migration_fraction(&self) -> f64 {
         let n = self.cluster_ids.len() as f64;
-        if n <= 0.0 { return 1.0; }
+        if n <= 0.0 {
+            return 1.0;
+        }
         1.0 / (n + 1.0)
     }
 }
@@ -159,7 +164,9 @@ pub struct SharedRing {
 
 impl SharedRing {
     pub fn new() -> Arc<Self> {
-        Arc::new(SharedRing { inner: RwLock::new(ConsistentHashRing::new()) })
+        Arc::new(SharedRing {
+            inner: RwLock::new(ConsistentHashRing::new()),
+        })
     }
 
     pub fn add_cluster(&self, id: &str) {
@@ -175,25 +182,40 @@ impl SharedRing {
     }
 
     pub fn get_cluster(&self, key: &str) -> Option<String> {
-        self.inner.read().ok()?.get_cluster(key).map(|s| s.to_owned())
+        self.inner
+            .read()
+            .ok()?
+            .get_cluster(key)
+            .map(|s| s.to_owned())
     }
 
     pub fn cluster_ids(&self) -> Vec<String> {
-        self.inner.read().map(|r| r.cluster_ids().to_vec()).unwrap_or_default()
+        self.inner
+            .read()
+            .map(|r| r.cluster_ids().to_vec())
+            .unwrap_or_default()
     }
 
     pub fn len(&self) -> usize {
         self.inner.read().map(|r| r.len()).unwrap_or(0)
     }
 
-    pub fn keys_migrating_to(&self, new_cluster: &str, all_keys: &[String]) -> Vec<(String, String)> {
-        self.inner.read()
+    pub fn keys_migrating_to(
+        &self,
+        new_cluster: &str,
+        all_keys: &[String],
+    ) -> Vec<(String, String)> {
+        self.inner
+            .read()
             .map(|r| r.keys_migrating_to(new_cluster, all_keys))
             .unwrap_or_default()
     }
 
     pub fn estimated_migration_fraction(&self) -> f64 {
-        self.inner.read().map(|r| r.estimated_migration_fraction()).unwrap_or(1.0)
+        self.inner
+            .read()
+            .map(|r| r.estimated_migration_fraction())
+            .unwrap_or(1.0)
     }
 
     pub fn snapshot(&self) -> Option<ConsistentHashRing> {
@@ -203,7 +225,9 @@ impl SharedRing {
 
 impl Default for SharedRing {
     fn default() -> Self {
-        SharedRing { inner: RwLock::new(ConsistentHashRing::new()) }
+        SharedRing {
+            inner: RwLock::new(ConsistentHashRing::new()),
+        }
     }
 }
 
@@ -217,7 +241,9 @@ mod tests {
 
     fn ring_with(clusters: &[&str]) -> ConsistentHashRing {
         let mut r = ConsistentHashRing::new();
-        for c in clusters { r.add_cluster(c); }
+        for c in clusters {
+            r.add_cluster(c);
+        }
         r
     }
 
@@ -255,9 +281,13 @@ mod tests {
                 if let Some(c) = r.get_cluster(&format!("{prefix}{i}")) {
                     seen.insert(c.to_owned());
                 }
-                if seen.len() >= 3 { break; }
+                if seen.len() >= 3 {
+                    break;
+                }
             }
-            if seen.len() >= 3 { break; }
+            if seen.len() >= 3 {
+                break;
+            }
         }
         assert!(seen.len() >= 3, "not all clusters got keys: {seen:?}");
     }
@@ -289,7 +319,10 @@ mod tests {
         let f2 = r.estimated_migration_fraction(); // 1/(2+1) = 0.33
         r.add_cluster("c3");
         let f3 = r.estimated_migration_fraction(); // 1/(3+1) = 0.25
-        assert!(f1 > f2 && f2 > f3, "migration fraction should decrease: {f1} > {f2} > {f3}");
+        assert!(
+            f1 > f2 && f2 > f3,
+            "migration fraction should decrease: {f1} > {f2} > {f3}"
+        );
     }
 
     #[test]
@@ -302,7 +335,9 @@ mod tests {
         assert!(
             frac > 0.15 && frac < 0.55,
             "expected ~33% migration, got {:.1}% ({} of {})",
-            frac * 100.0, migrating.len(), keys.len()
+            frac * 100.0,
+            migrating.len(),
+            keys.len()
         );
     }
 
@@ -315,7 +350,11 @@ mod tests {
         let mut r2 = r.clone();
         r2.add_cluster("asia");
         for (key, _old) in &migrating {
-            assert_eq!(r2.get_cluster(key), Some("asia"), "key {key} should go to asia");
+            assert_eq!(
+                r2.get_cluster(key),
+                Some("asia"),
+                "key {key} should go to asia"
+            );
         }
     }
 

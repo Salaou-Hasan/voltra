@@ -32,11 +32,26 @@ impl ColType {
         use sqlparser::ast::DataType as DT;
         match dt {
             DT::Boolean | DT::Bool => ColType::Bool,
-            DT::TinyInt(_) | DT::SmallInt(_) | DT::Int(_) | DT::Integer(_) | DT::BigInt(_)
-            | DT::Int2(_) | DT::Int4(_) | DT::Int8(_) | DT::UnsignedInt(_)
-            | DT::UnsignedBigInt(_) | DT::UnsignedSmallInt(_) => ColType::Int,
-            DT::Real | DT::Float(_) | DT::Double | DT::DoublePrecision | DT::Float4
-            | DT::Float8 | DT::Numeric(_) | DT::Decimal(_) | DT::Dec(_) => ColType::Float,
+            DT::TinyInt(_)
+            | DT::SmallInt(_)
+            | DT::Int(_)
+            | DT::Integer(_)
+            | DT::BigInt(_)
+            | DT::Int2(_)
+            | DT::Int4(_)
+            | DT::Int8(_)
+            | DT::UnsignedInt(_)
+            | DT::UnsignedBigInt(_)
+            | DT::UnsignedSmallInt(_) => ColType::Int,
+            DT::Real
+            | DT::Float(_)
+            | DT::Double
+            | DT::DoublePrecision
+            | DT::Float4
+            | DT::Float8
+            | DT::Numeric(_)
+            | DT::Decimal(_)
+            | DT::Dec(_) => ColType::Float,
             _ => ColType::Text,
         }
     }
@@ -54,14 +69,18 @@ impl ColType {
             (ColType::Int, Scalar::Int(i)) => Scalar::Int(i),
             (ColType::Int, Scalar::Float(f)) => Scalar::Int(f as i64),
             (ColType::Int, Scalar::Bool(b)) => Scalar::Int(b as i64),
-            (ColType::Int, Scalar::Text(t)) => {
-                t.trim().parse::<i64>().map(Scalar::Int).unwrap_or(Scalar::Text(t))
-            }
+            (ColType::Int, Scalar::Text(t)) => t
+                .trim()
+                .parse::<i64>()
+                .map(Scalar::Int)
+                .unwrap_or(Scalar::Text(t)),
             (ColType::Float, Scalar::Float(f)) => Scalar::Float(f),
             (ColType::Float, Scalar::Int(i)) => Scalar::Float(i as f64),
-            (ColType::Float, Scalar::Text(t)) => {
-                t.trim().parse::<f64>().map(Scalar::Float).unwrap_or(Scalar::Text(t))
-            }
+            (ColType::Float, Scalar::Text(t)) => t
+                .trim()
+                .parse::<f64>()
+                .map(Scalar::Float)
+                .unwrap_or(Scalar::Text(t)),
             (ColType::Text, Scalar::Text(t)) => Scalar::Text(t),
             (ColType::Text, other) => Scalar::Text(scalar_to_text(&other).unwrap_or_default()),
             (_, other) => other,
@@ -79,7 +98,11 @@ pub fn scalar_to_text(v: &Scalar) -> Option<String> {
             if f.is_nan() {
                 Some("NaN".into())
             } else if f.is_infinite() {
-                Some(if *f > 0.0 { "Infinity".into() } else { "-Infinity".into() })
+                Some(if *f > 0.0 {
+                    "Infinity".into()
+                } else {
+                    "-Infinity".into()
+                })
             } else {
                 Some(format!("{f}"))
             }

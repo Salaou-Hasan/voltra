@@ -1,4 +1,4 @@
-﻿use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::wal::entry::WalEntry;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -47,7 +47,14 @@ impl BatchedWalWriter {
 
         let (sender, receiver) = mpsc::sync_channel(batch_size * 2);
         let flusher_thread = thread::spawn(move || {
-            background_flusher(path, receiver, flush_interval_ms, batch_size, unsafe_no_fsync, file_size_writer);
+            background_flusher(
+                path,
+                receiver,
+                flush_interval_ms,
+                batch_size,
+                unsafe_no_fsync,
+                file_size_writer,
+            );
         });
 
         Ok(BatchedWalWriter {
@@ -171,7 +178,9 @@ fn background_flusher(
         };
         while let Ok(cmd) = receiver.try_recv() {
             pending.push(cmd);
-            if pending.len() >= 8192 { break; } // bound a single batch
+            if pending.len() >= 8192 {
+                break;
+            } // bound a single batch
         }
 
         for cmd in pending {
@@ -206,16 +215,27 @@ fn background_flusher(
                     // Rename current WAL to .old
                     let old_path = path.with_extension("wal.old");
                     if let Err(e) = std::fs::rename(&path, &old_path) {
-                        log::warn!("WAL rotate: rename to .old failed: {} (continuing with fresh file)", e);
+                        log::warn!(
+                            "WAL rotate: rename to .old failed: {} (continuing with fresh file)",
+                            e
+                        );
                     } else {
-                        log::info!("WAL rotated at snapshot seq={}: {} -> {}", sequence, path.display(), old_path.display());
+                        log::info!(
+                            "WAL rotated at snapshot seq={}: {} -> {}",
+                            sequence,
+                            path.display(),
+                            old_path.display()
+                        );
                     }
 
                     // Open a fresh WAL file
                     file = match open_wal_file(&path) {
                         Ok(f) => f,
                         Err(e) => {
-                            log::error!("WAL rotate: failed to open new file after rotation: {}", e);
+                            log::error!(
+                                "WAL rotate: failed to open new file after rotation: {}",
+                                e
+                            );
                             // Attempt to recover: try re-opening the old file
                             if old_path.exists() {
                                 let _ = std::fs::rename(&old_path, &path);
@@ -286,14 +306,22 @@ fn open_wal_file(path: &Path) -> std::io::Result<File> {
     {
         use std::os::unix::fs::OpenOptionsExt;
         let mut options = OpenOptions::new();
-        options.create(true).append(true).read(true).custom_flags(libc::O_DIRECT);
+        options
+            .create(true)
+            .append(true)
+            .read(true)
+            .custom_flags(libc::O_DIRECT);
         if let Ok(f) = options.open(path) {
             return Ok(f);
         }
         log::warn!("O_DIRECT open failed, falling back to normal WAL file access");
     }
 
-    OpenOptions::new().create(true).append(true).read(true).open(path)
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(path)
 }
 
 #[cfg(test)]
@@ -364,11 +392,20 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
 
         // Verify old file was created and new WAL is empty/fresh
-        assert!(old_path.exists(), "Old WAL file should exist after rotation");
-        assert!(wal_path.exists(), "Fresh WAL file should exist after rotation");
+        assert!(
+            old_path.exists(),
+            "Old WAL file should exist after rotation"
+        );
+        assert!(
+            wal_path.exists(),
+            "Fresh WAL file should exist after rotation"
+        );
 
         let old_size = std::fs::metadata(&old_path).unwrap().len();
-        assert!(old_size > 0, "Old WAL file should contain the original data");
+        assert!(
+            old_size > 0,
+            "Old WAL file should contain the original data"
+        );
 
         let new_size = std::fs::metadata(&wal_path).unwrap().len();
         assert_eq!(new_size, 0, "Fresh WAL file should be empty");
@@ -387,7 +424,11 @@ mod tests {
         let writer = BatchedWalWriter::open(&wal_path, 5, 1000, true).unwrap();
 
         // Initial size should be 0
-        assert_eq!(writer.wal_file_size_bytes(), 0, "Fresh WAL should report 0 bytes");
+        assert_eq!(
+            writer.wal_file_size_bytes(),
+            0,
+            "Fresh WAL should report 0 bytes"
+        );
 
         // Append entries
         for i in 0..10 {
@@ -405,7 +446,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
 
         let size_after = writer.wal_file_size_bytes();
-        assert!(size_after > 0, "WAL file size should increase after appending entries (got {})", size_after);
+        assert!(
+            size_after > 0,
+            "WAL file size should increase after appending entries (got {})",
+            size_after
+        );
 
         // Append more entries and verify size continues growing
         for i in 10..20 {
@@ -422,7 +467,12 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
 
         let size_final = writer.wal_file_size_bytes();
-        assert!(size_final > size_after, "WAL file size should keep growing (got {} then {})", size_after, size_final);
+        assert!(
+            size_final > size_after,
+            "WAL file size should keep growing (got {} then {})",
+            size_after,
+            size_final
+        );
 
         writer.shutdown().unwrap();
         let _ = std::fs::remove_dir_all(&tmp_dir);

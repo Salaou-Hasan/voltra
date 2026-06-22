@@ -1,6 +1,6 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AOrdering};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AOrdering};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use serde::Serialize;
@@ -35,18 +35,25 @@ impl LobbyStats {
 
     fn record_call(&self, latency_ns: u64) {
         self.calls.fetch_add(1, AOrdering::Relaxed);
-        self.total_latency_ns.fetch_add(latency_ns, AOrdering::Relaxed);
+        self.total_latency_ns
+            .fetch_add(latency_ns, AOrdering::Relaxed);
         // Optimistic update for min — occasional stale races are acceptable.
         let old = self.min_latency_ns.load(AOrdering::Relaxed);
         if latency_ns < old {
             let _ = self.min_latency_ns.compare_exchange_weak(
-                old, latency_ns, AOrdering::Relaxed, AOrdering::Relaxed,
+                old,
+                latency_ns,
+                AOrdering::Relaxed,
+                AOrdering::Relaxed,
             );
         }
         let old = self.max_latency_ns.load(AOrdering::Relaxed);
         if latency_ns > old {
             let _ = self.max_latency_ns.compare_exchange_weak(
-                old, latency_ns, AOrdering::Relaxed, AOrdering::Relaxed,
+                old,
+                latency_ns,
+                AOrdering::Relaxed,
+                AOrdering::Relaxed,
             );
         }
     }
@@ -123,7 +130,10 @@ impl LobbyRouter {
     ) -> Self {
         let core_ids = core_affinity::get_core_ids().unwrap_or_default();
         if !core_ids.is_empty() {
-            log::info!("[worker_pool] Core pinning enabled — {} logical cores available", core_ids.len());
+            log::info!(
+                "[worker_pool] Core pinning enabled — {} logical cores available",
+                core_ids.len()
+            );
         }
         LobbyRouter {
             lobby_channels: DashMap::new(),
@@ -141,7 +151,9 @@ impl LobbyRouter {
 
     /// Pick the next core ID for a new lobby worker (round-robin).
     fn next_core_id(&self) -> Option<core_affinity::CoreId> {
-        if self.core_ids.is_empty() { return None; }
+        if self.core_ids.is_empty() {
+            return None;
+        }
         let idx = self.next_core.fetch_add(1, AOrdering::Relaxed) % self.core_ids.len();
         Some(self.core_ids[idx])
     }
@@ -155,7 +167,10 @@ impl LobbyRouter {
         let lobby_id = match &call.lobby_hint {
             Some(lid) if !lid.is_empty() => lid.clone(),
             _ => {
-                self.global_tx.send(call).await.map_err(|_| "global channel closed".to_string())?;
+                self.global_tx
+                    .send(call)
+                    .await
+                    .map_err(|_| "global channel closed".to_string())?;
                 return Ok(());
             }
         };
@@ -175,7 +190,10 @@ impl LobbyRouter {
         // Slow path: create a new lobby worker if under the cap.
         if self.lobby_channels.len() >= self.max_lobbies {
             // Over the soft cap — route to global pool.
-            self.global_tx.send(call).await.map_err(|_| "global channel closed".to_string())?;
+            self.global_tx
+                .send(call)
+                .await
+                .map_err(|_| "global channel closed".to_string())?;
             return Ok(());
         }
 
@@ -200,7 +218,9 @@ impl LobbyRouter {
         self.worker_handles.insert(lobby_id.clone(), handle);
 
         // Now send the call through the freshly created channel.
-        tx.send(call).await.map_err(|_| "lobby channel closed".to_string())?;
+        tx.send(call)
+            .await
+            .map_err(|_| "lobby channel closed".to_string())?;
         Ok(())
     }
 
@@ -264,7 +284,8 @@ impl LobbyRouter {
 
     /// Snapshot of all active lobbies for the admin dashboard.
     pub fn lobbies_snapshot(&self) -> Vec<LobbySnapshot> {
-        let mut out: Vec<LobbySnapshot> = self.lobby_stats
+        let mut out: Vec<LobbySnapshot> = self
+            .lobby_stats
             .iter()
             .map(|e| {
                 let id = e.key().clone();
@@ -276,8 +297,16 @@ impl LobbyRouter {
                 let max_ns = st.max_latency_ns.load(AOrdering::Relaxed);
                 let queue = self.lobby_channels.get(&id).map(|c| c.len()).unwrap_or(0);
 
-                let avg_ms = if calls > 0 { (total_ns / calls) as f64 / 1_000_000.0 } else { 0.0 };
-                let min_ms = if min_ns == u64::MAX { 0.0 } else { min_ns as f64 / 1_000_000.0 };
+                let avg_ms = if calls > 0 {
+                    (total_ns / calls) as f64 / 1_000_000.0
+                } else {
+                    0.0
+                };
+                let min_ms = if min_ns == u64::MAX {
+                    0.0
+                } else {
+                    min_ns as f64 / 1_000_000.0
+                };
                 let max_ms = max_ns as f64 / 1_000_000.0;
 
                 LobbySnapshot {
@@ -338,10 +367,7 @@ fn lobby_worker_loop(
         // Drain up to DRAIN_LIMIT more queued calls.
         let mut batch: smallvec::SmallVec<[PendingCall; 16]> = smallvec::smallvec![call];
         for _ in 0..DRAIN_LIMIT {
-            match rt.block_on(tokio::time::timeout(
-                std::time::Duration::ZERO,
-                rx.recv(),
-            )) {
+            match rt.block_on(tokio::time::timeout(std::time::Duration::ZERO, rx.recv())) {
                 Ok(Ok(extra)) => batch.push(extra),
                 _ => break,
             }
@@ -371,7 +397,9 @@ fn lobby_worker_loop(
             let call_start = std::time::Instant::now();
             let response = loop {
                 attempt += 1;
-                let exec = deps.registry.execute(&call.reducer_name, &mut ctx, &call.args);
+                let exec = deps
+                    .registry
+                    .execute(&call.reducer_name, &mut ctx, &call.args);
 
                 break match exec {
                     Err(e) => {
@@ -391,7 +419,9 @@ fn lobby_worker_loop(
                         Err(e) => {
                             log::error!(
                                 "[lobby-{}] Commit failed for '{}': {}",
-                                lobby_id, call.reducer_name, e
+                                lobby_id,
+                                call.reducer_name,
+                                e
                             );
                             deps.metrics.reducer_errors_total.inc();
                             ReducerResponse::error(call_id, format!("Commit error: {}", e))
@@ -402,8 +432,7 @@ fn lobby_worker_loop(
                                 deps.cluster_bus.fanout_deltas(&deltas);
                             }
 
-                            let seq_num =
-                                deps.global_seq.fetch_add(1, Ordering::Relaxed);
+                            let seq_num = deps.global_seq.fetch_add(1, Ordering::Relaxed);
                             let entry = WalEntry::new(
                                 ts,
                                 seq_num,
@@ -443,8 +472,14 @@ mod tests {
 
     #[test]
     fn lobby_hint_extraction() {
-        assert_eq!(parse_lobby_key("l0_p123"), Some(("0".into(), "p123".into())));
-        assert_eq!(parse_lobby_key("l42_sim_players"), Some(("42".into(), "sim_players".into())));
+        assert_eq!(
+            parse_lobby_key("l0_p123"),
+            Some(("0".into(), "p123".into()))
+        );
+        assert_eq!(
+            parse_lobby_key("l42_sim_players"),
+            Some(("42".into(), "sim_players".into()))
+        );
         assert_eq!(parse_lobby_key("global_table"), None);
         assert_eq!(parse_lobby_key("__tenants"), None);
         assert_eq!(parse_lobby_key("l_missing_digits"), None);

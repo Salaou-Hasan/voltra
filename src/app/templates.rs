@@ -7,8 +7,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub(crate) struct Template {
-    pub(crate) name:        &'static str,
-    pub(crate) category:    &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) category: &'static str,
     pub(crate) description: &'static str,
 }
 
@@ -26,15 +26,21 @@ pub(crate) const TEMPLATES: &[Template] = &[
 
 /// Available add-on modules (`voltra add <name>`).
 pub(crate) const MODULES: &[(&str, &str)] = &[
-    ("chat",        "Rooms, messages, per-room presence"),
-    ("inventory",   "Items, qty stacking, equip slots"),
+    ("chat", "Rooms, messages, per-room presence"),
+    ("inventory", "Items, qty stacking, equip slots"),
     ("leaderboard", "Score submit, global top-N, weekly reset"),
     ("matchmaking", "Queue, ELO-pair, match creation (scheduled)"),
-    ("guilds",      "Create, invite, accept, kick"),
-    ("quests",      "Accept, progress tracking, claim reward"),
-    ("economy",     "Gold/gem wallets, shop buy/sell, transfers, loot boxes"),
-    ("combat",      "Attack, ability system, NPC damage, respawn"),
-    ("world",       "World tick, NPC spawn, session cleanup (scheduled)"),
+    ("guilds", "Create, invite, accept, kick"),
+    ("quests", "Accept, progress tracking, claim reward"),
+    (
+        "economy",
+        "Gold/gem wallets, shop buy/sell, transfers, loot boxes",
+    ),
+    ("combat", "Attack, ability system, NPC damage, respawn"),
+    (
+        "world",
+        "World tick, NPC spawn, session cleanup (scheduled)",
+    ),
 ];
 
 /// Path to the Voltra source on the machine that compiled this binary.
@@ -46,8 +52,7 @@ pub(crate) const VOLTRA_SOURCE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub(crate) const MIGRATIONS_README: &str = "# Migrations\nPlace `.toml` files here.\n";
-pub(crate) const PERF_MD: &str           = include_str!("../../templates/performance.md.txt");
-pub(crate) const SCALING_MD: &str        = include_str!("../../templates/scaling.md.txt");
+pub(crate) const SCALING_MD: &str = include_str!("../../templates/scaling.md.txt");
 
 // ── Voltra language template content (inline — no extra template files needed) ──
 /// VS Code language association — makes .vol files use Rust syntax highlighting.
@@ -607,377 +612,6 @@ reducer cleanup_old_messages() {
 "#;
 
 // ── Legacy single-file constants (kept for backward compatibility) ────────────
-pub(crate) const VOLTRA_BASIC_REDUCERS: &str = r#"// ============================================================
-// reducers.vol — basic game template
-//
-// This is your entire game logic. Edit here, then run:
-//   voltra build   → compiles to native Rust
-//   voltra start   → starts the server
-//
-// Language reference: docs/voltra/README.md
-// ============================================================
-
-table players {
-    hp:    int   = 100,
-    alive: bool  = true,
-    x:     float = 0.0,
-    y:     float = 0.0,
-    kills: int   = 0,
-    name:  str   = "",
-}
-
-// ── Spawn / despawn ──────────────────────────────────────────
-reducer spawn(player_id: str, name: str, x: float, y: float) {
-    players[player_id] = { hp: 100, alive: true, x: x, y: y, kills: 0, name: name }
-    set_counter("online", counter("online") + 1)
-    return { ok: true, player_id: player_id }
-}
-
-reducer despawn(player_id: str) {
-    let p = players[player_id] else { error("Player not found") }
-    delete players[player_id]
-    set_counter("online", counter("online") - 1)
-    return { ok: true }
-}
-
-// ── Movement ─────────────────────────────────────────────────
-reducer move_player(player_id: str, x: float, y: float) {
-    let p = players[player_id] else { error("Player not found") }
-    players[player_id].x = x
-    players[player_id].y = y
-    return { ok: true, x: x, y: y }
-}
-
-// ── Combat ───────────────────────────────────────────────────
-reducer damage(target_id: str, amount: int) {
-    let p = players[target_id] else { error("Player not found") }
-    let new_hp = max(0, p.hp - amount)
-    players[target_id].hp = new_hp
-    if new_hp <= 0 {
-        players[target_id].alive = false
-    }
-    return { hp: new_hp, alive: new_hp > 0 }
-}
-
-reducer heal(target_id: str, amount: int) {
-    let p = players[target_id] else { error("Player not found") }
-    let new_hp = min(100, p.hp + amount)
-    players[target_id].hp = new_hp
-    return { hp: new_hp }
-}
-
-// ── Server info ───────────────────────────────────────────────
-reducer get_stats() {
-    let online = counter("online")
-    let total  = count_rows("players")
-    let ts     = timestamp()
-    return { online: online, total_players: total, server_time: ts }
-}
-
-// ── Cleanup (scheduled — add to voltra.toml [[scheduler]]) ──
-reducer cleanup_dead() {
-    let removed = 0
-    for id, p in players {
-        if p.alive == false {
-            delete players[id]
-            removed = removed + 1
-        }
-    }
-    return { removed: removed }
-}
-"#;
-
-pub(crate) const VOLTRA_GAME_READY_REDUCERS: &str = r#"// ============================================================
-// reducers.vol — full game template (Voltra Language)
-//
-// Covers: spawn/despawn, movement, combat, XP/leveling,
-//         loot boxes, guilds, leaderboard, economy.
-//
-// Edit here → voltra build → voltra start
-// Reference: docs/voltra/README.md
-// ============================================================
-
-table players {
-    hp:     int   = 100,
-    max_hp: int   = 100,
-    level:  int   = 1,
-    xp:     int   = 0,
-    alive:  bool  = true,
-    x:      float = 0.0,
-    y:      float = 0.0,
-    kills:  int   = 0,
-    gold:   int   = 0,
-    name:   str   = "",
-    guild:  str   = "",
-}
-
-table guilds {
-    owner:        str   = "",
-    member_count: int   = 0,
-    score:        float = 0.0,
-    name:         str   = "",
-}
-
-// ── Spawn / despawn ──────────────────────────────────────────
-reducer spawn(player_id: str, name: str, x: float, y: float) {
-    players[player_id] = { hp: 100, max_hp: 100, level: 1, xp: 0,
-                           alive: true, x: x, y: y, kills: 0,
-                           gold: 50, name: name, guild: "" }
-    set_counter("total_players", counter("total_players") + 1)
-    return { ok: true, player_id: player_id }
-}
-
-reducer despawn(player_id: str) {
-    let p = players[player_id] else { error("Player not found") }
-    delete players[player_id]
-    set_counter("total_players", counter("total_players") - 1)
-    return { ok: true }
-}
-
-// ── Movement ─────────────────────────────────────────────────
-reducer move_player(player_id: str, x: float, y: float) {
-    let p = players[player_id] else { error("Player not found") }
-    players[player_id].x = x
-    players[player_id].y = y
-    return { ok: true, x: x, y: y }
-}
-
-// ── Combat ───────────────────────────────────────────────────
-reducer take_damage(player_id: str, amount: int, attacker_id: str) {
-    let p = players[player_id] else { error("Player not found") }
-    let new_hp = max(0, p.hp - amount)
-    players[player_id].hp = new_hp
-
-    if new_hp <= 0 {
-        players[player_id].alive = false
-        players[player_id].kills += 0
-        let killer = players[attacker_id] else { return { died: true, killer: "unknown" } }
-        players[attacker_id].kills += 1
-        set_counter("total_kills", counter("total_kills") + 1)
-        return { died: true, killer: attacker_id }
-    } else if new_hp <= 25 {
-        return { died: false, hp: new_hp, status: "critical" }
-    } else if new_hp <= 50 {
-        return { died: false, hp: new_hp, status: "wounded" }
-    } else {
-        return { died: false, hp: new_hp, status: "healthy" }
-    }
-}
-
-reducer heal(player_id: str, amount: int) {
-    let p = players[player_id] else { error("Player not found") }
-    let new_hp = min(p.max_hp, p.hp + amount)
-    players[player_id].hp = new_hp
-    return { hp: new_hp }
-}
-
-// ── XP and leveling ──────────────────────────────────────────
-reducer grant_xp(player_id: str, amount: int) {
-    let p = players[player_id] else { error("Player not found") }
-    let cur_xp  = p.xp + amount
-    let cur_lvl = p.level
-    while cur_xp >= cur_lvl * 100 {
-        cur_xp  = cur_xp - cur_lvl * 100
-        cur_lvl = cur_lvl + 1
-    }
-    players[player_id].level = cur_lvl
-    players[player_id].xp    = cur_xp
-    return { level: cur_lvl, xp: cur_xp }
-}
-
-// ── Loot ─────────────────────────────────────────────────────
-reducer roll_loot(player_id: str) {
-    let roll = rand_int(1, 100)
-    if roll >= 90 {
-        return { rarity: "legendary", roll: roll }
-    } else if roll >= 60 {
-        return { rarity: "rare",      roll: roll }
-    } else if roll >= 30 {
-        return { rarity: "uncommon",  roll: roll }
-    } else {
-        return { rarity: "common",    roll: roll }
-    }
-}
-
-// ── Economy ──────────────────────────────────────────────────
-reducer transfer_gold(from_id: str, to_id: str, amount: int) {
-    let from = players[from_id] else { error("Sender not found") }
-    let to   = players[to_id]   else { error("Recipient not found") }
-    if from.gold < amount {
-        error("Insufficient gold")
-    }
-    players[from_id].gold -= amount
-    players[to_id].gold   += amount
-    return { ok: true, transferred: amount }
-}
-
-// ── Guilds ───────────────────────────────────────────────────
-reducer create_guild(guild_id: str, name: str) {
-    let owner = caller_id
-    guilds[guild_id] = { owner: owner, member_count: 1, score: 0.0, name: name }
-    players[owner].guild = guild_id
-    return { ok: true, guild_id: guild_id }
-}
-
-reducer join_guild(guild_id: str) {
-    let player_id = caller_id
-    let g = guilds[guild_id] else { error("Guild not found") }
-    guilds[guild_id].member_count += 1
-    players[player_id].guild = guild_id
-    return { ok: true }
-}
-
-reducer leave_guild() {
-    let player_id = caller_id
-    let p = players[player_id] else { error("Player not found") }
-    let gid = p.guild
-    guilds[gid].member_count -= 1
-    players[player_id].guild = ""
-    return { ok: true }
-}
-
-// ── Leaderboard ───────────────────────────────────────────────
-reducer leaderboard(field: str) {
-    let rows = sort_by("players", field, "desc")
-    return { rows: rows }
-}
-
-reducer top_killers() {
-    let top = top_n("players", "kills", 10)
-    return { top: top }
-}
-
-// ── Stats ────────────────────────────────────────────────────
-reducer get_stats() {
-    let total  = count_rows("players")
-    let kills  = counter("total_kills")
-    let avg_k  = avg_field("players", "kills")
-    let ts     = timestamp()
-    return { total_players: total, total_kills: kills, avg_kills: avg_k, server_time: ts }
-}
-
-// ── Cleanup (run via [[scheduler]] in voltra.toml) ───────────
-reducer cleanup_dead() {
-    let removed = 0
-    for id, p in players {
-        if p.alive == false {
-            delete players[id]
-            removed = removed + 1
-        }
-    }
-    return { removed: removed }
-}
-"#;
-
-pub(crate) const VOLTRA_CHAT_REDUCERS: &str = r#"// ============================================================
-// reducers.vol — chat server template (Voltra Language)
-//
-// Covers: rooms, messages, presence, moderation.
-//
-// Edit here → voltra build → voltra start
-// Reference: docs/voltra/README.md
-// ============================================================
-
-table rooms {
-    name:         str = "",
-    member_count: int = 0,
-    created_by:   str = "",
-}
-
-table room_members {
-    room:   str = "",
-    player: str = "",
-}
-
-table messages {
-    room:   str = "",
-    sender: str = "",
-    text:   str = "",
-    ts:     int = 0,
-}
-
-// ── Room management ──────────────────────────────────────────
-reducer create_room(room_id: str, name: str) {
-    let creator = caller_id
-    rooms[room_id] = { name: name, member_count: 0, created_by: creator }
-    return { ok: true, room_id: room_id }
-}
-
-reducer join_room(room_id: str) {
-    let player_id = caller_id
-    let r = rooms[room_id] else { error("Room not found") }
-    let member_key = concat(room_id, concat(":", player_id))
-    room_members[member_key] = { room: room_id, player: player_id }
-    rooms[room_id].member_count += 1
-    return { ok: true, room: room_id, members: r.member_count + 1 }
-}
-
-reducer leave_room(room_id: str) {
-    let player_id = caller_id
-    let member_key = concat(room_id, concat(":", player_id))
-    let r = rooms[room_id] else { return { ok: true } }
-    delete room_members[member_key]
-    rooms[room_id].member_count -= 1
-    return { ok: true }
-}
-
-// ── Messaging ────────────────────────────────────────────────
-reducer send_message(room_id: str, text: str) {
-    let sender = caller_id
-    let r = rooms[room_id] else { error("Room not found") }
-    let trimmed = trim(text)
-    if len(trimmed) == 0 {
-        error("Message cannot be empty")
-    }
-    let msg_key = concat(room_id, concat(":", str(timestamp())))
-    messages[msg_key] = { room: room_id, sender: sender, text: trimmed, ts: timestamp() }
-    set_counter("total_messages", counter("total_messages") + 1)
-    return { ok: true, room: room_id }
-}
-
-// ── Info / stats ─────────────────────────────────────────────
-reducer list_rooms() {
-    let rows = sort_by("rooms", "member_count", "desc")
-    return { rooms: rows }
-}
-
-reducer online_count() {
-    let count = count_rows("room_members")
-    let msgs  = counter("total_messages")
-    return { online: count, total_messages: msgs }
-}
-
-reducer room_members(room_id: str) {
-    let members = find_all("room_members", "room", room_id)
-    return { room: room_id, members: members, count: array_len(members) }
-}
-
-// ── Moderation ───────────────────────────────────────────────
-reducer kick_from_room(room_id: str, target_id: str) {
-    let requester = caller_id
-    let r = rooms[room_id] else { error("Room not found") }
-    if r.created_by != requester {
-        error("Only the room creator can kick members")
-    }
-    let member_key = concat(room_id, concat(":", target_id))
-    delete room_members[member_key]
-    rooms[room_id].member_count -= 1
-    return { ok: true, kicked: target_id }
-}
-
-// ── Cleanup ──────────────────────────────────────────────────
-reducer cleanup_old_messages() {
-    let cutoff = timestamp() - 86400000000000
-    let removed = 0
-    for id, m in messages {
-        if m.ts < cutoff {
-            delete messages[id]
-            removed = removed + 1
-        }
-    }
-    return { removed: removed }
-}
-"#;
 
 pub(crate) const VOLTRA_CHAT_SCHEMA: &str = r#"# Chat server schema
 [[table]]
@@ -1408,63 +1042,75 @@ reducer world_tick() {
 "#;
 
 // ── Rust game templates ───────────────────────────────────────────────────────
-pub(crate) const GAME_MAIN_RS: &str         = include_str!("../../templates/r_game_main.rs.txt");
-pub(crate) const R_MOD_BASIC: &str          = include_str!("../../templates/r_reducers_mod_basic.rs.txt");
-pub(crate) const R_SPAWN_RS: &str           = include_str!("../../templates/r_spawn.rs.txt");
-pub(crate) const R_MOVE_RS: &str            = include_str!("../../templates/r_move.rs.txt");
-pub(crate) const R_DESPAWN_RS: &str         = include_str!("../../templates/r_despawn.rs.txt");
-pub(crate) const R_DAMAGE_RS: &str          = include_str!("../../templates/r_damage.rs.txt");
-pub(crate) const R_HEAL_RS: &str            = include_str!("../../templates/r_heal.rs.txt");
-pub(crate) const R_BASIC_SCHEMA: &str       = include_str!("../../templates/r_basic_schema.toml.txt");
+pub(crate) const GAME_MAIN_RS: &str = include_str!("../../templates/r_game_main.rs.txt");
+pub(crate) const R_MOD_BASIC: &str = include_str!("../../templates/r_reducers_mod_basic.rs.txt");
+pub(crate) const R_SPAWN_RS: &str = include_str!("../../templates/r_spawn.rs.txt");
+pub(crate) const R_MOVE_RS: &str = include_str!("../../templates/r_move.rs.txt");
+pub(crate) const R_DESPAWN_RS: &str = include_str!("../../templates/r_despawn.rs.txt");
+pub(crate) const R_DAMAGE_RS: &str = include_str!("../../templates/r_damage.rs.txt");
+pub(crate) const R_HEAL_RS: &str = include_str!("../../templates/r_heal.rs.txt");
+pub(crate) const R_BASIC_SCHEMA: &str = include_str!("../../templates/r_basic_schema.toml.txt");
 
 // ── module reducers (voltra add <name>) ──────────────────────────────────────
-pub(crate) const RM_CHAT_MOD_RS: &str       = include_str!("../../templates/rm_chat_mod.rs.txt");
-pub(crate) const RM_CHAT_SEND_RS: &str      = include_str!("../../templates/rm_chat_send.rs.txt");
-pub(crate) const RM_CHAT_JOIN_RS: &str      = include_str!("../../templates/rm_chat_join.rs.txt");
-pub(crate) const RM_CHAT_LEAVE_RS: &str     = include_str!("../../templates/rm_chat_leave.rs.txt");
-pub(crate) const RM_CHAT_CLEANUP_RS: &str   = include_str!("../../templates/rm_chat_cleanup.rs.txt");
-pub(crate) const RM_CHAT_SCHEMA: &str       = include_str!("../../templates/rm_chat_schema.toml.txt");
-pub(crate) const RM_INV_MOD_RS: &str        = include_str!("../../templates/rm_inventory_mod.rs.txt");
-pub(crate) const RM_INV_ADD_RS: &str        = include_str!("../../templates/rm_inventory_add.rs.txt");
-pub(crate) const RM_INV_REMOVE_RS: &str     = include_str!("../../templates/rm_inventory_remove.rs.txt");
-pub(crate) const RM_INV_EQUIP_RS: &str      = include_str!("../../templates/rm_inventory_equip.rs.txt");
-pub(crate) const RM_INV_SCHEMA: &str        = include_str!("../../templates/rm_inventory_schema.toml.txt");
-pub(crate) const RM_LB_MOD_RS: &str         = include_str!("../../templates/rm_leaderboard_mod.rs.txt");
-pub(crate) const RM_LB_SUBMIT_RS: &str      = include_str!("../../templates/rm_leaderboard_submit.rs.txt");
-pub(crate) const RM_LB_RESET_RS: &str       = include_str!("../../templates/rm_leaderboard_reset.rs.txt");
-pub(crate) const RM_LB_SCHEMA: &str         = include_str!("../../templates/rm_leaderboard_schema.toml.txt");
-pub(crate) const RM_MM_MOD_RS: &str         = include_str!("../../templates/rm_matchmaking_mod.rs.txt");
-pub(crate) const RM_MM_QUEUE_RS: &str       = include_str!("../../templates/rm_matchmaking_queue.rs.txt");
-pub(crate) const RM_MM_DEQUEUE_RS: &str     = include_str!("../../templates/rm_matchmaking_dequeue.rs.txt");
-pub(crate) const RM_MM_MATCH_RS: &str       = include_str!("../../templates/rm_matchmaking_match.rs.txt");
-pub(crate) const RM_MM_SCHEMA: &str         = include_str!("../../templates/rm_matchmaking_schema.toml.txt");
-pub(crate) const RM_GUILD_MOD_RS: &str      = include_str!("../../templates/rm_guilds_mod.rs.txt");
-pub(crate) const RM_GUILD_CREATE_RS: &str   = include_str!("../../templates/rm_guilds_create.rs.txt");
-pub(crate) const RM_GUILD_INVITE_RS: &str   = include_str!("../../templates/rm_guilds_invite.rs.txt");
-pub(crate) const RM_GUILD_ACCEPT_RS: &str   = include_str!("../../templates/rm_guilds_accept.rs.txt");
-pub(crate) const RM_GUILD_KICK_RS: &str     = include_str!("../../templates/rm_guilds_kick.rs.txt");
-pub(crate) const RM_GUILD_SCHEMA: &str      = include_str!("../../templates/rm_guilds_schema.toml.txt");
-pub(crate) const RM_QUEST_MOD_RS: &str      = include_str!("../../templates/rm_quests_mod.rs.txt");
-pub(crate) const RM_QUEST_ACCEPT_RS: &str   = include_str!("../../templates/rm_quests_accept.rs.txt");
-pub(crate) const RM_QUEST_PROGRESS_RS: &str = include_str!("../../templates/rm_quests_progress.rs.txt");
-pub(crate) const RM_QUEST_COMPLETE_RS: &str = include_str!("../../templates/rm_quests_complete.rs.txt");
-pub(crate) const RM_QUEST_SCHEMA: &str      = include_str!("../../templates/rm_quests_schema.toml.txt");
-pub(crate) const RM_ECON_MOD_RS: &str       = include_str!("../../templates/rm_economy_mod.rs.txt");
-pub(crate) const RM_ECON_BUY_RS: &str       = include_str!("../../templates/rm_economy_buy.rs.txt");
-pub(crate) const RM_ECON_SELL_RS: &str      = include_str!("../../templates/rm_economy_sell.rs.txt");
-pub(crate) const RM_ECON_TRANSFER_RS: &str  = include_str!("../../templates/rm_economy_transfer.rs.txt");
-pub(crate) const RM_ECON_LOOT_RS: &str      = include_str!("../../templates/rm_economy_loot.rs.txt");
-pub(crate) const RM_ECON_SCHEMA: &str       = include_str!("../../templates/rm_economy_schema.toml.txt");
-pub(crate) const RM_COMBAT_MOD_RS: &str     = include_str!("../../templates/rm_combat_mod.rs.txt");
-pub(crate) const RM_COMBAT_ATTACK_RS: &str  = include_str!("../../templates/rm_combat_attack.rs.txt");
-pub(crate) const RM_COMBAT_RESPAWN_RS: &str = include_str!("../../templates/rm_combat_respawn.rs.txt");
-pub(crate) const RM_COMBAT_ABILITY_RS: &str = include_str!("../../templates/rm_combat_ability.rs.txt");
-pub(crate) const RM_COMBAT_SCHEMA: &str     = include_str!("../../templates/rm_combat_schema.toml.txt");
-pub(crate) const RM_WORLD_MOD_RS: &str      = include_str!("../../templates/rm_world_mod.rs.txt");
-pub(crate) const RM_WORLD_TICK_RS: &str     = include_str!("../../templates/rm_world_tick.rs.txt");
-pub(crate) const RM_WORLD_NPC_RS: &str      = include_str!("../../templates/rm_world_npc_spawn.rs.txt");
-pub(crate) const RM_WORLD_CLEANUP_RS: &str  = include_str!("../../templates/rm_world_cleanup.rs.txt");
-pub(crate) const RM_WORLD_SCHEMA: &str      = include_str!("../../templates/rm_world_schema.toml.txt");
+pub(crate) const RM_CHAT_MOD_RS: &str = include_str!("../../templates/rm_chat_mod.rs.txt");
+pub(crate) const RM_CHAT_SEND_RS: &str = include_str!("../../templates/rm_chat_send.rs.txt");
+pub(crate) const RM_CHAT_JOIN_RS: &str = include_str!("../../templates/rm_chat_join.rs.txt");
+pub(crate) const RM_CHAT_LEAVE_RS: &str = include_str!("../../templates/rm_chat_leave.rs.txt");
+pub(crate) const RM_CHAT_CLEANUP_RS: &str = include_str!("../../templates/rm_chat_cleanup.rs.txt");
+pub(crate) const RM_CHAT_SCHEMA: &str = include_str!("../../templates/rm_chat_schema.toml.txt");
+pub(crate) const RM_INV_MOD_RS: &str = include_str!("../../templates/rm_inventory_mod.rs.txt");
+pub(crate) const RM_INV_ADD_RS: &str = include_str!("../../templates/rm_inventory_add.rs.txt");
+pub(crate) const RM_INV_REMOVE_RS: &str =
+    include_str!("../../templates/rm_inventory_remove.rs.txt");
+pub(crate) const RM_INV_EQUIP_RS: &str = include_str!("../../templates/rm_inventory_equip.rs.txt");
+pub(crate) const RM_INV_SCHEMA: &str = include_str!("../../templates/rm_inventory_schema.toml.txt");
+pub(crate) const RM_LB_MOD_RS: &str = include_str!("../../templates/rm_leaderboard_mod.rs.txt");
+pub(crate) const RM_LB_SUBMIT_RS: &str =
+    include_str!("../../templates/rm_leaderboard_submit.rs.txt");
+pub(crate) const RM_LB_RESET_RS: &str = include_str!("../../templates/rm_leaderboard_reset.rs.txt");
+pub(crate) const RM_LB_SCHEMA: &str =
+    include_str!("../../templates/rm_leaderboard_schema.toml.txt");
+pub(crate) const RM_MM_MOD_RS: &str = include_str!("../../templates/rm_matchmaking_mod.rs.txt");
+pub(crate) const RM_MM_QUEUE_RS: &str = include_str!("../../templates/rm_matchmaking_queue.rs.txt");
+pub(crate) const RM_MM_DEQUEUE_RS: &str =
+    include_str!("../../templates/rm_matchmaking_dequeue.rs.txt");
+pub(crate) const RM_MM_MATCH_RS: &str = include_str!("../../templates/rm_matchmaking_match.rs.txt");
+pub(crate) const RM_MM_SCHEMA: &str =
+    include_str!("../../templates/rm_matchmaking_schema.toml.txt");
+pub(crate) const RM_GUILD_MOD_RS: &str = include_str!("../../templates/rm_guilds_mod.rs.txt");
+pub(crate) const RM_GUILD_CREATE_RS: &str = include_str!("../../templates/rm_guilds_create.rs.txt");
+pub(crate) const RM_GUILD_INVITE_RS: &str = include_str!("../../templates/rm_guilds_invite.rs.txt");
+pub(crate) const RM_GUILD_ACCEPT_RS: &str = include_str!("../../templates/rm_guilds_accept.rs.txt");
+pub(crate) const RM_GUILD_KICK_RS: &str = include_str!("../../templates/rm_guilds_kick.rs.txt");
+pub(crate) const RM_GUILD_SCHEMA: &str = include_str!("../../templates/rm_guilds_schema.toml.txt");
+pub(crate) const RM_QUEST_MOD_RS: &str = include_str!("../../templates/rm_quests_mod.rs.txt");
+pub(crate) const RM_QUEST_ACCEPT_RS: &str = include_str!("../../templates/rm_quests_accept.rs.txt");
+pub(crate) const RM_QUEST_PROGRESS_RS: &str =
+    include_str!("../../templates/rm_quests_progress.rs.txt");
+pub(crate) const RM_QUEST_COMPLETE_RS: &str =
+    include_str!("../../templates/rm_quests_complete.rs.txt");
+pub(crate) const RM_QUEST_SCHEMA: &str = include_str!("../../templates/rm_quests_schema.toml.txt");
+pub(crate) const RM_ECON_MOD_RS: &str = include_str!("../../templates/rm_economy_mod.rs.txt");
+pub(crate) const RM_ECON_BUY_RS: &str = include_str!("../../templates/rm_economy_buy.rs.txt");
+pub(crate) const RM_ECON_SELL_RS: &str = include_str!("../../templates/rm_economy_sell.rs.txt");
+pub(crate) const RM_ECON_TRANSFER_RS: &str =
+    include_str!("../../templates/rm_economy_transfer.rs.txt");
+pub(crate) const RM_ECON_LOOT_RS: &str = include_str!("../../templates/rm_economy_loot.rs.txt");
+pub(crate) const RM_ECON_SCHEMA: &str = include_str!("../../templates/rm_economy_schema.toml.txt");
+pub(crate) const RM_COMBAT_MOD_RS: &str = include_str!("../../templates/rm_combat_mod.rs.txt");
+pub(crate) const RM_COMBAT_ATTACK_RS: &str =
+    include_str!("../../templates/rm_combat_attack.rs.txt");
+pub(crate) const RM_COMBAT_RESPAWN_RS: &str =
+    include_str!("../../templates/rm_combat_respawn.rs.txt");
+pub(crate) const RM_COMBAT_ABILITY_RS: &str =
+    include_str!("../../templates/rm_combat_ability.rs.txt");
+pub(crate) const RM_COMBAT_SCHEMA: &str = include_str!("../../templates/rm_combat_schema.toml.txt");
+pub(crate) const RM_WORLD_MOD_RS: &str = include_str!("../../templates/rm_world_mod.rs.txt");
+pub(crate) const RM_WORLD_TICK_RS: &str = include_str!("../../templates/rm_world_tick.rs.txt");
+pub(crate) const RM_WORLD_NPC_RS: &str = include_str!("../../templates/rm_world_npc_spawn.rs.txt");
+pub(crate) const RM_WORLD_CLEANUP_RS: &str =
+    include_str!("../../templates/rm_world_cleanup.rs.txt");
+pub(crate) const RM_WORLD_SCHEMA: &str = include_str!("../../templates/rm_world_schema.toml.txt");
 
 // ── Rust client SDK scaffold ──────────────────────────────────────────────────
 
@@ -1610,10 +1256,11 @@ default (array/positional) mode for struct fields.
 "#;
 
 // ── Unity + Godot SDKs ────────────────────────────────────────────────────────
-pub(crate) const UNITY_CLIENT_CS: &str    = include_str!("../engine_templates/unity_VoltraClient.cs");
-pub(crate) const UNITY_BEHAVIOUR_CS: &str = include_str!("../engine_templates/unity_VoltraBehaviour.cs");
-pub(crate) const UNITY_MANAGER_CS: &str   = include_str!("../../templates/g_unity_Manager.cs.txt");
-pub(crate) const UNITY_GAME_README: &str  = include_str!("../../templates/g_unity_readme.md.txt");
-pub(crate) const GODOT_CLIENT_GD: &str    = include_str!("../engine_templates/godot_voltra_client.gd");
-pub(crate) const GODOT_MANAGER_GD: &str   = include_str!("../../templates/g_godot_Manager.gd.txt");
-pub(crate) const GODOT_GAME_README: &str  = include_str!("../../templates/g_godot_readme.md.txt");
+pub(crate) const UNITY_CLIENT_CS: &str = include_str!("../engine_templates/unity_VoltraClient.cs");
+pub(crate) const UNITY_BEHAVIOUR_CS: &str =
+    include_str!("../engine_templates/unity_VoltraBehaviour.cs");
+pub(crate) const UNITY_MANAGER_CS: &str = include_str!("../../templates/g_unity_Manager.cs.txt");
+pub(crate) const UNITY_GAME_README: &str = include_str!("../../templates/g_unity_readme.md.txt");
+pub(crate) const GODOT_CLIENT_GD: &str = include_str!("../engine_templates/godot_voltra_client.gd");
+pub(crate) const GODOT_MANAGER_GD: &str = include_str!("../../templates/g_godot_Manager.gd.txt");
+pub(crate) const GODOT_GAME_README: &str = include_str!("../../templates/g_godot_readme.md.txt");

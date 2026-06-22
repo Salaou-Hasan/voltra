@@ -30,9 +30,9 @@
 // ============================================================================
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use voltra::{reducer::ReducerContext, table::TableStore};
 use std::sync::Arc;
 use std::time::Duration;
+use voltra::{reducer::ReducerContext, table::TableStore};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -43,9 +43,10 @@ fn new_store() -> Arc<TableStore> {
 /// Write one position-update row for `player_id` in `lobby_id`.
 fn move_player(tables: &Arc<TableStore>, lobby_id: usize, player_id: usize) {
     let table = format!("l{}_players", lobby_id);
-    let key   = format!("p{}", player_id);
+    let key = format!("p{}", player_id);
     let mut ctx = ReducerContext::new(tables.clone(), 0);
-    let row = ctx.get_row(&table, &key)
+    let row = ctx
+        .get_row(&table, &key)
         .unwrap_or(None)
         .unwrap_or_else(|| serde_json::json!({"x": 0, "y": 0, "hp": 100}));
     let new_row = serde_json::json!({
@@ -61,7 +62,8 @@ fn move_player(tables: &Arc<TableStore>, lobby_id: usize, player_id: usize) {
 fn move_player_flat(tables: &Arc<TableStore>, player_id: usize) {
     let key = format!("p{}", player_id);
     let mut ctx = ReducerContext::new(tables.clone(), 0);
-    let row = ctx.get_row("players", &key)
+    let row = ctx
+        .get_row("players", &key)
         .unwrap_or(None)
         .unwrap_or_else(|| serde_json::json!({"x": 0, "y": 0, "hp": 100}));
     let new_row = serde_json::json!({
@@ -78,9 +80,10 @@ fn seed_players(tables: &Arc<TableStore>, lobbies: usize, players_per_lobby: usi
     for lobby in 0..lobbies {
         for player in 0..players_per_lobby {
             let table = format!("l{}_players", lobby);
-            let key   = format!("p{}", player);
+            let key = format!("p{}", player);
             let mut ctx = ReducerContext::new(tables.clone(), 0);
-            ctx.set_row(&table, &key, serde_json::json!({"x": 0, "y": 0, "hp": 100})).unwrap();
+            ctx.set_row(&table, &key, serde_json::json!({"x": 0, "y": 0, "hp": 100}))
+                .unwrap();
             ctx.commit().unwrap();
         }
     }
@@ -90,7 +93,12 @@ fn seed_flat(tables: &Arc<TableStore>, players: usize) {
     for player in 0..players {
         let key = format!("p{}", player);
         let mut ctx = ReducerContext::new(tables.clone(), 0);
-        ctx.set_row("players", &key, serde_json::json!({"x": 0, "y": 0, "hp": 100})).unwrap();
+        ctx.set_row(
+            "players",
+            &key,
+            serde_json::json!({"x": 0, "y": 0, "hp": 100}),
+        )
+        .unwrap();
         ctx.commit().unwrap();
     }
 }
@@ -101,8 +109,8 @@ fn seed_flat(tables: &Arc<TableStore>, players: usize) {
 
 fn bench_routing_overhead(c: &mut Criterion) {
     const TOTAL_PLAYERS: usize = 20_000;
-    const LOBBIES:        usize = 200;
-    const PPL:            usize = TOTAL_PLAYERS / LOBBIES; // 100 players/lobby
+    const LOBBIES: usize = 200;
+    const PPL: usize = TOTAL_PLAYERS / LOBBIES; // 100 players/lobby
 
     let flat_store = new_store();
     seed_flat(&flat_store, TOTAL_PLAYERS);
@@ -147,8 +155,8 @@ fn bench_routing_overhead(c: &mut Criterion) {
 
 fn bench_concurrent_isolation(c: &mut Criterion) {
     const LOBBIES: usize = 200;
-    const PPL:     usize = 100;
-    const TOTAL:   usize = LOBBIES * PPL;
+    const PPL: usize = 100;
+    const TOTAL: usize = LOBBIES * PPL;
 
     let tables = new_store();
     seed_players(&tables, LOBBIES, PPL);
@@ -185,7 +193,7 @@ fn bench_concurrent_isolation(c: &mut Criterion) {
                     for t in 0..threads {
                         let tables = &tables;
                         let start = t * lobbies_per_thread;
-                        let end   = (start + lobbies_per_thread).min(LOBBIES);
+                        let end = (start + lobbies_per_thread).min(LOBBIES);
                         s.spawn(move || {
                             for lobby_id in start..end {
                                 for player_id in 0..PPL {

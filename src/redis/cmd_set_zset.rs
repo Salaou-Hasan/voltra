@@ -113,7 +113,11 @@ pub fn spop(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
         Err(e) => return e,
     };
     if s.is_empty() {
-        return if count.is_some() { Resp::SetReply(vec![]) } else { Resp::Null };
+        return if count.is_some() {
+            Resp::SetReply(vec![])
+        } else {
+            Resp::Null
+        };
     }
     let mut pool = sorted_members(&s);
     let mut rng = Rng::seeded(db.now_ms() ^ pool.len() as u64);
@@ -247,7 +251,12 @@ pub fn setop(db: &mut dyn Db, ns: u32, args: &[Bytes], op: SetOp, store: bool) -
         store_coll(db, ns, args[0].clone(), Datum::Set(result), None);
         Resp::Int(card)
     } else {
-        Resp::SetReply(sorted_members(&result).into_iter().map(Resp::Bulk).collect())
+        Resp::SetReply(
+            sorted_members(&result)
+                .into_iter()
+                .map(Resp::Bulk)
+                .collect(),
+        )
     }
 }
 
@@ -415,7 +424,8 @@ pub fn zadd(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
     if args.len() < 3 {
         return Resp::arity("zadd");
     }
-    let (mut nx, mut xx, mut gt, mut lt, mut ch, mut incr) = (false, false, false, false, false, false);
+    let (mut nx, mut xx, mut gt, mut lt, mut ch, mut incr) =
+        (false, false, false, false, false, false);
     let mut i = 1;
     while i < args.len() {
         match upper(&args[i]).as_str() {
@@ -455,7 +465,11 @@ pub fn zadd(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
         };
         let member = pair[1].clone();
         let cur = z.score(&member);
-        let new_score = if incr { cur.unwrap_or(0.0) + score } else { score };
+        let new_score = if incr {
+            cur.unwrap_or(0.0) + score
+        } else {
+            score
+        };
         let allowed = match (cur, nx, xx, gt, lt) {
             (Some(_), true, _, _, _) => false,         // NX: only add new
             (None, _, true, _, _) => false,            // XX: only update existing
@@ -673,7 +687,9 @@ pub fn zrange(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
         return Resp::syntax();
     }
     if limit.is_some() && !by_score && !by_lex {
-        return Resp::err("ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX");
+        return Resp::err(
+            "ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX",
+        );
     }
     if by_lex && with_scores {
         return Resp::syntax();
@@ -686,7 +702,11 @@ pub fn zrange(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
 
     if by_score {
         // In REV mode the bounds come as (max, min).
-        let (lo_raw, hi_raw) = if rev { (&args[2], &args[1]) } else { (&args[1], &args[2]) };
+        let (lo_raw, hi_raw) = if rev {
+            (&args[2], &args[1])
+        } else {
+            (&args[1], &args[2])
+        };
         let (Some((min, min_ex)), Some((max, max_ex))) =
             (parse_score_bound(lo_raw), parse_score_bound(hi_raw))
         else {
@@ -706,7 +726,11 @@ pub fn zrange(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
     }
 
     if by_lex {
-        let (lo_raw, hi_raw) = if rev { (&args[2], &args[1]) } else { (&args[1], &args[2]) };
+        let (lo_raw, hi_raw) = if rev {
+            (&args[2], &args[1])
+        } else {
+            (&args[1], &args[2])
+        };
         let (Some(min), Some(max)) = (parse_lex_bound(lo_raw), parse_lex_bound(hi_raw)) else {
             return Resp::err("ERR min or max not valid string range item");
         };
@@ -792,7 +816,11 @@ pub fn zrangebyscore(db: &mut dyn Db, ns: u32, args: &[Bytes], rev: bool) -> Res
         }
     }
     // ZREVRANGEBYSCORE takes (max, min).
-    let (lo_raw, hi_raw) = if rev { (&args[2], &args[1]) } else { (&args[1], &args[2]) };
+    let (lo_raw, hi_raw) = if rev {
+        (&args[2], &args[1])
+    } else {
+        (&args[1], &args[2])
+    };
     let (Some((min, min_ex)), Some((max, max_ex))) =
         (parse_score_bound(lo_raw), parse_score_bound(hi_raw))
     else {
@@ -832,7 +860,11 @@ pub fn zrangebylex(db: &mut dyn Db, ns: u32, args: &[Bytes], rev: bool) -> Resp 
         };
         limit = Some((off, cnt));
     }
-    let (lo_raw, hi_raw) = if rev { (&args[2], &args[1]) } else { (&args[1], &args[2]) };
+    let (lo_raw, hi_raw) = if rev {
+        (&args[2], &args[1])
+    } else {
+        (&args[1], &args[2])
+    };
     let (Some(min), Some(max)) = (parse_lex_bound(lo_raw), parse_lex_bound(hi_raw)) else {
         return Resp::err("ERR min or max not valid string range item");
     };

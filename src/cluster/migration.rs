@@ -18,10 +18,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::cluster::{ClusterBus, NodeInfo};
 use crate::cluster::ring::SharedRing;
-use crate::table::TableStore;
+use crate::cluster::{ClusterBus, NodeInfo};
 use crate::error::Result;
+use crate::table::TableStore;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Status types
@@ -37,11 +37,11 @@ pub enum MigrationStatus {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MigrationState {
-    pub status:          MigrationStatus,
-    pub target_cluster:  String,
-    pub total_keys:      usize,
-    pub migrated_keys:   usize,
-    pub failed_keys:     usize,
+    pub status: MigrationStatus,
+    pub target_cluster: String,
+    pub total_keys: usize,
+    pub migrated_keys: usize,
+    pub failed_keys: usize,
     pub started_at_secs: u64,
     pub finished_at_secs: Option<u64>,
 }
@@ -49,12 +49,12 @@ pub struct MigrationState {
 impl MigrationState {
     fn idle() -> Self {
         MigrationState {
-            status:           MigrationStatus::Idle,
-            target_cluster:   String::new(),
-            total_keys:       0,
-            migrated_keys:    0,
-            failed_keys:      0,
-            started_at_secs:  0,
+            status: MigrationStatus::Idle,
+            target_cluster: String::new(),
+            total_keys: 0,
+            migrated_keys: 0,
+            failed_keys: 0,
+            started_at_secs: 0,
             finished_at_secs: None,
         }
     }
@@ -67,14 +67,14 @@ impl MigrationState {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MigrateRow {
     pub table: String,
-    pub key:   String,
-    pub data:  Value,
+    pub key: String,
+    pub data: Value,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MigrateBatch {
     pub source_cluster: String,
-    pub rows:           Vec<MigrateRow>,
+    pub rows: Vec<MigrateRow>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -100,7 +100,10 @@ impl MigrationCoordinator {
 
     /// Current state snapshot (for /cluster/migration-status).
     pub fn status(&self) -> MigrationState {
-        self.state.lock().map(|s| s.clone()).unwrap_or_else(|_| MigrationState::idle())
+        self.state
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| MigrationState::idle())
     }
 
     /// Start a rebalancing migration in the background.
@@ -114,13 +117,13 @@ impl MigrationCoordinator {
     /// - `batch_size`      — rows per HTTP batch (default 200).
     pub fn start_rebalance(
         self: &Arc<Self>,
-        new_cluster_id:  String,
-        new_node:        NodeInfo,
-        ring:            Arc<SharedRing>,
-        tables:          Arc<TableStore>,
-        bus:             Arc<ClusterBus>,
-        my_cluster_id:   String,
-        batch_size:      usize,
+        new_cluster_id: String,
+        new_node: NodeInfo,
+        ring: Arc<SharedRing>,
+        tables: Arc<TableStore>,
+        bus: Arc<ClusterBus>,
+        my_cluster_id: String,
+        batch_size: usize,
     ) {
         // Guard: only one migration at a time.
         {
@@ -130,12 +133,12 @@ impl MigrationCoordinator {
                 return;
             }
             *st = MigrationState {
-                status:           MigrationStatus::Running,
-                target_cluster:   new_cluster_id.clone(),
-                total_keys:       0,
-                migrated_keys:    0,
-                failed_keys:      0,
-                started_at_secs:  now_secs(),
+                status: MigrationStatus::Running,
+                target_cluster: new_cluster_id.clone(),
+                total_keys: 0,
+                migrated_keys: 0,
+                failed_keys: 0,
+                started_at_secs: now_secs(),
                 finished_at_secs: None,
             };
         }
@@ -173,14 +176,14 @@ impl MigrationCoordinator {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn run_migration(
-    coord:          &Arc<MigrationCoordinator>,
+    coord: &Arc<MigrationCoordinator>,
     new_cluster_id: &str,
-    new_node:       &NodeInfo,
-    ring:           &Arc<SharedRing>,
-    tables:         &Arc<TableStore>,
-    bus:            &Arc<ClusterBus>,
-    my_cluster_id:  &str,
-    batch_size:     usize,
+    new_node: &NodeInfo,
+    ring: &Arc<SharedRing>,
+    tables: &Arc<TableStore>,
+    bus: &Arc<ClusterBus>,
+    my_cluster_id: &str,
+    batch_size: usize,
 ) -> Result<()> {
     // 1. Collect all local (table, key) pairs.
     let table_names = tables.list_tables();
@@ -196,9 +199,7 @@ fn run_migration(
     // 2. Compute which keys should migrate to the new cluster.
     //    "Should migrate" = new owner (ring WITH new cluster) is new_cluster_id
     //    AND old owner was this node.
-    let flat_keys: Vec<String> = all_keys.iter()
-        .map(|(t, k)| format!("{t}:{k}"))
-        .collect();
+    let flat_keys: Vec<String> = all_keys.iter().map(|(t, k)| format!("{t}:{k}")).collect();
 
     let migrating_flat = ring.keys_migrating_to(new_cluster_id, &flat_keys);
     let total = migrating_flat.len();
@@ -224,10 +225,11 @@ fn run_migration(
     let client = bus.http_client();
     let receive_url = format!("{}/cluster/receive", new_node.metrics_url);
     let mut migrated = 0usize;
-    let mut failed   = 0usize;
+    let mut failed = 0usize;
 
     // Parse the flat composite keys back to (table, key).
-    let migrate_pairs: Vec<(String, String)> = migrating_flat.into_iter()
+    let migrate_pairs: Vec<(String, String)> = migrating_flat
+        .into_iter()
         .filter_map(|(flat, _)| {
             let mut parts = flat.splitn(2, ':');
             let t = parts.next()?.to_owned();
@@ -240,10 +242,16 @@ fn run_migration(
         let mut batch_rows: Vec<MigrateRow> = Vec::with_capacity(chunk.len());
         for (table, key) in chunk {
             if let Ok(Some(data)) = tables.get_row(table, key) {
-                batch_rows.push(MigrateRow { table: table.clone(), key: key.clone(), data });
+                batch_rows.push(MigrateRow {
+                    table: table.clone(),
+                    key: key.clone(),
+                    data,
+                });
             }
         }
-        if batch_rows.is_empty() { continue; }
+        if batch_rows.is_empty() {
+            continue;
+        }
 
         let batch_len = batch_rows.len();
         let batch = MigrateBatch {
@@ -276,7 +284,7 @@ fn run_migration(
         // Update progress.
         let mut st = coord.state.lock().unwrap();
         st.migrated_keys = migrated;
-        st.failed_keys   = failed;
+        st.failed_keys = failed;
     }
 
     log::info!("[migration] done: {migrated} migrated, {failed} failed");
@@ -334,12 +342,12 @@ mod tests {
     #[test]
     fn migration_status_serializes() {
         let st = MigrationState {
-            status:           MigrationStatus::Running,
-            target_cluster:   "asia".to_owned(),
-            total_keys:       500,
-            migrated_keys:    200,
-            failed_keys:      0,
-            started_at_secs:  1_700_000_000,
+            status: MigrationStatus::Running,
+            target_cluster: "asia".to_owned(),
+            total_keys: 500,
+            migrated_keys: 200,
+            failed_keys: 0,
+            started_at_secs: 1_700_000_000,
             finished_at_secs: None,
         };
         let json = serde_json::to_string(&st).unwrap();
@@ -352,13 +360,11 @@ mod tests {
     fn migrate_batch_roundtrip() {
         let batch = MigrateBatch {
             source_cluster: "africa".to_owned(),
-            rows: vec![
-                MigrateRow {
-                    table: "players".to_owned(),
-                    key:   "alice".to_owned(),
-                    data:  serde_json::json!({ "hp": 100, "alive": true }),
-                },
-            ],
+            rows: vec![MigrateRow {
+                table: "players".to_owned(),
+                key: "alice".to_owned(),
+                data: serde_json::json!({ "hp": 100, "alive": true }),
+            }],
         };
         let json = serde_json::to_string(&batch).unwrap();
         let decoded: MigrateBatch = serde_json::from_str(&json).unwrap();

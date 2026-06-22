@@ -29,7 +29,7 @@
 //   Meta key : "\xff\x00last_seq"           (prefix 0xFF avoids all user keys)
 // ============================================================================
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::table::{RowDelta, TableStore};
 use std::path::Path;
 
@@ -44,9 +44,8 @@ pub struct PersistenceEngine {
 impl PersistenceEngine {
     /// Open (or create) the sled database at the given directory path.
     pub fn open(path: &Path) -> Result<Self> {
-        let db = sled::open(path).map_err(|e| {
-            VoltraError::StorageError(format!("open sled at {:?}: {}", path, e))
-        })?;
+        let db = sled::open(path)
+            .map_err(|e| VoltraError::StorageError(format!("open sled at {:?}: {}", path, e)))?;
         Ok(PersistenceEngine { db })
     }
 
@@ -56,9 +55,11 @@ impl PersistenceEngine {
     /// returns `(0, 0)`.
     pub fn load_all(&self, tables: &TableStore) -> Result<(usize, u64)> {
         // Retrieve last persisted WAL sequence number.
-        let last_seq: u64 = match self.db.get(META_LAST_SEQ_KEY).map_err(|e| {
-            VoltraError::StorageError(format!("sled get last_seq: {}", e))
-        })? {
+        let last_seq: u64 = match self
+            .db
+            .get(META_LAST_SEQ_KEY)
+            .map_err(|e| VoltraError::StorageError(format!("sled get last_seq: {}", e)))?
+        {
             Some(bytes) if bytes.len() == 8 => {
                 let arr: [u8; 8] = bytes[..8].try_into().unwrap_or([0u8; 8]);
                 u64::from_le_bytes(arr)
@@ -69,9 +70,8 @@ impl PersistenceEngine {
         let mut count = 0usize;
 
         for result in self.db.iter() {
-            let (k, v) = result.map_err(|e| {
-                VoltraError::StorageError(format!("sled iter: {}", e))
-            })?;
+            let (k, v) =
+                result.map_err(|e| VoltraError::StorageError(format!("sled iter: {}", e)))?;
 
             // Skip metadata keys (start with 0xFF).
             if k.first() == Some(&0xFF) {
@@ -96,11 +96,9 @@ impl PersistenceEngine {
             // Deserialize JSON and insert into TableStore.
             match serde_json::from_slice::<serde_json::Value>(&v) {
                 Ok(value) => {
-                    if let Err(e) = tables.set_row(
-                        table_name.to_string(),
-                        row_key.to_string(),
-                        value,
-                    ) {
+                    if let Err(e) =
+                        tables.set_row(table_name.to_string(), row_key.to_string(), value)
+                    {
                         log::warn!(
                             "[persist] Failed to restore {}/{}: {}",
                             table_name,
@@ -148,10 +146,7 @@ impl PersistenceEngine {
                                 batch.insert(key_bytes, bytes.as_slice());
                             }
                             Err(e) => {
-                                log::warn!(
-                                    "[persist] JSON encode error for {}: {}",
-                                    composite, e
-                                );
+                                log::warn!("[persist] JSON encode error for {}: {}", composite, e);
                             }
                         }
                     }
@@ -168,9 +163,9 @@ impl PersistenceEngine {
         // Update the last sequence number in the same batch.
         batch.insert(META_LAST_SEQ_KEY, &seq.to_le_bytes());
 
-        self.db.apply_batch(batch).map_err(|e| {
-            VoltraError::StorageError(format!("sled apply_batch: {}", e))
-        })?;
+        self.db
+            .apply_batch(batch)
+            .map_err(|e| VoltraError::StorageError(format!("sled apply_batch: {}", e)))?;
 
         // sled flushes to disk automatically in the background.
         // We only need an explicit flush for hard-durability guarantees

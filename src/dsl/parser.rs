@@ -4,11 +4,11 @@
 
 use super::ast::*;
 use super::error::VoltraError;
-use super::lexer::{Token, Spanned};
+use super::lexer::{Spanned, Token};
 
 struct Parser {
     tokens: Vec<Spanned>,
-    pos:    usize,
+    pos: usize,
 }
 
 impl Parser {
@@ -26,7 +26,9 @@ impl Parser {
 
     fn advance(&mut self) -> &Token {
         let t = &self.tokens[self.pos].token;
-        if self.pos + 1 < self.tokens.len() { self.pos += 1; }
+        if self.pos + 1 < self.tokens.len() {
+            self.pos += 1;
+        }
         t
     }
 
@@ -35,27 +37,39 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            Err(VoltraError::new(self.line(), format!(
-                "expected {:?}, found {:?}", expected, self.peek()
-            )))
+            Err(VoltraError::new(
+                self.line(),
+                format!("expected {:?}, found {:?}", expected, self.peek()),
+            ))
         }
     }
 
     fn eat_ident(&mut self) -> Result<String, VoltraError> {
         match self.peek().clone() {
-            Token::Ident(s) => { self.advance(); Ok(s) }
-            other => Err(VoltraError::new(self.line(), format!("expected identifier, found {:?}", other))),
+            Token::Ident(s) => {
+                self.advance();
+                Ok(s)
+            }
+            other => Err(VoltraError::new(
+                self.line(),
+                format!("expected identifier, found {:?}", other),
+            )),
         }
     }
 
     fn eat_type(&mut self) -> Result<Type, VoltraError> {
         let line = self.line();
         let ty = match self.peek() {
-            Token::TStr   => Type::Str,
-            Token::TInt   => Type::Int,
+            Token::TStr => Type::Str,
+            Token::TInt => Type::Int,
             Token::TFloat => Type::Float,
-            Token::TBool  => Type::Bool,
-            other => return Err(VoltraError::new(line, format!("expected type (str/int/float/bool), found {:?}", other))),
+            Token::TBool => Type::Bool,
+            other => {
+                return Err(VoltraError::new(
+                    line,
+                    format!("expected type (str/int/float/bool), found {:?}", other),
+                ))
+            }
         };
         self.advance();
         Ok(ty)
@@ -68,16 +82,19 @@ impl Parser {
     // ── Top-level ─────────────────────────────────────────────────────────────
 
     fn parse_program(&mut self) -> Result<Program, VoltraError> {
-        let mut tables   = Vec::new();
+        let mut tables = Vec::new();
         let mut reducers = Vec::new();
 
         while !self.at_end() {
             match self.peek() {
-                Token::Table   => tables.push(self.parse_table()?),
+                Token::Table => tables.push(self.parse_table()?),
                 Token::Reducer => reducers.push(self.parse_reducer()?),
-                other => return Err(VoltraError::new(self.line(), format!(
-                    "expected 'table' or 'reducer', found {:?}", other
-                ))),
+                other => {
+                    return Err(VoltraError::new(
+                        self.line(),
+                        format!("expected 'table' or 'reducer', found {:?}", other),
+                    ))
+                }
             }
         }
 
@@ -95,7 +112,9 @@ impl Parser {
         let mut fields = Vec::new();
         while self.peek() != &Token::RBrace && !self.at_end() {
             fields.push(self.parse_field_def()?);
-            if self.peek() == &Token::Comma { self.advance(); }
+            if self.peek() == &Token::Comma {
+                self.advance();
+            }
         }
 
         self.eat(&Token::RBrace)?;
@@ -115,7 +134,12 @@ impl Parser {
             None
         };
 
-        Ok(FieldDef { name, ty, default, line })
+        Ok(FieldDef {
+            name,
+            ty,
+            default,
+            line,
+        })
     }
 
     fn parse_literal(&mut self) -> Result<Literal, VoltraError> {
@@ -124,17 +148,41 @@ impl Parser {
         if self.peek() == &Token::Minus {
             self.advance();
             return match self.peek().clone() {
-                Token::IntLit(n)   => { self.advance(); Ok(Literal::Int(-n)) }
-                Token::FloatLit(f) => { self.advance(); Ok(Literal::Float(-f)) }
-                other => Err(VoltraError::new(line, format!("expected numeric literal after '-', found {:?}", other))),
+                Token::IntLit(n) => {
+                    self.advance();
+                    Ok(Literal::Int(-n))
+                }
+                Token::FloatLit(f) => {
+                    self.advance();
+                    Ok(Literal::Float(-f))
+                }
+                other => Err(VoltraError::new(
+                    line,
+                    format!("expected numeric literal after '-', found {:?}", other),
+                )),
             };
         }
         match self.peek().clone() {
-            Token::IntLit(n)  => { self.advance(); Ok(Literal::Int(n)) }
-            Token::FloatLit(f)=> { self.advance(); Ok(Literal::Float(f)) }
-            Token::StrLit(s)  => { self.advance(); Ok(Literal::Str(s)) }
-            Token::BoolLit(b) => { self.advance(); Ok(Literal::Bool(b)) }
-            other => Err(VoltraError::new(line, format!("expected literal, found {:?}", other))),
+            Token::IntLit(n) => {
+                self.advance();
+                Ok(Literal::Int(n))
+            }
+            Token::FloatLit(f) => {
+                self.advance();
+                Ok(Literal::Float(f))
+            }
+            Token::StrLit(s) => {
+                self.advance();
+                Ok(Literal::Str(s))
+            }
+            Token::BoolLit(b) => {
+                self.advance();
+                Ok(Literal::Bool(b))
+            }
+            other => Err(VoltraError::new(
+                line,
+                format!("expected literal, found {:?}", other),
+            )),
         }
     }
 
@@ -152,12 +200,19 @@ impl Parser {
             self.eat(&Token::Colon)?;
             let ty = self.eat_type()?;
             params.push(Param { name: pname, ty });
-            if self.peek() == &Token::Comma { self.advance(); }
+            if self.peek() == &Token::Comma {
+                self.advance();
+            }
         }
 
         self.eat(&Token::RParen)?;
         let body = self.parse_block()?;
-        Ok(ReducerDecl { name, params, body, line })
+        Ok(ReducerDecl {
+            name,
+            params,
+            body,
+            line,
+        })
     }
 
     // ── Block: { stmt* } ─────────────────────────────────────────────────────
@@ -177,17 +232,26 @@ impl Parser {
     fn parse_stmt(&mut self) -> Result<Stmt, VoltraError> {
         let line = self.line();
         match self.peek().clone() {
-            Token::Let      => self.parse_let(line),
-            Token::Delete   => self.parse_delete(line),
-            Token::If       => self.parse_if(line),
-            Token::Return   => self.parse_return(line),
-            Token::Error    => self.parse_error_stmt(line),
-            Token::For      => self.parse_for_stmt(line),
-            Token::While    => self.parse_while_stmt(line),
-            Token::Break    => { self.advance(); Ok(Stmt::Break { line }) }
-            Token::Continue => { self.advance(); Ok(Stmt::Continue { line }) }
+            Token::Let => self.parse_let(line),
+            Token::Delete => self.parse_delete(line),
+            Token::If => self.parse_if(line),
+            Token::Return => self.parse_return(line),
+            Token::Error => self.parse_error_stmt(line),
+            Token::For => self.parse_for_stmt(line),
+            Token::While => self.parse_while_stmt(line),
+            Token::Break => {
+                self.advance();
+                Ok(Stmt::Break { line })
+            }
+            Token::Continue => {
+                self.advance();
+                Ok(Stmt::Continue { line })
+            }
             Token::Ident(name) => self.parse_ident_stmt(name, line),
-            other => Err(VoltraError::new(line, format!("unexpected statement start: {:?}", other))),
+            other => Err(VoltraError::new(
+                line,
+                format!("unexpected statement start: {:?}", other),
+            )),
         }
     }
 
@@ -212,13 +276,23 @@ impl Parser {
                     None
                 };
 
-                return Ok(Stmt::LetRow { name, table, key: Box::new(key), else_body, line });
+                return Ok(Stmt::LetRow {
+                    name,
+                    table,
+                    key: Box::new(key),
+                    else_body,
+                    line,
+                });
             }
             self.pos = saved_pos;
         }
 
         let value = self.parse_expr()?;
-        Ok(Stmt::Let { name, value: Box::new(value), line })
+        Ok(Stmt::Let {
+            name,
+            value: Box::new(value),
+            line,
+        })
     }
 
     fn parse_delete(&mut self, line: usize) -> Result<Stmt, VoltraError> {
@@ -227,7 +301,11 @@ impl Parser {
         self.eat(&Token::LBracket)?;
         let key = self.parse_expr()?;
         self.eat(&Token::RBracket)?;
-        Ok(Stmt::DeleteRow { table, key: Box::new(key), line })
+        Ok(Stmt::DeleteRow {
+            table,
+            key: Box::new(key),
+            line,
+        })
     }
 
     fn parse_if(&mut self, line: usize) -> Result<Stmt, VoltraError> {
@@ -247,21 +325,37 @@ impl Parser {
         } else {
             None
         };
-        Ok(Stmt::If { condition: Box::new(condition), then_body, else_body, line })
+        Ok(Stmt::If {
+            condition: Box::new(condition),
+            then_body,
+            else_body,
+            line,
+        })
     }
 
     fn parse_return(&mut self, line: usize) -> Result<Stmt, VoltraError> {
         self.eat(&Token::Return)?;
         let value = self.parse_expr()?;
-        Ok(Stmt::Return { value: Box::new(value), line })
+        Ok(Stmt::Return {
+            value: Box::new(value),
+            line,
+        })
     }
 
     fn parse_error_stmt(&mut self, line: usize) -> Result<Stmt, VoltraError> {
         self.eat(&Token::Error)?;
         self.eat(&Token::LParen)?;
         let message = match self.peek().clone() {
-            Token::StrLit(s) => { self.advance(); s }
-            other => return Err(VoltraError::new(line, format!("error() expects a string literal, found {:?}", other))),
+            Token::StrLit(s) => {
+                self.advance();
+                s
+            }
+            other => {
+                return Err(VoltraError::new(
+                    line,
+                    format!("error() expects a string literal, found {:?}", other),
+                ))
+            }
         };
         self.eat(&Token::RParen)?;
         Ok(Stmt::Error { message, line })
@@ -280,13 +374,24 @@ impl Parser {
             self.eat(&Token::In)?;
             let table = self.eat_ident()?;
             let body = self.parse_block()?;
-            Ok(Stmt::ForRow { key_var: first_var, val_var, table, body, line })
+            Ok(Stmt::ForRow {
+                key_var: first_var,
+                val_var,
+                table,
+                body,
+                line,
+            })
         } else {
             // ForArray: for item in expr { }
             self.eat(&Token::In)?;
             let array = self.parse_expr()?;
             let body = self.parse_block()?;
-            Ok(Stmt::ForArray { item_var: first_var, array: Box::new(array), body, line })
+            Ok(Stmt::ForArray {
+                item_var: first_var,
+                array: Box::new(array),
+                body,
+                line,
+            })
         }
     }
 
@@ -295,7 +400,11 @@ impl Parser {
         self.eat(&Token::While)?;
         let condition = self.parse_expr()?;
         let body = self.parse_block()?;
-        Ok(Stmt::While { condition: Box::new(condition), body, line })
+        Ok(Stmt::While {
+            condition: Box::new(condition),
+            body,
+            line,
+        })
     }
 
     /// Statement starting with an identifier:
@@ -319,7 +428,11 @@ impl Parser {
         if self.peek() == &Token::Eq {
             self.advance(); // consume `=`
             let value = self.parse_expr()?;
-            return Ok(Stmt::Assign { name, value: Box::new(value), line });
+            return Ok(Stmt::Assign {
+                name,
+                value: Box::new(value),
+                line,
+            });
         }
 
         // Array-index statements
@@ -333,26 +446,44 @@ impl Parser {
 
             // Compound assignment: +=, -=, *=, /=
             let compound_op = match self.peek() {
-                Token::PlusEq  => Some(BinOp::Add),
+                Token::PlusEq => Some(BinOp::Add),
                 Token::MinusEq => Some(BinOp::Sub),
-                Token::StarEq  => Some(BinOp::Mul),
+                Token::StarEq => Some(BinOp::Mul),
                 Token::SlashEq => Some(BinOp::Div),
                 _ => None,
             };
             if let Some(op) = compound_op {
                 self.advance(); // consume the compound-assignment token
                 let value = self.parse_expr()?;
-                return Ok(Stmt::AssignFieldOp { table: name, key: Box::new(key), field, op, value: Box::new(value), line });
+                return Ok(Stmt::AssignFieldOp {
+                    table: name,
+                    key: Box::new(key),
+                    field,
+                    op,
+                    value: Box::new(value),
+                    line,
+                });
             }
 
             // Plain assignment
             self.eat(&Token::Eq)?;
             let value = self.parse_expr()?;
-            Ok(Stmt::AssignField { table: name, key: Box::new(key), field, value: Box::new(value), line })
+            Ok(Stmt::AssignField {
+                table: name,
+                key: Box::new(key),
+                field,
+                value: Box::new(value),
+                line,
+            })
         } else {
             self.eat(&Token::Eq)?;
             let value = self.parse_expr()?;
-            Ok(Stmt::AssignRow { table: name, key: Box::new(key), value: Box::new(value), line })
+            Ok(Stmt::AssignRow {
+                table: name,
+                key: Box::new(key),
+                value: Box::new(value),
+                line,
+            })
         }
     }
 
@@ -362,7 +493,9 @@ impl Parser {
         let mut args = Vec::new();
         while self.peek() != &Token::RParen && !self.at_end() {
             args.push(self.parse_expr()?);
-            if self.peek() == &Token::Comma { self.advance(); }
+            if self.peek() == &Token::Comma {
+                self.advance();
+            }
         }
         Ok(args)
     }
@@ -382,7 +515,11 @@ impl Parser {
         while self.peek() == &Token::PipePipe {
             self.advance();
             let right = self.parse_and()?;
-            left = Expr::BinOp { left: Box::new(left), op: BinOp::Or, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op: BinOp::Or,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -392,7 +529,11 @@ impl Parser {
         while self.peek() == &Token::AmpAmp {
             self.advance();
             let right = self.parse_bitor()?;
-            left = Expr::BinOp { left: Box::new(left), op: BinOp::And, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op: BinOp::And,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -402,7 +543,11 @@ impl Parser {
         while self.peek() == &Token::Pipe {
             self.advance();
             let right = self.parse_bitxor()?;
-            left = Expr::BinOp { left: Box::new(left), op: BinOp::BitOr, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op: BinOp::BitOr,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -412,7 +557,11 @@ impl Parser {
         while self.peek() == &Token::Caret {
             self.advance();
             let right = self.parse_bitand()?;
-            left = Expr::BinOp { left: Box::new(left), op: BinOp::BitXor, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op: BinOp::BitXor,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -422,7 +571,11 @@ impl Parser {
         while self.peek() == &Token::Amp {
             self.advance();
             let right = self.parse_equality()?;
-            left = Expr::BinOp { left: Box::new(left), op: BinOp::BitAnd, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op: BinOp::BitAnd,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -431,13 +584,17 @@ impl Parser {
         let mut left = self.parse_comparison()?;
         loop {
             let op = match self.peek() {
-                Token::EqEq   => BinOp::Eq,
+                Token::EqEq => BinOp::Eq,
                 Token::BangEq => BinOp::Ne,
                 _ => break,
             };
             self.advance();
             let right = self.parse_comparison()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -446,15 +603,19 @@ impl Parser {
         let mut left = self.parse_shift()?;
         loop {
             let op = match self.peek() {
-                Token::Lt   => BinOp::Lt,
-                Token::Gt   => BinOp::Gt,
+                Token::Lt => BinOp::Lt,
+                Token::Gt => BinOp::Gt,
                 Token::LtEq => BinOp::Le,
                 Token::GtEq => BinOp::Ge,
                 _ => break,
             };
             self.advance();
             let right = self.parse_shift()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -469,7 +630,11 @@ impl Parser {
             };
             self.advance();
             let right = self.parse_additive()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -478,13 +643,17 @@ impl Parser {
         let mut left = self.parse_multiplicative()?;
         loop {
             let op = match self.peek() {
-                Token::Plus  => BinOp::Add,
+                Token::Plus => BinOp::Add,
                 Token::Minus => BinOp::Sub,
                 _ => break,
             };
             self.advance();
             let right = self.parse_multiplicative()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -493,14 +662,18 @@ impl Parser {
         let mut left = self.parse_unary()?;
         loop {
             let op = match self.peek() {
-                Token::Star    => BinOp::Mul,
-                Token::Slash   => BinOp::Div,
+                Token::Star => BinOp::Mul,
+                Token::Slash => BinOp::Div,
                 Token::Percent => BinOp::Mod,
                 _ => break,
             };
             self.advance();
             let right = self.parse_unary()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -516,8 +689,8 @@ impl Parser {
             let inner = self.parse_unary()?;
             // Represent -x as (0 - x); avoids adding a new AST node
             return Ok(Expr::BinOp {
-                left:  Box::new(Expr::Lit(Literal::Int(0))),
-                op:    BinOp::Sub,
+                left: Box::new(Expr::Lit(Literal::Int(0))),
+                op: BinOp::Sub,
                 right: Box::new(inner),
             });
         }
@@ -530,7 +703,10 @@ impl Parser {
             if self.peek() == &Token::Dot {
                 self.advance();
                 let field = self.eat_ident()?;
-                expr = Expr::FieldAccess { object: Box::new(expr), field };
+                expr = Expr::FieldAccess {
+                    object: Box::new(expr),
+                    field,
+                };
             } else {
                 break;
             }
@@ -541,10 +717,22 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr, VoltraError> {
         let line = self.line();
         match self.peek().clone() {
-            Token::IntLit(n)  => { self.advance(); Ok(Expr::Lit(Literal::Int(n))) }
-            Token::FloatLit(f)=> { self.advance(); Ok(Expr::Lit(Literal::Float(f))) }
-            Token::StrLit(s)  => { self.advance(); Ok(Expr::Lit(Literal::Str(s))) }
-            Token::BoolLit(b) => { self.advance(); Ok(Expr::Lit(Literal::Bool(b))) }
+            Token::IntLit(n) => {
+                self.advance();
+                Ok(Expr::Lit(Literal::Int(n)))
+            }
+            Token::FloatLit(f) => {
+                self.advance();
+                Ok(Expr::Lit(Literal::Float(f)))
+            }
+            Token::StrLit(s) => {
+                self.advance();
+                Ok(Expr::Lit(Literal::Str(s)))
+            }
+            Token::BoolLit(b) => {
+                self.advance();
+                Ok(Expr::Lit(Literal::Bool(b)))
+            }
 
             Token::LParen => {
                 self.advance();
@@ -559,7 +747,9 @@ impl Parser {
                 let mut elems = Vec::new();
                 while self.peek() != &Token::RBracket && !self.at_end() {
                     elems.push(self.parse_expr()?);
-                    if self.peek() == &Token::Comma { self.advance(); }
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    }
                 }
                 self.eat(&Token::RBracket)?;
                 Ok(Expr::ArrayLit(elems))
@@ -574,7 +764,9 @@ impl Parser {
                     self.eat(&Token::Colon)?;
                     let val = self.parse_expr()?;
                     fields.push((field_name, val));
-                    if self.peek() == &Token::Comma { self.advance(); }
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    }
                 }
                 self.eat(&Token::RBrace)?;
                 Ok(Expr::RowLiteral { fields })
@@ -602,39 +794,69 @@ impl Parser {
                     self.advance();
                     let key = self.parse_expr()?;
                     self.eat(&Token::RBracket)?;
-                    return Ok(Expr::RowRead { table: name, key: Box::new(key) });
+                    return Ok(Expr::RowRead {
+                        table: name,
+                        key: Box::new(key),
+                    });
                 }
 
                 Ok(Expr::Var(name))
             }
 
             // Type keywords used as cast functions: int(x), float(x), str(x), bool(x)
-            Token::TInt   if self.tokens.get(self.pos + 1).map(|s| &s.token) == Some(&Token::LParen) => {
-                self.advance(); self.advance();
+            Token::TInt
+                if self.tokens.get(self.pos + 1).map(|s| &s.token) == Some(&Token::LParen) =>
+            {
+                self.advance();
+                self.advance();
                 let args = self.parse_arg_list()?;
                 self.eat(&Token::RParen)?;
-                Ok(Expr::FnCall { name: "int".to_owned(), args })
+                Ok(Expr::FnCall {
+                    name: "int".to_owned(),
+                    args,
+                })
             }
-            Token::TFloat if self.tokens.get(self.pos + 1).map(|s| &s.token) == Some(&Token::LParen) => {
-                self.advance(); self.advance();
+            Token::TFloat
+                if self.tokens.get(self.pos + 1).map(|s| &s.token) == Some(&Token::LParen) =>
+            {
+                self.advance();
+                self.advance();
                 let args = self.parse_arg_list()?;
                 self.eat(&Token::RParen)?;
-                Ok(Expr::FnCall { name: "float".to_owned(), args })
+                Ok(Expr::FnCall {
+                    name: "float".to_owned(),
+                    args,
+                })
             }
-            Token::TStr   if self.tokens.get(self.pos + 1).map(|s| &s.token) == Some(&Token::LParen) => {
-                self.advance(); self.advance();
+            Token::TStr
+                if self.tokens.get(self.pos + 1).map(|s| &s.token) == Some(&Token::LParen) =>
+            {
+                self.advance();
+                self.advance();
                 let args = self.parse_arg_list()?;
                 self.eat(&Token::RParen)?;
-                Ok(Expr::FnCall { name: "str".to_owned(), args })
+                Ok(Expr::FnCall {
+                    name: "str".to_owned(),
+                    args,
+                })
             }
-            Token::TBool  if self.tokens.get(self.pos + 1).map(|s| &s.token) == Some(&Token::LParen) => {
-                self.advance(); self.advance();
+            Token::TBool
+                if self.tokens.get(self.pos + 1).map(|s| &s.token) == Some(&Token::LParen) =>
+            {
+                self.advance();
+                self.advance();
                 let args = self.parse_arg_list()?;
                 self.eat(&Token::RParen)?;
-                Ok(Expr::FnCall { name: "bool".to_owned(), args })
+                Ok(Expr::FnCall {
+                    name: "bool".to_owned(),
+                    args,
+                })
             }
 
-            other => Err(VoltraError::new(line, format!("unexpected expression token: {:?}", other))),
+            other => Err(VoltraError::new(
+                line,
+                format!("unexpected expression token: {:?}", other),
+            )),
         }
     }
 }
@@ -668,7 +890,10 @@ mod tests {
         assert_eq!(p.tables[0].fields.len(), 2);
         assert_eq!(p.tables[0].fields[0].name, "hp");
         assert_eq!(p.tables[0].fields[0].ty, Type::Int);
-        assert!(matches!(p.tables[0].fields[0].default, Some(Literal::Int(100))));
+        assert!(matches!(
+            p.tables[0].fields[0].default,
+            Some(Literal::Int(100))
+        ));
     }
 
     #[test]
@@ -698,14 +923,22 @@ mod tests {
         "#;
         let p = parse_src(src);
         let stmt = &p.reducers[0].body[0];
-        assert!(matches!(stmt, Stmt::LetRow { else_body: Some(_), .. }));
+        assert!(matches!(
+            stmt,
+            Stmt::LetRow {
+                else_body: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
     fn parse_assign_row() {
         let src = r#"reducer spawn(id: str) { players[id] = { hp: 100, alive: true } }"#;
         let p = parse_src(src);
-        assert!(matches!(&p.reducers[0].body[0], Stmt::AssignRow { table, .. } if table == "players"));
+        assert!(
+            matches!(&p.reducers[0].body[0], Stmt::AssignRow { table, .. } if table == "players")
+        );
     }
 
     #[test]
@@ -719,21 +952,32 @@ mod tests {
     fn parse_assign_field_compound() {
         let src = r#"reducer heal(id: str, amt: int) { players[id].hp += amt }"#;
         let p = parse_src(src);
-        assert!(matches!(&p.reducers[0].body[0], Stmt::AssignFieldOp { op: BinOp::Add, field, .. } if field == "hp"));
+        assert!(
+            matches!(&p.reducers[0].body[0], Stmt::AssignFieldOp { op: BinOp::Add, field, .. } if field == "hp")
+        );
     }
 
     #[test]
     fn parse_delete() {
         let src = r#"reducer despawn(id: str) { delete players[id] }"#;
         let p = parse_src(src);
-        assert!(matches!(&p.reducers[0].body[0], Stmt::DeleteRow { table, .. } if table == "players"));
+        assert!(
+            matches!(&p.reducers[0].body[0], Stmt::DeleteRow { table, .. } if table == "players")
+        );
     }
 
     #[test]
     fn parse_if_else() {
-        let src = r#"reducer check(hp: int) { if hp <= 0 { error("dead") } else { error("alive") } }"#;
+        let src =
+            r#"reducer check(hp: int) { if hp <= 0 { error("dead") } else { error("alive") } }"#;
         let p = parse_src(src);
-        assert!(matches!(&p.reducers[0].body[0], Stmt::If { else_body: Some(_), .. }));
+        assert!(matches!(
+            &p.reducers[0].body[0],
+            Stmt::If {
+                else_body: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -744,7 +988,11 @@ mod tests {
             else { return { tier: "bronze" } }
         }"#;
         let p = parse_src(src);
-        if let Stmt::If { else_body: Some(else_stmts), .. } = &p.reducers[0].body[0] {
+        if let Stmt::If {
+            else_body: Some(else_stmts),
+            ..
+        } = &p.reducers[0].body[0]
+        {
             assert!(matches!(&else_stmts[0], Stmt::If { .. }));
         } else {
             panic!("expected else-if chain");
@@ -763,7 +1011,12 @@ mod tests {
         let src = r#"reducer x() { let r = 2 + 3 * 4 }"#;
         let p = parse_src(src);
         if let Stmt::Let { value, .. } = &p.reducers[0].body[0] {
-            if let Expr::BinOp { op: BinOp::Add, right, .. } = value.as_ref() {
+            if let Expr::BinOp {
+                op: BinOp::Add,
+                right,
+                ..
+            } = value.as_ref()
+            {
                 assert!(matches!(right.as_ref(), Expr::BinOp { op: BinOp::Mul, .. }));
             } else {
                 panic!("expected Add at top level");
@@ -786,7 +1039,9 @@ mod tests {
         let src = r#"reducer x(id: str) { let p = players[id] else { error("x") }
             for item in p.inventory { let n = item } }"#;
         let p = parse_src(src);
-        assert!(matches!(&p.reducers[0].body[1], Stmt::ForArray { item_var, .. } if item_var == "item"));
+        assert!(
+            matches!(&p.reducers[0].body[1], Stmt::ForArray { item_var, .. } if item_var == "item")
+        );
     }
 
     #[test]
@@ -833,7 +1088,9 @@ mod tests {
             if let Expr::FnCall { name, args } = value.as_ref() {
                 assert_eq!(name, "min");
                 assert_eq!(args.len(), 2);
-            } else { panic!("expected FnCall"); }
+            } else {
+                panic!("expected FnCall");
+            }
         }
     }
 
@@ -852,8 +1109,10 @@ mod tests {
         let src = r#"reducer x(hp: int) { let r = hp - 1 }"#;
         let p = parse_src(src);
         if let Stmt::Let { value, .. } = &p.reducers[0].body[0] {
-            assert!(matches!(value.as_ref(), Expr::BinOp { op: BinOp::Sub, .. }),
-                "hp - 1 must parse as BinOp::Sub, not two separate expressions");
+            assert!(
+                matches!(value.as_ref(), Expr::BinOp { op: BinOp::Sub, .. }),
+                "hp - 1 must parse as BinOp::Sub, not two separate expressions"
+            );
         }
     }
 
@@ -862,15 +1121,20 @@ mod tests {
         let src = r#"reducer x(n: int) { let r = -n }"#;
         let p = parse_src(src);
         if let Stmt::Let { value, .. } = &p.reducers[0].body[0] {
-            assert!(matches!(value.as_ref(), Expr::BinOp { op: BinOp::Sub, .. }),
-                "-n should parse as BinOp::Sub(0, n)");
+            assert!(
+                matches!(value.as_ref(), Expr::BinOp { op: BinOp::Sub, .. }),
+                "-n should parse as BinOp::Sub(0, n)"
+            );
         }
     }
 
     #[test]
     fn parse_negative_table_default() {
         let p = parse_src("table t { offset: int = -10, delta: float = -0.5 }");
-        assert!(matches!(p.tables[0].fields[0].default, Some(Literal::Int(-10))));
+        assert!(matches!(
+            p.tables[0].fields[0].default,
+            Some(Literal::Int(-10))
+        ));
         assert!(matches!(p.tables[0].fields[1].default, Some(Literal::Float(f)) if f == -0.5));
     }
 
@@ -888,7 +1152,13 @@ mod tests {
         let src = r#"reducer x(a: int, b: int) { let r = a & b }"#;
         let p = parse_src(src);
         if let Stmt::Let { value, .. } = &p.reducers[0].body[0] {
-            assert!(matches!(value.as_ref(), Expr::BinOp { op: BinOp::BitAnd, .. }));
+            assert!(matches!(
+                value.as_ref(),
+                Expr::BinOp {
+                    op: BinOp::BitAnd,
+                    ..
+                }
+            ));
         }
     }
 

@@ -24,17 +24,23 @@ enum Binding {
 }
 
 struct Scope<'a> {
-    vars:   HashMap<String, Binding>,
+    vars: HashMap<String, Binding>,
     tables: &'a [TableDecl],
 }
 
 impl<'a> Scope<'a> {
     fn new(tables: &'a [TableDecl]) -> Self {
-        Scope { vars: HashMap::new(), tables }
+        Scope {
+            vars: HashMap::new(),
+            tables,
+        }
     }
 
     fn child(&self) -> Scope<'_> {
-        Scope { vars: self.vars.clone(), tables: self.tables }
+        Scope {
+            vars: self.vars.clone(),
+            tables: self.tables,
+        }
     }
 
     fn add(&mut self, name: &str, binding: Binding) {
@@ -46,9 +52,11 @@ impl<'a> Scope<'a> {
     }
 
     fn field_type(&self, table_name: &str, field_name: &str) -> Option<&Type> {
-        self.tables.iter()
+        self.tables
+            .iter()
             .find(|t| t.name == table_name)?
-            .fields.iter()
+            .fields
+            .iter()
             .find(|f| f.name == field_name)
             .map(|f| &f.ty)
     }
@@ -85,10 +93,17 @@ fn gen_reducer(r: &ReducerDecl, scope: &mut Scope) -> Result<String, VoltraError
     // `type`, `match`). Escape it as a raw identifier so the generated Rust
     // compiles; the `#[voltra::reducer]` macro strips the `r#` back off when it
     // derives the wire name, so clients still call it by its plain Voltra name.
-    out.push_str(&format!("fn {}(ctx: ReducerContext", escape_rust_keyword(&r.name)));
+    out.push_str(&format!(
+        "fn {}(ctx: ReducerContext",
+        escape_rust_keyword(&r.name)
+    ));
     for p in &r.params {
         // Escape parameter names that happen to be Rust keywords (e.g. `type: str`)
-        out.push_str(&format!(", {}: {}", escape_rust_keyword(&p.name), p.ty.to_rust()));
+        out.push_str(&format!(
+            ", {}: {}",
+            escape_rust_keyword(&p.name),
+            p.ty.to_rust()
+        ));
     }
     out.push_str(") {\n");
 
@@ -106,12 +121,11 @@ fn gen_reducer(r: &ReducerDecl, scope: &mut Scope) -> Result<String, VoltraError
 /// Voltra reducer names in practice.
 fn escape_rust_keyword(name: &str) -> String {
     const KEYWORDS: &[&str] = &[
-        "as", "break", "const", "continue", "dyn", "else", "enum", "extern",
-        "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
-        "move", "mut", "pub", "ref", "return", "static", "struct", "trait",
-        "true", "type", "unsafe", "use", "where", "while", "async", "await",
-        "abstract", "become", "box", "do", "final", "macro", "override", "priv",
-        "typeof", "unsized", "virtual", "yield", "try",
+        "as", "break", "const", "continue", "dyn", "else", "enum", "extern", "false", "fn", "for",
+        "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
+        "static", "struct", "trait", "true", "type", "unsafe", "use", "where", "while", "async",
+        "await", "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof",
+        "unsized", "virtual", "yield", "try",
     ];
     if KEYWORDS.contains(&name) {
         format!("r#{name}")
@@ -125,9 +139,14 @@ fn escape_rust_keyword(name: &str) -> String {
 fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, VoltraError> {
     let pad = "    ".repeat(indent);
     match stmt {
-
         // ── let p = players[id] else { ... } ─────────────────────────────────
-        Stmt::LetRow { name, table, key, else_body, line: _ } => {
+        Stmt::LetRow {
+            name,
+            table,
+            key,
+            else_body,
+            line: _,
+        } => {
             scope.add(name, Binding::RowBinding(table.clone()));
             let key_code = gen_expr(key, scope);
             let mut out = format!(
@@ -140,7 +159,9 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
                     out.push_str(&gen_stmt(s, scope, indent + 2)?);
                 }
                 // Only emit a fallback return when the else body doesn't already terminate
-                let terminates = body.last().map_or(false, |s| matches!(s, Stmt::Error { .. } | Stmt::Return { .. }));
+                let terminates = body
+                    .last()
+                    .is_some_and(|s| matches!(s, Stmt::Error { .. } | Stmt::Return { .. }));
                 if !terminates {
                     out.push_str(&format!("{pad}        return Ok(vec![]);\n"));
                 }
@@ -168,14 +189,24 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
         }
 
         // ── players[id] = { ... } ─────────────────────────────────────────────
-        Stmt::AssignRow { table, key, value, .. } => {
+        Stmt::AssignRow {
+            table, key, value, ..
+        } => {
             let k = gen_expr(key, scope);
             let v = gen_row_expr(value, scope);
-            Ok(format!("{pad}ctx.set({table:?}, &({k}).to_string(), {v})?;\n"))
+            Ok(format!(
+                "{pad}ctx.set({table:?}, &({k}).to_string(), {v})?;\n"
+            ))
         }
 
         // ── players[id].field = expr ──────────────────────────────────────────
-        Stmt::AssignField { table, key, field, value, line: _ } => {
+        Stmt::AssignField {
+            table,
+            key,
+            field,
+            value,
+            line: _,
+        } => {
             let k = gen_expr(key, scope);
             let v = gen_expr(value, scope);
             let field_ty = scope.field_type(table, field).cloned().unwrap_or(Type::Str);
@@ -192,17 +223,21 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
         }
 
         // ── players[id].hp += amt ─────────────────────────────────────────────
-        Stmt::AssignFieldOp { table, key, field, op, value, line: _ } => {
+        Stmt::AssignFieldOp {
+            table,
+            key,
+            field,
+            op,
+            value,
+            line: _,
+        } => {
             let k = gen_expr(key, scope);
             let v = gen_expr(value, scope);
             let field_ty = scope.field_type(table, field).cloned().unwrap_or(Type::Int);
-            let getter  = field_getter_code(&field_ty);
-            let zero    = field_ty.zero_rust();
+            let getter = field_getter_code(&field_ty);
+            let zero = field_ty.zero_rust();
             let rust_op = op.to_rust();
-            let json_val = coerce_to_json(
-                &format!("(__old_{field} {rust_op} ({v}))"),
-                &field_ty,
-            );
+            let json_val = coerce_to_json(&format!("(__old_{field} {rust_op} ({v}))"), &field_ty);
             let tmp = format!("__row_{field}_{}", scope.vars.len());
             Ok(format!(
                 "{pad}{{\n\
@@ -218,11 +253,18 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
         // ── delete players[id] ────────────────────────────────────────────────
         Stmt::DeleteRow { table, key, .. } => {
             let k = gen_expr(key, scope);
-            Ok(format!("{pad}ctx.delete({table:?}, &({k}).to_string())?;\n"))
+            Ok(format!(
+                "{pad}ctx.delete({table:?}, &({k}).to_string())?;\n"
+            ))
         }
 
         // ── if cond { ... } else if ... | else { ... } ────────────────────────
-        Stmt::If { condition, then_body, else_body, .. } => {
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+            ..
+        } => {
             let cond = gen_bool_expr(condition, scope);
             let mut out = format!("{pad}if {cond} {{\n");
             let mut child = scope.child();
@@ -232,15 +274,25 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
             if let Some(eb) = else_body {
                 // `else if` sugar: single If stmt in the else body
                 if eb.len() == 1 {
-                    if let Stmt::If { condition: ec, then_body: et, else_body: ee, .. } = &eb[0] {
+                    if let Stmt::If {
+                        condition: ec,
+                        then_body: et,
+                        else_body: ee,
+                        ..
+                    } = &eb[0]
+                    {
                         let econd = gen_bool_expr(ec, scope);
                         out.push_str(&format!("{pad}}} else if {econd} {{\n"));
                         let mut child2 = scope.child();
-                        for s in et { out.push_str(&gen_stmt(s, &mut child2, indent + 1)?); }
+                        for s in et {
+                            out.push_str(&gen_stmt(s, &mut child2, indent + 1)?);
+                        }
                         if let Some(eeb) = ee {
                             out.push_str(&format!("{pad}}} else {{\n"));
                             let mut child3 = scope.child();
-                            for s in eeb { out.push_str(&gen_stmt(s, &mut child3, indent + 1)?); }
+                            for s in eeb {
+                                out.push_str(&gen_stmt(s, &mut child3, indent + 1)?);
+                            }
                         }
                         out.push_str(&format!("{pad}}}\n"));
                         return Ok(out);
@@ -257,7 +309,13 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
         }
 
         // ── for id, p in players { ... } ─────────────────────────────────────
-        Stmt::ForRow { key_var, val_var, table, body, .. } => {
+        Stmt::ForRow {
+            key_var,
+            val_var,
+            table,
+            body,
+            ..
+        } => {
             let mut out = format!(
                 "{pad}for ({key_var}, {val_var}) in ctx.tables.list_rows_with_keys({table:?})? {{\n"
             );
@@ -272,7 +330,12 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
         }
 
         // ── for item in arr_expr { ... } ─────────────────────────────────────
-        Stmt::ForArray { item_var, array, body, .. } => {
+        Stmt::ForArray {
+            item_var,
+            array,
+            body,
+            ..
+        } => {
             let arr = gen_expr(array, scope);
             let tmp = format!("__arr_{item_var}_{}", scope.vars.len());
             let mut out = format!(
@@ -289,7 +352,9 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
         }
 
         // ── while cond { ... } ────────────────────────────────────────────────
-        Stmt::While { condition, body, .. } => {
+        Stmt::While {
+            condition, body, ..
+        } => {
             let cond = gen_bool_expr(condition, scope);
             let mut out = format!("{pad}while {cond} {{\n");
             let mut child = scope.child();
@@ -301,7 +366,7 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
         }
 
         // ── break / continue ──────────────────────────────────────────────────
-        Stmt::Break    { .. } => Ok(format!("{pad}break;\n")),
+        Stmt::Break { .. } => Ok(format!("{pad}break;\n")),
         Stmt::Continue { .. } => Ok(format!("{pad}continue;\n")),
 
         // ── return { ok: true } ───────────────────────────────────────────────
@@ -311,28 +376,31 @@ fn gen_stmt(stmt: &Stmt, scope: &mut Scope, indent: usize) -> Result<String, Vol
         }
 
         // ── error("msg") ──────────────────────────────────────────────────────
-        Stmt::Error { message, .. } => {
-            Ok(format!(
-                "{pad}return Err(voltra::error::VoltraError::reducer_error({message:?}));\n"
-            ))
-        }
+        Stmt::Error { message, .. } => Ok(format!(
+            "{pad}return Err(voltra::error::VoltraError::reducer_error({message:?}));\n"
+        )),
 
         // ── set_counter("kills", val) / push(arr, val) / ... ─────────────────
-        Stmt::CallStmt { name, args, .. } => {
-            gen_call_stmt(name, args, scope, &pad)
-        }
+        Stmt::CallStmt { name, args, .. } => gen_call_stmt(name, args, scope, &pad),
     }
 }
 
 // ── Built-in call statements ──────────────────────────────────────────────────
 
-fn gen_call_stmt(name: &str, args: &[Expr], scope: &Scope, pad: &str) -> Result<String, VoltraError> {
+fn gen_call_stmt(
+    name: &str,
+    args: &[Expr],
+    scope: &Scope,
+    pad: &str,
+) -> Result<String, VoltraError> {
     let a = |i: usize| args.get(i).map(|e| gen_expr(e, scope)).unwrap_or_default();
     match name {
         "set_counter" => {
             let n = a(0);
             let v = a(1);
-            Ok(format!("{pad}ctx.set_counter(({n}).to_string(), ({v}) as i32)?;\n"))
+            Ok(format!(
+                "{pad}ctx.set_counter(({n}).to_string(), ({v}) as i32)?;\n"
+            ))
         }
 
         // ── Array mutation stmts ──────────────────────────────────────────────
@@ -379,7 +447,7 @@ fn gen_expr(expr: &Expr, scope: &Scope) -> String {
         Expr::Lit(lit) => gen_literal(lit),
 
         Expr::Var(name) => match name.as_str() {
-            "caller_id"   => "ctx.caller_id.clone()".to_owned(),
+            "caller_id" => "ctx.caller_id.clone()".to_owned(),
             "caller_role" => "ctx.caller_role.clone()".to_owned(),
             _ => {
                 if let Some(Binding::Param(Type::Str)) = scope.get(name) {
@@ -396,20 +464,22 @@ fn gen_expr(expr: &Expr, scope: &Scope) -> String {
         }
 
         Expr::FieldAccess { object, field } => {
-            let obj    = gen_expr(object, scope);
+            let obj = gen_expr(object, scope);
             let getter = infer_field_getter(object, field, scope);
             format!("{obj}[{field:?}].{getter}")
         }
 
         Expr::RowLiteral { fields } => {
-            let parts: Vec<_> = fields.iter()
+            let parts: Vec<_> = fields
+                .iter()
                 .map(|(k, v)| format!("{k:?}: {}", gen_json_val(v, scope)))
                 .collect();
             format!("serde_json::json!({{ {} }})", parts.join(", "))
         }
 
         Expr::ArrayLit(elems) => {
-            let parts: Vec<_> = elems.iter()
+            let parts: Vec<_> = elems
+                .iter()
                 .map(|e| format!("serde_json::json!(({})) ", gen_expr(e, scope)))
                 .collect();
             format!("serde_json::Value::Array(vec![{}])", parts.join(", "))
@@ -711,7 +781,8 @@ fn gen_builtin_call(name: &str, args: &[String]) -> String {
 fn gen_row_expr(expr: &Expr, scope: &Scope) -> String {
     match expr {
         Expr::RowLiteral { fields } => {
-            let parts: Vec<_> = fields.iter()
+            let parts: Vec<_> = fields
+                .iter()
                 .map(|(k, v)| format!("{k:?}: {}", gen_json_val(v, scope)))
                 .collect();
             format!("serde_json::json!({{ {} }})", parts.join(", "))
@@ -723,7 +794,8 @@ fn gen_row_expr(expr: &Expr, scope: &Scope) -> String {
 fn gen_return_expr(expr: &Expr, scope: &Scope) -> String {
     match expr {
         Expr::RowLiteral { fields } => {
-            let parts: Vec<_> = fields.iter()
+            let parts: Vec<_> = fields
+                .iter()
                 .map(|(k, v)| format!("{k:?}: {}", gen_json_val(v, scope)))
                 .collect();
             format!("{{ {} }}", parts.join(", "))
@@ -741,34 +813,37 @@ fn gen_json_val(expr: &Expr, scope: &Scope) -> String {
 
 fn gen_literal(lit: &Literal) -> String {
     match lit {
-        Literal::Int(n)   => format!("{n}i64"),
+        Literal::Int(n) => format!("{n}i64"),
         Literal::Float(f) => format!("{f}f64"),
-        Literal::Str(s)   => format!("{s:?}.to_owned()"),
-        Literal::Bool(b)  => format!("{b}"),
+        Literal::Str(s) => format!("{s:?}.to_owned()"),
+        Literal::Bool(b) => format!("{b}"),
     }
 }
 
 /// JSON getter expression for a typed field (`as_i64()`, `as_str()`, etc.)
 fn field_getter_code(ty: &Type) -> &'static str {
     match ty {
-        Type::Int   => "as_i64()",
+        Type::Int => "as_i64()",
         Type::Float => "as_f64()",
-        Type::Bool  => "as_bool()",
-        Type::Str   => "as_str()",
+        Type::Bool => "as_bool()",
+        Type::Str => "as_str()",
     }
 }
 
 fn infer_field_getter(object: &Expr, field: &str, scope: &Scope) -> String {
-    let var_name = match object { Expr::Var(n) => Some(n.as_str()), _ => None };
+    let var_name = match object {
+        Expr::Var(n) => Some(n.as_str()),
+        _ => None,
+    };
 
     if let Some(name) = var_name {
         if let Some(Binding::RowBinding(table)) = scope.get(name) {
             if let Some(ty) = scope.field_type(table, field) {
                 return match ty {
-                    Type::Str   => "as_str().unwrap_or(\"\").to_owned()".to_owned(),
-                    Type::Int   => format!("as_i64().unwrap_or({})", ty.zero_rust()),
+                    Type::Str => "as_str().unwrap_or(\"\").to_owned()".to_owned(),
+                    Type::Int => format!("as_i64().unwrap_or({})", ty.zero_rust()),
                     Type::Float => format!("as_f64().unwrap_or({})", ty.zero_rust()),
-                    Type::Bool  => format!("as_bool().unwrap_or({})", ty.zero_rust()),
+                    Type::Bool => format!("as_bool().unwrap_or({})", ty.zero_rust()),
                 };
             }
         }
@@ -778,13 +853,13 @@ fn infer_field_getter(object: &Expr, field: &str, scope: &Scope) -> String {
 
 fn coerce_to_json(code: &str, ty: &Type) -> String {
     match ty {
-        Type::Str   => format!("serde_json::Value::String(({code}).to_string())"),
-        Type::Int   => format!("serde_json::Value::Number(serde_json::Number::from({code} as i64))"),
+        Type::Str => format!("serde_json::Value::String(({code}).to_string())"),
+        Type::Int => format!("serde_json::Value::Number(serde_json::Number::from({code} as i64))"),
         Type::Float => format!(
             "serde_json::Value::Number(serde_json::Number::from_f64({code} as f64)\
              .unwrap_or(serde_json::Number::from(0)))"
         ),
-        Type::Bool  => format!("serde_json::Value::Bool({code} as i64 != 0)"),
+        Type::Bool => format!("serde_json::Value::Bool({code} as i64 != 0)"),
     }
 }
 
@@ -805,35 +880,56 @@ mod tests {
     #[test]
     fn codegen_allow_attr_per_function() {
         let out = compile("reducer reset() {}");
-        assert!(out.contains("#[allow(unused_variables"), "per-function allow missing");
-        assert!(!out.contains("#![allow"), "file-level allow must not be emitted");
+        assert!(
+            out.contains("#[allow(unused_variables"),
+            "per-function allow missing"
+        );
+        assert!(
+            !out.contains("#![allow"),
+            "file-level allow must not be emitted"
+        );
     }
 
     #[test]
     fn codegen_keyword_param_escaped() {
         // `type` is a Rust keyword; as a param it must be emitted as `r#type`
         let out = compile("reducer x(type: str, ref: int) {}");
-        assert!(out.contains("r#type: String"), "keyword param 'type' not escaped:\n{out}");
-        assert!(out.contains("r#ref: i64"),     "keyword param 'ref' not escaped:\n{out}");
+        assert!(
+            out.contains("r#type: String"),
+            "keyword param 'type' not escaped:\n{out}"
+        );
+        assert!(
+            out.contains("r#ref: i64"),
+            "keyword param 'ref' not escaped:\n{out}"
+        );
     }
 
     #[test]
     fn codegen_subtract_integer_literal() {
         // `hp - 1` was previously broken (lexed as two tokens: `hp`, `-1`)
         let out = compile("reducer x(hp: int) { let r = hp - 1 }");
-        assert!(out.contains("(hp - 1i64)"), "hp - 1 must codegen as subtraction:\n{out}");
+        assert!(
+            out.contains("(hp - 1i64)"),
+            "hp - 1 must codegen as subtraction:\n{out}"
+        );
     }
 
     #[test]
     fn codegen_unary_minus() {
         let out = compile("reducer x(n: int) { let r = -n }");
-        assert!(out.contains("(0i64 - n)"), "unary minus must codegen as 0 - n:\n{out}");
+        assert!(
+            out.contains("(0i64 - n)"),
+            "unary minus must codegen as 0 - n:\n{out}"
+        );
     }
 
     #[test]
     fn codegen_bool_cast_safe_for_floats() {
         let out = compile("reducer x(v: float) { let b = bool(v) }");
-        assert!(out.contains("as i64 != 0"), "bool() must cast via i64:\n{out}");
+        assert!(
+            out.contains("as i64 != 0"),
+            "bool() must cast via i64:\n{out}"
+        );
     }
 
     #[test]
@@ -841,9 +937,14 @@ mod tests {
         // else body ends with `error(...)` — no `return Ok(vec![])` should follow
         let out = compile(r#"reducer x(id: str) { let p = players[id] else { error("nope") } }"#);
         let none_arm = out.split("None =>").nth(1).unwrap_or("");
-        let after_err = none_arm.split("VoltraError::reducer_error").nth(1).unwrap_or("");
-        assert!(!after_err.contains("return Ok(vec![])"),
-            "unreachable Ok return must not be emitted after error() else:\n{out}");
+        let after_err = none_arm
+            .split("VoltraError::reducer_error")
+            .nth(1)
+            .unwrap_or("");
+        assert!(
+            !after_err.contains("return Ok(vec![])"),
+            "unreachable Ok return must not be emitted after error() else:\n{out}"
+        );
     }
 
     #[test]
@@ -859,10 +960,14 @@ mod tests {
         // (`fn r#move`) or it won't compile. The #[reducer] macro strips the
         // `r#` back off, so the wire name stays "move" for clients.
         let out = compile("reducer move(id: str, x: float) {}");
-        assert!(out.contains("fn r#move(ctx: ReducerContext"),
-            "keyword reducer name must be escaped as a raw identifier:\n{out}");
-        assert!(!out.contains("fn move("),
-            "must not emit the bare keyword `fn move(`");
+        assert!(
+            out.contains("fn r#move(ctx: ReducerContext"),
+            "keyword reducer name must be escaped as a raw identifier:\n{out}"
+        );
+        assert!(
+            !out.contains("fn move("),
+            "must not emit the bare keyword `fn move(`"
+        );
     }
 
     #[test]
@@ -894,11 +999,13 @@ mod tests {
 
     #[test]
     fn codegen_let_row_with_else_error() {
-        let out = compile(r#"
+        let out = compile(
+            r#"
             reducer mv(id: str, x: float) {
                 let p = players[id] else { error("not found") }
             }
-        "#);
+        "#,
+        );
         assert!(out.contains("ctx.get(\"players\""));
         assert!(out.contains("not found"));
     }
@@ -912,11 +1019,13 @@ mod tests {
 
     #[test]
     fn codegen_else_if() {
-        let out = compile(r#"reducer tier(rank: int) {
+        let out = compile(
+            r#"reducer tier(rank: int) {
             if rank == 1 { return { tier: "gold" } }
             else if rank == 2 { return { tier: "silver" } }
             else { return { tier: "bronze" } }
-        }"#);
+        }"#,
+        );
         assert!(out.contains("} else if (rank == 2i64)"));
         assert!(out.contains("} else {"));
     }
@@ -958,10 +1067,12 @@ mod tests {
 
     #[test]
     fn codegen_for_array_loop() {
-        let out = compile(r#"reducer x(id: str) {
+        let out = compile(
+            r#"reducer x(id: str) {
             let p = players[id] else { error("x") }
             for item in p.inventory { let n = item }
-        }"#);
+        }"#,
+        );
         assert!(out.contains("as_array().cloned().unwrap_or_default()"));
         assert!(out.contains("for item in __arr_item_"));
     }
@@ -1031,7 +1142,9 @@ mod tests {
 
     #[test]
     fn codegen_math_builtins() {
-        let out = compile(r#"reducer calc(x: float) { let a = abs(x) let f = floor(x) let c = ceil(x) let s = sqrt(x) }"#);
+        let out = compile(
+            r#"reducer calc(x: float) { let a = abs(x) let f = floor(x) let c = ceil(x) let s = sqrt(x) }"#,
+        );
         assert!(out.contains(".abs()"));
         assert!(out.contains(".floor()"));
         assert!(out.contains(".ceil()"));
@@ -1066,11 +1179,13 @@ mod tests {
 
     #[test]
     fn codegen_string_ops() {
-        let out = compile(r#"reducer x(s: str) {
+        let out = compile(
+            r#"reducer x(s: str) {
             let parts = split(s, ",")
             let idx   = index_of(s, "x")
             let sub   = substring(s, 0, 3)
-        }"#);
+        }"#,
+        );
         assert!(out.contains(".split("));
         assert!(out.contains(".find("));
         assert!(out.contains(".chars().skip("));
@@ -1078,44 +1193,52 @@ mod tests {
 
     #[test]
     fn codegen_array_ops() {
-        let out = compile(r#"reducer x() {
+        let out = compile(
+            r#"reducer x() {
             let arr = [1, 2, 3]
             let n   = array_len(arr)
             let v   = get_index(arr, 0)
-        }"#);
+        }"#,
+        );
         assert!(out.contains("as_array().map(|__v| __v.len()"));
         assert!(out.contains(".as_array().and_then(|__v| __v.get("));
     }
 
     #[test]
     fn codegen_push_pop() {
-        let out = compile(r#"reducer x() {
+        let out = compile(
+            r#"reducer x() {
             let arr = [1, 2]
             push(arr, 3)
             pop(arr)
-        }"#);
+        }"#,
+        );
         assert!(out.contains("__push_v"));
         assert!(out.contains("__pop_v"));
     }
 
     #[test]
     fn codegen_table_queries() {
-        let out = compile(r#"reducer stats() {
+        let out = compile(
+            r#"reducer stats() {
             let n  = count_rows("players")
             let s  = sum_field("players", "score")
             let av = avg_field("players", "score")
-        }"#);
+        }"#,
+        );
         assert!(out.contains("list_rows_with_keys("));
         assert!(out.contains(".sum::<f64>()"));
     }
 
     #[test]
     fn codegen_find_and_sort() {
-        let out = compile(r#"reducer x() {
+        let out = compile(
+            r#"reducer x() {
             let top  = top_n("players", "score", 10)
             let rows = sort_by("players", "hp", "desc")
             let p    = find_first("players", "alive", true)
-        }"#);
+        }"#,
+        );
         assert!(out.contains(".take(__n)"));
         assert!(out.contains("__dir == \"desc\""));
         assert!(out.contains(".find(|(_, __r)|"));
@@ -1134,25 +1257,44 @@ mod tests {
         let program = parse(tokens).expect("parse smoke");
         let out = generate(&program).expect("codegen smoke");
         // All 8 reducers present
-        for name in &["spawn", "move_player", "take_damage", "heal", "add_kill",
-                       "cleanup_dead", "get_stats", "roll_loot"] {
-            assert!(out.contains(&format!("fn {name}(")), "missing reducer {name}");
+        for name in &[
+            "spawn",
+            "move_player",
+            "take_damage",
+            "heal",
+            "add_kill",
+            "cleanup_dead",
+            "get_stats",
+            "roll_loot",
+        ] {
+            assert!(
+                out.contains(&format!("fn {name}(")),
+                "missing reducer {name}"
+            );
         }
         // Key generated constructs
-        assert!(out.contains("list_rows_with_keys(\"players\")?"), "for loop missing ?");
-        assert!(out.contains("ctx.set_counter"),   "set_counter missing");
-        assert!(out.contains("ctx.get_counter"),   "counter() missing");
-        assert!(out.contains("ctx.timestamp()"),   "timestamp missing");
-        assert!(out.contains(".max("),             "max() missing");
-        assert!(out.contains("__ts ^ (__ts >> 33)"), "rand_int expansion missing");
+        assert!(
+            out.contains("list_rows_with_keys(\"players\")?"),
+            "for loop missing ?"
+        );
+        assert!(out.contains("ctx.set_counter"), "set_counter missing");
+        assert!(out.contains("ctx.get_counter"), "counter() missing");
+        assert!(out.contains("ctx.timestamp()"), "timestamp missing");
+        assert!(out.contains(".max("), "max() missing");
+        assert!(
+            out.contains("__ts ^ (__ts >> 33)"),
+            "rand_int expansion missing"
+        );
     }
 
     #[test]
     fn codegen_multiple_reducers() {
-        let out = compile(r#"
+        let out = compile(
+            r#"
             reducer a() {}
             reducer b(x: int) {}
-        "#);
+        "#,
+        );
         assert!(out.contains("fn a("));
         assert!(out.contains("fn b("));
     }
@@ -1172,11 +1314,25 @@ mod tests {
         let out = generate(&program).expect("codegen mmo");
 
         // Verify all major reducer categories compiled
-        for name in &["spawn", "take_damage", "heal", "grant_xp", "roll_loot",
-                       "open_loot_box", "create_guild", "join_guild", "cleanup_dead",
-                       "get_stats", "leaderboard", "find_player_by_name",
-                       "find_guild_members", "update_name", "grant_flag", "has_flag",
-                       "server_economy"] {
+        for name in &[
+            "spawn",
+            "take_damage",
+            "heal",
+            "grant_xp",
+            "roll_loot",
+            "open_loot_box",
+            "create_guild",
+            "join_guild",
+            "cleanup_dead",
+            "get_stats",
+            "leaderboard",
+            "find_player_by_name",
+            "find_guild_members",
+            "update_name",
+            "grant_flag",
+            "has_flag",
+            "server_economy",
+        ] {
             assert!(out.contains(&format!("fn {name}(")), "missing: {name}");
         }
 
@@ -1185,21 +1341,33 @@ mod tests {
         // else if
         assert!(out.contains("} else if ("), "else if missing");
         // bitwise ops
-        assert!(out.contains("& 7i64") || out.contains("& flag)"), "bitwise AND missing");
+        assert!(
+            out.contains("& 7i64") || out.contains("& flag)"),
+            "bitwise AND missing"
+        );
         // modulo
         assert!(out.contains("% 10i64"), "modulo missing");
         // shift
         assert!(out.contains("<< 2i64"), "shift missing");
         // array literal
-        assert!(out.contains("serde_json::Value::Array(vec!["), "array literal missing");
+        assert!(
+            out.contains("serde_json::Value::Array(vec!["),
+            "array literal missing"
+        );
         // table queries
-        assert!(out.contains("count_rows") || out.contains("list_rows_with_keys"), "count_rows missing");
+        assert!(
+            out.contains("count_rows") || out.contains("list_rows_with_keys"),
+            "count_rows missing"
+        );
         assert!(out.contains(".take(__n)"), "top_n missing");
         assert!(out.contains(".sum::<f64>()"), "sum_field missing");
         // string ops
         assert!(out.contains(".split("), "split missing");
         assert!(out.contains(".chars().skip("), "substring missing");
         // for array loop
-        assert!(out.contains("as_array().cloned().unwrap_or_default()"), "ForArray missing");
+        assert!(
+            out.contains("as_array().cloned().unwrap_or_default()"),
+            "ForArray missing"
+        );
     }
 }

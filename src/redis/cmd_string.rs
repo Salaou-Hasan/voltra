@@ -219,7 +219,12 @@ pub fn incr_by(db: &mut dyn Db, ns: u32, args: &[Bytes], sign: i64, implicit: bo
     let Some(newv) = cur.checked_add(delta) else {
         return Resp::not_int();
     };
-    db.put(ns, args[0].clone(), Datum::Str(Bytes::from(newv.to_string())), exp);
+    db.put(
+        ns,
+        args[0].clone(),
+        Datum::Str(Bytes::from(newv.to_string())),
+        exp,
+    );
     Resp::Int(newv)
 }
 
@@ -501,7 +506,11 @@ pub fn ttl(db: &mut dyn Db, ns: u32, args: &[Bytes], ms: bool) -> Resp {
     match db.expiry(ns, &args[0]) {
         Some(at) => {
             let rem = at.saturating_sub(db.now_ms());
-            Resp::Int(if ms { rem as i64 } else { rem.div_ceil(1000) as i64 })
+            Resp::Int(if ms {
+                rem as i64
+            } else {
+                rem.div_ceil(1000) as i64
+            })
         }
         None => Resp::Int(-1),
     }
@@ -613,7 +622,10 @@ pub fn copy(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
     while i < args.len() {
         match upper(&args[i]).as_str() {
             "DB" => {
-                let Some(n) = args.get(i + 1).and_then(parse_i64).filter(|n| (0..16).contains(n))
+                let Some(n) = args
+                    .get(i + 1)
+                    .and_then(parse_i64)
+                    .filter(|n| (0..16).contains(n))
                 else {
                     return Resp::err("ERR DB index is out of range");
                 };
@@ -794,6 +806,9 @@ pub fn object(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
         "REFCOUNT" => Resp::Int(1),
         "IDLETIME" => Resp::Int(0),
         "FREQ" => Resp::Int(0),
-        _ => Resp::err(format!("ERR Unknown OBJECT subcommand '{}'", lossy(&args[0]))),
+        _ => Resp::err(format!(
+            "ERR Unknown OBJECT subcommand '{}'",
+            lossy(&args[0])
+        )),
     }
 }

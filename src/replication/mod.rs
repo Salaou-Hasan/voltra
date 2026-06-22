@@ -68,13 +68,21 @@ pub fn replication_lag() -> u64 {
 /// Snapshot rotation truncates the WAL; a replica that falls behind a rotation
 /// must bootstrap from a backup/snapshot first (logged as a gap warning on the
 /// replica side).
-pub fn serve_wal_entries(wal_path: &Path, from_seq: u64, max: usize) -> Result<(Vec<WalEntry>, u64)> {
+pub fn serve_wal_entries(
+    wal_path: &Path,
+    from_seq: u64,
+    max: usize,
+) -> Result<(Vec<WalEntry>, u64)> {
     if !wal_path.exists() {
         return Ok((Vec::new(), from_seq));
     }
     let mut reader = WalReader::open(wal_path)?;
     let all = reader.read_all_entries()?;
-    let last_seq = all.iter().map(|e| e.header.sequence_number).max().unwrap_or(from_seq);
+    let last_seq = all
+        .iter()
+        .map(|e| e.header.sequence_number)
+        .max()
+        .unwrap_or(from_seq);
     let entries: Vec<WalEntry> = all
         .into_iter()
         .filter(|e| e.header.sequence_number > from_seq)
@@ -131,7 +139,8 @@ pub fn apply_replicated_entries(
             log::warn!(
                 "[replication] sequence gap: last applied {} but received {} — \
                  primary may have rotated its WAL; consider re-seeding this replica from a backup",
-                last, seq
+                last,
+                seq
             );
         }
 
@@ -143,13 +152,19 @@ pub fn apply_replicated_entries(
                 break;
             }
         }
-        if !ok { continue; }
+        if !ok {
+            continue;
+        }
 
         if !entry.payload.deltas.is_empty() {
             subs.publish_deltas(&entry.payload.deltas);
         }
         if let Err(e) = wal_writer.append(entry, seq) {
-            log::warn!("[replication] local WAL append failed at seq={}: {}", seq, e);
+            log::warn!(
+                "[replication] local WAL append failed at seq={}: {}",
+                seq,
+                e
+            );
         }
 
         last = seq;
@@ -191,7 +206,11 @@ pub async fn run_replica_loop(
     let client = reqwest::Client::new();
     let base = primary_url.trim_end_matches('/').to_string();
     let miss_limit = failover_miss_count.max(1);
-    log::info!("[replication] replica mode: pulling from {} every {}ms", base, poll_ms);
+    log::info!(
+        "[replication] replica mode: pulling from {} every {}ms",
+        base,
+        poll_ms
+    );
     if auto_failover {
         log::info!(
             "[replication] auto-failover ENABLED: promoting after {} consecutive unreachable polls (~{}ms)",
@@ -210,7 +229,12 @@ pub async fn run_replica_loop(
         let from_seq = REPLICA_LAST_APPLIED_SEQ.load(Ordering::Relaxed);
         let url = format!("{}/replication/wal?from_seq={}&max=2048", base, from_seq);
 
-        match client.get(&url).timeout(std::time::Duration::from_secs(10)).send().await {
+        match client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 consecutive_misses = 0; // reachable
                 match resp.json::<serde_json::Value>().await {
@@ -218,18 +242,34 @@ pub async fn run_replica_loop(
                         let encoded: Vec<String> = body
                             .get("entries")
                             .and_then(|v| v.as_array())
-                            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|s| s.as_str().map(str::to_owned))
+                                    .collect()
+                            })
                             .unwrap_or_default();
-                        let primary_last = body.get("last_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let primary_last =
+                            body.get("last_seq").and_then(|v| v.as_u64()).unwrap_or(0);
 
                         if !encoded.is_empty() {
                             let entries = decode_entries(&encoded);
-                            let n = apply_replicated_entries(&entries, &tables, &subs, &wal_writer, &global_seq);
+                            let n = apply_replicated_entries(
+                                &entries,
+                                &tables,
+                                &subs,
+                                &wal_writer,
+                                &global_seq,
+                            );
                             if n > 0 {
-                                log::debug!("[replication] applied {} entries (now at seq {})", n, last_applied_seq());
+                                log::debug!(
+                                    "[replication] applied {} entries (now at seq {})",
+                                    n,
+                                    last_applied_seq()
+                                );
                             }
                         }
-                        let lag = primary_last.saturating_sub(REPLICA_LAST_APPLIED_SEQ.load(Ordering::Relaxed));
+                        let lag = primary_last
+                            .saturating_sub(REPLICA_LAST_APPLIED_SEQ.load(Ordering::Relaxed));
                         REPLICA_LAG_ENTRIES.store(lag, Ordering::Relaxed);
                     }
                     Err(e) => log::warn!("[replication] bad response from primary: {}", e),
@@ -245,7 +285,10 @@ pub async fn run_replica_loop(
                 consecutive_misses += 1;
                 log::warn!(
                     "[replication] cannot reach primary at {} ({}/{}): {}",
-                    base, consecutive_misses, miss_limit, e
+                    base,
+                    consecutive_misses,
+                    miss_limit,
+                    e
                 );
                 if auto_failover && consecutive_misses >= miss_limit {
                     log::warn!(
@@ -294,8 +337,13 @@ mod tests {
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "{}_{}_{}.wal", name, std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+            "{}_{}_{}.wal",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
         ))
     }
 
@@ -316,8 +364,20 @@ mod tests {
     #[test]
     fn test_encode_decode_roundtrip() {
         let entries = vec![
-            WalEntry::new(1000, 1, "spawn".into(), vec![1, 2], vec![delta("players", "a", serde_json::json!({"hp": 10}))]),
-            WalEntry::new(1001, 2, "spawn".into(), vec![3, 4], vec![delta("players", "b", serde_json::json!({"hp": 20}))]),
+            WalEntry::new(
+                1000,
+                1,
+                "spawn".into(),
+                vec![1, 2],
+                vec![delta("players", "a", serde_json::json!({"hp": 10}))],
+            ),
+            WalEntry::new(
+                1001,
+                2,
+                "spawn".into(),
+                vec![3, 4],
+                vec![delta("players", "b", serde_json::json!({"hp": 20}))],
+            ),
         ];
         let wire = encode_entries(&entries);
         assert_eq!(wire.len(), 2);
@@ -331,7 +391,10 @@ mod tests {
 
     #[test]
     fn test_decode_skips_garbage() {
-        let wire = vec!["!!!not-base64!!!".to_string(), base64::engine::general_purpose::STANDARD.encode(b"not msgpack")];
+        let wire = vec![
+            "!!!not-base64!!!".to_string(),
+            base64::engine::general_purpose::STANDARD.encode(b"not msgpack"),
+        ];
         let back = decode_entries(&wire);
         assert!(back.is_empty());
     }
@@ -341,7 +404,14 @@ mod tests {
         let path = tmp_path("test_repl_serve");
         let mut w = WalWriter::open(&path).unwrap();
         for seq in 1..=5u64 {
-            w.append(&WalEntry::new(1000 + seq, seq, "inc".into(), vec![], vec![])).unwrap();
+            w.append(&WalEntry::new(
+                1000 + seq,
+                seq,
+                "inc".into(),
+                vec![],
+                vec![],
+            ))
+            .unwrap();
         }
         w.fsync().unwrap();
         drop(w);
@@ -374,8 +444,20 @@ mod tests {
         let seq = AtomicU64::new(0);
 
         let entries = vec![
-            WalEntry::new(1000, 1, "spawn".into(), vec![], vec![delta("players", "alice", serde_json::json!({"hp": 100}))]),
-            WalEntry::new(1001, 2, "spawn".into(), vec![], vec![delta("players", "bob", serde_json::json!({"hp": 90}))]),
+            WalEntry::new(
+                1000,
+                1,
+                "spawn".into(),
+                vec![],
+                vec![delta("players", "alice", serde_json::json!({"hp": 100}))],
+            ),
+            WalEntry::new(
+                1001,
+                2,
+                "spawn".into(),
+                vec![],
+                vec![delta("players", "bob", serde_json::json!({"hp": 90}))],
+            ),
         ];
 
         // Reset globals (tests share process state).

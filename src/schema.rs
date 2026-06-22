@@ -36,7 +36,7 @@
 //   (arrays and nested objects are accepted as-is — type = "any")
 // ============================================================================
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -59,13 +59,13 @@ pub enum ColumnType {
 impl ColumnType {
     fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "string" | "str" | "text"      => Some(ColumnType::String),
+            "string" | "str" | "text" => Some(ColumnType::String),
             "i64" | "i32" | "int" | "integer" | "number" => Some(ColumnType::I64),
-            "f64" | "f32" | "float" | "double"           => Some(ColumnType::F64),
-            "bool" | "boolean"             => Some(ColumnType::Bool),
-            "bytes" | "blob"               => Some(ColumnType::Bytes),
-            "any" | "json" | "object"      => Some(ColumnType::Any),
-            _                              => None,
+            "f64" | "f32" | "float" | "double" => Some(ColumnType::F64),
+            "bool" | "boolean" => Some(ColumnType::Bool),
+            "bytes" | "blob" => Some(ColumnType::Bytes),
+            "any" | "json" | "object" => Some(ColumnType::Any),
+            _ => None,
         }
     }
 
@@ -73,11 +73,11 @@ impl ColumnType {
     fn display(&self) -> &'static str {
         match self {
             ColumnType::String => "String",
-            ColumnType::I64    => "i64",
-            ColumnType::F64    => "f64",
-            ColumnType::Bool   => "bool",
-            ColumnType::Bytes  => "bytes",
-            ColumnType::Any    => "any",
+            ColumnType::I64 => "i64",
+            ColumnType::F64 => "f64",
+            ColumnType::Bool => "bool",
+            ColumnType::Bytes => "bytes",
+            ColumnType::Any => "any",
         }
     }
 
@@ -85,11 +85,11 @@ impl ColumnType {
     fn accepts(&self, value: &Value) -> bool {
         match self {
             ColumnType::String => value.is_string(),
-            ColumnType::I64    => value.is_i64() || value.is_u64(),
-            ColumnType::F64    => value.is_f64(),
-            ColumnType::Bool   => value.is_boolean(),
-            ColumnType::Bytes  => value.is_string() || value.is_array(), // base64 string or byte array
-            ColumnType::Any    => true,
+            ColumnType::I64 => value.is_i64() || value.is_u64(),
+            ColumnType::F64 => value.is_f64(),
+            ColumnType::Bool => value.is_boolean(),
+            ColumnType::Bytes => value.is_string() || value.is_array(), // base64 string or byte array
+            ColumnType::Any => true,
         }
     }
 
@@ -129,7 +129,9 @@ pub struct ColumnDef {
     pub required: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl ColumnDef {
     pub fn col_type(&self) -> ColumnType {
@@ -171,9 +173,16 @@ impl ColumnDef {
 pub enum RlsPolicy {
     #[default]
     Public,
-    OwnerField { field: String },
-    RoleGated { roles: Vec<String> },
-    OwnerFieldWithAdmin { field: String, admin_roles: Vec<String> },
+    OwnerField {
+        field: String,
+    },
+    RoleGated {
+        roles: Vec<String>,
+    },
+    OwnerFieldWithAdmin {
+        field: String,
+        admin_roles: Vec<String>,
+    },
 }
 
 /// Evaluate an RLS policy for a single access attempt.
@@ -209,13 +218,11 @@ pub fn rls_check(
             match row {
                 // New insert — allow so the reducer can set the owner field.
                 None => true,
-                Some(row_val) => {
-                    row_val
-                        .get(field)
-                        .and_then(|v| v.as_str())
-                        .map(|owner| owner == caller_id)
-                        .unwrap_or(false)
-                }
+                Some(row_val) => row_val
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .map(|owner| owner == caller_id)
+                    .unwrap_or(false),
             }
         }
 
@@ -229,13 +236,11 @@ pub fn rls_check(
             // Owner check.
             match row {
                 None => true,
-                Some(row_val) => {
-                    row_val
-                        .get(field)
-                        .and_then(|v| v.as_str())
-                        .map(|owner| owner == caller_id)
-                        .unwrap_or(false)
-                }
+                Some(row_val) => row_val
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .map(|owner| owner == caller_id)
+                    .unwrap_or(false),
             }
         }
     }
@@ -275,10 +280,7 @@ impl TableSchema {
         //    accepted `{"id": null, ...}` and the bad value landed in the store.
         if let Some(obj) = value.as_object_mut() {
             for col in &self.columns {
-                let is_missing_or_null = obj
-                    .get(&col.name)
-                    .map(|v| v.is_null())
-                    .unwrap_or(true);
+                let is_missing_or_null = obj.get(&col.name).map(|v| v.is_null()).unwrap_or(true);
 
                 if is_missing_or_null {
                     // First try to fill from default — applies whether the field
@@ -316,7 +318,9 @@ impl TableSchema {
         if let Some(obj) = value.as_object_mut() {
             for (key, val) in obj.iter_mut() {
                 // Skip internal Voltra fields injected by the table engine.
-                if key == "row_key" || key == "shard_id" { continue; }
+                if key == "row_key" || key == "shard_id" {
+                    continue;
+                }
 
                 if let Some(col) = col_map.get(key.as_str()) {
                     let col_type = col.col_type();
@@ -350,13 +354,13 @@ impl TableSchema {
 
 fn json_type_name(v: &Value) -> &'static str {
     match v {
-        Value::String(_)  => "String",
+        Value::String(_) => "String",
         Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
-        Value::Number(_)  => "float",
-        Value::Bool(_)    => "bool",
-        Value::Null       => "null",
-        Value::Array(_)   => "array",
-        Value::Object(_)  => "object",
+        Value::Number(_) => "float",
+        Value::Bool(_) => "bool",
+        Value::Null => "null",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
 
@@ -381,15 +385,11 @@ impl SchemaRegistry {
             return Ok(Self::new());
         }
 
-        let content = std::fs::read_to_string(path).map_err(|e| {
-            VoltraError::internal(format!("Failed to read schema.toml: {}", e))
-        })?;
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| VoltraError::internal(format!("Failed to read schema.toml: {}", e)))?;
 
         let raw: RawSchemaFile = toml::from_str(&content).map_err(|e| {
-            VoltraError::invalid_argument(format!(
-                "schema.toml parse error: {}",
-                e
-            ))
+            VoltraError::invalid_argument(format!("schema.toml parse error: {}", e))
         })?;
 
         let mut registry = Self::new();
@@ -421,7 +421,7 @@ impl SchemaRegistry {
     pub fn validate(&self, table_name: &str, value: Value) -> Result<Value> {
         match self.schemas.get(table_name) {
             Some(schema) => schema.validate_and_fill(value),
-            None         => Ok(value),
+            None => Ok(value),
         }
     }
 
@@ -454,10 +454,30 @@ mod tests {
             name: "players".to_string(),
             primary_key: Some("id".to_string()),
             columns: vec![
-                ColumnDef { name: "id".to_string(), type_str: "String".to_string(), default: None, required: true },
-                ColumnDef { name: "score".to_string(), type_str: "i64".to_string(), default: Some("0".to_string()), required: true },
-                ColumnDef { name: "active".to_string(), type_str: "bool".to_string(), default: Some("true".to_string()), required: true },
-                ColumnDef { name: "name".to_string(), type_str: "String".to_string(), default: None, required: false },
+                ColumnDef {
+                    name: "id".to_string(),
+                    type_str: "String".to_string(),
+                    default: None,
+                    required: true,
+                },
+                ColumnDef {
+                    name: "score".to_string(),
+                    type_str: "i64".to_string(),
+                    default: Some("0".to_string()),
+                    required: true,
+                },
+                ColumnDef {
+                    name: "active".to_string(),
+                    type_str: "bool".to_string(),
+                    default: Some("true".to_string()),
+                    required: true,
+                },
+                ColumnDef {
+                    name: "name".to_string(),
+                    type_str: "String".to_string(),
+                    default: None,
+                    required: false,
+                },
             ],
             rls: RlsPolicy::default(),
         }
@@ -502,9 +522,12 @@ mod tests {
         let schema = TableSchema {
             name: "readings".to_string(),
             primary_key: None,
-            columns: vec![
-                ColumnDef { name: "temp".to_string(), type_str: "f64".to_string(), default: None, required: true },
-            ],
+            columns: vec![ColumnDef {
+                name: "temp".to_string(),
+                type_str: "f64".to_string(),
+                default: None,
+                required: true,
+            }],
             rls: RlsPolicy::default(),
         };
         // JSON integer should be coerced to f64 without error
@@ -562,8 +585,16 @@ mod tests {
         let row = json!({ "score": 10, "active": true });
         let err = s.validate_and_fill(row).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("id"), "error should mention column name, got: {}", msg);
-        assert!(msg.contains("missing"), "missing-column error expected, got: {}", msg);
+        assert!(
+            msg.contains("id"),
+            "error should mention column name, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("missing"),
+            "missing-column error expected, got: {}",
+            msg
+        );
     }
 
     #[test]
@@ -583,8 +614,16 @@ mod tests {
         let row = json!({ "id": null, "score": 10, "active": true });
         let err = s.validate_and_fill(row).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("id"), "error should mention column name, got: {}", msg);
-        assert!(msg.contains("must not be null"), "expected explicit-null error, got: {}", msg);
+        assert!(
+            msg.contains("id"),
+            "error should mention column name, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("must not be null"),
+            "expected explicit-null error, got: {}",
+            msg
+        );
     }
 
     #[test]
@@ -593,7 +632,11 @@ mod tests {
         let s = player_schema();
         let row = json!({ "id": "p1", "score": 10, "active": true, "name": null });
         let result = s.validate_and_fill(row);
-        assert!(result.is_ok(), "optional null should pass: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "optional null should pass: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -627,8 +670,18 @@ mod tests {
             name: "events".to_string(),
             primary_key: Some("event_id".to_string()),
             columns: vec![
-                ColumnDef { name: "event_id".to_string(), type_str: "String".to_string(), default: None, required: true },
-                ColumnDef { name: "payload".to_string(), type_str: "any".to_string(), default: None, required: true },
+                ColumnDef {
+                    name: "event_id".to_string(),
+                    type_str: "String".to_string(),
+                    default: None,
+                    required: true,
+                },
+                ColumnDef {
+                    name: "payload".to_string(),
+                    type_str: "any".to_string(),
+                    default: None,
+                    required: true,
+                },
             ],
             rls: RlsPolicy::default(),
         };
@@ -687,14 +740,18 @@ default = "0"
 
     #[test]
     fn rls_owner_field_allows_owner() {
-        let policy = RlsPolicy::OwnerField { field: "owner".to_string() };
+        let policy = RlsPolicy::OwnerField {
+            field: "owner".to_string(),
+        };
         let row = owned_row("alice");
         assert!(rls_check(&policy, Some(&row), "alice", "player"));
     }
 
     #[test]
     fn rls_owner_field_denies_non_owner() {
-        let policy = RlsPolicy::OwnerField { field: "owner".to_string() };
+        let policy = RlsPolicy::OwnerField {
+            field: "owner".to_string(),
+        };
         let row = owned_row("alice");
         assert!(!rls_check(&policy, Some(&row), "bob", "player"));
     }
@@ -702,20 +759,26 @@ default = "0"
     #[test]
     fn rls_owner_field_allows_new_insert() {
         // row == None means new insert — always allow so reducer can set owner.
-        let policy = RlsPolicy::OwnerField { field: "owner".to_string() };
+        let policy = RlsPolicy::OwnerField {
+            field: "owner".to_string(),
+        };
         assert!(rls_check(&policy, None, "charlie", "player"));
     }
 
     #[test]
     fn rls_role_gated_allows_matching_role() {
-        let policy = RlsPolicy::RoleGated { roles: vec!["admin".to_string(), "moderator".to_string()] };
+        let policy = RlsPolicy::RoleGated {
+            roles: vec!["admin".to_string(), "moderator".to_string()],
+        };
         assert!(rls_check(&policy, None, "alice", "admin"));
         assert!(rls_check(&policy, None, "alice", "moderator"));
     }
 
     #[test]
     fn rls_role_gated_denies_wrong_role() {
-        let policy = RlsPolicy::RoleGated { roles: vec!["admin".to_string()] };
+        let policy = RlsPolicy::RoleGated {
+            roles: vec!["admin".to_string()],
+        };
         assert!(!rls_check(&policy, None, "alice", "player"));
         assert!(!rls_check(&policy, None, "alice", ""));
     }
@@ -753,7 +816,9 @@ default = "0"
 
     #[test]
     fn rls_scheduler_bypasses_owner_field() {
-        let policy = RlsPolicy::OwnerField { field: "owner".to_string() };
+        let policy = RlsPolicy::OwnerField {
+            field: "owner".to_string(),
+        };
         let row = owned_row("alice");
         // scheduler role always bypasses — even accessing another user's row.
         assert!(rls_check(&policy, Some(&row), "system", "scheduler"));
@@ -761,7 +826,9 @@ default = "0"
 
     #[test]
     fn rls_system_role_bypasses_role_gated() {
-        let policy = RlsPolicy::RoleGated { roles: vec!["vip".to_string()] };
+        let policy = RlsPolicy::RoleGated {
+            roles: vec!["vip".to_string()],
+        };
         // "system" role is a hardcoded bypass even if not in the allowed list.
         assert!(rls_check(&policy, None, "anything", "system"));
     }

@@ -28,7 +28,7 @@
 //  3. set_row builds Arc<Bytes> payload once and reuses it.
 // ============================================================================
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::schema::SchemaRegistry;
 use crate::table::{Counter, RowDelta, TableStore};
 use crate::tenant::{physical_table, TenantRegistry};
@@ -108,9 +108,7 @@ impl ReducerContext {
     #[inline]
     fn phys(&self, table_name: &str) -> String {
         match &self.tenant_id {
-            Some(tid)
-                if !table_name.starts_with("__") && !table_name.starts_with("tn:") =>
-            {
+            Some(tid) if !table_name.starts_with("__") && !table_name.starts_with("tn:") => {
                 physical_table(tid, table_name)
             }
             _ => table_name.to_string(),
@@ -203,7 +201,12 @@ impl ReducerContext {
         };
 
         let existing = self.get_row(&table_name, &row_key)?;
-        let operation = if existing.is_some() { "update" } else { "insert" }.to_string();
+        let operation = if existing.is_some() {
+            "update"
+        } else {
+            "insert"
+        }
+        .to_string();
 
         let encoded = serde_json::to_vec(&row_value)
             .map_err(|e| VoltraError::SerializationError(format!("Row encode: {}", e)))?;
@@ -303,7 +306,9 @@ impl ReducerContext {
         if let (Some(tid), Some(reg)) = (&self.tenant_id, &self.tenant_registry) {
             let quota = reg.row_quota(tid);
             if quota > 0 {
-                let pending_inserts = self.pending_deltas.iter()
+                let pending_inserts = self
+                    .pending_deltas
+                    .iter()
                     .filter(|d| d.operation == "insert")
                     .count() as u64;
                 let current_count = reg.tenant_row_count(tid);
@@ -371,7 +376,11 @@ impl ReducerContext {
         let read_set: Vec<(String, String, u64)> = self
             .read_versions
             .lock()
-            .map(|rv| rv.iter().map(|((t, k), v)| (t.clone(), k.clone(), *v)).collect())
+            .map(|rv| {
+                rv.iter()
+                    .map(|((t, k), v)| (t.clone(), k.clone(), *v))
+                    .collect()
+            })
             .unwrap_or_default();
         let committed = self
             .tables
@@ -391,7 +400,6 @@ impl ReducerContext {
             rv.clear();
         }
     }
-
 
     pub fn rollback(&mut self) {
         if let Ok(mut rv) = self.read_versions.lock() {
@@ -482,23 +490,43 @@ mod tests {
     fn test_concurrent_rmw_conflict_detected() {
         let tables = Arc::new(TableStore::new());
         tables
-            .set_row("players".into(), "p1".into(), serde_json::json!({"hp": 100}))
+            .set_row(
+                "players".into(),
+                "p1".into(),
+                serde_json::json!({"hp": 100}),
+            )
             .unwrap();
 
         let mut ctx_a = ReducerContext::new(tables.clone(), 1);
         let mut ctx_b = ReducerContext::new(tables.clone(), 2);
 
         // Both read hp=100 (recording version 1).
-        let hp_a = ctx_a.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
-        let hp_b = ctx_b.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        let hp_a = ctx_a.get_row("players", "p1").unwrap().unwrap()["hp"]
+            .as_i64()
+            .unwrap();
+        let hp_b = ctx_b.get_row("players", "p1").unwrap().unwrap()["hp"]
+            .as_i64()
+            .unwrap();
         assert_eq!((hp_a, hp_b), (100, 100));
 
         // A commits hp-30 first.
-        ctx_a.set_row("players".into(), "p1".into(), serde_json::json!({"hp": hp_a - 30})).unwrap();
+        ctx_a
+            .set_row(
+                "players".into(),
+                "p1".into(),
+                serde_json::json!({"hp": hp_a - 30}),
+            )
+            .unwrap();
         ctx_a.commit().unwrap();
 
         // B's commit of hp-20 (computed from stale hp=100) must conflict.
-        ctx_b.set_row("players".into(), "p1".into(), serde_json::json!({"hp": hp_b - 20})).unwrap();
+        ctx_b
+            .set_row(
+                "players".into(),
+                "p1".into(),
+                serde_json::json!({"hp": hp_b - 20}),
+            )
+            .unwrap();
         let err = ctx_b.commit().unwrap_err();
         assert!(
             matches!(err, VoltraError::TxnConflict(_)),
@@ -506,16 +534,28 @@ mod tests {
         );
 
         // A's write survived untouched.
-        let hp = tables.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        let hp = tables.get_row("players", "p1").unwrap().unwrap()["hp"]
+            .as_i64()
+            .unwrap();
         assert_eq!(hp, 70);
 
         // Retry path: B re-reads fresh state and succeeds.
         ctx_b.reset_for_retry();
-        let hp_b2 = ctx_b.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        let hp_b2 = ctx_b.get_row("players", "p1").unwrap().unwrap()["hp"]
+            .as_i64()
+            .unwrap();
         assert_eq!(hp_b2, 70);
-        ctx_b.set_row("players".into(), "p1".into(), serde_json::json!({"hp": hp_b2 - 20})).unwrap();
+        ctx_b
+            .set_row(
+                "players".into(),
+                "p1".into(),
+                serde_json::json!({"hp": hp_b2 - 20}),
+            )
+            .unwrap();
         ctx_b.commit().unwrap();
-        let hp = tables.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        let hp = tables.get_row("players", "p1").unwrap().unwrap()["hp"]
+            .as_i64()
+            .unwrap();
         assert_eq!(hp, 50); // both hits landed — zero lost updates
     }
 
@@ -524,19 +564,39 @@ mod tests {
     #[test]
     fn test_read_only_rows_do_not_conflict() {
         let tables = Arc::new(TableStore::new());
-        tables.set_row("cfg".into(), "world".into(), serde_json::json!({"tick": 1})).unwrap();
-        tables.set_row("players".into(), "p1".into(), serde_json::json!({"hp": 100})).unwrap();
+        tables
+            .set_row("cfg".into(), "world".into(), serde_json::json!({"tick": 1}))
+            .unwrap();
+        tables
+            .set_row(
+                "players".into(),
+                "p1".into(),
+                serde_json::json!({"hp": 100}),
+            )
+            .unwrap();
 
         let mut ctx_a = ReducerContext::new(tables.clone(), 1);
         // A reads cfg (won't write it) and writes players/p1.
         ctx_a.get_row("cfg", "world").unwrap();
-        let hp = ctx_a.get_row("players", "p1").unwrap().unwrap()["hp"].as_i64().unwrap();
+        let hp = ctx_a.get_row("players", "p1").unwrap().unwrap()["hp"]
+            .as_i64()
+            .unwrap();
 
         // Someone else updates cfg meanwhile.
-        tables.set_row("cfg".into(), "world".into(), serde_json::json!({"tick": 2})).unwrap();
+        tables
+            .set_row("cfg".into(), "world".into(), serde_json::json!({"tick": 2}))
+            .unwrap();
 
-        ctx_a.set_row("players".into(), "p1".into(), serde_json::json!({"hp": hp - 1})).unwrap();
-        ctx_a.commit().expect("read-only rows must not abort the commit");
+        ctx_a
+            .set_row(
+                "players".into(),
+                "p1".into(),
+                serde_json::json!({"hp": hp - 1}),
+            )
+            .unwrap();
+        ctx_a
+            .commit()
+            .expect("read-only rows must not abort the commit");
     }
 
     /// Insert race: two transactions both observe a key as absent (v0) and
@@ -550,10 +610,22 @@ mod tests {
         assert!(ctx_a.get_row("items", "sword#1").unwrap().is_none());
         assert!(ctx_b.get_row("items", "sword#1").unwrap().is_none());
 
-        ctx_a.set_row("items".into(), "sword#1".into(), serde_json::json!({"owner": "alice"})).unwrap();
+        ctx_a
+            .set_row(
+                "items".into(),
+                "sword#1".into(),
+                serde_json::json!({"owner": "alice"}),
+            )
+            .unwrap();
         ctx_a.commit().unwrap();
 
-        ctx_b.set_row("items".into(), "sword#1".into(), serde_json::json!({"owner": "bob"})).unwrap();
+        ctx_b
+            .set_row(
+                "items".into(),
+                "sword#1".into(),
+                serde_json::json!({"owner": "bob"}),
+            )
+            .unwrap();
         let err = ctx_b.commit().unwrap_err();
         assert!(matches!(err, VoltraError::TxnConflict(_)));
 

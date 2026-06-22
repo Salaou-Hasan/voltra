@@ -1,4 +1,4 @@
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::reducer::backend::ReducerBackend;
 use crate::reducer::native::NativeReducerBackend;
 use crate::reducer::v8::V8ReducerBackend;
@@ -111,7 +111,10 @@ impl ReducerRegistry {
                     backend,
                 },
             );
-            log::info!("Auto-registered native reducer '{}' (via #[reducer])", item.name);
+            log::info!(
+                "Auto-registered native reducer '{}' (via #[reducer])",
+                item.name
+            );
         }
 
         let modules_path = PathBuf::from("modules");
@@ -525,16 +528,23 @@ mod tests {
         let mut ctx = ReducerContext::new(tables.clone(), 42);
 
         // set via shortcut
-        ctx.set("scores", "alice", serde_json::json!({ "pts": 100 })).unwrap();
+        ctx.set("scores", "alice", serde_json::json!({ "pts": 100 }))
+            .unwrap();
 
         // get via shortcut — read-your-writes before commit
-        let row = ctx.get("scores", "alice").unwrap().expect("row should exist");
+        let row = ctx
+            .get("scores", "alice")
+            .unwrap()
+            .expect("row should exist");
         assert_eq!(row["pts"], 100);
 
         // delete via shortcut
         ctx.delete("scores", "alice").unwrap();
         let after_delete = ctx.get("scores", "alice").unwrap();
-        assert!(after_delete.is_none(), "Row should be gone after pending delete");
+        assert!(
+            after_delete.is_none(),
+            "Row should be gone after pending delete"
+        );
     }
 
     #[test]
@@ -542,11 +552,15 @@ mod tests {
         let tables = Arc::new(TableStore::new());
         let mut ctx = ReducerContext::new(tables.clone(), 99);
 
-        ctx.set("items", "sword", serde_json::json!({ "damage": 55 })).unwrap();
+        ctx.set("items", "sword", serde_json::json!({ "damage": 55 }))
+            .unwrap();
         ctx.commit().unwrap();
 
         // After commit, the row lives in the TableStore.
-        let row = tables.get_row("items", "sword").unwrap().expect("committed row missing");
+        let row = tables
+            .get_row("items", "sword")
+            .unwrap()
+            .expect("committed row missing");
         assert_eq!(row["damage"], 55);
     }
 }

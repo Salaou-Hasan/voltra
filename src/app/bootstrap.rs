@@ -13,7 +13,9 @@ use voltra::{
     config::{Config, ScheduledReducerConfig},
     error::Result,
     metrics::Metrics,
-    network::{start_listener, PendingCall, RateLimiterConfig, RateLimiterRegistry, ReducerResponse},
+    network::{
+        start_listener, PendingCall, RateLimiterConfig, RateLimiterRegistry, ReducerResponse,
+    },
     presence::PresenceManager,
     reducer::{ReducerContext, ReducerRegistry},
     subscriptions::SubscriptionManager,
@@ -68,7 +70,11 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
             Ok(meta) => {
                 min_wal_seq = meta.last_sequence;
                 initial_seq = meta.last_sequence.saturating_add(1);
-                log::info!("Snapshot loaded: {} rows, replaying WAL from seq > {}", meta.row_count, meta.last_sequence);
+                log::info!(
+                    "Snapshot loaded: {} rows, replaying WAL from seq > {}",
+                    meta.row_count,
+                    meta.last_sequence
+                );
             }
             Err(e) => log::warn!("Failed to load snapshot: {} — replaying full WAL", e),
         }
@@ -82,7 +88,9 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
             }
             Err(e) => log::warn!("WAL recovery failed: {}", e),
         }
-    } else { log::info!("WAL does not exist, starting fresh"); }
+    } else {
+        log::info!("WAL does not exist, starting fresh");
+    }
 
     let migrations_dir = PathBuf::from("migrations");
     match voltra::migrations::apply_migrations(&migrations_dir, &tables) {
@@ -93,7 +101,7 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
 
     let schema_registry = Arc::new(
         voltra::schema::SchemaRegistry::load_from_file(Path::new("schema.toml"))
-            .unwrap_or_else(|_| voltra::schema::SchemaRegistry::new())
+            .unwrap_or_else(|_| voltra::schema::SchemaRegistry::new()),
     );
 
     // Tenant registry — hydrated from __tenants table (populated by WAL/snapshot replay above).
@@ -109,19 +117,27 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
     // Reads VOLTRA_PEERS, VOLTRA_SHARD_ID, VOLTRA_SHARD_COUNT from env.
     // No-op when VOLTRA_PEERS is unset (single-node mode).
     let my_shard_id: u32 = std::env::var("VOLTRA_SHARD_ID")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let shard_count: u32 = std::env::var("VOLTRA_SHARD_COUNT")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
     let cluster_cfg = voltra::cluster::ClusterConfig::from_env(my_shard_id, shard_count);
     let cluster_bus = voltra::cluster::ClusterBus::new(cluster_cfg);
     if cluster_bus.is_active() {
         log::info!(
             "[cluster] Active — shard {}/{}, {} peer(s): {}",
-            my_shard_id, shard_count,
+            my_shard_id,
+            shard_count,
             cluster_bus.peers.len(),
-            cluster_bus.healthy_peers().iter()
+            cluster_bus
+                .healthy_peers()
+                .iter()
                 .map(|p| format!("shard{}@{}", p.shard_id, p.metrics_url))
-                .collect::<Vec<_>>().join(", ")
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     } else {
         log::info!("[voltra] single-node mode (set VOLTRA_PEERS to enable clustering)");
@@ -129,7 +145,9 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
 
     let (reducer_tx, reducer_rx) = kanal::bounded_async::<PendingCall>(config.reducer_queue_cap);
     let queue_probe = reducer_tx.clone(); // for healthz queue-depth reporting
-    let subscription_manager = Arc::new(SubscriptionManager::new_with_options(config.two_frame_protocol));
+    let subscription_manager = Arc::new(SubscriptionManager::new_with_options(
+        config.two_frame_protocol,
+    ));
     subscription_manager.start_tick_flusher(config.sub_tick_ms);
 
     let active_connections = Arc::new(AtomicUsize::new(0));
@@ -141,7 +159,8 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
     // ── Ed25519 identity issuer ───────────────────────────────────────────────
     // Persist key in <wal_dir>/identity_key.pem.  Generated on first start,
     // reloaded on subsequent starts so tokens stay valid across restarts.
-    let identity_key_path = config.wal_path
+    let identity_key_path = config
+        .wal_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("identity_key.pem");
@@ -168,39 +187,49 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
         log::info!("[identity] Generated new Ed25519 key (kid={})", iss.kid);
         Arc::new(iss)
     };
-    println!("[voltra] Identity public key:\n{}", identity_issuer.public_key_pem());
+    println!(
+        "[voltra] Identity public key:\n{}",
+        identity_issuer.public_key_pem()
+    );
 
     // ── Persistent relational store (SQLite) ─────────────────────────────────
     // Stored alongside the WAL directory.  Only accessed at handshake / HTTP
     // endpoints — never from the game reducer hot path.
-    let persistent_db_path = config.wal_path
+    let persistent_db_path = config
+        .wal_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("voltra_persistent.db");
     let persistent_store: Arc<voltra::persistent::PersistentStore> =
         match voltra::persistent::PersistentStore::open(&persistent_db_path) {
             Ok(s) => {
-                log::info!("[persistent] SQLite store opened at {:?}", persistent_db_path);
+                log::info!(
+                    "[persistent] SQLite store opened at {:?}",
+                    persistent_db_path
+                );
                 Arc::new(s)
             }
             Err(e) => {
-                log::warn!("[persistent] Could not open SQLite ({}), auth endpoints will be unavailable", e);
+                log::warn!(
+                    "[persistent] Could not open SQLite ({}), auth endpoints will be unavailable",
+                    e
+                );
                 // Create an in-memory fallback so the server still boots.
-                Arc::new(voltra::persistent::PersistentStore::open(
-                    std::path::Path::new(":memory:"),
-                ).unwrap_or_else(|_| panic!("SQLite in-memory fallback failed")))
+                Arc::new(
+                    voltra::persistent::PersistentStore::open(std::path::Path::new(":memory:"))
+                        .unwrap_or_else(|_| panic!("SQLite in-memory fallback failed")),
+                )
             }
         };
-    let auth_service: Arc<voltra::auth_service::AuthService> = Arc::new(
-        voltra::auth_service::AuthService::new(
+    let auth_service: Arc<voltra::auth_service::AuthService> =
+        Arc::new(voltra::auth_service::AuthService::new(
             persistent_store.clone(),
             identity_issuer.clone(),
             std::env::var("VOLTRA_TOKEN_TTL_SECS")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(86_400),
-        ),
-    );
+        ));
 
     // ── Rate limiter ─────────────────────────────────────────────────────────
     let rate_limiter = Arc::new(RateLimiterRegistry::new(RateLimiterConfig {
@@ -223,21 +252,31 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
 
     // ── TLS configuration ────────────────────────────────────────────────────
     let tls_server_config: Option<std::sync::Arc<rustls::ServerConfig>> = if config.tls.enabled {
-        match (config.tls.cert_path.as_deref(), config.tls.key_path.as_deref()) {
-            (Some(cert), Some(key)) => {
-                match voltra::network::tls::load_tls_config(cert, key) {
-                    Ok(cfg) => {
-                        log::info!("TLS enabled: cert={}, key={}", cert.display(), key.display());
-                        Some(cfg)
-                    }
-                    Err(e) => {
-                        log::error!("Failed to load TLS config, falling back to plaintext: {}", e);
-                        None
-                    }
+        match (
+            config.tls.cert_path.as_deref(),
+            config.tls.key_path.as_deref(),
+        ) {
+            (Some(cert), Some(key)) => match voltra::network::tls::load_tls_config(cert, key) {
+                Ok(cfg) => {
+                    log::info!(
+                        "TLS enabled: cert={}, key={}",
+                        cert.display(),
+                        key.display()
+                    );
+                    Some(cfg)
                 }
-            }
+                Err(e) => {
+                    log::error!(
+                        "Failed to load TLS config, falling back to plaintext: {}",
+                        e
+                    );
+                    None
+                }
+            },
             _ => {
-                log::warn!("TLS enabled but cert_path/key_path not set. Falling back to plaintext.");
+                log::warn!(
+                    "TLS enabled but cert_path/key_path not set. Falling back to plaintext."
+                );
                 None
             }
         }
@@ -249,9 +288,16 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
     let drain_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let wal_writer = Arc::new(BatchedWalWriter::open(
-        &config.wal_path, config.wal_batch_interval_ms, config.wal_batch_size, config.unsafe_no_fsync,
+        &config.wal_path,
+        config.wal_batch_interval_ms,
+        config.wal_batch_size,
+        config.unsafe_no_fsync,
     )?);
-    let worker_count = if config.workers > 0 { config.workers } else { num_cpus::get().max(1) };
+    let worker_count = if config.workers > 0 {
+        config.workers
+    } else {
+        num_cpus::get().max(1)
+    };
     log::info!("Starting {} reducer workers", worker_count);
     let global_seq = Arc::new(std::sync::atomic::AtomicU64::new(initial_seq));
 
@@ -286,9 +332,12 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
     };
 
     let listener_handle = {
-        let config_c = config.clone(); let tx_c = reducer_tx.clone();
-        let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
-        let conns_c = active_connections.clone(); let rx_shutdown = shutdown_rx.clone();
+        let config_c = config.clone();
+        let tx_c = reducer_tx.clone();
+        let subs_c = subscription_manager.clone();
+        let tables_c = tables.clone();
+        let conns_c = active_connections.clone();
+        let rx_shutdown = shutdown_rx.clone();
         let perms_c = permissions.clone();
         let auth_c = auth_validator.clone();
         let rl_c = rate_limiter.clone();
@@ -303,25 +352,48 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
         let df_c = drain_flag.clone();
         tokio::spawn(async move {
             if let Err(e) = start_listener(
-                config_c.host, config_c.port, tx_c, subs_c, tables_c,
-                config_c.max_connections, config_c.api_key.clone(),
-                conns_c, perms_c, config_c.sql_timeout_ms,
-                auth_c, rl_c, pres_c, ttl_c, iss_c, rx_shutdown, metrics_c, tls_cfg,
-                tenant_registry_ws, inl_c, Some(lr_c), df_c,
-            ).await { log::error!("Listener error: {}", e); }
+                config_c.host,
+                config_c.port,
+                tx_c,
+                subs_c,
+                tables_c,
+                config_c.max_connections,
+                config_c.api_key.clone(),
+                conns_c,
+                perms_c,
+                config_c.sql_timeout_ms,
+                auth_c,
+                rl_c,
+                pres_c,
+                ttl_c,
+                iss_c,
+                rx_shutdown,
+                metrics_c,
+                tls_cfg,
+                tenant_registry_ws,
+                inl_c,
+                Some(lr_c),
+                df_c,
+            )
+            .await
+            {
+                log::error!("Listener error: {}", e);
+            }
         })
     };
 
-    let timeout_ms        = config.reducer_timeout_ms;
+    let timeout_ms = config.reducer_timeout_ms;
     let snapshot_interval = config.snapshot_interval;
-    let snapshot_dir_w    = config.snapshot_dir.clone();
+    let snapshot_dir_w = config.snapshot_dir.clone();
 
     let startup_instant = std::time::Instant::now();
 
     let metrics_handle = {
-        let subs_c = subscription_manager.clone(); let tables_c = tables.clone();
+        let subs_c = subscription_manager.clone();
+        let tables_c = tables.clone();
         let rx_shutdown = shutdown_rx.clone();
-        let host_c = config.host.clone(); let mport = config.metrics_port;
+        let host_c = config.host.clone();
+        let mport = config.metrics_port;
         let registry_c = registry.clone();
         let wal_c = wal_writer.clone();
         let seq_c = global_seq.clone();
@@ -343,8 +415,11 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
         }
         let region_registry = Arc::new(voltra::cluster::RegionRegistry::from_env());
         if region_registry.is_multi_region() {
-            log::info!("[regions] Multi-region mode: region='{}', peers={}",
-                region_registry.my_region, region_registry.peer_regions().len());
+            log::info!(
+                "[regions] Multi-region mode: region='{}', peers={}",
+                region_registry.my_region,
+                region_registry.peer_regions().len()
+            );
         }
 
         let lobby_routes = voltra::cluster::LobbyRouteRegistry::new(tables.clone());
@@ -364,7 +439,8 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
             config.leaderboard_board.clone(),
             config.leaderboard_interval_secs,
             config.leaderboard_top_n,
-        ).start(shutdown_rx.clone());
+        )
+        .start(shutdown_rx.clone());
 
         let stat_sync = voltra::stat_sync::StatSyncQueue::new(
             tables.clone(),
@@ -391,7 +467,26 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
         });
         let schema_c = schema_registry.clone();
         tokio::spawn(async move {
-            if let Err(e) = start_metrics_server(host_c, mport, subs_c, tables_c, registry_c, wal_c, seq_c, startup_instant, pres_m, ttl_m, prom_c, issuer_c, qprobe_c, admin_c, schema_c, rx_shutdown).await {
+            if let Err(e) = start_metrics_server(
+                host_c,
+                mport,
+                subs_c,
+                tables_c,
+                registry_c,
+                wal_c,
+                seq_c,
+                startup_instant,
+                pres_m,
+                ttl_m,
+                prom_c,
+                issuer_c,
+                qprobe_c,
+                admin_c,
+                schema_c,
+                rx_shutdown,
+            )
+            .await
+            {
                 log::error!("Metrics server error: {}", e);
             }
         })
@@ -416,9 +511,17 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                 let shut_r = shutdown_rx.clone();
                 tokio::spawn(async move {
                     voltra::replication::run_replica_loop(
-                        primary, tables_r, subs_r, wal_r, seq_r, poll,
-                        auto_failover, miss_count, shut_r,
-                    ).await;
+                        primary,
+                        tables_r,
+                        subs_r,
+                        wal_r,
+                        seq_r,
+                        poll,
+                        auto_failover,
+                        miss_count,
+                        shut_r,
+                    )
+                    .await;
                 });
                 log::info!("[replication] Started in REPLICA mode (read-only)");
             }
@@ -467,7 +570,11 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                 }
             }
         });
-        log::info!("[backup] Automated backups every {}s (keep {})", interval_secs, keep);
+        log::info!(
+            "[backup] Automated backups every {}s (keep {})",
+            interval_secs,
+            keep
+        );
     }
 
     // ── Cluster gossip + fan-out retry tasks ─────────────────────────────────
@@ -483,11 +590,15 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
 
     let mut worker_handles = Vec::with_capacity(worker_count);
     for worker_id in 0..worker_count {
-        let rx = reducer_rx.clone(); let tables_w = tables.clone();
+        let rx = reducer_rx.clone();
+        let tables_w = tables.clone();
         let registry_w = registry.clone();
-        let subs_w = subscription_manager.clone(); let wal_w = wal_writer.clone();
-        let seq_w = global_seq.clone(); let snap_iv = snapshot_interval;
-        let snap_dir_ww = snapshot_dir_w.clone(); let schema_w = schema_registry.clone();
+        let subs_w = subscription_manager.clone();
+        let wal_w = wal_writer.clone();
+        let seq_w = global_seq.clone();
+        let snap_iv = snapshot_interval;
+        let snap_dir_ww = snapshot_dir_w.clone();
+        let schema_w = schema_registry.clone();
         let ttl_w = ttl_manager.clone();
         let tenant_w = tenant_registry.clone();
         let cluster_w = cluster_bus.clone();
@@ -607,7 +718,7 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                             // Periodic snapshot + WAL rotation. Skip if a snapshot is
                             // already in flight — overlapping snapshots each clone the
                             // full dataset into memory and would compound, not bound it.
-                            if snap_iv > 0 && (seq_num + 1) % snap_iv == 0
+                            if snap_iv > 0 && (seq_num + 1).is_multiple_of(snap_iv)
                                 && !snap_busy_w.swap(true, std::sync::atomic::Ordering::AcqRel)
                             {
                                 let tbl = tables_w.clone(); let dir = snap_dir_ww.clone(); let ts2 = current_timestamp_nanos();
@@ -680,7 +791,9 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
             30_000 // default to 30s if disabled (task will be a no-op)
         };
         tokio::spawn(async move {
-            if sweep_interval == 0 { return; }
+            if sweep_interval == 0 {
+                return;
+            }
             let mut ticker = tokio::time::interval(Duration::from_millis(sweep_interval.max(1)));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             ticker.tick().await; // skip first immediate tick
@@ -713,7 +826,9 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
         let mut rx_ttl = shutdown_rx.clone();
         let sweep_ms = config.ttl_sweep_interval_ms;
         tokio::spawn(async move {
-            if sweep_ms == 0 { return; }
+            if sweep_ms == 0 {
+                return;
+            }
             let mut ticker = tokio::time::interval(Duration::from_millis(sweep_ms));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             ticker.tick().await; // skip first immediate tick
@@ -753,10 +868,17 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
         let tx_sched = reducer_tx.clone();
         let seq_sched = sched_seq.clone();
         let mut rx_shutdown_sched = shutdown_rx.clone();
-        let args_bytes: Vec<u8> = sched.args_json.as_deref()
+        let args_bytes: Vec<u8> = sched
+            .args_json
+            .as_deref()
             .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
-            .and_then(|v| rmp_serde::to_vec(&v).ok()).unwrap_or_default();
-        log::info!("Scheduler: '{}' every {}ms", sched.reducer, sched.interval_ms);
+            .and_then(|v| rmp_serde::to_vec(&v).ok())
+            .unwrap_or_default();
+        log::info!(
+            "Scheduler: '{}' every {}ms",
+            sched.reducer,
+            sched.interval_ms
+        );
         scheduler_handles.push(tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_millis(sched.interval_ms.max(1)));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -797,8 +919,8 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
     // separate from the hot path — no lock contention on the hot path.
     let gauge_handle = {
         let tables_g = tables.clone();
-        let subs_g   = subscription_manager.clone();
-        let prom_g   = metrics.clone();
+        let subs_g = subscription_manager.clone();
+        let prom_g = metrics.clone();
         let mut rx_g = shutdown_rx.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(5));
@@ -831,15 +953,19 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
     drop(reducer_tx);
 
     // 3. Wait for all in-flight reducer workers to finish, with a 30-second deadline.
-    let drain_result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        async {
-            for h in worker_handles  { let _ = h.await; }
-            for h in scheduler_handles { let _ = h.await; }
+    let drain_result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        for h in worker_handles {
+            let _ = h.await;
         }
-    ).await;
+        for h in scheduler_handles {
+            let _ = h.await;
+        }
+    })
+    .await;
     if drain_result.is_err() {
-        log::warn!("[voltra] Worker drain timed out after 30s — some in-flight reducers may be incomplete");
+        log::warn!(
+            "[voltra] Worker drain timed out after 30s — some in-flight reducers may be incomplete"
+        );
     }
 
     // 4. Flush any buffered WAL entries to disk before shutting down the writer.
@@ -847,7 +973,9 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
         log::error!("WAL flush failed during shutdown: {}", e);
     }
     if let Ok(writer) = Arc::try_unwrap(wal_writer) {
-        if let Err(e) = writer.shutdown() { log::error!("WAL shutdown: {}", e); }
+        if let Err(e) = writer.shutdown() {
+            log::error!("WAL shutdown: {}", e);
+        }
     }
 
     // 5. Await all remaining task handles (listener sends WebSocket Close frames).

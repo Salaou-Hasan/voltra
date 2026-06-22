@@ -29,16 +29,17 @@ use super::rate_limiter::RateLimiterRegistry;
 use super::InlineRegistry;
 use crate::auth::{AuthResult, AuthValidator, IdentityIssuer};
 use crate::config::PermissionsConfig;
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::metrics::Metrics;
 use crate::presence::PresenceManager;
-use crate::tenant::TenantRegistry;
-use crate::ttl::TtlManager;
-use crate::sql::{Executor as SqlExecutor};
+use crate::sql::Executor as SqlExecutor;
 use crate::subscriptions::{OutboundFrames, SubscriptionManager};
 use crate::table::TableStore;
+use crate::tenant::TenantRegistry;
+use crate::ttl::TtlManager;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
@@ -46,7 +47,6 @@ use std::sync::{
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch::Receiver};
 use tokio_rustls::TlsAcceptor;
-use socket2::{Domain, Protocol, Socket, Type};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -66,14 +66,13 @@ pub const CLIENT_SEND_BUFFER_CAPACITY: usize = 1024;
 /// and recovers (strike counter resets on the next successful send); only a
 /// client that stays behind for this many deliveries in a row is disconnected.
 /// Tunable via `VOLTRA_SLOW_CONSUMER_MAX_STRIKES` (default 64).
-pub static SLOW_CONSUMER_MAX_STRIKES: std::sync::LazyLock<u32> =
-    std::sync::LazyLock::new(|| {
-        std::env::var("VOLTRA_SLOW_CONSUMER_MAX_STRIKES")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|&n| n > 0)
-            .unwrap_or(64)
-    });
+pub static SLOW_CONSUMER_MAX_STRIKES: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
+    std::env::var("VOLTRA_SLOW_CONSUMER_MAX_STRIKES")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(64)
+});
 
 /// Create N TCP listeners all bound to the same address.
 ///
@@ -82,8 +81,9 @@ pub static SLOW_CONSUMER_MAX_STRIKES: std::sync::LazyLock<u32> =
 /// On other platforms (Windows, macOS) we fall back to a single listener;
 /// `SO_REUSEPORT` either doesn't exist or doesn't provide the same guarantee.
 fn create_listeners(bind_addr: &str, _count: usize) -> std::io::Result<Vec<TcpListener>> {
-    let addr: std::net::SocketAddr = bind_addr.parse()
-        .map_err(|e: std::net::AddrParseError| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+    let addr: std::net::SocketAddr = bind_addr.parse().map_err(|e: std::net::AddrParseError| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string())
+    })?;
 
     #[cfg(target_os = "linux")]
     let n = _count;
@@ -92,8 +92,12 @@ fn create_listeners(bind_addr: &str, _count: usize) -> std::io::Result<Vec<TcpLi
 
     let mut listeners = Vec::with_capacity(n);
     for _ in 0..n {
-        let domain  = if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
-        let socket  = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+        let domain = if addr.is_ipv6() {
+            Domain::IPV6
+        } else {
+            Domain::IPV4
+        };
+        let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
         socket.set_reuse_address(true)?;
         #[cfg(target_os = "linux")]
         socket.set_reuse_port(true)?;
@@ -108,30 +112,30 @@ fn create_listeners(bind_addr: &str, _count: usize) -> std::io::Result<Vec<TcpLi
 /// All shared state passed to each accept-loop task.
 /// Using a struct + Arc lets us spawn N accept tasks without cloning 20 params.
 struct AcceptState {
-    reducer_tx:           kanal::AsyncSender<PendingCall>,
+    reducer_tx: kanal::AsyncSender<PendingCall>,
     subscription_manager: Arc<crate::subscriptions::SubscriptionManager>,
-    tables:               Arc<crate::table::TableStore>,
-    api_key:              Option<String>,
-    active_connections:   Arc<AtomicUsize>,
-    permissions:          Arc<crate::config::PermissionsConfig>,
-    sql_timeout_ms:       u64,
-    auth_validator:       Arc<crate::auth::AuthValidator>,
-    rate_limiter:         Arc<super::RateLimiterRegistry>,
-    presence:             Arc<crate::presence::PresenceManager>,
-    ttl_manager:          Arc<crate::ttl::TtlManager>,
-    identity_issuer:      Arc<crate::auth::IdentityIssuer>,
-    metrics:              Arc<crate::metrics::Metrics>,
-    tenant_registry:      Arc<crate::tenant::TenantRegistry>,
-    inline_registry:      Arc<super::InlineRegistry>,
-    lobby_router:         Option<Arc<crate::worker_pool::LobbyRouter>>,
-    drain_flag:           Arc<AtomicBool>,
-    max_connections:      usize,
+    tables: Arc<crate::table::TableStore>,
+    api_key: Option<String>,
+    active_connections: Arc<AtomicUsize>,
+    permissions: Arc<crate::config::PermissionsConfig>,
+    sql_timeout_ms: u64,
+    auth_validator: Arc<crate::auth::AuthValidator>,
+    rate_limiter: Arc<super::RateLimiterRegistry>,
+    presence: Arc<crate::presence::PresenceManager>,
+    ttl_manager: Arc<crate::ttl::TtlManager>,
+    identity_issuer: Arc<crate::auth::IdentityIssuer>,
+    metrics: Arc<crate::metrics::Metrics>,
+    tenant_registry: Arc<crate::tenant::TenantRegistry>,
+    inline_registry: Arc<super::InlineRegistry>,
+    lobby_router: Option<Arc<crate::worker_pool::LobbyRouter>>,
+    drain_flag: Arc<AtomicBool>,
+    max_connections: usize,
 }
 
 async fn run_accept_loop(
-    listener:     TcpListener,
+    listener: TcpListener,
     tls_acceptor: Option<TlsAcceptor>,
-    s:            Arc<AcceptState>,
+    s: Arc<AcceptState>,
     mut shutdown: Receiver<()>,
 ) {
     loop {
@@ -249,9 +253,8 @@ fn is_valid_role(role: &str) -> bool {
     if role.is_empty() || role.len() > 32 {
         return false;
     }
-    role.bytes().all(|b| {
-        b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
-    })
+    role.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Parse a Bearer token into (api_key_part, role_part).
@@ -318,13 +321,22 @@ pub async fn start_listener(
     // Spawn N accept tasks: one per logical core (capped at 8) on Linux with
     // SO_REUSEPORT, exactly 1 everywhere else (create_listeners handles this).
     let accept_count = num_cpus::get().clamp(1, 8);
-    let listeners = create_listeners(&bind_addr, accept_count)
-        .map_err(|e| crate::error::VoltraError::network_error(format!("bind {}: {}", bind_addr, e)))?;
+    let listeners = create_listeners(&bind_addr, accept_count).map_err(|e| {
+        crate::error::VoltraError::network_error(format!("bind {}: {}", bind_addr, e))
+    })?;
 
     if tls_acceptor.is_some() {
-        log::info!("WebSocket listener (WSS/TLS) on {} ({} accept queue(s))", bind_addr, listeners.len());
+        log::info!(
+            "WebSocket listener (WSS/TLS) on {} ({} accept queue(s))",
+            bind_addr,
+            listeners.len()
+        );
     } else {
-        log::info!("WebSocket listener on {} ({} accept queue(s))", bind_addr, listeners.len());
+        log::info!(
+            "WebSocket listener on {} ({} accept queue(s))",
+            bind_addr,
+            listeners.len()
+        );
     }
 
     let state = Arc::new(AcceptState {
@@ -350,16 +362,18 @@ pub async fn start_listener(
 
     let mut handles = Vec::with_capacity(listeners.len());
     for listener in listeners {
-        let s   = state.clone();
+        let s = state.clone();
         let tls = tls_acceptor.clone();
-        let sd  = shutdown.clone();
+        let sd = shutdown.clone();
         handles.push(tokio::spawn(run_accept_loop(listener, tls, s, sd)));
     }
 
     // Wait for the shutdown signal, then abort all accept tasks.
     let _ = shutdown.changed().await;
     log::info!("WebSocket listener shutdown requested");
-    for h in &handles { h.abort(); }
+    for h in &handles {
+        h.abort();
+    }
     Ok(())
 }
 
@@ -388,15 +402,15 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     // ── WebSocket handshake with JWT / API-key auth ───────────────────────────
-    let caller_id_cell    = Arc::new(std::sync::Mutex::new(String::new()));
-    let caller_role_cell  = Arc::new(std::sync::Mutex::new(String::new()));
-    let tenant_id_cell    = Arc::new(std::sync::Mutex::new(Option::<String>::None));
-    let caller_id_capture   = caller_id_cell.clone();
+    let caller_id_cell = Arc::new(std::sync::Mutex::new(String::new()));
+    let caller_role_cell = Arc::new(std::sync::Mutex::new(String::new()));
+    let tenant_id_cell = Arc::new(std::sync::Mutex::new(Option::<String>::None));
+    let caller_id_capture = caller_id_cell.clone();
     let caller_role_capture = caller_role_cell.clone();
-    let tenant_id_capture   = tenant_id_cell.clone();
+    let tenant_id_capture = tenant_id_cell.clone();
 
-    let auth_v  = auth_validator.clone();
-    let iss_v   = identity_issuer.clone();
+    let auth_v = auth_validator.clone();
+    let iss_v = identity_issuer.clone();
     let tenant_v = tenant_registry.clone();
 
     // Bound per-connection memory. tungstenite's default max_write_buffer_size
@@ -410,10 +424,10 @@ where
     // also tighten the worst-case single-allocation.
     let ws_config = {
         let mut c = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
-        c.write_buffer_size     = 64 * 1024;        // flush threshold (64 KiB)
-        c.max_write_buffer_size  = 512 * 1024;       // hard per-conn cap (512 KiB)
-        c.max_message_size       = Some(1 << 20);    // 1 MiB inbound message cap
-        c.max_frame_size         = Some(1 << 20);    // 1 MiB inbound frame cap
+        c.write_buffer_size = 64 * 1024; // flush threshold (64 KiB)
+        c.max_write_buffer_size = 512 * 1024; // hard per-conn cap (512 KiB)
+        c.max_message_size = Some(1 << 20); // 1 MiB inbound message cap
+        c.max_frame_size = Some(1 << 20); // 1 MiB inbound frame cap
         c
     };
 
@@ -432,7 +446,9 @@ where
                 // validate() with an empty token would return Denied even in
                 // None mode, locking out all anonymous dev connections.
                 if !matches!(auth_v.mode(), crate::auth::AuthMode::None) {
-                    return Err(ErrorResponse::new(Some("Unauthorized: missing Authorization header".to_string())));
+                    return Err(ErrorResponse::new(Some(
+                        "Unauthorized: missing Authorization header".to_string(),
+                    )));
                 }
             } else {
                 // Strip "Bearer " prefix to get the raw token.
@@ -457,7 +473,8 @@ where
                         }
                         Err(e) => {
                             return Err(ErrorResponse::new(Some(format!(
-                                "Unauthorized: invalid JWT — {}", e
+                                "Unauthorized: invalid JWT — {}",
+                                e
                             ))));
                         }
                     }
@@ -477,7 +494,7 @@ where
                         }
                         None => {
                             return Err(ErrorResponse::new(Some(
-                                "Unauthorized: invalid tenant API key".to_string()
+                                "Unauthorized: invalid tenant API key".to_string(),
                             )));
                         }
                     }
@@ -485,11 +502,18 @@ where
                     // ── Legacy API key / HMAC JWT path ───────────────────────
                     match auth_v.validate(auth_header) {
                         AuthResult::Authenticated { user_id, role, .. } => {
-                            if let Ok(mut cell) = caller_id_capture.lock() { *cell = user_id; }
-                            if let Ok(mut cell) = caller_role_capture.lock() { *cell = role; }
+                            if let Ok(mut cell) = caller_id_capture.lock() {
+                                *cell = user_id;
+                            }
+                            if let Ok(mut cell) = caller_role_capture.lock() {
+                                *cell = role;
+                            }
                         }
                         AuthResult::Denied(reason) => {
-                            return Err(ErrorResponse::new(Some(format!("Unauthorized: {}", reason))));
+                            return Err(ErrorResponse::new(Some(format!(
+                                "Unauthorized: {}",
+                                reason
+                            ))));
                         }
                         AuthResult::Anonymous => {
                             // No auth configured — allow with default identity
@@ -504,7 +528,9 @@ where
                 .get("x-voltra-identity")
                 .and_then(|v| v.to_str().ok())
             {
-                if let Ok(mut cell) = caller_id_capture.lock() { *cell = id.to_string(); }
+                if let Ok(mut cell) = caller_id_capture.lock() {
+                    *cell = id.to_string();
+                }
             }
             Ok(response)
         },
@@ -515,13 +541,23 @@ where
 
     let caller_id: String = {
         let g = caller_id_cell.lock().unwrap_or_else(|e| e.into_inner());
-        if g.is_empty() { peer_addr.clone() } else { g.clone() }
+        if g.is_empty() {
+            peer_addr.clone()
+        } else {
+            g.clone()
+        }
     };
     let caller_role: String = {
-        caller_role_cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        caller_role_cell
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     };
     let tenant_id: Option<String> = {
-        tenant_id_cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        tenant_id_cell
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     };
 
     // ── Presence: mark user online ───────────────────────────────────────────
@@ -641,7 +677,9 @@ where
             };
 
             if dropped > 0 {
-                sub_metrics.subscription_frames_dropped_total.inc_by(dropped);
+                sub_metrics
+                    .subscription_frames_dropped_total
+                    .inc_by(dropped);
                 strikes = strikes.saturating_add(1);
                 if strikes >= max_strikes {
                     sub_metrics.slow_consumer_evictions_total.inc();
@@ -671,7 +709,7 @@ where
         };
         let msg = match msg_opt {
             Some(m) => m,
-            None    => break,
+            None => break,
         };
         // Implicit heartbeat: any message from the client refreshes presence.
         presence.heartbeat(&caller_id);
@@ -682,18 +720,22 @@ where
                     Ok(ClientMessage::ReducerCall(call)) => {
                         // ── Rate limit check ─────────────────────────────────
                         let rate_ok = rate_limiter.check(&caller_id)
-                            && tenant_id.as_deref()
+                            && tenant_id
+                                .as_deref()
                                 .map(|tid| tenant_registry.check_rate(tid))
                                 .unwrap_or(true);
                         if !rate_ok {
                             log::debug!("Rate limited: caller_id='{}'", caller_id);
-                            let limited = ReducerResponse::error(
-                                call.call_id,
-                                "Rate limited".to_string(),
-                            );
+                            let limited =
+                                ReducerResponse::error(call.call_id, "Rate limited".to_string());
                             if let Ok(encoded) = protocol::encode_response(&limited) {
-                                if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                    metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
+                                if let Err(mpsc::error::TrySendError::Full(_)) =
+                                    write_tx.try_send(Message::Binary(encoded))
+                                {
+                                    metrics.slow_consumer_evictions_total.inc();
+                                    log::warn!(
+                                        "Client send buffer full, disconnecting slow client"
+                                    );
                                     break;
                                 }
                             }
@@ -704,7 +746,8 @@ where
                         if !permissions.is_allowed(&call.reducer_name, &caller_role) {
                             log::warn!(
                                 "Permission denied: caller_role='{}' tried to call '{}'",
-                                caller_role, call.reducer_name
+                                caller_role,
+                                call.reducer_name
                             );
                             let denied = ReducerResponse::error(
                                 call.call_id,
@@ -714,10 +757,15 @@ where
                                 ),
                             );
                             if let Ok(encoded) = protocol::encode_response(&denied) {
-                                if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
-                                        break;
-                                    }
+                                if let Err(mpsc::error::TrySendError::Full(_)) =
+                                    write_tx.try_send(Message::Binary(encoded))
+                                {
+                                    metrics.slow_consumer_evictions_total.inc();
+                                    log::warn!(
+                                        "Client send buffer full, disconnecting slow client"
+                                    );
+                                    break;
+                                }
                             }
                             continue;
                         }
@@ -763,7 +811,10 @@ where
                         }
                     }
 
-                    Ok(ClientMessage::Subscribe { subscription_id, query }) => {
+                    Ok(ClientMessage::Subscribe {
+                        subscription_id,
+                        query,
+                    }) => {
                         // Rewrite query to use the physical table name for tenant clients.
                         let physical_query = match &tenant_id {
                             Some(tid) => rewrite_query_for_tenant(&query, tid),
@@ -788,10 +839,13 @@ where
                             },
                         };
                         if let Ok(encoded) = protocol::encode_server_message(&ack) {
-                            if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
-                                        break;
-                                    }
+                            if let Err(mpsc::error::TrySendError::Full(_)) =
+                                write_tx.try_send(Message::Binary(encoded))
+                            {
+                                metrics.slow_consumer_evictions_total.inc();
+                                log::warn!("Client send buffer full, disconnecting slow client");
+                                break;
+                            }
                         }
                     }
 
@@ -815,18 +869,21 @@ where
                             },
                         };
                         if let Ok(encoded) = protocol::encode_server_message(&ack) {
-                            if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
-                                        break;
-                                    }
+                            if let Err(mpsc::error::TrySendError::Full(_)) =
+                                write_tx.try_send(Message::Binary(encoded))
+                            {
+                                metrics.slow_consumer_evictions_total.inc();
+                                log::warn!("Client send buffer full, disconnecting slow client");
+                                break;
+                            }
                         }
                     }
 
                     // ── Full SQL query ────────────────────────────────────────
                     Ok(ClientMessage::SqlQuery(sq)) => {
-                        let query_id  = sq.query_id;
-                        let sql       = sq.sql.clone();
-                        let tables_q  = tables.clone();
+                        let query_id = sq.query_id;
+                        let sql = sq.sql.clone();
+                        let tables_q = tables.clone();
                         let write_tx_q = write_tx.clone();
                         let timeout_ms = sql_timeout_ms;
 
@@ -850,7 +907,9 @@ where
                                 match tokio::time::timeout(
                                     std::time::Duration::from_millis(timeout_ms),
                                     work,
-                                ).await {
+                                )
+                                .await
+                                {
                                     Ok(Ok(r)) => r,
                                     Ok(Err(e)) => SqlResult::err(
                                         query_id,
@@ -859,7 +918,8 @@ where
                                     Err(_) => {
                                         log::warn!(
                                             "SQL query {} cancelled after {}ms timeout",
-                                            query_id, timeout_ms
+                                            query_id,
+                                            timeout_ms
                                         );
                                         SqlResult::err(
                                             query_id,
@@ -874,11 +934,15 @@ where
                             let msg = ServerMessage::SqlResult(result);
                             match protocol::encode_server_message(&msg) {
                                 Ok(bytes) => {
-                                if let Err(mpsc::error::TrySendError::Full(_)) = write_tx_q.try_send(Message::Binary(bytes)) {
-                                    log::warn!("Client send buffer full (SQL result), frame dropped");
+                                    if let Err(mpsc::error::TrySendError::Full(_)) =
+                                        write_tx_q.try_send(Message::Binary(bytes))
+                                    {
+                                        log::warn!(
+                                            "Client send buffer full (SQL result), frame dropped"
+                                        );
+                                    }
                                 }
-                            }
-                                Err(e)    => log::warn!("SQL result encode error: {}", e),
+                                Err(e) => log::warn!("SQL result encode error: {}", e),
                             }
                         });
                     }
@@ -892,21 +956,37 @@ where
                     // ── SetPresence ──────────────────────────────────
                     Ok(ClientMessage::SetPresence { status, metadata }) => {
                         presence.set_online(&caller_id, metadata);
-                        log::debug!("Presence update: caller='{}' status='{}'", caller_id, status);
+                        log::debug!(
+                            "Presence update: caller='{}' status='{}'",
+                            caller_id,
+                            status
+                        );
                     }
 
                     // ── SetTtl ───────────────────────────────────────
-                    Ok(ClientMessage::SetTtl { table_name, row_key, ttl_ms }) => {
+                    Ok(ClientMessage::SetTtl {
+                        table_name,
+                        row_key,
+                        ttl_ms,
+                    }) => {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_millis() as u64;
                         ttl_manager.set_ttl(&table_name, &row_key, now_ms, ttl_ms);
-                        log::debug!("TTL set: {}.{} expires in {}ms", table_name, row_key, ttl_ms);
+                        log::debug!(
+                            "TTL set: {}.{} expires in {}ms",
+                            table_name,
+                            row_key,
+                            ttl_ms
+                        );
                     }
 
                     // ── CancelTtl ────────────────────────────────────
-                    Ok(ClientMessage::CancelTtl { table_name, row_key }) => {
+                    Ok(ClientMessage::CancelTtl {
+                        table_name,
+                        row_key,
+                    }) => {
                         ttl_manager.cancel_ttl(&table_name, &row_key);
                         log::debug!("TTL cancelled: {}.{}", table_name, row_key);
                     }
@@ -917,14 +997,20 @@ where
                             Ok(call) => {
                                 // ── Rate limit check (fallback path) ──────────
                                 if !rate_limiter.check(&caller_id) {
-                                    log::debug!("Rate limited (fallback): caller_id='{}'", caller_id);
+                                    log::debug!(
+                                        "Rate limited (fallback): caller_id='{}'",
+                                        caller_id
+                                    );
                                     let limited = ReducerResponse::error(
                                         call.call_id,
                                         "Rate limited".to_string(),
                                     );
                                     if let Ok(encoded) = protocol::encode_response(&limited) {
-                                        if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                            metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
+                                        if let Err(mpsc::error::TrySendError::Full(_)) =
+                                            write_tx.try_send(Message::Binary(encoded))
+                                        {
+                                            metrics.slow_consumer_evictions_total.inc();
+                                            log::warn!("Client send buffer full, disconnecting slow client");
                                             break;
                                         }
                                     }
@@ -934,7 +1020,8 @@ where
                                 if !permissions.is_allowed(&call.reducer_name, &caller_role) {
                                     log::warn!(
                                         "Permission denied (fallback): role='{}' tried '{}'",
-                                        caller_role, call.reducer_name
+                                        caller_role,
+                                        call.reducer_name
                                     );
                                     let denied = ReducerResponse::error(
                                         call.call_id,
@@ -944,10 +1031,13 @@ where
                                         ),
                                     );
                                     if let Ok(encoded) = protocol::encode_response(&denied) {
-                                        if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
-                                        break;
-                                    }
+                                        if let Err(mpsc::error::TrySendError::Full(_)) =
+                                            write_tx.try_send(Message::Binary(encoded))
+                                        {
+                                            metrics.slow_consumer_evictions_total.inc();
+                                            log::warn!("Client send buffer full, disconnecting slow client");
+                                            break;
+                                        }
                                     }
                                     continue;
                                 }
@@ -983,8 +1073,13 @@ where
                                     message: format!("Decode error: {}", e),
                                 };
                                 if let Ok(encoded) = protocol::encode_server_message(&error) {
-                                    if let Err(mpsc::error::TrySendError::Full(_)) = write_tx.try_send(Message::Binary(encoded)) {
-                                        metrics.slow_consumer_evictions_total.inc(); log::warn!("Client send buffer full, disconnecting slow client");
+                                    if let Err(mpsc::error::TrySendError::Full(_)) =
+                                        write_tx.try_send(Message::Binary(encoded))
+                                    {
+                                        metrics.slow_consumer_evictions_total.inc();
+                                        log::warn!(
+                                            "Client send buffer full, disconnecting slow client"
+                                        );
                                         break;
                                     }
                                 }
@@ -1092,11 +1187,7 @@ fn strip_tenant_frames(frames: OutboundFrames, tenant_id: &str) -> OutboundFrame
 
 /// Parse and execute a SQL string against the live TableStore.
 /// Returns a `SqlResult` ready to send over the wire.
-fn execute_sql_query(
-    sql: &str,
-    tables: &Arc<TableStore>,
-    query_id: u64,
-) -> SqlResult {
+fn execute_sql_query(sql: &str, tables: &Arc<TableStore>, query_id: u64) -> SqlResult {
     // Parse
     let stmt = match crate::sql::parser::parse(sql) {
         Ok(s) => s,
@@ -1109,7 +1200,8 @@ fn execute_sql_query(
         Err(e) => SqlResult::err(query_id, format!("Execution error: {}", e)),
         Ok(result) => {
             // Convert each Row (Map<String, Value>) into a plain JSON object Value
-            let rows: Vec<serde_json::Value> = result.rows
+            let rows: Vec<serde_json::Value> = result
+                .rows
                 .into_iter()
                 .map(serde_json::Value::Object)
                 .collect();
@@ -1271,16 +1363,14 @@ mod tests {
     #[test]
     fn test_execute_sql_query_select() {
         let tables = Arc::new(TableStore::new());
-        tables.set_row(
-            "players".into(),
-            "alice".into(),
-            serde_json::json!({"id": "alice", "score": 200}),
-        ).unwrap();
-        let result = execute_sql_query(
-            "SELECT * FROM players WHERE id = 'alice'",
-            &tables,
-            1,
-        );
+        tables
+            .set_row(
+                "players".into(),
+                "alice".into(),
+                serde_json::json!({"id": "alice", "score": 200}),
+            )
+            .unwrap();
+        let result = execute_sql_query("SELECT * FROM players WHERE id = 'alice'", &tables, 1);
         assert!(result.success, "{:?}", result.error);
         assert_eq!(result.rows.len(), 1);
     }
@@ -1345,7 +1435,10 @@ mod tests {
             Err(mpsc::error::TrySendError::Full(_)) => {
                 // Expected: channel is full, slow client would be disconnected
             }
-            Ok(_) => panic!("Expected channel to be full after {} sends", CLIENT_SEND_BUFFER_CAPACITY),
+            Ok(_) => panic!(
+                "Expected channel to be full after {} sends",
+                CLIENT_SEND_BUFFER_CAPACITY
+            ),
             Err(mpsc::error::TrySendError::Closed(_)) => panic!("Channel unexpectedly closed"),
         }
     }
@@ -1385,7 +1478,10 @@ mod tests {
                 strikes = 0;
             }
         }
-        assert!(!evicted, "transient spikes (reset by a success) must not evict");
+        assert!(
+            !evicted,
+            "transient spikes (reset by a success) must not evict"
+        );
         assert_eq!(frames_dropped, 5);
 
         // Now four drops IN A ROW must evict.
@@ -1397,7 +1493,11 @@ mod tests {
                 evicted = true;
             }
         }
-        assert!(evicted, "{} consecutive full-buffer strikes must evict", max);
+        assert!(
+            evicted,
+            "{} consecutive full-buffer strikes must evict",
+            max
+        );
     }
 
     #[test]
@@ -1420,7 +1520,9 @@ mod tests {
     #[test]
     fn test_is_jwt_with_three_segments() {
         // A real JWT (three base64url segments separated by dots)
-        assert!(is_jwt("eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhbGljZSJ9.SIGNATURE"));
+        assert!(is_jwt(
+            "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhbGljZSJ9.SIGNATURE"
+        ));
     }
 
     #[test]

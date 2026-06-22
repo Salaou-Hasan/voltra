@@ -22,13 +22,13 @@
 //!     concatenated without a separator: "[dry-run] Would seedSeeding 3 row(s)...".
 //!     Fixed by splitting into two separate println! calls.
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use crate::network::message::{ClientMessage, ReducerCall};
 use futures::{SinkExt, StreamExt};
+use reqwest;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
-use reqwest;
 
 fn ws_request(
     url: &str,
@@ -245,13 +245,12 @@ pub async fn cmd_generate_npc(
     let args_bytes = rmp_serde::to_vec(&args)
         .map_err(|e| crate::error::VoltraError::SerializationError(e.to_string()))?;
 
-    let msg = crate::network::message::ClientMessage::ReducerCall(
-        crate::network::message::ReducerCall {
+    let msg =
+        crate::network::message::ClientMessage::ReducerCall(crate::network::message::ReducerCall {
             call_id: 1,
             reducer_name: "cache_npc_template".to_string(),
             args: args_bytes,
-        },
-    );
+        });
     let frame = rmp_serde::to_vec(&msg)
         .map_err(|e| crate::error::VoltraError::SerializationError(e.to_string()))?;
 
@@ -259,15 +258,16 @@ pub async fn cmd_generate_npc(
     match tokio_tungstenite::connect_async(request).await {
         Ok((mut ws, _)) => {
             use futures::{SinkExt, StreamExt};
-            let _ = ws.send(tokio_tungstenite::tungstenite::Message::Binary(frame)).await;
+            let _ = ws
+                .send(tokio_tungstenite::tungstenite::Message::Binary(frame))
+                .await;
             // Wait briefly for ack, then close gracefully.
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                ws.next(),
-            )
-            .await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await;
             let _ = ws.close(None).await;
-            println!("✓ Template cached in server as npc_templates['{}']", npc_type);
+            println!(
+                "✓ Template cached in server as npc_templates['{}']",
+                npc_type
+            );
         }
         Err(e) => {
             println!(
@@ -283,8 +283,8 @@ pub async fn cmd_generate_npc(
 /// Call the Anthropic messages API to generate an NPC template.
 /// Reads ANTHROPIC_API_KEY from the environment.
 async fn generate_via_anthropic(prompt: &str) -> std::result::Result<serde_json::Value, String> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| "ANTHROPIC_API_KEY not set".to_string())?;
+    let api_key =
+        std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY not set".to_string())?;
 
     let body = serde_json::json!({
         "model": "claude-haiku-4-5-20251001",
@@ -335,19 +335,84 @@ async fn generate_via_anthropic(prompt: &str) -> std::result::Result<serde_json:
         .trim_end_matches("```")
         .trim();
 
-    serde_json::from_str(cleaned)
-        .map_err(|e| format!("JSON parse error: {} — raw: {}", e, &cleaned[..cleaned.len().min(200)]))
+    serde_json::from_str(cleaned).map_err(|e| {
+        format!(
+            "JSON parse error: {} — raw: {}",
+            e,
+            &cleaned[..cleaned.len().min(200)]
+        )
+    })
 }
 
 /// Built-in fallback NPC template when AI generation is not available.
 fn built_in_npc_template(npc_type: &str) -> serde_json::Value {
     let (display, desc, behavior, hp, atk, def, speed, xp, gold) = match npc_type {
-        "goblin"   => ("Goblin",   "A small green menace with a rusty blade.", "aggressive", 60,  12,  4, 6, 20,   5),
-        "orc"      => ("Orc",      "A brutish warrior, slow but devastating.",  "aggressive", 120, 20, 10, 4, 50,  15),
-        "skeleton" => ("Skeleton", "An undead archer, silent and relentless.", "patrol",     80,  16,  6, 5, 35,   8),
-        "dragon"   => ("Dragon",   "An ancient dragon of immense power.",       "boss",       800, 70, 40, 3, 1000, 500),
-        "boss"     => ("Boss",     "A powerful dungeon guardian.",              "boss",       500, 45, 25, 4, 500, 200),
-        _          => (npc_type,   "A dangerous enemy.",                        "aggressive",  60,  12,  4, 5,  20,   5),
+        "goblin" => (
+            "Goblin",
+            "A small green menace with a rusty blade.",
+            "aggressive",
+            60,
+            12,
+            4,
+            6,
+            20,
+            5,
+        ),
+        "orc" => (
+            "Orc",
+            "A brutish warrior, slow but devastating.",
+            "aggressive",
+            120,
+            20,
+            10,
+            4,
+            50,
+            15,
+        ),
+        "skeleton" => (
+            "Skeleton",
+            "An undead archer, silent and relentless.",
+            "patrol",
+            80,
+            16,
+            6,
+            5,
+            35,
+            8,
+        ),
+        "dragon" => (
+            "Dragon",
+            "An ancient dragon of immense power.",
+            "boss",
+            800,
+            70,
+            40,
+            3,
+            1000,
+            500,
+        ),
+        "boss" => (
+            "Boss",
+            "A powerful dungeon guardian.",
+            "boss",
+            500,
+            45,
+            25,
+            4,
+            500,
+            200,
+        ),
+        _ => (
+            npc_type,
+            "A dangerous enemy.",
+            "aggressive",
+            60,
+            12,
+            4,
+            5,
+            20,
+            5,
+        ),
     };
     serde_json::json!({
         "npc_type": npc_type,
@@ -361,7 +426,6 @@ fn built_in_npc_template(npc_type: &str) -> serde_json::Value {
         "source": "built_in"
     })
 }
-
 
 // ── seed ─────────────────────────────────────────────────────────────────────
 
@@ -388,22 +452,19 @@ fn built_in_npc_template(npc_type: &str) -> serde_json::Value {
 ///   }
 /// }
 /// ```
-pub async fn cmd_seed(
-    metrics_url: &str,
-    file_path: &str,
-    dry_run: bool,
-) -> Result<()> {
+pub async fn cmd_seed(metrics_url: &str, file_path: &str, dry_run: bool) -> Result<()> {
     // ── 1. Read and parse the seed file ──────────────────────────────────────
     let raw = std::fs::read_to_string(file_path).map_err(|e| {
         VoltraError::invalid_argument(format!("Cannot read seed file '{}': {}", file_path, e))
     })?;
-    let seed: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| {
-            VoltraError::invalid_argument(format!("Seed file is not valid JSON: {}", e))
-        })?;
+    let seed: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        VoltraError::invalid_argument(format!("Seed file is not valid JSON: {}", e))
+    })?;
 
     let tables_map = seed.as_object().ok_or_else(|| {
-        VoltraError::invalid_argument("Seed file root must be a JSON object mapping table names to rows")
+        VoltraError::invalid_argument(
+            "Seed file root must be a JSON object mapping table names to rows",
+        )
     })?;
 
     // ── 2. Normalize into a flat Vec<(table, key, data)> ─────────────────────
@@ -419,18 +480,19 @@ pub async fn cmd_seed(
                             table_name, idx
                         ))
                     })?;
-                    let row_key = obj
-                        .get("key")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            VoltraError::invalid_argument(format!(
-                                "{}[{}]: array-format rows must have a \"key\" string field",
-                                table_name, idx
-                            ))
-                        })?;
+                    let row_key = obj.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
+                        VoltraError::invalid_argument(format!(
+                            "{}[{}]: array-format rows must have a \"key\" string field",
+                            table_name, idx
+                        ))
+                    })?;
                     let mut data = obj.clone();
                     data.remove("key");
-                    rows.push((table_name.clone(), row_key.to_string(), serde_json::Value::Object(data)));
+                    rows.push((
+                        table_name.clone(),
+                        row_key.to_string(),
+                        serde_json::Value::Object(data),
+                    ));
                 }
             }
             serde_json::Value::Object(map) => {
@@ -494,9 +556,9 @@ pub async fn cmd_seed(
     let payload_str = serde_json::to_string(&payload)
         .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
-    let uri: hyper::Uri = seed_url.parse().map_err(|e| {
-        VoltraError::network_error(format!("Invalid URL '{}': {}", seed_url, e))
-    })?;
+    let uri: hyper::Uri = seed_url
+        .parse()
+        .map_err(|e| VoltraError::network_error(format!("Invalid URL '{}': {}", seed_url, e)))?;
     let req = hyper::Request::builder()
         .method(hyper::Method::POST)
         .uri(uri)
@@ -529,9 +591,15 @@ pub async fn cmd_seed(
     // ── 5. Print result ───────────────────────────────────────────────────────
     match serde_json::from_str::<serde_json::Value>(&body) {
         Ok(v) => {
-            let written = v.get("rows_written").and_then(|n| n.as_u64()).unwrap_or(rows.len() as u64);
+            let written = v
+                .get("rows_written")
+                .and_then(|n| n.as_u64())
+                .unwrap_or(rows.len() as u64);
             let skipped = v.get("rows_skipped").and_then(|n| n.as_u64()).unwrap_or(0);
-            println!("\n✓ Seed complete: {} row(s) written, {} skipped.", written, skipped);
+            println!(
+                "\n✓ Seed complete: {} row(s) written, {} skipped.",
+                written, skipped
+            );
         }
         Err(_) => println!("\n✓ Seed complete.\n{}", body),
     }
@@ -615,7 +683,10 @@ pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Resul
             match found {
                 Some(row) => {
                     let data = row.get("data").cloned().unwrap_or(serde_json::Value::Null);
-                    println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&data).unwrap_or_default()
+                    );
                 }
                 None => println!("Row '{}' not found in table '{}'", k, table),
             }
@@ -629,7 +700,11 @@ pub async fn cmd_get(metrics_url: &str, table: &str, key: Option<&str>) -> Resul
             for row in rows {
                 let rk = row.get("row_key").and_then(|v| v.as_str()).unwrap_or("?");
                 let data = row.get("data").cloned().unwrap_or(serde_json::Value::Null);
-                println!("  [{}] {}", rk, serde_json::to_string(&data).unwrap_or_default());
+                println!(
+                    "  [{}] {}",
+                    rk,
+                    serde_json::to_string(&data).unwrap_or_default()
+                );
             }
         }
     }
@@ -654,8 +729,8 @@ pub async fn cmd_call(
         reducer_name: reducer.to_string(),
         args: args_bytes,
     });
-    let frame = rmp_serde::to_vec(&msg)
-        .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
+    let frame =
+        rmp_serde::to_vec(&msg).map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
     let request = ws_request(ws_url, api_key)?;
     let (mut ws, _) = tokio_tungstenite::connect_async(request)
@@ -691,7 +766,11 @@ pub async fn cmd_call(
                             }
                         }
                     } else {
-                        println!("✗ Reducer '{}' failed: {}", reducer, error.unwrap_or_default());
+                        println!(
+                            "✗ Reducer '{}' failed: {}",
+                            reducer,
+                            error.unwrap_or_default()
+                        );
                     }
                 }
                 Err(e) => println!("Could not decode response: {}", e),
@@ -699,9 +778,11 @@ pub async fn cmd_call(
         }
         Some(Ok(_)) => println!("Unexpected non-binary response"),
         Some(Err(e)) => return Err(VoltraError::network_error(e.to_string())),
-        None => return Err(VoltraError::network_error(
-            "Connection closed without a response".to_string(),
-        )),
+        None => {
+            return Err(VoltraError::network_error(
+                "Connection closed without a response".to_string(),
+            ))
+        }
     }
 
     let _ = ws.close(None).await;
@@ -723,8 +804,8 @@ pub async fn cmd_watch(ws_url: &str, query: &str, api_key: Option<&str>) -> Resu
         subscription_id: "cli_watch".to_string(),
         query: query.to_string(),
     };
-    let frame = rmp_serde::to_vec(&msg)
-        .map_err(|e| VoltraError::SerializationError(e.to_string()))?;
+    let frame =
+        rmp_serde::to_vec(&msg).map_err(|e| VoltraError::SerializationError(e.to_string()))?;
 
     ws.send(Message::Binary(frame))
         .await
@@ -770,46 +851,90 @@ fn handle_watch_frame(data: &[u8], pending_route: &mut Option<Vec<String>>) {
                 let fields = content.as_array().cloned().unwrap_or_default();
                 match variant.as_str() {
                     "SubscriptionAck" => {
-                        let ok = content.get("success").and_then(|v| v.as_bool())
-                            .unwrap_or_else(|| fields.get(1).and_then(|v| v.as_bool()).unwrap_or(false));
+                        let ok = content
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or_else(|| {
+                                fields.get(1).and_then(|v| v.as_bool()).unwrap_or(false)
+                            });
                         if ok {
                             println!("[{}] subscribed ✓", ts());
                         } else {
-                            let msg = content.get("message").and_then(|v| v.as_str())
+                            let msg = content
+                                .get("message")
+                                .and_then(|v| v.as_str())
                                 .or_else(|| fields.get(2).and_then(|v| v.as_str()))
                                 .unwrap_or("");
                             println!("[{}] subscription failed: {}", ts(), msg);
                         }
                     }
                     "SubscriptionDiff" => {
-                        let table = content.get("table_name").and_then(|v| v.as_str())
-                            .or_else(|| fields.get(1).and_then(|v| v.as_str())).unwrap_or("?");
-                        let key = content.get("row_key").and_then(|v| v.as_str())
-                            .or_else(|| fields.get(2).and_then(|v| v.as_str())).unwrap_or("?");
-                        let op = content.get("operation").and_then(|v| v.as_str())
-                            .or_else(|| fields.get(3).and_then(|v| v.as_str())).unwrap_or("?");
-                        let row = content.get("row_data").cloned()
-                            .or_else(|| fields.get(4).cloned()).unwrap_or(serde_json::Value::Null);
+                        let table = content
+                            .get("table_name")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(1).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let key = content
+                            .get("row_key")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(2).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let op = content
+                            .get("operation")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(3).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let row = content
+                            .get("row_data")
+                            .cloned()
+                            .or_else(|| fields.get(4).cloned())
+                            .unwrap_or(serde_json::Value::Null);
                         println!("[{}] {:<16} {}.{} = {}", ts(), op, table, key, row);
                     }
                     "SubscriptionRoute" => {
-                        let ids = content.get("subscription_ids").and_then(|v| v.as_array())
+                        let ids = content
+                            .get("subscription_ids")
+                            .and_then(|v| v.as_array())
                             .or_else(|| fields.first().and_then(|v| v.as_array()))
-                            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(String::from))
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         *pending_route = Some(ids);
                     }
                     "SubscriptionBody" => {
-                        let table = content.get("table_name").and_then(|v| v.as_str())
-                            .or_else(|| fields.first().and_then(|v| v.as_str())).unwrap_or("?");
-                        let key = content.get("row_key").and_then(|v| v.as_str())
-                            .or_else(|| fields.get(1).and_then(|v| v.as_str())).unwrap_or("?");
-                        let op = content.get("operation").and_then(|v| v.as_str())
-                            .or_else(|| fields.get(2).and_then(|v| v.as_str())).unwrap_or("?");
-                        let row = content.get("row_data").cloned()
-                            .or_else(|| fields.get(3).cloned()).unwrap_or(serde_json::Value::Null);
+                        let table = content
+                            .get("table_name")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.first().and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let key = content
+                            .get("row_key")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(1).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let op = content
+                            .get("operation")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| fields.get(2).and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let row = content
+                            .get("row_data")
+                            .cloned()
+                            .or_else(|| fields.get(3).cloned())
+                            .unwrap_or(serde_json::Value::Null);
                         let n = pending_route.take().map(|r| r.len()).unwrap_or(1);
-                        println!("[{}] {:<16} {}.{} = {} (×{} sub)", ts(), op, table, key, row, n);
+                        println!(
+                            "[{}] {:<16} {}.{} = {} (×{} sub)",
+                            ts(),
+                            op,
+                            table,
+                            key,
+                            row,
+                            n
+                        );
                     }
                     _ => {}
                 }
@@ -827,11 +952,7 @@ fn handle_watch_frame(data: &[u8], pending_route: &mut Option<Vec<String>>) {
 /// and returns a per-file summary.  Already-applied migrations are skipped.
 ///
 /// `--dry-run` reads the files and prints what would be applied without POSTing.
-pub async fn cmd_migrate(
-    metrics_url: &str,
-    migrations_dir: &str,
-    dry_run: bool,
-) -> Result<()> {
+pub async fn cmd_migrate(metrics_url: &str, migrations_dir: &str, dry_run: bool) -> Result<()> {
     let dir = std::path::Path::new(migrations_dir);
     if !dir.exists() {
         println!("No migrations directory found at {:?}", dir);
@@ -864,15 +985,36 @@ pub async fn cmd_migrate(
     if dry_run {
         println!("[dry-run] Would send the following migration files:");
         for p in &paths {
-            println!("  • {}", p.file_name().and_then(|s| s.to_str()).unwrap_or("?"));
+            println!(
+                "  • {}",
+                p.file_name().and_then(|s| s.to_str()).unwrap_or("?")
+            );
             // Print a quick summary of steps
             if let Ok(contents) = std::fs::read_to_string(p) {
                 if let Ok(parsed) = toml::from_str::<toml::Value>(&contents) {
-                    let version = parsed.get("version").and_then(|v| v.as_integer()).unwrap_or(0);
-                    let desc = parsed.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                    let steps = parsed.get("steps").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                    println!("    version={}, steps={}{}", version, steps,
-                        if desc.is_empty() { String::new() } else { format!(", \"{}\"", desc) });
+                    let version = parsed
+                        .get("version")
+                        .and_then(|v| v.as_integer())
+                        .unwrap_or(0);
+                    let desc = parsed
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let steps = parsed
+                        .get("steps")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    println!(
+                        "    version={}, steps={}{}",
+                        version,
+                        steps,
+                        if desc.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", \"{}\"", desc)
+                        }
+                    );
                 }
             }
         }
@@ -884,7 +1026,11 @@ pub async fn cmd_migrate(
     // Build the request payload: list of {filename, content} objects
     let mut migrations = Vec::new();
     for p in &paths {
-        let filename = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        let filename = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
         let content = std::fs::read_to_string(p)
             .map_err(|e| VoltraError::internal(format!("Cannot read {:?}: {}", p, e)))?;
         migrations.push(serde_json::json!({ "filename": filename, "content": content }));
@@ -911,10 +1057,17 @@ pub async fn cmd_migrate(
 
     match serde_json::from_str::<serde_json::Value>(&body) {
         Ok(v) => {
-            let applied  = v.get("applied").and_then(|n| n.as_u64()).unwrap_or(0);
-            let skipped  = v.get("skipped").and_then(|n| n.as_u64()).unwrap_or(0);
-            let errors   = v.get("errors").and_then(|e| e.as_array()).cloned().unwrap_or_default();
-            println!("✓ Migration complete: {} applied, {} already up to date.", applied, skipped);
+            let applied = v.get("applied").and_then(|n| n.as_u64()).unwrap_or(0);
+            let skipped = v.get("skipped").and_then(|n| n.as_u64()).unwrap_or(0);
+            let errors = v
+                .get("errors")
+                .and_then(|e| e.as_array())
+                .cloned()
+                .unwrap_or_default();
+            println!(
+                "✓ Migration complete: {} applied, {} already up to date.",
+                applied, skipped
+            );
             if !errors.is_empty() {
                 println!("  Errors:");
                 for err in &errors {

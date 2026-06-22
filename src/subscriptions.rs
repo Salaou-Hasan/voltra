@@ -27,8 +27,10 @@
 // ============================================================================
 
 use crate::compression::HybridCompressor;
-use crate::error::{VoltraError, Result};
-use crate::network::message::{ServerMessage, SubscriptionBody, SubscriptionDiff, SubscriptionRoute};
+use crate::error::{Result, VoltraError};
+use crate::network::message::{
+    ServerMessage, SubscriptionBody, SubscriptionDiff, SubscriptionRoute,
+};
 use crate::table::{RowDelta, TableStore};
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -215,11 +217,7 @@ fn encode_body(delta: &RowDelta) -> Option<Arc<Bytes>> {
     encode_server(&ServerMessage::SubscriptionBody(body))
 }
 
-fn encode_snapshot_body(
-    table_name: &str,
-    row_key: &str,
-    row_data: Value,
-) -> Option<Arc<Bytes>> {
+fn encode_snapshot_body(table_name: &str, row_key: &str, row_data: Value) -> Option<Arc<Bytes>> {
     let body = SubscriptionBody {
         table_name: table_name.to_string(),
         row_key: row_key.to_string(),
@@ -231,7 +229,10 @@ fn encode_snapshot_body(
 
 /// Compute which fields in `new_val` differ from `old_val`.
 /// Returns None if nothing changed or if either value is not an object.
-fn compute_patch(old_val: &serde_json::Value, new_val: &serde_json::Value) -> Option<serde_json::Value> {
+fn compute_patch(
+    old_val: &serde_json::Value,
+    new_val: &serde_json::Value,
+) -> Option<serde_json::Value> {
     let old_obj = old_val.as_object()?;
     let new_obj = new_val.as_object()?;
     let mut patch = serde_json::Map::new();
@@ -240,7 +241,9 @@ fn compute_patch(old_val: &serde_json::Value, new_val: &serde_json::Value) -> Op
             patch.insert(k.clone(), v.clone());
         }
     }
-    if patch.is_empty() { return None; }
+    if patch.is_empty() {
+        return None;
+    }
     Some(serde_json::Value::Object(patch))
 }
 
@@ -282,7 +285,6 @@ impl SubscriptionManager {
             compressor: Arc::new(HybridCompressor::new(16_384)),
         }
     }
-
 
     /// Enable tick-coalesced delivery and spawn the flush task.
     /// Call once at server startup; `tick_ms` of 0 keeps immediate delivery.
@@ -403,7 +405,11 @@ impl SubscriptionManager {
                     // Index hit — fetch only matching keys.
                     keys.into_iter()
                         .filter_map(|k| {
-                            tables.get_row(&table_name, &k).ok().flatten().map(|v| (k, v))
+                            tables
+                                .get_row(&table_name, &k)
+                                .ok()
+                                .flatten()
+                                .map(|v| (k, v))
                         })
                         .collect()
                 } else {
@@ -443,7 +449,11 @@ impl SubscriptionManager {
                         let a_field = a_val.get(&field);
                         let b_field = b_val.get(&field);
                         let ord = compare_values(a_field, b_field);
-                        if desc { ord.reverse() } else { ord }
+                        if desc {
+                            ord.reverse()
+                        } else {
+                            ord
+                        }
                     });
                 }
 
@@ -466,22 +476,27 @@ impl SubscriptionManager {
                             route_bytes.clone(),
                             encode_snapshot_body(&table_name, &row_key, row_value),
                         ) {
-                            if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(OutboundFrames::Two {
-                                first: route,
-                                second: body,
-                            }) {
-                                log::warn!("Client send buffer full during snapshot delivery, truncating");
+                            if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx
+                                .try_send(OutboundFrames::Two {
+                                    first: route,
+                                    second: body,
+                                })
+                            {
+                                log::warn!(
+                                    "Client send buffer full during snapshot delivery, truncating"
+                                );
                                 break;
                             }
                         }
-                    } else if let Some(frame) = encode_legacy_snapshot(
-                        &subscription_id,
-                        &table_name,
-                        &row_key,
-                        row_value,
-                    ) {
-                        if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(OutboundFrames::One(frame)) {
-                            log::warn!("Client send buffer full during snapshot delivery, truncating");
+                    } else if let Some(frame) =
+                        encode_legacy_snapshot(&subscription_id, &table_name, &row_key, row_value)
+                    {
+                        if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) =
+                            tx.try_send(OutboundFrames::One(frame))
+                        {
+                            log::warn!(
+                                "Client send buffer full during snapshot delivery, truncating"
+                            );
                             break;
                         }
                     }
@@ -535,8 +550,10 @@ impl SubscriptionManager {
         // state-sync semantics, and it batches matching + encoding too.
         if self.tick_enabled.load(Ordering::Acquire) {
             for delta in deltas {
-                self.pending
-                    .insert((delta.table_name.clone(), delta.row_key.clone()), delta.clone());
+                self.pending.insert(
+                    (delta.table_name.clone(), delta.row_key.clone()),
+                    delta.clone(),
+                );
             }
             return;
         }
@@ -545,13 +562,16 @@ impl SubscriptionManager {
 
     // ── Batch fan-out (tick path) ─────────────────────────────────────────────────
 
-fn encode_batch_for_client(&self, diffs: &[SubscriptionDiff]) -> Option<Arc<Bytes>> {
-    let (payload, compressed) = self.compressor.compress_subscription_batch(diffs)?;
-    let msg = ServerMessage::BatchUpdate { compressed, payload };
-    encode_server(&msg)
-}
+    fn encode_batch_for_client(&self, diffs: &[SubscriptionDiff]) -> Option<Arc<Bytes>> {
+        let (payload, compressed) = self.compressor.compress_subscription_batch(diffs)?;
+        let msg = ServerMessage::BatchUpdate {
+            compressed,
+            payload,
+        };
+        encode_server(&msg)
+    }
 
-fn publish_now(&self, deltas: &[RowDelta]) {
+    fn publish_now(&self, deltas: &[RowDelta]) {
         if self.clients.is_empty() || deltas.is_empty() {
             return;
         }
@@ -597,10 +617,12 @@ fn publish_now(&self, deltas: &[RowDelta]) {
                 let mut clients_to_remove: Vec<ClientId> = Vec::new();
                 for (cid, (tx, sub_ids)) in &per_client {
                     if let Some(route) = encode_route(sub_ids.clone()) {
-                        if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(OutboundFrames::Two {
-                            first: route,
-                            second: body.clone(),
-                        }) {
+                        if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) =
+                            tx.try_send(OutboundFrames::Two {
+                                first: route,
+                                second: body.clone(),
+                            })
+                        {
                             log::warn!("Subscription send buffer full for client {}, removing subscriptions", cid);
                             clients_to_remove.push(*cid);
                         }
@@ -652,7 +674,9 @@ fn publish_now(&self, deltas: &[RowDelta]) {
 
                     if let Some(frame) = encode_legacy_diff(sub_id, delta) {
                         for (cid, tx, _) in &matching[i..run_end] {
-                            if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(OutboundFrames::One(frame.clone())) {
+                            if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) =
+                                tx.try_send(OutboundFrames::One(frame.clone()))
+                            {
                                 log::warn!("Subscription send buffer full for client {}, removing subscriptions", cid);
                                 clients_to_remove.push(*cid);
                             }
@@ -711,8 +735,10 @@ fn publish_now(&self, deltas: &[RowDelta]) {
                             if let Some(new_data) = &delta.row_data {
                                 if let Some(old_val) = client.row_cache.get(&cache_key) {
                                     if let Some(patch) = compute_patch(&old_val, new_data) {
-                                        let patch_bytes = rmp_serde::to_vec(&patch).unwrap_or_default();
-                                        let full_bytes = rmp_serde::to_vec(new_data).unwrap_or_default();
+                                        let patch_bytes =
+                                            rmp_serde::to_vec(&patch).unwrap_or_default();
+                                        let full_bytes =
+                                            rmp_serde::to_vec(new_data).unwrap_or_default();
                                         if patch_bytes.len() < full_bytes.len() {
                                             ("patch".to_string(), Some(patch))
                                         } else {
@@ -771,7 +797,8 @@ fn publish_now(&self, deltas: &[RowDelta]) {
                         };
                         log::warn!(
                             "[voltra] slow consumer client {}: {} missed tick(s)",
-                            client_id, missed
+                            client_id,
+                            missed
                         );
                         if missed >= Self::SLOW_CONSUMER_EVICT_AFTER {
                             clients_to_remove.push(client_id);
@@ -850,7 +877,11 @@ impl Predicate {
 /// Used to auto-create secondary indexes when a subscription is first registered.
 fn collect_eq_fields(pred: &Predicate) -> Vec<(&str, &Value)> {
     match pred {
-        Predicate::Comparison { field, op: ComparisonOp::Eq, value } => {
+        Predicate::Comparison {
+            field,
+            op: ComparisonOp::Eq,
+            value,
+        } => {
             vec![(field.as_str(), value)]
         }
         Predicate::Comparison { .. } => vec![],
@@ -869,11 +900,17 @@ fn collect_eq_fields(pred: &Predicate) -> Vec<(&str, &Value)> {
 /// runs `filter.matches()` on each candidate so correctness is maintained even
 /// if the index covers only part of the predicate.
 /// Returns `None` to signal "fall back to full table scan".
-fn index_candidates(pred: &Predicate, table_name: &str, tables: &TableStore) -> Option<Vec<String>> {
+fn index_candidates(
+    pred: &Predicate,
+    table_name: &str,
+    tables: &TableStore,
+) -> Option<Vec<String>> {
     match pred {
-        Predicate::Comparison { field, op: ComparisonOp::Eq, value } => {
-            tables.index_lookup(table_name, field, value)
-        }
+        Predicate::Comparison {
+            field,
+            op: ComparisonOp::Eq,
+            value,
+        } => tables.index_lookup(table_name, field, value),
         Predicate::Comparison { .. } => None,
         Predicate::In { field, values } => {
             // Union of index lookups for each IN value — only if all succeed.
@@ -889,7 +926,10 @@ fn index_candidates(pred: &Predicate, table_name: &str, tables: &TableStore) -> 
             Some(result)
         }
         Predicate::And(l, r) => {
-            match (index_candidates(l, table_name, tables), index_candidates(r, table_name, tables)) {
+            match (
+                index_candidates(l, table_name, tables),
+                index_candidates(r, table_name, tables),
+            ) {
                 (Some(lk), Some(rk)) => {
                     // Intersect: keep only keys present in both sides.
                     let r_set: std::collections::HashSet<_> = rk.into_iter().collect();
@@ -902,7 +942,10 @@ fn index_candidates(pred: &Predicate, table_name: &str, tables: &TableStore) -> 
         }
         Predicate::Or(l, r) => {
             // Both sides must have indexes for an OR to be index-accelerated.
-            match (index_candidates(l, table_name, tables), index_candidates(r, table_name, tables)) {
+            match (
+                index_candidates(l, table_name, tables),
+                index_candidates(r, table_name, tables),
+            ) {
                 (Some(mut lk), Some(rk)) => {
                     lk.extend(rk);
                     lk.sort_unstable();
@@ -961,7 +1004,10 @@ fn parse_subscription_query(query: &str) -> Result<SubscriptionFilter> {
 
     let lower = without_order_by.to_lowercase();
     let (table_name, predicate) = if let Some(idx) = lower.find(" where ") {
-        (&without_order_by[..idx], Some(without_order_by[idx + 7..].trim()))
+        (
+            &without_order_by[..idx],
+            Some(without_order_by[idx + 7..].trim()),
+        )
     } else {
         (without_order_by, None)
     };
@@ -1101,9 +1147,8 @@ fn parse_comparison(predicate: &str) -> Result<Predicate> {
         if let Some(idx) = predicate.find(op) {
             if op == "=" {
                 let before = predicate.as_bytes().get(idx.wrapping_sub(1)).copied();
-                let after  = predicate.as_bytes().get(idx + 1).copied();
-                if matches!(before, Some(b'>' | b'<' | b'!' | b'='))
-                    || matches!(after, Some(b'='))
+                let after = predicate.as_bytes().get(idx + 1).copied();
+                if matches!(before, Some(b'>' | b'<' | b'!' | b'=')) || matches!(after, Some(b'='))
                 {
                     continue;
                 }
@@ -1113,7 +1158,11 @@ fn parse_comparison(predicate: &str) -> Result<Predicate> {
             let cmp_op = ComparisonOp::from_str(op)
                 .ok_or_else(|| VoltraError::invalid_argument("Unsupported comparator"))?;
             let value = parse_predicate_value(value_part)?;
-            return Ok(Predicate::Comparison { field, op: cmp_op, value });
+            return Ok(Predicate::Comparison {
+                field,
+                op: cmp_op,
+                value,
+            });
         }
     }
     Err(VoltraError::invalid_argument(
@@ -1165,9 +1214,7 @@ mod tests {
         }
     }
 
-    fn recv_one(
-        rx: &mut tokio::sync::mpsc::Receiver<OutboundFrames>,
-    ) -> Arc<Bytes> {
+    fn recv_one(rx: &mut tokio::sync::mpsc::Receiver<OutboundFrames>) -> Arc<Bytes> {
         match rx.try_recv().expect("expected a frame") {
             OutboundFrames::One(b) => b,
             OutboundFrames::Two { .. } => panic!("expected legacy single-frame message"),
@@ -1182,7 +1229,8 @@ mod tests {
                 OutboundFrames::One(b) => b,
                 OutboundFrames::Two { .. } => panic!("expected single-frame"),
             };
-            let msg: crate::network::message::ServerMessage = rmp_serde::from_slice(&bytes).unwrap();
+            let msg: crate::network::message::ServerMessage =
+                rmp_serde::from_slice(&bytes).unwrap();
             match msg {
                 crate::network::message::ServerMessage::SubscriptionDiff(d) => keys.push(d.row_key),
                 _ => {}
@@ -1242,10 +1290,21 @@ mod tests {
     #[test]
     fn single_equals_matches_string_delta() {
         let f = parse_subscription_query("messages WHERE room_id = 'general'").unwrap();
-        let matching = make_delta("messages", "m1", serde_json::json!({"room_id": "general", "text": "hi"}));
-        let non_matching = make_delta("messages", "m2", serde_json::json!({"room_id": "private", "text": "hi"}));
-        assert!(f.matches(&matching),     "room_id='general' should match");
-        assert!(!f.matches(&non_matching), "room_id='private' should not match");
+        let matching = make_delta(
+            "messages",
+            "m1",
+            serde_json::json!({"room_id": "general", "text": "hi"}),
+        );
+        let non_matching = make_delta(
+            "messages",
+            "m2",
+            serde_json::json!({"room_id": "private", "text": "hi"}),
+        );
+        assert!(f.matches(&matching), "room_id='general' should match");
+        assert!(
+            !f.matches(&non_matching),
+            "room_id='private' should not match"
+        );
     }
 
     #[test]
@@ -1253,25 +1312,41 @@ mod tests {
         let f_gte = parse_subscription_query("scores WHERE value >= 10").unwrap();
         let f_lte = parse_subscription_query("scores WHERE value <= 5").unwrap();
         let d_10 = make_delta("scores", "s1", serde_json::json!({"value": 10}));
-        let d_5  = make_delta("scores", "s2", serde_json::json!({"value": 5}));
+        let d_5 = make_delta("scores", "s2", serde_json::json!({"value": 5}));
         assert!(f_gte.matches(&d_10), ">= 10 should match value=10");
-        assert!(f_lte.matches(&d_5),  "<= 5 should match value=5");
+        assert!(f_lte.matches(&d_5), "<= 5 should match value=5");
     }
 
     #[test]
     fn players_zone_single_equals_watch_query() {
         let f = parse_subscription_query("players WHERE zone = 'zone_0_0'").unwrap();
-        let hit  = make_delta("players", "alice", serde_json::json!({"zone": "zone_0_0", "x": 0, "y": 0}));
-        let miss = make_delta("players", "bob",   serde_json::json!({"zone": "zone_1_0", "x": 10, "y": 0}));
-        assert!(f.matches(&hit),  "zone_0_0 should match");
+        let hit = make_delta(
+            "players",
+            "alice",
+            serde_json::json!({"zone": "zone_0_0", "x": 0, "y": 0}),
+        );
+        let miss = make_delta(
+            "players",
+            "bob",
+            serde_json::json!({"zone": "zone_1_0", "x": 10, "y": 0}),
+        );
+        assert!(f.matches(&hit), "zone_0_0 should match");
         assert!(!f.matches(&miss), "zone_1_0 should not match");
     }
 
     #[test]
     fn games_id_single_equals_watch_query() {
         let f = parse_subscription_query("games WHERE id = 'game1'").unwrap();
-        let hit  = make_delta("games", "game1", serde_json::json!({"id": "game1", "status": "active"}));
-        let miss = make_delta("games", "game2", serde_json::json!({"id": "game2", "status": "active"}));
+        let hit = make_delta(
+            "games",
+            "game1",
+            serde_json::json!({"id": "game1", "status": "active"}),
+        );
+        let miss = make_delta(
+            "games",
+            "game2",
+            serde_json::json!({"id": "game2", "status": "active"}),
+        );
         assert!(f.matches(&hit));
         assert!(!f.matches(&miss));
     }
@@ -1280,12 +1355,13 @@ mod tests {
 
     #[test]
     fn or_predicate_either_side_matches() {
-        let f = parse_subscription_query("players WHERE status = 'alive' OR status = 'respawning'").unwrap();
+        let f = parse_subscription_query("players WHERE status = 'alive' OR status = 'respawning'")
+            .unwrap();
         let alive = make_delta("players", "p1", serde_json::json!({"status": "alive"}));
-        let resp  = make_delta("players", "p2", serde_json::json!({"status": "respawning"}));
-        let dead  = make_delta("players", "p3", serde_json::json!({"status": "dead"}));
+        let resp = make_delta("players", "p2", serde_json::json!({"status": "respawning"}));
+        let dead = make_delta("players", "p3", serde_json::json!({"status": "dead"}));
         assert!(f.matches(&alive), "alive should match");
-        assert!(f.matches(&resp),  "respawning should match");
+        assert!(f.matches(&resp), "respawning should match");
         assert!(!f.matches(&dead), "dead should not match");
     }
 
@@ -1301,31 +1377,44 @@ mod tests {
     #[test]
     fn or_with_number_comparison() {
         let f = parse_subscription_query("scores WHERE value < 10 OR value > 100").unwrap();
-        let low  = make_delta("scores", "s1", serde_json::json!({"value": 5}));
-        let mid  = make_delta("scores", "s2", serde_json::json!({"value": 50}));
+        let low = make_delta("scores", "s1", serde_json::json!({"value": 5}));
+        let mid = make_delta("scores", "s2", serde_json::json!({"value": 50}));
         let high = make_delta("scores", "s3", serde_json::json!({"value": 200}));
-        assert!(f.matches(&low),   "value=5 should match OR value < 10");
-        assert!(!f.matches(&mid),  "value=50 should not match");
-        assert!(f.matches(&high),  "value=200 should match OR value > 100");
+        assert!(f.matches(&low), "value=5 should match OR value < 10");
+        assert!(!f.matches(&mid), "value=50 should not match");
+        assert!(f.matches(&high), "value=200 should match OR value > 100");
     }
 
     #[test]
     fn and_has_higher_precedence_than_or() {
-        let f = parse_subscription_query(
-            "players WHERE level > 5 AND level < 20 OR status = 'vip'"
-        ).unwrap();
-        let and_wins = make_delta("players", "p1", serde_json::json!({"level": 10, "status": "normal"}));
-        let or_wins  = make_delta("players", "p2", serde_json::json!({"level": 50, "status": "vip"}));
-        let neither  = make_delta("players", "p3", serde_json::json!({"level": 50, "status": "normal"}));
+        let f =
+            parse_subscription_query("players WHERE level > 5 AND level < 20 OR status = 'vip'")
+                .unwrap();
+        let and_wins = make_delta(
+            "players",
+            "p1",
+            serde_json::json!({"level": 10, "status": "normal"}),
+        );
+        let or_wins = make_delta(
+            "players",
+            "p2",
+            serde_json::json!({"level": 50, "status": "vip"}),
+        );
+        let neither = make_delta(
+            "players",
+            "p3",
+            serde_json::json!({"level": 50, "status": "normal"}),
+        );
         assert!(f.matches(&and_wins), "AND branch should match");
-        assert!(f.matches(&or_wins),  "OR right branch should match");
+        assert!(f.matches(&or_wins), "OR right branch should match");
         assert!(!f.matches(&neither), "Neither branch should not match");
     }
 
     #[test]
     fn or_delivers_delta_to_subscriber() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(
             cid,
@@ -1334,8 +1423,8 @@ mod tests {
         )
         .unwrap();
         let alive = make_delta("players", "p1", serde_json::json!({"status": "alive"}));
-        let idle  = make_delta("players", "p2", serde_json::json!({"status": "idle"}));
-        let dead  = make_delta("players", "p3", serde_json::json!({"status": "dead"}));
+        let idle = make_delta("players", "p2", serde_json::json!({"status": "idle"}));
+        let dead = make_delta("players", "p3", serde_json::json!({"status": "dead"}));
         mgr.publish_deltas(&[alive]);
         assert!(rx.try_recv().is_ok(), "alive should be delivered");
         mgr.publish_deltas(&[idle]);
@@ -1369,7 +1458,8 @@ mod tests {
             tables.set_counter(format!("c{}", i), i as i32, 0).unwrap();
         }
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(
             cid,
@@ -1382,29 +1472,38 @@ mod tests {
         while rx.try_recv().is_ok() {
             count += 1;
         }
-        assert_eq!(count, 3, "LIMIT 3 should cap snapshot at 3 rows, got {}", count);
+        assert_eq!(
+            count, 3,
+            "LIMIT 3 should cap snapshot at 3 rows, got {}",
+            count
+        );
     }
 
     #[test]
     fn limit_does_not_affect_live_deltas() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(
-            cid,
-            "s".to_string(),
-            "counters LIMIT 1".to_string(),
-        )
-        .unwrap();
+        mgr.subscribe(cid, "s".to_string(), "counters LIMIT 1".to_string())
+            .unwrap();
         for i in 0..5 {
-            let d = make_delta("counters", &format!("k{}", i), serde_json::json!({"value": i}));
+            let d = make_delta(
+                "counters",
+                &format!("k{}", i),
+                serde_json::json!({"value": i}),
+            );
             mgr.publish_deltas(&[d]);
         }
         let mut received = 0;
         while rx.try_recv().is_ok() {
             received += 1;
         }
-        assert_eq!(received, 5, "LIMIT should not filter live deltas; got {}", received);
+        assert_eq!(
+            received, 5,
+            "LIMIT should not filter live deltas; got {}",
+            received
+        );
     }
 
     #[test]
@@ -1413,7 +1512,8 @@ mod tests {
         tables.set_counter("x".to_string(), 1, 0).unwrap();
         tables.set_counter("y".to_string(), 2, 0).unwrap();
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(
             cid,
@@ -1422,7 +1522,10 @@ mod tests {
             Some(&tables),
         )
         .unwrap();
-        assert!(rx.try_recv().is_err(), "LIMIT 0 should deliver no snapshot rows");
+        assert!(
+            rx.try_recv().is_err(),
+            "LIMIT 0 should deliver no snapshot rows"
+        );
     }
 
     // ── Session 31: ORDER BY field ASC|DESC ──────────────────────────────────
@@ -1447,9 +1550,8 @@ mod tests {
 
     #[test]
     fn order_by_with_where_and_limit() {
-        let f = parse_subscription_query(
-            "scores WHERE value > 0 ORDER BY value DESC LIMIT 5"
-        ).unwrap();
+        let f =
+            parse_subscription_query("scores WHERE value > 0 ORDER BY value DESC LIMIT 5").unwrap();
         assert_eq!(f.table_name, "scores");
         assert!(f.predicate.is_some());
         assert_eq!(f.limit, Some(5));
@@ -1462,21 +1564,31 @@ mod tests {
     fn order_by_desc_sorts_snapshot_numeric() {
         let tables = Arc::new(TableStore::new());
         // Insert scores: p_a=10, p_b=30, p_c=20
-        tables.set_row(
-            "scores".to_string(), "p_a".to_string(),
-            serde_json::json!({"score": 10}),
-        ).unwrap();
-        tables.set_row(
-            "scores".to_string(), "p_b".to_string(),
-            serde_json::json!({"score": 30}),
-        ).unwrap();
-        tables.set_row(
-            "scores".to_string(), "p_c".to_string(),
-            serde_json::json!({"score": 20}),
-        ).unwrap();
+        tables
+            .set_row(
+                "scores".to_string(),
+                "p_a".to_string(),
+                serde_json::json!({"score": 10}),
+            )
+            .unwrap();
+        tables
+            .set_row(
+                "scores".to_string(),
+                "p_b".to_string(),
+                serde_json::json!({"score": 30}),
+            )
+            .unwrap();
+        tables
+            .set_row(
+                "scores".to_string(),
+                "p_c".to_string(),
+                serde_json::json!({"score": 20}),
+            )
+            .unwrap();
 
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(
             cid,
@@ -1488,19 +1600,42 @@ mod tests {
 
         let keys = drain_snapshot_keys(&mut rx);
         // Should arrive in descending score order: p_b(30), p_c(20), p_a(10)
-        assert_eq!(keys, vec!["p_b", "p_c", "p_a"],
-            "ORDER BY score DESC should sort highest first; got {:?}", keys);
+        assert_eq!(
+            keys,
+            vec!["p_b", "p_c", "p_a"],
+            "ORDER BY score DESC should sort highest first; got {:?}",
+            keys
+        );
     }
 
     #[test]
     fn order_by_asc_sorts_snapshot_numeric() {
         let tables = Arc::new(TableStore::new());
-        tables.set_row("scores".to_string(), "p_a".to_string(), serde_json::json!({"score": 10})).unwrap();
-        tables.set_row("scores".to_string(), "p_b".to_string(), serde_json::json!({"score": 30})).unwrap();
-        tables.set_row("scores".to_string(), "p_c".to_string(), serde_json::json!({"score": 20})).unwrap();
+        tables
+            .set_row(
+                "scores".to_string(),
+                "p_a".to_string(),
+                serde_json::json!({"score": 10}),
+            )
+            .unwrap();
+        tables
+            .set_row(
+                "scores".to_string(),
+                "p_b".to_string(),
+                serde_json::json!({"score": 30}),
+            )
+            .unwrap();
+        tables
+            .set_row(
+                "scores".to_string(),
+                "p_c".to_string(),
+                serde_json::json!({"score": 20}),
+            )
+            .unwrap();
 
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe_with_snapshot(
             cid,
@@ -1511,8 +1646,12 @@ mod tests {
         .unwrap();
 
         let keys = drain_snapshot_keys(&mut rx);
-        assert_eq!(keys, vec!["p_a", "p_c", "p_b"],
-            "ORDER BY score ASC should sort lowest first; got {:?}", keys);
+        assert_eq!(
+            keys,
+            vec!["p_a", "p_c", "p_b"],
+            "ORDER BY score ASC should sort lowest first; got {:?}",
+            keys
+        );
     }
 
     #[test]
@@ -1520,15 +1659,18 @@ mod tests {
         let tables = Arc::new(TableStore::new());
         // Insert 5 rows with scores 10..50
         for i in 1..=5usize {
-            tables.set_row(
-                "scores".to_string(),
-                format!("p{}", i),
-                serde_json::json!({"score": i * 10}),
-            ).unwrap();
+            tables
+                .set_row(
+                    "scores".to_string(),
+                    format!("p{}", i),
+                    serde_json::json!({"score": i * 10}),
+                )
+                .unwrap();
         }
 
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         // Top 3 scores descending
         mgr.subscribe_with_snapshot(
@@ -1542,16 +1684,29 @@ mod tests {
         let keys = drain_snapshot_keys(&mut rx);
         assert_eq!(keys.len(), 3, "LIMIT 3 should deliver exactly 3 rows");
         // First key must be the row with highest score (p5=50)
-        assert_eq!(keys[0], "p5", "First row should be p5 (score=50); got {:?}", keys);
-        assert_eq!(keys[1], "p4", "Second row should be p4 (score=40); got {:?}", keys);
-        assert_eq!(keys[2], "p3", "Third row should be p3 (score=30); got {:?}", keys);
+        assert_eq!(
+            keys[0], "p5",
+            "First row should be p5 (score=50); got {:?}",
+            keys
+        );
+        assert_eq!(
+            keys[1], "p4",
+            "Second row should be p4 (score=40); got {:?}",
+            keys
+        );
+        assert_eq!(
+            keys[2], "p3",
+            "Third row should be p3 (score=30); got {:?}",
+            keys
+        );
     }
 
     #[test]
     fn order_by_does_not_affect_live_deltas() {
         // Live deltas must be delivered as they arrive, regardless of ORDER BY.
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
         mgr.subscribe(
             cid,
@@ -1562,12 +1717,21 @@ mod tests {
 
         // Publish 3 deltas in insertion order; they should all arrive.
         for i in [1i64, 3, 2] {
-            let d = make_delta("scores", &format!("p{}", i), serde_json::json!({"score": i * 10}));
+            let d = make_delta(
+                "scores",
+                &format!("p{}", i),
+                serde_json::json!({"score": i * 10}),
+            );
             mgr.publish_deltas(&[d]);
         }
         let mut received = 0;
-        while rx.try_recv().is_ok() { received += 1; }
-        assert_eq!(received, 3, "All 3 live deltas must arrive (ORDER BY doesn't filter)");
+        while rx.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(
+            received, 3,
+            "All 3 live deltas must arrive (ORDER BY doesn't filter)"
+        );
     }
 
     // ── All previous tests preserved below ───────────────────────────────────
@@ -1579,8 +1743,10 @@ mod tests {
         let (tx2, _rx2) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
-        mgr.subscribe(id1, "s1".to_string(), "counters".to_string()).unwrap();
-        mgr.subscribe(id2, "s2".to_string(), "counters".to_string()).unwrap();
+        mgr.subscribe(id1, "s1".to_string(), "counters".to_string())
+            .unwrap();
+        mgr.subscribe(id2, "s2".to_string(), "counters".to_string())
+            .unwrap();
         let deltas = vec![make_delta("counters", "k", serde_json::json!({"v": 1}))];
         mgr.publish_deltas(&deltas);
     }
@@ -1588,55 +1754,95 @@ mod tests {
     #[test]
     fn publish_deltas_shared_sub_id_encodes_once() {
         let mgr = SubscriptionManager::new();
-        let (tx1, mut rx1) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
-        let (tx2, mut rx2) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx1, mut rx1) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx2, mut rx2) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
-        mgr.subscribe(id1, "world_sync".to_string(), "players".to_string()).unwrap();
-        mgr.subscribe(id2, "world_sync".to_string(), "players".to_string()).unwrap();
-        let deltas = vec![make_delta("players", "hero_1", serde_json::json!({"hp": 100}))];
+        mgr.subscribe(id1, "world_sync".to_string(), "players".to_string())
+            .unwrap();
+        mgr.subscribe(id2, "world_sync".to_string(), "players".to_string())
+            .unwrap();
+        let deltas = vec![make_delta(
+            "players",
+            "hero_1",
+            serde_json::json!({"hp": 100}),
+        )];
         mgr.publish_deltas(&deltas);
         let frame1 = recv_one(&mut rx1);
         let frame2 = recv_one(&mut rx2);
-        assert_eq!(Arc::as_ptr(&frame1), Arc::as_ptr(&frame2),
-            "shared sub_id must share the same Arc<Bytes> allocation");
+        assert_eq!(
+            Arc::as_ptr(&frame1),
+            Arc::as_ptr(&frame2),
+            "shared sub_id must share the same Arc<Bytes> allocation"
+        );
     }
 
     #[test]
     fn publish_deltas_unique_sub_ids_receive_correct_data() {
         let mgr = SubscriptionManager::new();
-        let (tx1, mut rx1) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
-        let (tx2, mut rx2) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx1, mut rx1) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx2, mut rx2) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id1 = mgr.register_client(tx1);
         let id2 = mgr.register_client(tx2);
-        mgr.subscribe(id1, "sub_client_1".to_string(), "counters".to_string()).unwrap();
-        mgr.subscribe(id2, "sub_client_2".to_string(), "counters".to_string()).unwrap();
-        let deltas = vec![make_delta("counters", "score", serde_json::json!({"value": 42}))];
+        mgr.subscribe(id1, "sub_client_1".to_string(), "counters".to_string())
+            .unwrap();
+        mgr.subscribe(id2, "sub_client_2".to_string(), "counters".to_string())
+            .unwrap();
+        let deltas = vec![make_delta(
+            "counters",
+            "score",
+            serde_json::json!({"value": 42}),
+        )];
         mgr.publish_deltas(&deltas);
         let frame1 = recv_one(&mut rx1);
         let frame2 = recv_one(&mut rx2);
         use crate::network::message::ServerMessage;
         let msg1: ServerMessage = rmp_serde::from_slice(&frame1).unwrap();
         let msg2: ServerMessage = rmp_serde::from_slice(&frame2).unwrap();
-        match msg1 { ServerMessage::SubscriptionDiff(d) => assert_eq!(d.subscription_id, "sub_client_1"), _ => panic!() }
-        match msg2 { ServerMessage::SubscriptionDiff(d) => assert_eq!(d.subscription_id, "sub_client_2"), _ => panic!() }
+        match msg1 {
+            ServerMessage::SubscriptionDiff(d) => assert_eq!(d.subscription_id, "sub_client_1"),
+            _ => panic!(),
+        }
+        match msg2 {
+            ServerMessage::SubscriptionDiff(d) => assert_eq!(d.subscription_id, "sub_client_2"),
+            _ => panic!(),
+        }
     }
 
     #[test]
     fn two_frame_protocol_groups_route_and_body() {
         let mgr = SubscriptionManager::new_with_options(true);
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "s".to_string(), "players".to_string()).unwrap();
+        mgr.subscribe(cid, "s".to_string(), "players".to_string())
+            .unwrap();
         let deltas = vec![make_delta("players", "p1", serde_json::json!({"hp": 99}))];
         mgr.publish_deltas(&deltas);
         let frames = rx.try_recv().expect("expected outbound frames");
         match frames {
             OutboundFrames::Two { first, second } => {
-                let route: crate::network::message::ServerMessage = rmp_serde::from_slice(&first).unwrap();
-                let body: crate::network::message::ServerMessage = rmp_serde::from_slice(&second).unwrap();
-                match route { crate::network::message::ServerMessage::SubscriptionRoute(r) => assert_eq!(r.subscription_ids, vec!["s".to_string()]), _ => panic!() }
-                match body { crate::network::message::ServerMessage::SubscriptionBody(b) => { assert_eq!(b.table_name, "players"); assert_eq!(b.row_key, "p1"); } _ => panic!() }
+                let route: crate::network::message::ServerMessage =
+                    rmp_serde::from_slice(&first).unwrap();
+                let body: crate::network::message::ServerMessage =
+                    rmp_serde::from_slice(&second).unwrap();
+                match route {
+                    crate::network::message::ServerMessage::SubscriptionRoute(r) => {
+                        assert_eq!(r.subscription_ids, vec!["s".to_string()])
+                    }
+                    _ => panic!(),
+                }
+                match body {
+                    crate::network::message::ServerMessage::SubscriptionBody(b) => {
+                        assert_eq!(b.table_name, "players");
+                        assert_eq!(b.row_key, "p1");
+                    }
+                    _ => panic!(),
+                }
             }
             other => panic!("expected two-frame outbound, got {:?}", other),
         }
@@ -1645,16 +1851,38 @@ mod tests {
     #[test]
     fn publish_deltas_predicate_filters_correctly() {
         let mgr = SubscriptionManager::new();
-        let (tx_match, mut rx_match) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
-        let (tx_skip, mut rx_skip) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx_match, mut rx_match) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx_skip, mut rx_skip) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id_match = mgr.register_client(tx_match);
         let id_skip = mgr.register_client(tx_skip);
-        mgr.subscribe(id_match, "high".to_string(), "counters WHERE value >= 10".to_string()).unwrap();
-        mgr.subscribe(id_skip, "low".to_string(), "counters WHERE value >= 100".to_string()).unwrap();
-        let deltas = vec![make_delta("counters", "score", serde_json::json!({"value": 42}))];
+        mgr.subscribe(
+            id_match,
+            "high".to_string(),
+            "counters WHERE value >= 10".to_string(),
+        )
+        .unwrap();
+        mgr.subscribe(
+            id_skip,
+            "low".to_string(),
+            "counters WHERE value >= 100".to_string(),
+        )
+        .unwrap();
+        let deltas = vec![make_delta(
+            "counters",
+            "score",
+            serde_json::json!({"value": 42}),
+        )];
         mgr.publish_deltas(&deltas);
-        assert!(rx_match.try_recv().is_ok(), "matching predicate should receive");
-        assert!(rx_skip.try_recv().is_err(), "non-matching predicate should be filtered");
+        assert!(
+            rx_match.try_recv().is_ok(),
+            "matching predicate should receive"
+        );
+        assert!(
+            rx_skip.try_recv().is_err(),
+            "non-matching predicate should be filtered"
+        );
     }
 
     #[test]
@@ -1667,9 +1895,11 @@ mod tests {
     #[test]
     fn publish_deltas_wrong_table_not_delivered() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "s".to_string(), "players".to_string()).unwrap();
+        mgr.subscribe(cid, "s".to_string(), "players".to_string())
+            .unwrap();
         let deltas = vec![make_delta("counters", "k", serde_json::json!({"v": 1}))];
         mgr.publish_deltas(&deltas);
         assert!(rx.try_recv().is_err());
@@ -1678,26 +1908,45 @@ mod tests {
     #[test]
     fn reverse_index_skips_unrelated_table_entirely() {
         let mgr = SubscriptionManager::new();
-        let (tx_a, mut rx_a) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
-        let (tx_b, mut rx_b) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx_a, mut rx_a) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx_b, mut rx_b) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let id_a = mgr.register_client(tx_a);
         let id_b = mgr.register_client(tx_b);
-        mgr.subscribe(id_a, "sa".to_string(), "table_alpha".to_string()).unwrap();
-        mgr.subscribe(id_b, "sb".to_string(), "table_beta".to_string()).unwrap();
+        mgr.subscribe(id_a, "sa".to_string(), "table_alpha".to_string())
+            .unwrap();
+        mgr.subscribe(id_b, "sb".to_string(), "table_beta".to_string())
+            .unwrap();
         let deltas = vec![make_delta("table_alpha", "k1", serde_json::json!({"x": 1}))];
         mgr.publish_deltas(&deltas);
-        assert!(rx_a.try_recv().is_ok(), "table_alpha subscriber must receive");
-        assert!(rx_b.try_recv().is_err(), "table_beta subscriber must NOT receive");
+        assert!(
+            rx_a.try_recv().is_ok(),
+            "table_alpha subscriber must receive"
+        );
+        assert!(
+            rx_b.try_recv().is_err(),
+            "table_beta subscriber must NOT receive"
+        );
     }
 
     #[test]
     fn reverse_index_cleaned_up_on_unsubscribe() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "sub1".to_string(), "counters".to_string()).unwrap();
+        mgr.subscribe(cid, "sub1".to_string(), "counters".to_string())
+            .unwrap();
         mgr.unsubscribe(cid, "sub1").unwrap();
-        assert!(mgr.table_index.get("counters").is_none() || mgr.table_index.get("counters").map(|m| m.is_empty()).unwrap_or(true));
+        assert!(
+            mgr.table_index.get("counters").is_none()
+                || mgr
+                    .table_index
+                    .get("counters")
+                    .map(|m| m.is_empty())
+                    .unwrap_or(true)
+        );
         let deltas = vec![make_delta("counters", "k", serde_json::json!({"v": 99}))];
         mgr.publish_deltas(&deltas);
         assert!(rx.try_recv().is_err());
@@ -1706,16 +1955,26 @@ mod tests {
     #[test]
     fn reverse_index_cleaned_up_on_unregister() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "s1".to_string(), "players".to_string()).unwrap();
-        mgr.subscribe(cid, "s2".to_string(), "counters".to_string()).unwrap();
+        mgr.subscribe(cid, "s1".to_string(), "players".to_string())
+            .unwrap();
+        mgr.subscribe(cid, "s2".to_string(), "counters".to_string())
+            .unwrap();
         mgr.unregister_client(cid);
         for table in &["players", "counters"] {
-            let absent = mgr.table_index.get(*table).map(|m| m.get(&cid).is_none()).unwrap_or(true);
+            let absent = mgr
+                .table_index
+                .get(*table)
+                .map(|m| m.get(&cid).is_none())
+                .unwrap_or(true);
             assert!(absent);
         }
-        let deltas = vec![make_delta("players", "hero", serde_json::json!({"hp": 50})), make_delta("counters", "score", serde_json::json!({"value": 1}))];
+        let deltas = vec![
+            make_delta("players", "hero", serde_json::json!({"hp": 50})),
+            make_delta("counters", "score", serde_json::json!({"value": 1})),
+        ];
         mgr.publish_deltas(&deltas);
         assert!(rx.try_recv().is_err());
     }
@@ -1726,35 +1985,60 @@ mod tests {
         let mut rxs_players = Vec::new();
         let mut rxs_counters = Vec::new();
         for i in 0..25 {
-            let (tx, rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+            let (tx, rx) =
+                tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
             let cid = mgr.register_client(tx);
-            mgr.subscribe(cid, format!("ps_{}", i), "players".to_string()).unwrap();
+            mgr.subscribe(cid, format!("ps_{}", i), "players".to_string())
+                .unwrap();
             rxs_players.push(rx);
         }
         for i in 0..25 {
-            let (tx, rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+            let (tx, rx) =
+                tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
             let cid = mgr.register_client(tx);
-            mgr.subscribe(cid, format!("cs_{}", i), "counters".to_string()).unwrap();
+            mgr.subscribe(cid, format!("cs_{}", i), "counters".to_string())
+                .unwrap();
             rxs_counters.push(rx);
         }
         let deltas = vec![make_delta("players", "p1", serde_json::json!({"hp": 100}))];
         mgr.publish_deltas(&deltas);
-        for (i, rx) in rxs_players.iter_mut().enumerate() { assert!(rx.try_recv().is_ok(), "players subscriber {} must receive", i); }
-        for (i, rx) in rxs_counters.iter_mut().enumerate() { assert!(rx.try_recv().is_err(), "counters subscriber {} must NOT receive", i); }
+        for (i, rx) in rxs_players.iter_mut().enumerate() {
+            assert!(
+                rx.try_recv().is_ok(),
+                "players subscriber {} must receive",
+                i
+            );
+        }
+        for (i, rx) in rxs_counters.iter_mut().enumerate() {
+            assert!(
+                rx.try_recv().is_err(),
+                "counters subscriber {} must NOT receive",
+                i
+            );
+        }
     }
 
     #[test]
     fn client_with_multi_table_subscriptions() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "watch_players".to_string(), "players".to_string()).unwrap();
-        mgr.subscribe(cid, "watch_counters".to_string(), "counters".to_string()).unwrap();
+        mgr.subscribe(cid, "watch_players".to_string(), "players".to_string())
+            .unwrap();
+        mgr.subscribe(cid, "watch_counters".to_string(), "counters".to_string())
+            .unwrap();
         let deltas = vec![make_delta("players", "hero", serde_json::json!({"hp": 75}))];
         mgr.publish_deltas(&deltas);
         let frame = recv_one(&mut rx);
         let msg: crate::network::message::ServerMessage = rmp_serde::from_slice(&frame).unwrap();
-        match msg { crate::network::message::ServerMessage::SubscriptionDiff(d) => { assert_eq!(d.subscription_id, "watch_players"); assert_eq!(d.table_name, "players"); } _ => panic!() }
+        match msg {
+            crate::network::message::ServerMessage::SubscriptionDiff(d) => {
+                assert_eq!(d.subscription_id, "watch_players");
+                assert_eq!(d.table_name, "players");
+            }
+            _ => panic!(),
+        }
         assert!(rx.try_recv().is_err());
     }
 
@@ -1764,14 +2048,33 @@ mod tests {
         tables.set_counter("alpha".to_string(), 10, 0).unwrap();
         tables.set_counter("beta".to_string(), 20, 0).unwrap();
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe_with_snapshot(cid, "snap_all".to_string(), "counters".to_string(), Some(&tables)).unwrap();
+        mgr.subscribe_with_snapshot(
+            cid,
+            "snap_all".to_string(),
+            "counters".to_string(),
+            Some(&tables),
+        )
+        .unwrap();
         let mut received = 0;
         while let Ok(frames) = rx.try_recv() {
-            let frame = match frames { OutboundFrames::One(b) => b, OutboundFrames::Two { .. } => panic!() };
-            let msg: crate::network::message::ServerMessage = rmp_serde::from_slice(&frame).unwrap();
-            match msg { crate::network::message::ServerMessage::SubscriptionDiff(d) => { assert_eq!(d.subscription_id, "snap_all"); assert_eq!(d.operation, "initial_snapshot"); assert_eq!(d.table_name, "counters"); received += 1; } _ => panic!() }
+            let frame = match frames {
+                OutboundFrames::One(b) => b,
+                OutboundFrames::Two { .. } => panic!(),
+            };
+            let msg: crate::network::message::ServerMessage =
+                rmp_serde::from_slice(&frame).unwrap();
+            match msg {
+                crate::network::message::ServerMessage::SubscriptionDiff(d) => {
+                    assert_eq!(d.subscription_id, "snap_all");
+                    assert_eq!(d.operation, "initial_snapshot");
+                    assert_eq!(d.table_name, "counters");
+                    received += 1;
+                }
+                _ => panic!(),
+            }
         }
         assert_eq!(received, 2, "expected 2 snapshot frames, got {}", received);
     }
@@ -1782,29 +2085,53 @@ mod tests {
         tables.set_counter("low".to_string(), 5, 0).unwrap();
         tables.set_counter("high".to_string(), 50, 0).unwrap();
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe_with_snapshot(cid, "snap_high".to_string(), "counters WHERE value > 10".to_string(), Some(&tables)).unwrap();
+        mgr.subscribe_with_snapshot(
+            cid,
+            "snap_high".to_string(),
+            "counters WHERE value > 10".to_string(),
+            Some(&tables),
+        )
+        .unwrap();
         let mut received = 0;
-        while let Ok(_) = rx.try_recv() { received += 1; }
-        assert_eq!(received, 1, "expected 1 snapshot frame (only 'high' matches), got {}", received);
+        while let Ok(_) = rx.try_recv() {
+            received += 1;
+        }
+        assert_eq!(
+            received, 1,
+            "expected 1 snapshot frame (only 'high' matches), got {}",
+            received
+        );
     }
 
     #[test]
     fn subscribe_without_tables_sends_no_snapshot() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "no_snap".to_string(), "counters".to_string()).unwrap();
-        assert!(rx.try_recv().is_err(), "no snapshot should be sent without tables");
+        mgr.subscribe(cid, "no_snap".to_string(), "counters".to_string())
+            .unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "no snapshot should be sent without tables"
+        );
     }
 
     #[test]
     fn predicate_in_matches_member_value() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "s".to_string(), "players WHERE status IN ('active', 'pending')".to_string()).unwrap();
+        mgr.subscribe(
+            cid,
+            "s".to_string(),
+            "players WHERE status IN ('active', 'pending')".to_string(),
+        )
+        .unwrap();
         let d = make_delta("players", "p1", serde_json::json!({"status": "active"}));
         mgr.publish_deltas(&[d]);
         assert!(rx.try_recv().is_ok(), "IN match should deliver");
@@ -1816,54 +2143,106 @@ mod tests {
     #[test]
     fn predicate_in_with_numbers() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "s".to_string(), "players WHERE level IN (1, 5, 10)".to_string()).unwrap();
+        mgr.subscribe(
+            cid,
+            "s".to_string(),
+            "players WHERE level IN (1, 5, 10)".to_string(),
+        )
+        .unwrap();
         let match_delta = make_delta("players", "p1", serde_json::json!({"level": 5}));
         mgr.publish_deltas(&[match_delta]);
         assert!(rx.try_recv().is_ok(), "level=5 should match IN (1,5,10)");
         let no_match = make_delta("players", "p2", serde_json::json!({"level": 7}));
         mgr.publish_deltas(&[no_match]);
-        assert!(rx.try_recv().is_err(), "level=7 should not match IN (1,5,10)");
+        assert!(
+            rx.try_recv().is_err(),
+            "level=7 should not match IN (1,5,10)"
+        );
     }
 
     #[test]
     fn predicate_and_both_must_match() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "s".to_string(), "players WHERE score > 100 AND level > 5".to_string()).unwrap();
-        let both = make_delta("players", "p1", serde_json::json!({"score": 200, "level": 10}));
+        mgr.subscribe(
+            cid,
+            "s".to_string(),
+            "players WHERE score > 100 AND level > 5".to_string(),
+        )
+        .unwrap();
+        let both = make_delta(
+            "players",
+            "p1",
+            serde_json::json!({"score": 200, "level": 10}),
+        );
         mgr.publish_deltas(&[both]);
         assert!(rx.try_recv().is_ok(), "both conditions met should deliver");
-        let only_left = make_delta("players", "p2", serde_json::json!({"score": 200, "level": 3}));
+        let only_left = make_delta(
+            "players",
+            "p2",
+            serde_json::json!({"score": 200, "level": 3}),
+        );
         mgr.publish_deltas(&[only_left]);
-        assert!(rx.try_recv().is_err(), "only left condition should be filtered");
-        let only_right = make_delta("players", "p3", serde_json::json!({"score": 50, "level": 10}));
+        assert!(
+            rx.try_recv().is_err(),
+            "only left condition should be filtered"
+        );
+        let only_right = make_delta(
+            "players",
+            "p3",
+            serde_json::json!({"score": 50, "level": 10}),
+        );
         mgr.publish_deltas(&[only_right]);
-        assert!(rx.try_recv().is_err(), "only right condition should be filtered");
+        assert!(
+            rx.try_recv().is_err(),
+            "only right condition should be filtered"
+        );
     }
 
     #[test]
     fn predicate_in_and_comparison_combined() {
         let mgr = SubscriptionManager::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
         let cid = mgr.register_client(tx);
-        mgr.subscribe(cid, "s".to_string(), "players WHERE status IN ('active', 'vip') AND score >= 50".to_string()).unwrap();
-        let hit = make_delta("players", "p1", serde_json::json!({"status": "active", "score": 100}));
+        mgr.subscribe(
+            cid,
+            "s".to_string(),
+            "players WHERE status IN ('active', 'vip') AND score >= 50".to_string(),
+        )
+        .unwrap();
+        let hit = make_delta(
+            "players",
+            "p1",
+            serde_json::json!({"status": "active", "score": 100}),
+        );
         mgr.publish_deltas(&[hit]);
         assert!(rx.try_recv().is_ok());
-        let low_score = make_delta("players", "p2", serde_json::json!({"status": "vip", "score": 10}));
+        let low_score = make_delta(
+            "players",
+            "p2",
+            serde_json::json!({"status": "vip", "score": 10}),
+        );
         mgr.publish_deltas(&[low_score]);
         assert!(rx.try_recv().is_err());
-        let banned = make_delta("players", "p3", serde_json::json!({"status": "banned", "score": 200}));
+        let banned = make_delta(
+            "players",
+            "p3",
+            serde_json::json!({"status": "banned", "score": 200}),
+        );
         mgr.publish_deltas(&[banned]);
         assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn parse_in_predicate_returns_correct_values() {
-        let filter = parse_subscription_query("items WHERE rarity IN ('common', 'rare', 'epic')").unwrap();
+        let filter =
+            parse_subscription_query("items WHERE rarity IN ('common', 'rare', 'epic')").unwrap();
         assert_eq!(filter.table_name, "items");
         match filter.predicate.unwrap() {
             Predicate::In { field, values } => {
@@ -1883,8 +2262,14 @@ mod tests {
         assert_eq!(filter.table_name, "players");
         match filter.predicate.unwrap() {
             Predicate::And(left, right) => {
-                match *left { Predicate::Comparison { field, .. } => assert_eq!(field, "score"), _ => panic!() }
-                match *right { Predicate::Comparison { field, .. } => assert_eq!(field, "level"), _ => panic!() }
+                match *left {
+                    Predicate::Comparison { field, .. } => assert_eq!(field, "score"),
+                    _ => panic!(),
+                }
+                match *right {
+                    Predicate::Comparison { field, .. } => assert_eq!(field, "level"),
+                    _ => panic!(),
+                }
             }
             other => panic!("Expected And predicate, got {:?}", other),
         }
@@ -1902,13 +2287,28 @@ mod tests {
     async fn index_auto_created_on_eq_subscribe() {
         let (mgr, tables) = make_mgr_and_tables();
         for i in 0..10u32 {
-            tables.set_row("players".into(), format!("p{i}"), serde_json::json!({"zone": "a"})).unwrap();
+            tables
+                .set_row(
+                    "players".into(),
+                    format!("p{i}"),
+                    serde_json::json!({"zone": "a"}),
+                )
+                .unwrap();
         }
         let (tx, _rx) = tokio::sync::mpsc::channel(1024);
         let cid = mgr.register_client(tx);
-        mgr.subscribe_with_snapshot(cid, "s1".into(), "players WHERE zone = 'a'".into(), Some(&tables)).unwrap();
+        mgr.subscribe_with_snapshot(
+            cid,
+            "s1".into(),
+            "players WHERE zone = 'a'".into(),
+            Some(&tables),
+        )
+        .unwrap();
         // Index should have been auto-created
-        assert!(!tables.list_indexes("players").is_empty(), "index must be auto-created on subscribe");
+        assert!(
+            !tables.list_indexes("players").is_empty(),
+            "index must be auto-created on subscribe"
+        );
         assert!(tables.list_indexes("players").contains(&"zone".to_string()));
     }
 
@@ -1917,14 +2317,30 @@ mod tests {
         let (mgr, tables) = make_mgr_and_tables();
         for i in 0..20u32 {
             let zone = if i < 10 { "lobby_0" } else { "lobby_1" };
-            tables.set_row("players".into(), format!("p{i}"), serde_json::json!({"zone": zone})).unwrap();
+            tables
+                .set_row(
+                    "players".into(),
+                    format!("p{i}"),
+                    serde_json::json!({"zone": zone}),
+                )
+                .unwrap();
         }
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let cid = mgr.register_client(tx);
-        mgr.subscribe_with_snapshot(cid, "s1".into(), "players WHERE zone = 'lobby_0'".into(), Some(&tables)).unwrap();
+        mgr.subscribe_with_snapshot(
+            cid,
+            "s1".into(),
+            "players WHERE zone = 'lobby_0'".into(),
+            Some(&tables),
+        )
+        .unwrap();
         let keys = drain_snapshot_keys(&mut rx);
         // Should deliver exactly the 10 lobby_0 players
-        assert_eq!(keys.len(), 10, "index snapshot must return exactly matching rows");
+        assert_eq!(
+            keys.len(),
+            10,
+            "index snapshot must return exactly matching rows"
+        );
         for k in &keys {
             let val = tables.get_row("players", k).unwrap().unwrap();
             assert_eq!(val["zone"], "lobby_0");
@@ -1935,16 +2351,50 @@ mod tests {
     async fn index_snapshot_and_predicate_intersection() {
         let (mgr, tables) = make_mgr_and_tables();
         // 4 players: zone+status combos
-        tables.set_row("players".into(), "p1".into(), serde_json::json!({"zone": "z1", "status": "alive"})).unwrap();
-        tables.set_row("players".into(), "p2".into(), serde_json::json!({"zone": "z1", "status": "dead"})).unwrap();
-        tables.set_row("players".into(), "p3".into(), serde_json::json!({"zone": "z2", "status": "alive"})).unwrap();
-        tables.set_row("players".into(), "p4".into(), serde_json::json!({"zone": "z2", "status": "dead"})).unwrap();
+        tables
+            .set_row(
+                "players".into(),
+                "p1".into(),
+                serde_json::json!({"zone": "z1", "status": "alive"}),
+            )
+            .unwrap();
+        tables
+            .set_row(
+                "players".into(),
+                "p2".into(),
+                serde_json::json!({"zone": "z1", "status": "dead"}),
+            )
+            .unwrap();
+        tables
+            .set_row(
+                "players".into(),
+                "p3".into(),
+                serde_json::json!({"zone": "z2", "status": "alive"}),
+            )
+            .unwrap();
+        tables
+            .set_row(
+                "players".into(),
+                "p4".into(),
+                serde_json::json!({"zone": "z2", "status": "dead"}),
+            )
+            .unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let cid = mgr.register_client(tx);
-        mgr.subscribe_with_snapshot(cid, "s1".into(), "players WHERE zone = 'z1' AND status = 'alive'".into(), Some(&tables)).unwrap();
+        mgr.subscribe_with_snapshot(
+            cid,
+            "s1".into(),
+            "players WHERE zone = 'z1' AND status = 'alive'".into(),
+            Some(&tables),
+        )
+        .unwrap();
         let keys = drain_snapshot_keys(&mut rx);
         // Only p1 matches both conditions
-        assert_eq!(keys.len(), 1, "AND index intersection must return exactly 1 row");
+        assert_eq!(
+            keys.len(),
+            1,
+            "AND index intersection must return exactly 1 row"
+        );
         assert_eq!(keys[0], "p1");
     }
 
@@ -1952,13 +2402,31 @@ mod tests {
     async fn index_snapshot_no_index_falls_back_to_full_scan() {
         let (mgr, tables) = make_mgr_and_tables();
         for i in 0..5u32 {
-            tables.set_row("items".into(), format!("i{i}"), serde_json::json!({"rarity": "common"})).unwrap();
+            tables
+                .set_row(
+                    "items".into(),
+                    format!("i{i}"),
+                    serde_json::json!({"rarity": "common"}),
+                )
+                .unwrap();
         }
-        tables.set_row("items".into(), "i5".into(), serde_json::json!({"rarity": "rare"})).unwrap();
+        tables
+            .set_row(
+                "items".into(),
+                "i5".into(),
+                serde_json::json!({"rarity": "rare"}),
+            )
+            .unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let cid = mgr.register_client(tx);
         // Gt predicate — no index for range queries, must fall back to full scan
-        mgr.subscribe_with_snapshot(cid, "s1".into(), "items WHERE rarity = 'rare'".into(), Some(&tables)).unwrap();
+        mgr.subscribe_with_snapshot(
+            cid,
+            "s1".into(),
+            "items WHERE rarity = 'rare'".into(),
+            Some(&tables),
+        )
+        .unwrap();
         let keys = drain_snapshot_keys(&mut rx);
         assert_eq!(keys.len(), 1, "fallback full-scan must return 1 rare item");
         assert_eq!(keys[0], "i5");
@@ -1967,8 +2435,16 @@ mod tests {
     #[test]
     fn collect_eq_fields_extracts_all_eq_comparisons() {
         let pred = Predicate::And(
-            Box::new(Predicate::Comparison { field: "zone".into(), op: ComparisonOp::Eq, value: serde_json::json!("a") }),
-            Box::new(Predicate::Comparison { field: "status".into(), op: ComparisonOp::Gt, value: serde_json::json!(0) }),
+            Box::new(Predicate::Comparison {
+                field: "zone".into(),
+                op: ComparisonOp::Eq,
+                value: serde_json::json!("a"),
+            }),
+            Box::new(Predicate::Comparison {
+                field: "status".into(),
+                op: ComparisonOp::Gt,
+                value: serde_json::json!(0),
+            }),
         );
         let fields = collect_eq_fields(&pred);
         assert_eq!(fields.len(), 1, "only Eq comparison should be collected");
@@ -1978,7 +2454,11 @@ mod tests {
     #[test]
     fn index_candidates_returns_none_when_no_index() {
         let tables = TableStore::new();
-        let pred = Predicate::Comparison { field: "zone".into(), op: ComparisonOp::Eq, value: serde_json::json!("a") };
+        let pred = Predicate::Comparison {
+            field: "zone".into(),
+            op: ComparisonOp::Eq,
+            value: serde_json::json!("a"),
+        };
         // No index created — should return None
         let result = index_candidates(&pred, "players", &tables);
         assert!(result.is_none(), "must return None when no index exists");

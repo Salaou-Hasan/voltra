@@ -23,17 +23,17 @@
 // ============================================================================
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use tokio::sync::mpsc;
 use voltra::{
     reducer::{increment_reducer, ReducerContext},
     subscriptions::{OutboundFrames, SubscriptionManager},
     table::TableStore,
     wal::{BatchedWalWriter, WalEntry},
 };
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
-use tokio::sync::mpsc;
 
 // ── shared test infrastructure ────────────────────────────────────────────────
 
@@ -60,11 +60,10 @@ impl GameServer {
             rxs.push(rx);
         }
 
-        let wal_path =
-            std::env::temp_dir().join(format!("voltra_bench_s3_{}.wal", wal_tag));
+        let wal_path = std::env::temp_dir().join(format!("voltra_bench_s3_{}.wal", wal_tag));
         let _ = std::fs::remove_file(&wal_path);
         let wal = Arc::new(
-            BatchedWalWriter::open(&wal_path, 10, 512, /*unsafe_no_fsync=*/true).unwrap(),
+            BatchedWalWriter::open(&wal_path, 10, 512, /*unsafe_no_fsync=*/ true).unwrap(),
         );
 
         GameServer {
@@ -85,12 +84,7 @@ impl GameServer {
         f(&mut ctx);
         let deltas = ctx.commit().unwrap();
         let s = self.seq.fetch_add(1, Ordering::Relaxed);
-        let entry = WalEntry::new(
-            1_000, s,
-            reducer_name.to_string(),
-            vec![],
-            deltas.clone(),
-        );
+        let entry = WalEntry::new(1_000, s, reducer_name.to_string(), vec![], deltas.clone());
         self.wal.append(&entry, s).unwrap();
         self.mgr.publish_deltas(&deltas);
     }
@@ -336,8 +330,7 @@ fn bench_idle_clicker(c: &mut Criterion) {
         b.iter(|| {
             srv.run("click", |ctx| {
                 let _ =
-                    increment_reducer(ctx, black_box("cookies".to_string()), black_box(1))
-                        .unwrap();
+                    increment_reducer(ctx, black_box("cookies".to_string()), black_box(1)).unwrap();
             });
         });
     });
@@ -466,11 +459,9 @@ fn bench_moba(c: &mut Criterion) {
                 )
                 .unwrap();
                 // killer's kill count
-                let _ =
-                    increment_reducer(ctx, format!("kills_hero_{}", killer), 1).unwrap();
+                let _ = increment_reducer(ctx, format!("kills_hero_{}", killer), 1).unwrap();
                 // bounty gold
-                let _ =
-                    increment_reducer(ctx, format!("gold_hero_{}", killer), 300).unwrap();
+                let _ = increment_reducer(ctx, format!("gold_hero_{}", killer), 300).unwrap();
                 // global kill counter
                 let _ = increment_reducer(ctx, "match_kill_total".to_string(), 1).unwrap();
                 // update scoreboard

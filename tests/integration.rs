@@ -1,5 +1,4 @@
 use futures::{future::join_all, SinkExt, StreamExt};
-use voltra::network::message::{ClientMessage, ReducerCall, ServerMessage};
 use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -7,6 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
+use voltra::network::message::{ClientMessage, ReducerCall, ServerMessage};
 
 #[derive(Serialize, Deserialize)]
 struct IncrementArgs {
@@ -701,10 +701,9 @@ async fn integration_permissions_authorized_call_passes() {
     let ws_url = format!("ws://127.0.0.1:{}", port);
     wait_for_server_ready_with_auth(&ws_url, Duration::from_secs(5), "perm_key2").await;
 
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(bearer_request(&ws_url, "perm_key2:admin"))
-            .await
-            .expect("connect with role");
+    let (mut ws, _) = tokio_tungstenite::connect_async(bearer_request(&ws_url, "perm_key2:admin"))
+        .await
+        .expect("connect with role");
 
     let args = rmp_serde::to_vec(&IncrementArgs {
         name: "perms_admin".to_string(),

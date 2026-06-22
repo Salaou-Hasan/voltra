@@ -32,11 +32,11 @@
 //     intentional and documented.
 // ============================================================================
 
-pub mod eviction;
 pub mod columnar;
+pub mod eviction;
 
+pub use columnar::{intersect_results, ColumnIndex};
 pub use eviction::{EvictionPolicy, LruTracker};
-pub use columnar::{ColumnIndex, intersect_results};
 
 /// Parse a physical table name into `(lobby_id, logical_table_name)`.
 ///
@@ -60,7 +60,7 @@ pub fn parse_lobby_key(physical_table: &str) -> Option<(String, String)> {
     None
 }
 
-use crate::error::{VoltraError, Result};
+use crate::error::{Result, VoltraError};
 use bytes::Bytes;
 use dashmap::DashMap;
 use parking_lot::RwLock;
@@ -361,9 +361,9 @@ fn encode_row(value: &Value) -> Result<Bytes> {
 
 /// Decode tagged MsgPack bytes back to a `serde_json::Value`.
 fn decode_row_bytes(data: &[u8]) -> Result<Value> {
-    let (tag, payload) = data.split_first().ok_or_else(|| {
-        VoltraError::SerializationError("Row decode: empty data".to_string())
-    })?;
+    let (tag, payload) = data
+        .split_first()
+        .ok_or_else(|| VoltraError::SerializationError("Row decode: empty data".to_string()))?;
     match tag {
         0x00 => {
             // Raw MsgPack
@@ -378,7 +378,8 @@ fn decode_row_bytes(data: &[u8]) -> Result<Value> {
                 .map_err(|e| VoltraError::SerializationError(format!("Row decode: {}", e)))
         }
         _ => Err(VoltraError::SerializationError(format!(
-            "Row decode: unknown tag 0x{:02x}", tag
+            "Row decode: unknown tag 0x{:02x}",
+            tag
         ))),
     }
 }
@@ -455,7 +456,7 @@ impl TableStore {
             shard_count: 1,
             eviction_policy: EvictionPolicy::None,
             lru: None,
-            lobby_stores: None,  // sub-stores never route further
+            lobby_stores: None, // sub-stores never route further
         }
     }
 
@@ -525,7 +526,9 @@ impl TableStore {
 
     pub fn get_row(&self, table_name: &str, key: &str) -> Result<Option<Value>> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
-            return self.get_lobby_store(&lid).map_or(Ok(None), |s| s.get_row(&logical, key));
+            return self
+                .get_lobby_store(&lid)
+                .map_or(Ok(None), |s| s.get_row(&logical, key));
         }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
@@ -548,9 +551,15 @@ impl TableStore {
     /// Row fetch that also returns its OCC version (single entry read — the
     /// value and version are guaranteed consistent). Missing rows read as
     /// version 0, so "read nothing, then someone inserted" also conflicts.
-    pub fn get_row_with_version(&self, table_name: &str, key: &str) -> Result<Option<(Value, u64)>> {
+    pub fn get_row_with_version(
+        &self,
+        table_name: &str,
+        key: &str,
+    ) -> Result<Option<(Value, u64)>> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
-            return self.get_lobby_store(&lid).map_or(Ok(None), |s| s.get_row_with_version(&logical, key));
+            return self
+                .get_lobby_store(&lid)
+                .map_or(Ok(None), |s| s.get_row_with_version(&logical, key));
         }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
@@ -573,7 +582,9 @@ impl TableStore {
     /// Current OCC version of a row (0 = absent).
     pub fn row_version(&self, table_name: &str, key: &str) -> u64 {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
-            return self.get_lobby_store(&lid).map_or(0, |s| s.row_version(&logical, key));
+            return self
+                .get_lobby_store(&lid)
+                .map_or(0, |s| s.row_version(&logical, key));
         }
         self.tables
             .get(table_name)
@@ -622,7 +633,9 @@ impl TableStore {
 
     pub fn list_rows(&self, table_name: &str) -> Result<Vec<Value>> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
-            return self.get_lobby_store(&lid).map_or(Ok(vec![]), |s| s.list_rows(&logical));
+            return self
+                .get_lobby_store(&lid)
+                .map_or(Ok(vec![]), |s| s.list_rows(&logical));
         }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
@@ -742,7 +755,8 @@ impl TableStore {
 
     pub fn set_row(&self, table_name: String, key: String, value: Value) -> Result<RowDelta> {
         if let Some((lid, logical)) = parse_lobby_key(&table_name) {
-            return self.get_lobby_store(&lid)
+            return self
+                .get_lobby_store(&lid)
                 .ok_or_else(|| VoltraError::table_error("lobby store unavailable"))?
                 .set_row(logical, key, value);
         }
@@ -751,7 +765,8 @@ impl TableStore {
 
     pub fn delete_row(&self, table_name: &str, key: &str) -> Result<RowDelta> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
-            return self.get_lobby_store(&lid)
+            return self
+                .get_lobby_store(&lid)
                 .ok_or_else(|| VoltraError::table_error("lobby store unavailable"))?
                 .delete_row(&logical, key);
         }
@@ -791,9 +806,11 @@ impl TableStore {
         // Route lobby-prefixed tables to isolated sub-stores.
         if self.lobby_stores.is_some() {
             let mut global_deltas: Vec<RowDelta> = Vec::new();
-            let mut lobby_deltas: std::collections::HashMap<String, Vec<RowDelta>> = std::collections::HashMap::new();
+            let mut lobby_deltas: std::collections::HashMap<String, Vec<RowDelta>> =
+                std::collections::HashMap::new();
             let mut global_rv: Vec<(String, String, u64)> = Vec::new();
-            let mut lobby_rv: std::collections::HashMap<String, Vec<(String, String, u64)>> = std::collections::HashMap::new();
+            let mut lobby_rv: std::collections::HashMap<String, Vec<(String, String, u64)>> =
+                std::collections::HashMap::new();
 
             for delta in deltas {
                 match parse_lobby_key(&delta.table_name) {
@@ -808,7 +825,10 @@ impl TableStore {
             for (table, key, ver) in read_versions {
                 match parse_lobby_key(table) {
                     Some((lid, logical)) => {
-                        lobby_rv.entry(lid).or_default().push((logical, key.clone(), *ver));
+                        lobby_rv
+                            .entry(lid)
+                            .or_default()
+                            .push((logical, key.clone(), *ver));
                     }
                     None => global_rv.push((table.clone(), key.clone(), *ver)),
                 }
@@ -816,7 +836,8 @@ impl TableStore {
 
             let mut results = self.apply_delta_batch_inner(&global_deltas, &global_rv)?;
             for (lid, ld) in lobby_deltas {
-                let store = self.get_lobby_store(&lid)
+                let store = self
+                    .get_lobby_store(&lid)
                     .ok_or_else(|| VoltraError::table_error("lobby store unavailable"))?;
                 let rv = lobby_rv.remove(&lid).unwrap_or_default();
                 results.extend(store.apply_delta_batch_inner(&ld, &rv)?);
@@ -876,7 +897,9 @@ impl TableStore {
         // at the version it read. `lock_keys` is the sorted written-key set.
         for (t, k, seen) in read_versions {
             let written = lock_keys
-                .binary_search_by(|(lt, lk)| (lt.as_str(), lk.as_str()).cmp(&(t.as_str(), k.as_str())))
+                .binary_search_by(|(lt, lk)| {
+                    (lt.as_str(), lk.as_str()).cmp(&(t.as_str(), k.as_str()))
+                })
                 .is_ok();
             if written {
                 let current = self.row_version(t, k);
@@ -928,8 +951,8 @@ impl TableStore {
                     // "counters" or a tenant's "tn:<id>:counters") under the lock —
                     // this is what makes concurrent tenant increments atomic too.
                     let existing = self.get_counter_in(&delta.table_name, name)?;
-                    let new_val = existing.as_ref().map(|c| c.value).unwrap_or(0)
-                        + delta.counter_add_amount;
+                    let new_val =
+                        existing.as_ref().map(|c| c.value).unwrap_or(0) + delta.counter_add_amount;
                     let row_id = existing
                         .map(|c| c.id)
                         .unwrap_or_else(|| self.alloc_row_id());
@@ -1035,16 +1058,19 @@ impl TableStore {
                     let total_bytes: usize = self
                         .tables
                         .iter()
-                        .map(|t| t.value().rows.iter().map(|r| r.value().data.len()).sum::<usize>())
+                        .map(|t| {
+                            t.value()
+                                .rows
+                                .iter()
+                                .map(|r| r.value().data.len())
+                                .sum::<usize>()
+                        })
                         .sum();
 
                     if total_bytes > *max_bytes_total {
                         // Evict from every table that has rows, oldest first across the whole store.
-                        let all_tables: Vec<String> = self
-                            .tables
-                            .iter()
-                            .map(|e| e.key().clone())
-                            .collect();
+                        let all_tables: Vec<String> =
+                            self.tables.iter().map(|e| e.key().clone()).collect();
 
                         // Simple heuristic: try to free ~10% of rows from the largest tables.
                         for table_name in all_tables {
@@ -1286,7 +1312,9 @@ impl TableStore {
     /// Includes blob data if present. Respects shard filter.
     pub fn list_rows_with_keys(&self, table_name: &str) -> Result<Vec<(String, Value)>> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
-            return self.get_lobby_store(&lid).map_or(Ok(vec![]), |s| s.list_rows_with_keys(&logical));
+            return self
+                .get_lobby_store(&lid)
+                .map_or(Ok(vec![]), |s| s.list_rows_with_keys(&logical));
         }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
@@ -1336,7 +1364,9 @@ impl TableStore {
     /// the JSON decode is limited to a single key extraction.
     pub fn scan_column(&self, table_name: &str, field: &str) -> Vec<(String, Value)> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
-            return self.get_lobby_store(&lid).map_or(vec![], |s| s.scan_column(&logical, field));
+            return self
+                .get_lobby_store(&lid)
+                .map_or(vec![], |s| s.scan_column(&logical, field));
         }
         let table = match self.tables.get(table_name) {
             Some(t) => t.clone(),
@@ -1370,7 +1400,11 @@ impl TableStore {
         field: &str,
     ) -> std::collections::HashMap<String, usize> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
-            return self.get_lobby_store(&lid).map_or(std::collections::HashMap::new(), |s| s.count_by_field(&logical, field));
+            return self
+                .get_lobby_store(&lid)
+                .map_or(std::collections::HashMap::new(), |s| {
+                    s.count_by_field(&logical, field)
+                });
         }
         use std::collections::HashMap;
         let table = match self.tables.get(table_name) {
@@ -1399,7 +1433,9 @@ impl TableStore {
     /// sorted by their string representation.
     pub fn distinct_field_values(&self, table_name: &str, field: &str) -> Vec<Value> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
-            return self.get_lobby_store(&lid).map_or(vec![], |s| s.distinct_field_values(&logical, field));
+            return self
+                .get_lobby_store(&lid)
+                .map_or(vec![], |s| s.distinct_field_values(&logical, field));
         }
         use std::collections::BTreeSet;
         let table = match self.tables.get(table_name) {
@@ -1446,9 +1482,11 @@ impl TableStore {
     /// Return the total number of rows across all tables, including all lobby sub-stores.
     pub fn total_row_count(&self) -> usize {
         let global: usize = self.tables.iter().map(|t| t.value().rows.len()).sum();
-        let lobby: usize = self.lobby_stores.as_ref().map(|m| {
-            m.iter().map(|e| e.value().total_row_count()).sum()
-        }).unwrap_or(0);
+        let lobby: usize = self
+            .lobby_stores
+            .as_ref()
+            .map(|m| m.iter().map(|e| e.value().total_row_count()).sum())
+            .unwrap_or(0);
         global + lobby
     }
 
@@ -1489,9 +1527,18 @@ mod tests {
 
     #[test]
     fn test_parse_lobby_key_valid() {
-        assert_eq!(parse_lobby_key("l0_players"), Some(("0".to_string(), "players".to_string())));
-        assert_eq!(parse_lobby_key("l42_inventory"), Some(("42".to_string(), "inventory".to_string())));
-        assert_eq!(parse_lobby_key("l999_npc_spawns"), Some(("999".to_string(), "npc_spawns".to_string())));
+        assert_eq!(
+            parse_lobby_key("l0_players"),
+            Some(("0".to_string(), "players".to_string()))
+        );
+        assert_eq!(
+            parse_lobby_key("l42_inventory"),
+            Some(("42".to_string(), "inventory".to_string()))
+        );
+        assert_eq!(
+            parse_lobby_key("l999_npc_spawns"),
+            Some(("999".to_string(), "npc_spawns".to_string()))
+        );
     }
 
     #[test]
@@ -1499,15 +1546,25 @@ mod tests {
         assert_eq!(parse_lobby_key("players"), None);
         assert_eq!(parse_lobby_key("__tenants"), None);
         assert_eq!(parse_lobby_key("lab_players"), None); // non-numeric prefix
-        assert_eq!(parse_lobby_key("l_players"), None);   // empty numeric part
-        assert_eq!(parse_lobby_key("l0"), None);           // no underscore
+        assert_eq!(parse_lobby_key("l_players"), None); // empty numeric part
+        assert_eq!(parse_lobby_key("l0"), None); // no underscore
     }
 
     #[test]
     fn test_lobby_isolation() {
         let s = store();
-        s.set_row("l0_players".to_string(), "alice".to_string(), serde_json::json!({"hp": 100})).unwrap();
-        s.set_row("l1_players".to_string(), "alice".to_string(), serde_json::json!({"hp": 50})).unwrap();
+        s.set_row(
+            "l0_players".to_string(),
+            "alice".to_string(),
+            serde_json::json!({"hp": 100}),
+        )
+        .unwrap();
+        s.set_row(
+            "l1_players".to_string(),
+            "alice".to_string(),
+            serde_json::json!({"hp": 50}),
+        )
+        .unwrap();
 
         let l0 = s.get_row("l0_players", "alice").unwrap().unwrap();
         let l1 = s.get_row("l1_players", "alice").unwrap().unwrap();
@@ -1519,8 +1576,18 @@ mod tests {
     #[test]
     fn test_lobby_global_separation() {
         let s = store();
-        s.set_row("l0_players".to_string(), "alice".to_string(), serde_json::json!({"lobby": true})).unwrap();
-        s.set_row("accounts".to_string(), "alice".to_string(), serde_json::json!({"global": true})).unwrap();
+        s.set_row(
+            "l0_players".to_string(),
+            "alice".to_string(),
+            serde_json::json!({"lobby": true}),
+        )
+        .unwrap();
+        s.set_row(
+            "accounts".to_string(),
+            "alice".to_string(),
+            serde_json::json!({"global": true}),
+        )
+        .unwrap();
 
         let lobby_row = s.get_row("l0_players", "alice").unwrap().unwrap();
         let global_row = s.get_row("accounts", "alice").unwrap().unwrap();
@@ -1532,10 +1599,30 @@ mod tests {
     #[test]
     fn test_lobby_total_row_count() {
         let s = store();
-        s.set_row("l0_players".to_string(), "p1".to_string(), serde_json::json!({})).unwrap();
-        s.set_row("l0_players".to_string(), "p2".to_string(), serde_json::json!({})).unwrap();
-        s.set_row("l1_players".to_string(), "p3".to_string(), serde_json::json!({})).unwrap();
-        s.set_row("accounts".to_string(), "a1".to_string(), serde_json::json!({})).unwrap();
+        s.set_row(
+            "l0_players".to_string(),
+            "p1".to_string(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        s.set_row(
+            "l0_players".to_string(),
+            "p2".to_string(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        s.set_row(
+            "l1_players".to_string(),
+            "p3".to_string(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        s.set_row(
+            "accounts".to_string(),
+            "a1".to_string(),
+            serde_json::json!({}),
+        )
+        .unwrap();
 
         assert_eq!(s.total_row_count(), 4);
     }
@@ -1543,8 +1630,18 @@ mod tests {
     #[test]
     fn test_lobby_list_tables_includes_lobby_tables() {
         let s = store();
-        s.set_row("l0_players".to_string(), "p1".to_string(), serde_json::json!({})).unwrap();
-        s.set_row("accounts".to_string(), "a1".to_string(), serde_json::json!({})).unwrap();
+        s.set_row(
+            "l0_players".to_string(),
+            "p1".to_string(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        s.set_row(
+            "accounts".to_string(),
+            "a1".to_string(),
+            serde_json::json!({}),
+        )
+        .unwrap();
 
         let tables = s.list_tables();
         assert!(tables.contains(&"accounts".to_string()));
@@ -1554,8 +1651,18 @@ mod tests {
     #[test]
     fn test_lobby_clear_all() {
         let s = store();
-        s.set_row("l0_players".to_string(), "p1".to_string(), serde_json::json!({})).unwrap();
-        s.set_row("accounts".to_string(), "a1".to_string(), serde_json::json!({})).unwrap();
+        s.set_row(
+            "l0_players".to_string(),
+            "p1".to_string(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        s.set_row(
+            "accounts".to_string(),
+            "a1".to_string(),
+            serde_json::json!({}),
+        )
+        .unwrap();
         assert_eq!(s.total_row_count(), 2);
 
         s.clear_all();
@@ -1571,35 +1678,47 @@ mod tests {
                 table_name: "l0_players".to_string(),
                 operation: "insert".to_string(),
                 row_key: "alice".to_string(),
-                row_id: 1, shard_id: 0,
+                row_id: 1,
+                shard_id: 0,
                 payload_arc: None,
                 row_data: Some(serde_json::json!({"hp": 100})),
-                counter_add_amount: 0, counter_add_timestamp: 0,
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
             },
             RowDelta {
                 table_name: "l1_players".to_string(),
                 operation: "insert".to_string(),
                 row_key: "bob".to_string(),
-                row_id: 2, shard_id: 0,
+                row_id: 2,
+                shard_id: 0,
                 payload_arc: None,
                 row_data: Some(serde_json::json!({"hp": 80})),
-                counter_add_amount: 0, counter_add_timestamp: 0,
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
             },
             RowDelta {
                 table_name: "accounts".to_string(),
                 operation: "insert".to_string(),
                 row_key: "sys".to_string(),
-                row_id: 3, shard_id: 0,
+                row_id: 3,
+                shard_id: 0,
                 payload_arc: None,
                 row_data: Some(serde_json::json!({"kind": "global"})),
-                counter_add_amount: 0, counter_add_timestamp: 0,
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
             },
         ];
         s.apply_delta_batch(&deltas).unwrap();
 
-        assert_eq!(s.get_row("l0_players", "alice").unwrap().unwrap()["hp"], 100);
+        assert_eq!(
+            s.get_row("l0_players", "alice").unwrap().unwrap()["hp"],
+            100
+        );
         assert_eq!(s.get_row("l1_players", "bob").unwrap().unwrap()["hp"], 80);
-        assert_eq!(s.get_row("accounts", "sys").unwrap().unwrap()["kind"], "global");
+        assert_eq!(
+            s.get_row("accounts", "sys").unwrap().unwrap()["kind"],
+            "global"
+        );
         assert_eq!(s.lobby_count(), 2);
     }
 
@@ -1834,13 +1953,31 @@ mod tests {
         // Two increments to the same tenant counter accumulate (no lost update).
         s.apply_delta_batch(&[add("tn:t1:counters", 5)]).unwrap();
         s.apply_delta_batch(&[add("tn:t1:counters", 3)]).unwrap();
-        assert_eq!(s.get_counter_in("tn:t1:counters", "score").unwrap().unwrap().value, 8);
+        assert_eq!(
+            s.get_counter_in("tn:t1:counters", "score")
+                .unwrap()
+                .unwrap()
+                .value,
+            8
+        );
         // A different tenant + the global table share the key but stay independent.
         s.apply_delta_batch(&[add("tn:t2:counters", 100)]).unwrap();
         s.apply_delta_batch(&[add("counters", 1)]).unwrap();
-        assert_eq!(s.get_counter_in("tn:t2:counters", "score").unwrap().unwrap().value, 100);
+        assert_eq!(
+            s.get_counter_in("tn:t2:counters", "score")
+                .unwrap()
+                .unwrap()
+                .value,
+            100
+        );
         assert_eq!(s.get_counter("score").unwrap().unwrap().value, 1);
-        assert_eq!(s.get_counter_in("tn:t1:counters", "score").unwrap().unwrap().value, 8);
+        assert_eq!(
+            s.get_counter_in("tn:t1:counters", "score")
+                .unwrap()
+                .unwrap()
+                .value,
+            8
+        );
     }
 
     // ── Secondary index tests ────────────────────────────────────────────────
@@ -2172,28 +2309,34 @@ mod tests {
                 table_name: "items".to_string(),
                 operation: "insert".to_string(),
                 row_key: "r1".to_string(),
-                row_id: 1, shard_id: 0,
+                row_id: 1,
+                shard_id: 0,
                 payload_arc: None,
                 row_data: Some(serde_json::json!({"v": 1})),
-                counter_add_amount: 0, counter_add_timestamp: 0,
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
             },
             RowDelta {
                 table_name: "items".to_string(),
                 operation: "insert".to_string(),
                 row_key: "r2".to_string(),
-                row_id: 2, shard_id: 0,
+                row_id: 2,
+                shard_id: 0,
                 payload_arc: None,
                 row_data: Some(serde_json::json!({"v": 2})),
-                counter_add_amount: 0, counter_add_timestamp: 0,
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
             },
             RowDelta {
                 table_name: "items".to_string(),
                 operation: "insert".to_string(),
                 row_key: "r3".to_string(),
-                row_id: 3, shard_id: 0,
+                row_id: 3,
+                shard_id: 0,
                 payload_arc: None,
                 row_data: Some(serde_json::json!({"v": 3})),
-                counter_add_amount: 0, counter_add_timestamp: 0,
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
             },
         ];
         ts.apply_delta_batch(&deltas).unwrap();
@@ -2205,16 +2348,22 @@ mod tests {
             table_name: "items".to_string(),
             operation: "insert".to_string(),
             row_key: "r4".to_string(),
-            row_id: 4, shard_id: 0,
+            row_id: 4,
+            shard_id: 0,
             payload_arc: None,
             row_data: Some(serde_json::json!({"v": 4})),
-            counter_add_amount: 0, counter_add_timestamp: 0,
+            counter_add_amount: 0,
+            counter_add_timestamp: 0,
         };
         ts.apply_delta_batch(&[delta4]).unwrap();
 
         // Still at most cap rows.
         let count = ts.list_rows("items").unwrap().len();
-        assert!(count <= 3, "expected <= 3 rows after eviction, got {}", count);
+        assert!(
+            count <= 3,
+            "expected <= 3 rows after eviction, got {}",
+            count
+        );
         // r4 (just inserted) must be present.
         assert!(
             ts.get_row("items", "r4").unwrap().is_some(),
@@ -2233,10 +2382,12 @@ mod tests {
                 table_name: "t".to_string(),
                 operation: "insert".to_string(),
                 row_key: format!("k{}", i),
-                row_id: i as u32, shard_id: 0,
+                row_id: i as u32,
+                shard_id: 0,
                 payload_arc: None,
                 row_data: Some(serde_json::json!({"i": i})),
-                counter_add_amount: 0, counter_add_timestamp: 0,
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
             };
             ts.apply_delta_batch(&[delta]).unwrap();
         }
@@ -2252,14 +2403,20 @@ mod tests {
                 table_name: "t".to_string(),
                 operation: "insert".to_string(),
                 row_key: format!("k{}", i),
-                row_id: i as u32, shard_id: 0,
+                row_id: i as u32,
+                shard_id: 0,
                 payload_arc: None,
                 row_data: Some(serde_json::json!({"i": i})),
-                counter_add_amount: 0, counter_add_timestamp: 0,
+                counter_add_amount: 0,
+                counter_add_timestamp: 0,
             };
             ts.apply_delta_batch(&[delta]).unwrap();
         }
-        assert_eq!(ts.list_rows("t").unwrap().len(), 20, "None policy must not evict");
+        assert_eq!(
+            ts.list_rows("t").unwrap().len(),
+            20,
+            "None policy must not evict"
+        );
     }
 
     // 4. LruByteCap constructor stores the cap correctly.
@@ -2287,10 +2444,12 @@ mod tests {
             table_name: "t".to_string(),
             operation: "insert".to_string(),
             row_key: "key1".to_string(),
-            row_id: 1, shard_id: 0,
+            row_id: 1,
+            shard_id: 0,
             payload_arc: None,
             row_data: Some(serde_json::json!({"x": 1})),
-            counter_add_amount: 0, counter_add_timestamp: 0,
+            counter_add_amount: 0,
+            counter_add_timestamp: 0,
         };
         ts.apply_delta_batch(&[insert_delta]).unwrap();
 
@@ -2298,10 +2457,12 @@ mod tests {
             table_name: "t".to_string(),
             operation: "delete".to_string(),
             row_key: "key1".to_string(),
-            row_id: 1, shard_id: 0,
+            row_id: 1,
+            shard_id: 0,
             payload_arc: None,
             row_data: None,
-            counter_add_amount: 0, counter_add_timestamp: 0,
+            counter_add_amount: 0,
+            counter_add_timestamp: 0,
         };
         ts.apply_delta_batch(&[delete_delta]).unwrap();
 
