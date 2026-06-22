@@ -1089,7 +1089,6 @@ fn copy_lockfile_if_available(p: &Path) -> Result<()> {
 fn scaffold_game_basic(p: &Path, name: &str, template: &str) -> Result<()> {
     wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
-    wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
     wf(p, "src/reducers/mod.rs",         R_MOD_BASIC)?;
     wf(p, "src/reducers/spawn.rs",       R_SPAWN_RS)?;
@@ -1261,7 +1260,6 @@ fn scaffold_voltra_basic(p: &Path, name: &str) -> Result<()> {
     ]);
     wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
-    wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
     // Per-file reducer layout (mirrors the Rust template structure)
     wf(p, "reducers/schema.vol",        VOLTRA_BASIC_SCHEMA)?;
@@ -1304,7 +1302,6 @@ fn scaffold_voltra_game_ready(p: &Path, name: &str) -> Result<()> {
     ]);
     wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
-    wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
     wf(p, "reducers/schema.vol",        VOLTRA_GAME_SCHEMA)?;
     wf(p, "reducers/spawn.vol",         VOLTRA_GAME_SPAWN)?;
@@ -1351,7 +1348,6 @@ fn scaffold_voltra_chat(p: &Path, name: &str) -> Result<()> {
     ]);
     wf(p, "Cargo.toml",                  &game_cargo_toml(name))?;
     copy_lockfile_if_available(p)?;
-    wf(p, "rust-toolchain.toml",         RUST_TOOLCHAIN)?;
     wf(p, "src/main.rs",                 GAME_MAIN_RS)?;
     wf(p, "reducers/schema.vol",        VOLTRA_CHAT_SCHEMA_VOLTRA)?;
     wf(p, "reducers/rooms.vol",         VOLTRA_CHAT_ROOMS)?;
@@ -2992,7 +2988,6 @@ reducer world_tick() {
 
 // ── Rust game templates ───────────────────────────────────────────────────────
 const GAME_MAIN_RS: &str         = include_str!("../templates/r_game_main.rs.txt");
-const RUST_TOOLCHAIN: &str       = include_str!("../templates/rust_toolchain.toml.txt");
 const R_MOD_BASIC: &str          = include_str!("../templates/r_reducers_mod_basic.rs.txt");
 const R_SPAWN_RS: &str           = include_str!("../templates/r_spawn.rs.txt");
 const R_MOVE_RS: &str            = include_str!("../templates/r_move.rs.txt");
