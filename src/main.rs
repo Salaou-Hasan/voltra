@@ -268,25 +268,6 @@ enum Commands {
         #[arg(long, default_value = "http://127.0.0.1:3001")]
         metrics_url: String,
     },
-    /// Execute a VQL query against a running server
-    ///
-    /// Accepts a VQL string or a .vql file path.
-    ///
-    /// Examples:
-    ///   voltra query "SELECT * FROM players WHERE hp > 50"
-    ///   voltra query queries/leaderboard.vql
-    ///   voltra query "LEADERBOARD scores BY score DESC LIMIT 10"
-    ///   voltra query "SUBSCRIBE players WHERE zone = 'z1'"
-    Query {
-        /// VQL query string or path to a .vql file
-        query: String,
-        /// Admin/metrics server URL
-        #[arg(long, default_value = "http://127.0.0.1:3001")]
-        metrics_url: String,
-        /// Optional API key
-        #[arg(long)]
-        api_key: Option<String>,
-    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -366,7 +347,6 @@ async fn main() -> Result<()> {
         }
         Commands::Promote { metrics_url } => cmd_promote(&metrics_url).await,
         Commands::Generate { lang, out, metrics_url } => cmd_generate(&metrics_url, &lang, &out).await,
-        Commands::Query { query, metrics_url, api_key } => voltra::cli::cmd_query(&metrics_url, &query, api_key.as_deref()).await,
     }
 }
 
@@ -4989,55 +4969,6 @@ async fn handle_metrics_request(
             }
         }
 
-        // POST /admin/api/vql      — run a VQL query
-        (&Method::POST, "/admin/api/vql") => {
-            if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }
-            let body_bytes = hyper::body::to_bytes(req.into_body()).await
-                .map_err(|e| voltra::error::VoltraError::network_error(format!("Read body: {}", e)))?;
-            let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(v) => v,
-                Err(e) => return Ok(bad_request(format!("Invalid JSON: {}", e))),
-            };
-            let query = match payload.get("query").and_then(|v| v.as_str()) {
-                Some(q) if !q.trim().is_empty() => q.to_string(),
-                _ => return Ok(bad_request("Missing 'query' field".into())),
-            };
-            let tbl = tables.clone();
-            let result = tokio::task::spawn_blocking(move || -> std::result::Result<_, String> {
-                let program = voltra::vql::parse(&query).map_err(|e| {
-                    let errs: Vec<String> = e.iter().map(|e| e.to_string()).collect();
-                    format!("Parse error: {}", errs.join("; "))
-                })?;
-                let exec = voltra::vql::executor::Executor::new(tbl);
-                let mut combined = voltra::vql::executor::QueryResult {
-                    rows: vec![],
-                    columns: vec![],
-                    rows_affected: 0,
-                };
-                for stmt in &program.statements {
-                    let res = exec.execute(stmt).map_err(|e| format!("Execution error: {}", e))?;
-                    combined.rows.extend(res.rows);
-                    combined.rows_affected += res.rows_affected;
-                    if combined.columns.is_empty() && !res.columns.is_empty() {
-                        combined.columns = res.columns;
-                    }
-                }
-                Ok(combined)
-            }).await;
-            match result {
-                Ok(Ok(res)) => {
-                    let rows: Vec<serde_json::Value> =
-                        res.rows.into_iter().map(serde_json::Value::Object).collect();
-                    Ok(json_response(serde_json::json!({
-                        "columns": res.columns,
-                        "rows": rows,
-                        "rows_affected": res.rows_affected,
-                    })))
-                }
-                Ok(Err(e)) => Ok(bad_request(e)),
-                Err(e) => Ok(server_error(format!("task: {}", e))),
-            }
-        }
 
         (&Method::POST, "/admin/api/row") => {
             if let Some(resp) = admin_auth_check(&req) { return Ok(resp); }

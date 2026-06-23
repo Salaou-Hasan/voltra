@@ -1561,7 +1561,7 @@ impl TableStore {
     }
 
     /// Return all rows as raw encoded bytes — no MsgPack decode.
-    /// Used by VQL lazy decode to filter before full deserialization.
+    /// Enables lazy field decode: filter on a few fields before full deserialization.
     pub fn list_rows_with_keys_raw(&self, table_name: &str) -> Result<Vec<(String, Bytes)>> {
         if let Some((lid, logical)) = parse_lobby_key(table_name) {
             return self.get_lobby_store(&lid).map_or(Ok(vec![]), |s| s.list_rows_with_keys_raw(&logical));

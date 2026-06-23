@@ -5,7 +5,6 @@ pub mod cluster;
 pub mod codegen;
 pub mod compression;
 pub mod dsl;
-pub mod vql;
 pub mod metrics;
 pub mod chat;
 pub mod tenant;

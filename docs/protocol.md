@@ -32,10 +32,16 @@ ClientMessage::ReducerCall({
   call_id:       u64,    // client-assigned, echoed in ReducerResponse
   reducer_name:  String,
   args:          Bytes,  // MessagePack-encoded args (array or map)
+  sequence:      Option<u64>,  // input sequence for client-side prediction
 })
 ```
 
 `args` must be a valid MessagePack value. Pass an empty array `[]` (MessagePack fixarray of length 0) if the reducer takes no arguments.
+
+`sequence` is an optional monotonically increasing number the client assigns
+to each input. The server echoes it back in `ReducerResponse.sequence` so the
+client can reconcile predicted state. See [client-prediction.md](client-prediction.md)
+for a full implementation guide.
 
 ### Subscribe
 
@@ -47,6 +53,38 @@ ClientMessage::Subscribe({
   query:           String,  // subscription query (see grammar below)
 })
 ```
+
+#### AOI Subscriptions (Game Runtime)
+
+For lobbies with tick-based simulation enabled (`lobby_tick_hz > 0`), clients
+can subscribe to AOI (area-of-interest) updates instead of table subscriptions.
+AOI subscriptions deliver entity position updates at the server's tick rate,
+filtered to only show entities within the player's view distance.
+
+```
+ClientMessage::Subscribe({
+  subscription_id: "aoi-1",
+  query: "__aoi WHERE lobby = 'l0'",
+})
+```
+
+The server responds with a `SubscriptionAck`, then streams `AoiDelta` frames:
+
+```
+ServerMessage::AoiDelta({
+  entity_id:  u64,          // entity index in the lobby's ECS
+  operation:  String,       // "insert" | "update" | "delete"
+  x:          f32,          // world X position
+  y:          f32,          // world Y position
+  data:       Option<Value>, // reserved for future component data
+  server_tick: Option<u64>, // server tick for interpolation
+})
+```
+
+AOI deltas are delivered at the lobby's tick rate (e.g. 128Hz for competitive
+FPS). Only entities visible to the player (within `view_distance`) are sent.
+See [client-prediction.md](client-prediction.md) for interpolation and
+prediction implementation.
 
 ### Unsubscribe
 
@@ -115,12 +153,21 @@ Response to a `ReducerCall`.
 
 ```
 ServerMessage::ReducerResponse({
-  call_id: u64,
-  success: bool,
-  result:  Option<Bytes>,  // MessagePack-encoded return value, if any
-  error:   Option<String>, // error message when success = false
+  call_id:     u64,
+  success:     bool,
+  result:      Option<Bytes>,    // MessagePack-encoded return value, if any
+  error:       Option<String>,   // error message when success = false
+  sequence:    Option<u64>,      // echoed from ReducerCall.sequence
+  server_tick: Option<u64>,      // server tick when this response was generated
 })
 ```
+
+`sequence` is the input sequence number echoed from the client's `ReducerCall`.
+Clients use this to reconcile predicted state — see [client-prediction.md](client-prediction.md).
+
+`server_tick` is the server's tick counter when the reducer executed. Clients
+use this for entity interpolation — rendering positions between known server
+ticks for smooth movement of remote entities.
 
 ### SubscriptionAck
 
