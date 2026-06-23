@@ -531,6 +531,439 @@ fn decode_row_bytes(data: &[u8]) -> Result<Value> {
     }
 }
 
+// ── Lazy field decode — extract specific fields from MsgPack without full tree ─
+
+/// Decode a single named field from raw MsgPack bytes without deserializing the full row.
+/// Returns `None` if the field doesn't exist. This avoids allocating the entire
+/// `serde_json::Value` tree when only 1-2 fields are needed.
+///
+/// For compressed rows (tag 0x01), decompression is unavoidable but we still
+/// skip decoding the rest of the map.
+pub fn decode_field_from_bytes(data: &[u8], field: &str) -> Result<Option<Value>> {
+    let (tag, payload) = data
+        .split_first()
+        .ok_or_else(|| VoltraError::SerializationError("Row decode: empty data".to_string()))?;
+    let raw = match tag {
+        0x00 => Cow::Borrowed(payload),
+        0x01 => {
+            let decompressed = zstd::decode_all(payload)
+                .map_err(|e| VoltraError::SerializationError(format!("Row decompress: {}", e)))?;
+            return decode_field_from_decompressed(&decompressed, field);
+        }
+        _ => {
+            return Err(VoltraError::SerializationError(format!(
+                "Row decode: unknown tag 0x{:02x}",
+                tag
+            )))
+        }
+    };
+    decode_field_from_decompressed(&raw, field)
+}
+
+/// Decode multiple named fields from raw MsgPack bytes.
+/// More efficient than calling `decode_field_from_bytes` multiple times —
+/// only decompresses once and scans the map once.
+pub fn decode_fields_from_bytes(
+    data: &[u8],
+    fields: &[&str],
+) -> Result<Option<serde_json::Map<String, Value>>> {
+    let (tag, payload) = data
+        .split_first()
+        .ok_or_else(|| VoltraError::SerializationError("Row decode: empty data".to_string()))?;
+    match tag {
+        0x00 => decode_fields_from_decompressed(payload, fields),
+        0x01 => {
+            let decompressed = zstd::decode_all(payload)
+                .map_err(|e| VoltraError::SerializationError(format!("Row decompress: {}", e)))?;
+            decode_fields_from_decompressed(&decompressed, fields)
+        }
+        _ => Err(VoltraError::SerializationError(format!(
+            "Row decode: unknown tag 0x{:02x}",
+            tag
+        ))),
+    }
+}
+
+use std::borrow::Cow;
+
+fn decode_field_from_decompressed(data: &[u8], field: &str) -> Result<Option<Value>> {
+    let mut pos = 0;
+    // Parse map header
+    let len = match parse_map_header(data, &mut pos) {
+        Some(l) => l,
+        None => return Ok(None),
+    };
+
+    let field_bytes = field.as_bytes();
+    // Scan map entries: for each entry, read key, if key matches, decode value
+    for _ in 0..len {
+        // Read key
+        let (_, key_len) = match parse_str_header(data, &mut pos) {
+            Some(h) => h,
+            None => {
+                // Skip unknown key type
+                skip_msgpack_value(data, &mut pos);
+                skip_msgpack_value(data, &mut pos);
+                continue;
+            }
+        };
+        let key_end = pos + key_len;
+        if key_end > data.len() {
+            break;
+        }
+
+        if &data[pos..key_end] == field_bytes {
+            // Found the field — decode its value
+            let value = rmp_serde::from_slice(&data[key_end..])
+                .map_err(|e| VoltraError::SerializationError(format!("Field decode: {}", e)))?;
+            return Ok(Some(value));
+        }
+
+        // Skip value to get to next entry
+        pos = key_end;
+        skip_msgpack_value(data, &mut pos);
+    }
+    Ok(None)
+}
+
+fn decode_fields_from_decompressed(
+    data: &[u8],
+    fields: &[&str],
+) -> Result<Option<serde_json::Map<String, Value>>> {
+    if fields.is_empty() {
+        return Ok(Some(serde_json::Map::new()));
+    }
+
+    let mut pos = 0;
+    let len = match parse_map_header(data, &mut pos) {
+        Some(l) => l,
+        None => return Ok(None),
+    };
+
+    let mut result = serde_json::Map::new();
+    let mut found = 0;
+
+    for _ in 0..len {
+        let (_, key_len) = match parse_str_header(data, &mut pos) {
+            Some(h) => h,
+            None => {
+                skip_msgpack_value(data, &mut pos);
+                skip_msgpack_value(data, &mut pos);
+                continue;
+            }
+        };
+        let key_end = pos + key_len;
+        if key_end > data.len() {
+            break;
+        }
+
+        let key = std::str::from_utf8(&data[pos..key_end]).unwrap_or("");
+        pos = key_end;
+
+        if fields.contains(&key) {
+            let value: Value = rmp_serde::from_slice(&data[pos..])
+                .map_err(|e| VoltraError::SerializationError(format!("Field decode: {}", e)))?;
+            result.insert(key.to_string(), value);
+            found += 1;
+        } else {
+            skip_msgpack_value(data, &mut pos);
+        }
+
+        if found == fields.len() {
+            return Ok(Some(result));
+        }
+    }
+
+    if found > 0 {
+        Ok(Some(result))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Parse a MsgPack map header at `pos`, advancing `pos` past it.
+/// Returns the number of key-value pairs, or None if not a map.
+fn parse_map_header(data: &[u8], pos: &mut usize) -> Option<usize> {
+    if *pos >= data.len() {
+        return None;
+    }
+    let marker = data[*pos];
+    match marker {
+        // fixmap: 0x80..=0x8f
+        0x80..=0x8f => {
+            *pos += 1;
+            Some((marker & 0x0f) as usize)
+        }
+        // map16: 0xde
+        0xde => {
+            if *pos + 3 > data.len() {
+                return None;
+            }
+            let len = u16::from_be_bytes([data[*pos + 1], data[*pos + 2]]) as usize;
+            *pos += 3;
+            Some(len)
+        }
+        // map32: 0xdf
+        0xdf => {
+            if *pos + 5 > data.len() {
+                return None;
+            }
+            let len = u32::from_be_bytes([
+                data[*pos + 1],
+                data[*pos + 2],
+                data[*pos + 3],
+                data[*pos + 4],
+            ]) as usize;
+            *pos += 5;
+            Some(len)
+        }
+        _ => None,
+    }
+}
+
+/// Parse a MsgPack string header at `pos`, advancing `pos` past it.
+/// Returns `(start, len)` of the string data, or None if not a string.
+fn parse_str_header(data: &[u8], pos: &mut usize) -> Option<(usize, usize)> {
+    if *pos >= data.len() {
+        return None;
+    }
+    let marker = data[*pos];
+    match marker {
+        // fixstr: 0xa0..=0xbf
+        0xa0..=0xbf => {
+            *pos += 1;
+            let len = (marker & 0x0f) as usize;
+            Some((*pos, len))
+        }
+        // str8: 0xd9
+        0xd9 => {
+            if *pos + 2 > data.len() {
+                return None;
+            }
+            let len = data[*pos + 1] as usize;
+            *pos += 2;
+            Some((*pos, len))
+        }
+        // str16: 0xda
+        0xda => {
+            if *pos + 3 > data.len() {
+                return None;
+            }
+            let len = u16::from_be_bytes([data[*pos + 1], data[*pos + 2]]) as usize;
+            *pos += 3;
+            Some((*pos, len))
+        }
+        // str32: 0xdb
+        0xdb => {
+            if *pos + 5 > data.len() {
+                return None;
+            }
+            let len = u32::from_be_bytes([
+                data[*pos + 1],
+                data[*pos + 2],
+                data[*pos + 3],
+                data[*pos + 4],
+            ]) as usize;
+            *pos += 5;
+            Some((*pos, len))
+        }
+        _ => None,
+    }
+}
+
+/// Skip a single MsgPack value at `pos`, advancing `pos` past it.
+/// Handles all MsgPack types recursively (maps, arrays, strings, numbers, etc.)
+fn skip_msgpack_value(data: &[u8], pos: &mut usize) {
+    if *pos >= data.len() {
+        return;
+    }
+    let marker = data[*pos];
+    match marker {
+        // nil, false, true
+        0xc0..=0xc2 => {
+            *pos += 1;
+        }
+        0xc3 => {
+            *pos += 1;
+        }
+        // bin 8/16/32
+        0xc4 => {
+            *pos += 2;
+            if *pos <= data.len() {
+                let l = data[*pos - 1] as usize;
+                *pos += l.min(data.len() - *pos);
+            }
+        }
+        0xc5 => {
+            if *pos + 3 <= data.len() {
+                let l = u16::from_be_bytes([data[*pos + 1], data[*pos + 2]]) as usize;
+                *pos += 3 + l.min(data.len() - *pos - 3);
+            }
+        }
+        0xc6 => {
+            if *pos + 5 <= data.len() {
+                let l = u32::from_be_bytes([
+                    data[*pos + 1],
+                    data[*pos + 2],
+                    data[*pos + 3],
+                    data[*pos + 4],
+                ]) as usize;
+                *pos += 5 + l.min(data.len() - *pos - 5);
+            }
+        }
+        // float32, float64
+        0xca => {
+            *pos += 5;
+        }
+        0xcb => {
+            *pos += 9;
+        }
+        // uint8/16/32/64, int8/16/32/64
+        0xcc | 0xd0 => {
+            *pos += 2;
+        }
+        0xcd | 0xd1 => {
+            *pos += 3;
+        }
+        0xce | 0xd2 => {
+            *pos += 5;
+        }
+        0xcf => {
+            *pos += 9;
+        }
+        0xd3 => {
+            *pos += 9;
+        }
+        // fixint: 0x00..=0x7f (positive), 0xe0..=0xff (negative)
+        0x00..=0x7f | 0xe0..=0xff => {
+            *pos += 1;
+        }
+        // fixstr: 0xa0..=0xbf
+        0xa0..=0xbf => {
+            let len = (marker & 0x0f) as usize;
+            *pos += 1 + len;
+        }
+        // str8/16/32
+        0xd9 => {
+            if *pos + 2 <= data.len() {
+                let l = data[*pos + 1] as usize;
+                *pos += 2 + l.min(data.len() - *pos - 2);
+            }
+        }
+        0xda => {
+            if *pos + 3 <= data.len() {
+                let l = u16::from_be_bytes([data[*pos + 1], data[*pos + 2]]) as usize;
+                *pos += 3 + l.min(data.len() - *pos - 3);
+            }
+        }
+        0xdb => {
+            if *pos + 5 <= data.len() {
+                let l = u32::from_be_bytes([
+                    data[*pos + 1],
+                    data[*pos + 2],
+                    data[*pos + 3],
+                    data[*pos + 4],
+                ]) as usize;
+                *pos += 5 + l.min(data.len() - *pos - 5);
+            }
+        }
+        // fixarray: 0x90..=0x9f
+        0x90..=0x9f => {
+            let len = (marker & 0x0f) as usize;
+            *pos += 1;
+            for _ in 0..len {
+                skip_msgpack_value(data, pos);
+            }
+        }
+        // array16/32
+        0xdc => {
+            if *pos + 3 <= data.len() {
+                let l = u16::from_be_bytes([data[*pos + 1], data[*pos + 2]]) as usize;
+                *pos += 3;
+                for _ in 0..l {
+                    skip_msgpack_value(data, pos);
+                }
+            }
+        }
+        0xdd => {
+            if *pos + 5 <= data.len() {
+                let l = u32::from_be_bytes([
+                    data[*pos + 1],
+                    data[*pos + 2],
+                    data[*pos + 3],
+                    data[*pos + 4],
+                ]) as usize;
+                *pos += 5;
+                for _ in 0..l {
+                    skip_msgpack_value(data, pos);
+                }
+            }
+        }
+        // fixmap: 0x80..=0x8f
+        0x80..=0x8f => {
+            let len = (marker & 0x0f) as usize;
+            *pos += 1;
+            for _ in 0..len {
+                skip_msgpack_value(data, pos);
+                skip_msgpack_value(data, pos);
+            }
+        }
+        // map16/32
+        0xde => {
+            if *pos + 3 <= data.len() {
+                let l = u16::from_be_bytes([data[*pos + 1], data[*pos + 2]]) as usize;
+                *pos += 3;
+                for _ in 0..l {
+                    skip_msgpack_value(data, pos);
+                    skip_msgpack_value(data, pos);
+                }
+            }
+        }
+        0xdf => {
+            if *pos + 5 <= data.len() {
+                let l = u32::from_be_bytes([
+                    data[*pos + 1],
+                    data[*pos + 2],
+                    data[*pos + 3],
+                    data[*pos + 4],
+                ]) as usize;
+                *pos += 5;
+                for _ in 0..l {
+                    skip_msgpack_value(data, pos);
+                    skip_msgpack_value(data, pos);
+                }
+            }
+        }
+        // ext 8/16/32
+        0xc7 => {
+            if *pos + 2 <= data.len() {
+                let l = data[*pos + 1] as usize;
+                *pos += 2 + 1 + l.min(data.len() - *pos - 2 - 1);
+            }
+        }
+        0xc8 => {
+            if *pos + 3 <= data.len() {
+                let l = u16::from_be_bytes([data[*pos + 1], data[*pos + 2]]) as usize;
+                *pos += 3 + 1 + l.min(data.len() - *pos - 3 - 1);
+            }
+        }
+        0xc9 => {
+            if *pos + 5 <= data.len() {
+                let l = u32::from_be_bytes([
+                    data[*pos + 1],
+                    data[*pos + 2],
+                    data[*pos + 3],
+                    data[*pos + 4],
+                ]) as usize;
+                *pos += 5 + 1 + l.min(data.len() - *pos - 5 - 1);
+            }
+        }
+        _ => {
+            *pos += 1;
+        }
+    }
+}
+
 // ── TableStore ────────────────────────────────────────────────────────────────
 
 pub struct TableStore {
@@ -1544,6 +1977,30 @@ impl TableStore {
                 self.load_blob_into_value(&mut value, offset)?;
             }
             rows.push((key, value));
+        }
+        Ok(rows)
+    }
+
+    /// Return all rows as raw encoded bytes — no MsgPack decode.
+    /// Enables lazy field decode: filter on a few fields before full deserialization.
+    pub fn list_rows_with_keys_raw(&self, table_name: &str) -> Result<Vec<(String, Bytes)>> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self
+                .get_lobby_store(&lid)
+                .map_or(Ok(vec![]), |s| s.list_rows_with_keys_raw(&logical));
+        }
+        let table = match self.tables.get(table_name) {
+            Some(t) => t.clone(),
+            None => return Ok(vec![]),
+        };
+        let mut rows = Vec::with_capacity(table.rows.len());
+        for entry in table.rows.iter() {
+            let key = entry.key().clone();
+            let row = entry.value();
+            if !self.row_matches_shard(row.shard_id) {
+                continue;
+            }
+            rows.push((key, row.data.clone()));
         }
         Ok(rows)
     }
