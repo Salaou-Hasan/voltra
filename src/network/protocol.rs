@@ -36,6 +36,7 @@ mod tests {
             call_id: 1,
             reducer_name: "increment".to_string(),
             args: vec![1, 2, 3],
+            sequence: None,
         };
 
         let encoded = encode_message(&call).unwrap();

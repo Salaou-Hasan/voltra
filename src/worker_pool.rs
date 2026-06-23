@@ -399,6 +399,7 @@ fn lobby_worker_loop(
                         deps.metrics.reducer_errors_total.inc();
                         stats.errors.fetch_add(1, AOrdering::Relaxed);
                         ReducerResponse::error(call_id, e.to_string())
+                            .with_sequence(call.sequence)
                     }
                     Ok(result_bytes) => match ctx.commit() {
                         Err(crate::error::VoltraError::TxnConflict(_))
@@ -415,6 +416,7 @@ fn lobby_worker_loop(
                             );
                             deps.metrics.reducer_errors_total.inc();
                             ReducerResponse::error(call_id, format!("Commit error: {}", e))
+                                .with_sequence(call.sequence)
                         }
                         Ok(deltas) => {
                             if !deltas.is_empty() {
@@ -443,6 +445,7 @@ fn lobby_worker_loop(
                                 .observe(call_start.elapsed().as_secs_f64());
                             stats.record_call(call_start.elapsed().as_nanos() as u64);
                             ReducerResponse::success(call_id, result_bytes)
+                                .with_sequence(call.sequence)
                         }
                     },
                 };

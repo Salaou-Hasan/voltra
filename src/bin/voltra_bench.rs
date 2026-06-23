@@ -155,6 +155,7 @@ async fn run_client(
             call_id,
             reducer_name: reducer.clone(),
             args: args_bytes.clone(),
+            sequence: None,
         };
         let frame = match rmp_serde::to_vec(&call) {
             Ok(b) => b,

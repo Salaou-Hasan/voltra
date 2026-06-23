@@ -1243,6 +1243,7 @@ impl WsConn {
             call_id,
             reducer_name: reducer.to_string(),
             args,
+            sequence: None,
         });
         let frame = match rmp_serde::to_vec(&msg) {
             Ok(b) => b,
@@ -1727,6 +1728,7 @@ async fn run_stress_client(
                 call_id,
                 reducer_name: reducer.clone(),
                 args: args_bytes.clone(),
+                sequence: None,
             });
             match rmp_serde::to_vec(&msg) {
                 Ok(frame) => {

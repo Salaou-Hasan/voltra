@@ -250,6 +250,7 @@ pub async fn cmd_generate_npc(
             call_id: 1,
             reducer_name: "cache_npc_template".to_string(),
             args: args_bytes,
+            sequence: None,
         },
     );
     let frame = rmp_serde::to_vec(&msg)
@@ -653,6 +654,7 @@ pub async fn cmd_call(
         call_id: 1,
         reducer_name: reducer.to_string(),
         args: args_bytes,
+        sequence: None,
     });
     let frame = rmp_serde::to_vec(&msg)
         .map_err(|e| VoltraError::SerializationError(e.to_string()))?;

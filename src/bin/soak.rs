@@ -163,6 +163,7 @@ async fn soak_client(
                 call_id: (client_id as u64) << 40 | call_seq,
                 reducer_name: args.reducer.clone(),
                 args: inc_args.clone(),
+                sequence: None,
             });
             let frame = match rmp_serde::to_vec(&msg) {
                 Ok(b) => b,

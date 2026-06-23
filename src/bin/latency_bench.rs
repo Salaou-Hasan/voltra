@@ -128,6 +128,7 @@ impl WsClient {
             call_id:      id,
             reducer_name: "bench_ping".into(),
             args:         rmp_serde::to_vec(&vec![key]).unwrap(),
+            sequence: None,
         });
         let frame = rmp_serde::to_vec(&msg).unwrap();
 

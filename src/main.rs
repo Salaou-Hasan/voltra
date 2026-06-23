@@ -4330,11 +4330,13 @@ async fn run_server(config: Config) -> Result<()> {
                         log::warn!("call_id={} timed out", call_id);
                         metrics_w.reducer_errors_total.inc();
                         ReducerResponse::error(call_id, "Reducer timed out".to_string())
+                            .with_sequence(call.sequence)
                     }
                     Ok(Err(e)) => {
                         log::error!("Join error: {}", e);
                         metrics_w.reducer_errors_total.inc();
                         ReducerResponse::error(call_id, "Internal task error".to_string())
+                            .with_sequence(call.sequence)
                     }
                     Ok(Ok(outcome)) => match outcome {
                         Outcome::Done(result_bytes, deltas) => {
@@ -4400,21 +4402,25 @@ async fn run_server(config: Config) -> Result<()> {
                             metrics_w.reducer_calls_total.inc();
                             metrics_w.reducer_duration_seconds.observe(call_start.elapsed().as_secs_f64());
                             ReducerResponse::success(call_id, result_bytes)
+                                .with_sequence(call.sequence)
                         }
                         Outcome::CommitErr(e) => {
                             log::error!("Commit failed call_id={}: {}", call_id, e);
                             metrics_w.reducer_errors_total.inc();
                             ReducerResponse::error(call_id, format!("Commit error: {}", e))
+                                .with_sequence(call.sequence)
                         }
                         Outcome::ReducerErr(e) => {
                             log::warn!("Reducer error: {}", e);
                             metrics_w.reducer_errors_total.inc();
                             ReducerResponse::error(call_id, e)
+                                .with_sequence(call.sequence)
                         }
                         Outcome::Panicked => {
                             log::warn!("Reducer panicked call_id={}", call_id);
                             metrics_w.reducer_errors_total.inc();
                             ReducerResponse::error(call_id, "Reducer panicked".to_string())
+                                .with_sequence(call.sequence)
                         }
                     },
                 };
@@ -4529,6 +4535,7 @@ async fn run_server(config: Config) -> Result<()> {
                             tenant_id: None,
                             lobby_hint: None,
                             response_tx: resp_tx,
+                            sequence: None,
                         };
                         if tx_sched.send(call).await.is_ok() {
                             let name_c = sched.reducer.clone();
@@ -4928,6 +4935,7 @@ async fn handle_metrics_request(
                 tenant_id: None,
                 lobby_hint: None,
                 response_tx: resp_tx,
+                sequence: None,
             };
             if queue_probe.send(call).await.is_err() {
                 return Ok(server_error("Reducer queue closed".into()));
@@ -5403,6 +5411,7 @@ async fn handle_metrics_request(
                 tenant_id: None,
                 lobby_hint: None,
                 response_tx: resp_tx,
+                sequence: None,
             };
             if queue_probe.send(call).await.is_err() {
                 return Ok(server_error("Reducer queue closed".into()));

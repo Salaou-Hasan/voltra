@@ -435,6 +435,7 @@ async fn run_server_inner(
                         ctx.rollback();
                         metrics_w.reducer_errors_total.inc();
                         ReducerResponse::error(call_id, e.to_string())
+                            .with_sequence(call.sequence)
                     }
                     Ok(result_bytes) => {
                         // Commit staged writes atomically.
@@ -453,6 +454,7 @@ async fn run_server_inner(
                                 );
                                 metrics_w.reducer_errors_total.inc();
                                 ReducerResponse::error(call_id, format!("Commit error: {}", e))
+                                    .with_sequence(call.sequence)
                             }
                             Ok(deltas) => {
                                 // Fan out live subscription updates — O(1) per subscriber.
@@ -538,6 +540,7 @@ async fn run_server_inner(
 
                                 metrics_w.reducer_calls_total.inc();
                                 ReducerResponse::success(call_id, result_bytes)
+                                    .with_sequence(call.sequence)
                             }
                         }
                     }
@@ -587,6 +590,7 @@ async fn run_server_inner(
                             tenant_id: None,
                             lobby_hint: None,
                             response_tx: resp_tx,
+                            sequence: None,
                         };
                         if tx_sched.send(call).await.is_err() { break; }
                     }
@@ -1000,6 +1004,7 @@ async fn handle_embedded_admin(
                 call_id: 0, reducer_name: pr.reducer_name, args,
                 caller_id: pr.caller_id, caller_role: pr.caller_role,
                 tenant_id: None, lobby_hint: None, response_tx: resp_tx,
+                sequence: None,
             };
             if queue_tx.send(call).await.is_err() {
                 return Ok(admin_server_error("Reducer queue closed".into()));
@@ -1177,6 +1182,7 @@ async fn handle_embedded_admin(
                 tenant_id: None,
                 lobby_hint: None,
                 response_tx: resp_tx,
+                sequence: None,
             };
             if queue_tx.send(call).await.is_err() {
                 return Ok(admin_server_error("Reducer queue closed".into()));

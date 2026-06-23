@@ -240,7 +240,6 @@ pub struct PendingCall {
     pub lobby_hint: Option<String>,
     pub response_tx: mpsc::UnboundedSender<ReducerResponse>,
     /// Client-assigned input sequence number for prediction reconciliation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequence: Option<u64>,
 }
 

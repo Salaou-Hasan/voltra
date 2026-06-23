@@ -210,7 +210,7 @@ mod tests {
         let e = EntityId::new(0, 0);
         current.insert(e, (10.0, 20.0));
 
-        let deltas = b.compute_deltas(&current);
+        let deltas = b.compute_deltas(&current, 0);
         assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].operation, "insert");
         assert_eq!(deltas[0].x, 10.0);
@@ -227,7 +227,7 @@ mod tests {
 
         let mut snap2 = HashMap::new();
         snap2.insert(e, (5.0, 10.0));
-        let deltas = b.compute_deltas(&snap2);
+        let deltas = b.compute_deltas(&snap2, 1);
         assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].operation, "update");
         assert_eq!(deltas[0].x, 5.0);
@@ -245,7 +245,7 @@ mod tests {
 
         let mut snap2 = HashMap::new();
         snap2.insert(e, (5.0, 5.0));
-        let deltas = b.compute_deltas(&snap2);
+        let deltas = b.compute_deltas(&snap2, 1);
         assert!(deltas.is_empty());
     }
 
@@ -259,7 +259,7 @@ mod tests {
         b.update_snapshot(&snap1);
 
         let snap2 = HashMap::new();
-        let deltas = b.compute_deltas(&snap2);
+        let deltas = b.compute_deltas(&snap2, 1);
         assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].operation, "delete");
     }

@@ -198,6 +198,7 @@ mod tests {
             call_id: 1,
             reducer_name: "increment".to_string(),
             args: vec![1, 2, 3],
+            sequence: None,
         };
 
         let serialized = rmp_serde::to_vec(&call).unwrap();
