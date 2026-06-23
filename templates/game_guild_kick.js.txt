@@ -1,0 +1,33 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// guild_kick — remove a member from a guild (owner only)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [guild_id: string, member_id: string]
+// Return: { ok: true, members: string[] }
+//         { error: "no_such_guild" | "forbidden" }
+//
+// Usage:
+//   voltra call guild_kick '["guild_001", "player2"]'
+//   (caller must be the guild owner)
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [gid, member] = args;
+  const g = __voltra_get("guilds", gid);
+  if (!g) { return { error: "no_such_guild" }; }
+  else if (g.owner !== __voltra_caller_id) { return { error: "forbidden" }; }
+  else {
+    g.members = g.members.filter((m) => m !== member);
+    __voltra_set("guilds", gid, g);
+    return { ok: true, members: g.members };
+  }
+}

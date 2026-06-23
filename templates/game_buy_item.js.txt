@@ -1,0 +1,36 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// buy_item — purchase an item with in-game currency
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, item_id: string, price: number]
+// Return: { ok: true, currency: number, item_id: string, qty: number }
+//         { error: "not_found" | "insufficient_funds" }
+//
+// Usage:
+//   voltra call buy_item '["player1", "sword", 50]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [pid, item_id, price] = args;
+  const p = __voltra_get("players", pid);
+  if (!p) { return { error: "not_found" }; }
+  else if (p.currency < price) { return { error: "insufficient_funds" }; }
+  else {
+    p.currency -= price;
+    __voltra_set("players", pid, p);
+    const k = pid + ":" + item_id;
+    const inv = __voltra_get("inventory", k) || { player_id: pid, item_id, qty: 0 };
+    inv.qty += 1;
+    __voltra_set("inventory", k, inv);
+    return { ok: true, currency: p.currency, item_id, qty: inv.qty };
+  }
+}

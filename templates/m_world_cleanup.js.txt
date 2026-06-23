@@ -1,0 +1,18 @@
+// Scheduled reducer — runs every 60 seconds
+// Removes stale sessions where last_seen is older than 5 minutes
+
+const now = Date.now();
+const TTL_MS = 300_000; // 5 minutes
+
+const sessions = db.all("sessions");
+let removed = 0;
+
+for (const session of sessions) {
+  if (now - session.last_seen > TTL_MS) {
+    db.delete("sessions",  session.player_id);
+    db.delete("players",   session.player_id);
+    removed++;
+  }
+}
+
+result = { ok: true, removed };

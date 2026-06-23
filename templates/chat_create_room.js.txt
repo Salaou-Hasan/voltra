@@ -1,0 +1,29 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// create_room — open a new chat room
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [room_id: string, name: string, owner_id: string]
+// Return: { ok: true, room_id: string }
+//         { error: "exists" }
+//
+// Usage:
+//   voltra call create_room '["general", "General Chat", "alice"]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [rid, name, owner] = args;
+  if (__voltra_get("rooms", rid)) { return { error: "exists" }; }
+  else {
+    __voltra_set("rooms", rid, { room_id: rid, name, owner, members: [owner], created_at: 0 });
+    return { ok: true, room_id: rid };
+  }
+}

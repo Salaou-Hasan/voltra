@@ -1,0 +1,23 @@
+const [player_id, lobby_id, class_name] = args;
+
+// Prevent duplicate spawns
+const existing = db.get("players", player_id);
+if (existing) { result = { error: "Player already spawned" }; return; }
+
+const now = Date.now();
+const region = "default";
+
+// Create the player with full initial state
+db.set("players", player_id, {
+  player_id, lobby: lobby_id, region,
+  x: 0, y: 0, hp: 100, max_hp: 100,
+  class: class_name, alive: true,
+});
+
+// Record the session
+db.set("sessions", player_id, {
+  player_id, connected_at: now, last_seen: now,
+});
+
+const player = db.get("players", player_id);
+result = { ok: true, player };

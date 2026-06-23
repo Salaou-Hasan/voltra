@@ -1,0 +1,19 @@
+[tables.players]
+columns = [
+  { name = "player_id",  type = "String",  required = true  },
+  { name = "lobby",      type = "String",  required = true  },
+  { name = "region",     type = "String",  required = true  },
+  { name = "x",         type = "Float",   required = true  },
+  { name = "y",         type = "Float",   required = true  },
+  { name = "hp",        type = "Int",     required = true  },
+  { name = "max_hp",    type = "Int",     required = true  },
+  { name = "class",     type = "String",  required = true  },
+  { name = "alive",     type = "Bool",    required = false, default = true },
+]
+
+[tables.sessions]
+columns = [
+  { name = "player_id",    type = "String", required = true },
+  { name = "connected_at", type = "Int",    required = true },
+  { name = "last_seen",    type = "Int",    required = true },
+]

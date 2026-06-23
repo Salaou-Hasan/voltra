@@ -1,0 +1,15 @@
+const [guild_id, invitee_id] = args;
+
+// Caller must be a guild member to invite
+const membership = db.get("guild_members", caller.id);
+if (!membership || membership.guild_id !== guild_id) {
+  result = { error: "You are not a member of this guild" }; return;
+}
+
+const invite_id = guild_id + ":" + invitee_id + ":" + Date.now();
+
+db.set("guild_invites", invite_id, {
+  invite_id, guild_id, invitee_id, inviter_id: caller.id,
+});
+
+result = { ok: true, invite_id };

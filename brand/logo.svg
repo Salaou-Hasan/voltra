@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 160" role="img" aria-label="Voltra logo">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="55%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <rect width="520" height="160" rx="24" fill="#0b0f1a"/>
+  <rect x="36" y="36" width="88" height="88" rx="20" fill="#10151f" stroke="#ffffff" stroke-opacity="0.08"/>
+  <g transform="translate(36,36) scale(0.6875)">
+    <path d="M72 24 L40 76 L62 76 L56 112 L92 54 L70 54 L84 24 Z" fill="url(#g)"/>
+  </g>
+  <text x="150" y="100" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="54" font-weight="600" letter-spacing="-1" fill="#f3f5f8">voltra</text>
+  <text x="152" y="126" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#8a93a6">the in-memory database for games</text>
+</svg>

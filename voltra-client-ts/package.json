@@ -1,0 +1,47 @@
+{
+  "name": "@voltra/client",
+  "version": "0.2.0",
+  "description": "TypeScript/JavaScript client SDK for Voltra — self-hosted real-time game backend",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./react": {
+      "import": "./dist/hooks.js",
+      "types": "./dist/hooks.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test dist/tests/*.test.js"
+  },
+  "keywords": ["voltra", "websocket", "realtime", "game-backend", "messagepack", "react"],
+  "license": "MIT",
+  "dependencies": {
+    "@msgpack/msgpack": "^3.0.0",
+    "fzstd": "^0.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.0.0",
+    "@types/ws": "^8.0.0",
+    "typescript": "^5.0.0",
+    "ws": "^8.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "ws": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "ws": {
+      "optional": true
+    }
+  }
+}

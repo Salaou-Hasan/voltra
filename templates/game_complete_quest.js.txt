@@ -1,0 +1,35 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// complete_quest — finalise a quest and grant XP + currency rewards
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, quest_id: string, xp_reward: number, currency_reward: number]
+// Return: { ok: true, xp: number, currency: number }
+//         { error: "not_found" }
+//
+// Usage:
+//   voltra call complete_quest '["player1", "q_kill_goblins", 200, 50]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [pid, quest_id, xp, gold] = args;
+  const k = pid + ":" + quest_id;
+  const q = __voltra_get("quests", k);
+  const p = __voltra_get("players", pid);
+  if (!q || !p) { return { error: "not_found" }; }
+  else {
+    q.status = "complete";
+    __voltra_set("quests", k, q);
+    p.xp += (xp || 0); p.currency += (gold || 0);
+    __voltra_set("players", pid, p);
+    return { ok: true, xp: p.xp, currency: p.currency };
+  }
+}

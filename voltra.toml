@@ -1,0 +1,41 @@
+[project]
+name = "voltra-sample"
+version = "0.1.0"
+
+[server]
+host = "127.0.0.1"
+port = 3000
+
+# How often to write a full snapshot to disk, measured in WAL entries.
+#
+# Trade-off:
+#   - LOWER value (e.g. 10_000)  → faster crash recovery (fewer entries to replay),
+#                                  but more disk I/O during steady-state writes.
+#   - HIGHER value (e.g. 1_000_000) → less disk thrash, but on restart the server
+#                                     may need to replay millions of WAL entries
+#                                     before serving traffic.
+#
+# 100_000 is a balanced default: at 50k writes/sec a snapshot fires roughly every
+# 2 seconds, restart replay stays under a few seconds, and disk pressure is modest.
+snapshot_interval = 100000
+
+# Maximum delay (ms) between an fsync of the WAL file and the next one.
+#
+# Trade-off:
+#   - 0  → fsync on every write (safest, slowest — ~hundreds of writes/sec on HDD).
+#   - 100 → batch up to 100 ms of writes before fsync (durability window: 100 ms
+#           of recent writes can be lost on a hard crash; throughput: tens of
+#           thousands of writes/sec).
+#   - HIGHER (e.g. 1000) → maximum throughput, but you risk losing a full second
+#                          of recent writes on power loss.
+#
+# 100 ms is the recommended production default: durable enough for game state,
+# fast enough for real-time workloads.
+fsync_interval_ms = 100
+
+# Maximum time (ms) a single reducer call may run before being cancelled.
+#
+# Prevents a buggy reducer (infinite loop, expensive computation) from
+# monopolising a worker thread. 5 seconds is generous for game logic;
+# tune down to 1000 for high-frequency reducers, up to 30000 for batch jobs.
+reducer_timeout_ms = 5000

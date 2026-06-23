@@ -1,0 +1,9 @@
+target/**
+**/target/**
+.git/
+**/node_modules/**
+*.log
+.env
+.github/
+mygame/
+my-project/

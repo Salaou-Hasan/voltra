@@ -1,0 +1,26 @@
+const [box_type] = args;
+
+// Seeded roll: combine player id chars + timestamp for determinism within a call
+const seed_str = caller.id + Date.now();
+let seed = 0;
+for (let i = 0; i < seed_str.length; i++) seed = (seed * 31 + seed_str.charCodeAt(i)) >>> 0;
+const roll = (seed % 100) + 1; // 1–100
+
+// Drop table: common 60%, rare 30%, epic 10%
+let tier, item_id;
+if (roll <= 60)      { tier = "common"; item_id = box_type + "_common_" + (seed % 5); }
+else if (roll <= 90) { tier = "rare";   item_id = box_type + "_rare_"   + (seed % 3); }
+else                 { tier = "epic";   item_id = box_type + "_epic_"   + (seed % 2); }
+
+const inv_key = caller.id + ":" + item_id;
+const existing = db.get("inventory", inv_key);
+if (existing) {
+  db.set("inventory", inv_key, { ...existing, qty: existing.qty + 1 });
+} else {
+  db.set("inventory", inv_key, {
+    inv_key, player_id: caller.id, item_id, item_name: tier + " item",
+    qty: 1, slot: "", equipped: false,
+  });
+}
+
+result = { ok: true, tier, item_id };

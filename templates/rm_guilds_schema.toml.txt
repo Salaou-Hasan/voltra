@@ -1,0 +1,63 @@
+[[table]]
+name = "guilds"
+
+[[table.columns]]
+name = "guild_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "name"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "owner"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "member_count"
+type = "i64"
+required = true
+
+[[table]]
+name = "guild_members"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "guild_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "player_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "role"
+type = "String"
+required = true
+
+[[table]]
+name = "guild_invites"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "guild_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "player_id"
+type = "String"
+required = true

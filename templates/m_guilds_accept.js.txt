@@ -1,0 +1,18 @@
+const [invite_id] = args;
+
+const invite = db.get("guild_invites", invite_id);
+if (!invite) { result = { error: "Invite not found" }; return; }
+
+// Only the intended invitee can accept
+if (invite.invitee_id !== caller.id) {
+  result = { error: "This invite is not for you" }; return;
+}
+
+db.set("guild_members", caller.id, {
+  player_id: caller.id, guild_id: invite.guild_id,
+  rank: "member", joined_at: Date.now(),
+});
+
+db.delete("guild_invites", invite_id);
+
+result = { ok: true, guild_id: invite.guild_id };

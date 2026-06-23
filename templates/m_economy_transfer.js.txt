@@ -1,0 +1,14 @@
+const [to_player_id, amount] = args;
+
+const sender = db.get("wallets", caller.id);
+if (!sender) { result = { error: "Sender wallet not found" }; return; }
+if (sender.gold < amount) { result = { error: "Insufficient gold" }; return; }
+
+const receiver = db.get("wallets", to_player_id);
+if (!receiver) { result = { error: "Recipient wallet not found" }; return; }
+
+const now = Date.now();
+db.set("wallets", caller.id,   { ...sender,   gold: sender.gold - amount,   updated_at: now });
+db.set("wallets", to_player_id, { ...receiver, gold: receiver.gold + amount, updated_at: now });
+
+result = { ok: true, sent: amount, received: amount };

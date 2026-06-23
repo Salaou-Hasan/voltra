@@ -1,0 +1,17 @@
+const [lobby_id, npc_type, x, y] = args;
+
+// Unique NPC id derived from lobby + type + timestamp
+const npc_id = lobby_id + "_" + npc_type + "_" + Date.now();
+
+db.set("npcs", npc_id, {
+  npc_id, lobby: lobby_id, type: npc_type,
+  hp: 100, max_hp: 100, x, y, alive: true,
+});
+
+// Update zone NPC count
+const zone = db.get("zones", lobby_id);
+if (zone) {
+  db.set("zones", lobby_id, { ...zone, npc_count: (zone.npc_count || 0) + 1 });
+}
+
+result = { ok: true, npc_id };

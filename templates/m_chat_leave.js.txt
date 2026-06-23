@@ -1,0 +1,9 @@
+const [room_id] = args;
+
+const member_key = caller.id + ":" + room_id;
+const membership = db.get("chat_members", member_key);
+if (!membership) { result = { error: "Not a member" }; return; }
+
+db.delete("chat_members", member_key);
+
+result = { ok: true };

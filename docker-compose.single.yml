@@ -1,0 +1,28 @@
+# Single-node Voltra via plain `docker compose up` (no Dokploy).
+# For a Dokploy deployment use docker-compose.dokploy.yml + deploy/DOKPLOY.md.
+services:
+  voltra:
+    build: .
+    restart: unless-stopped
+    environment:
+      VOLTRA_HOST: "0.0.0.0"             # required inside a container
+      VOLTRA_PORT: "3000"                # WebSocket game protocol
+      VOLTRA_METRICS_PORT: "3001"        # metrics + admin + /healthz
+      VOLTRA_REDIS_PORT: "6379"
+      VOLTRA_PG_PORT: "5432"
+      VOLTRA_API_KEY: "${VOLTRA_API_KEY:-changeme-set-a-real-secret}"
+      VOLTRA_WAL_PATH: "/var/lib/voltra/data/voltra.wal"
+      VOLTRA_SNAPSHOT_DIR: "/var/lib/voltra/data/snapshots"
+      VOLTRA_BACKUP_DIR: "/var/lib/voltra/data/backups"
+      VOLTRA_BACKUP_INTERVAL_SECS: "3600"
+      VOLTRA_BACKUP_KEEP: "24"
+    volumes:
+      - voltra-data:/var/lib/voltra/data
+    ports:
+      - "3000:3000"
+      - "3001:3001"   # ⚠ admin/metrics — firewall in production
+      - "6379:6379"
+      - "5432:5432"
+
+volumes:
+  voltra-data:

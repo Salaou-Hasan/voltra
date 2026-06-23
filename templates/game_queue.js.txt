@@ -1,0 +1,25 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// queue — put a player in the matchmaking queue
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, rating: number]
+// Return: { ok: true }
+//
+// Usage:
+//   voltra call queue '["player1", 1250]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [pid, rating] = args;
+  __voltra_set("matchmaking", pid, { player_id: pid, rating: rating || 1000, queued_at: 0 });
+  return { ok: true };
+}

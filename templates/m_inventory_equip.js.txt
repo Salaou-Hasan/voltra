@@ -1,0 +1,17 @@
+const [player_id, item_id, slot] = args;
+
+const inv_key = player_id + ":" + item_id;
+const item = db.get("inventory", inv_key);
+if (!item) { result = { error: "Item not in inventory" }; return; }
+
+// Unequip any item currently in the same slot
+const all_items = db.all("inventory");
+for (const i of all_items) {
+  if (i.player_id === player_id && i.slot === slot && i.item_id !== item_id) {
+    db.set("inventory", i.inv_key, { ...i, equipped: false, slot: "" });
+  }
+}
+
+db.set("inventory", inv_key, { ...item, equipped: true, slot });
+
+result = { ok: true };

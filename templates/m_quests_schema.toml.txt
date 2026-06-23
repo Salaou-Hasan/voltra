@@ -1,0 +1,11 @@
+[tables.player_quests]
+columns = [
+  { name = "quest_key",    type = "String", required = true  },
+  { name = "player_id",    type = "String", required = true  },
+  { name = "quest_id",     type = "String", required = true  },
+  { name = "status",       type = "String", required = true  },
+  { name = "progress",     type = "Int",    required = true  },
+  { name = "goal",         type = "Int",    required = true  },
+  { name = "started_at",   type = "Int",    required = true  },
+  { name = "completed_at", type = "Int",    required = false, default = 0 },
+]

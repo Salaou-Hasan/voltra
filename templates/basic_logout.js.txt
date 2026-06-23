@@ -1,0 +1,30 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// logout — end a session
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [username: string]
+// Return: { ok: true }
+//         { error: "no_session" }
+//
+// Usage:
+//   voltra call logout '["alice"]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [username] = args;
+  const session = __voltra_get("sessions", username);
+  if (!session) { return { error: "no_session" }; }
+  else {
+    __voltra_delete("sessions", username);
+    return { ok: true };
+  }
+}

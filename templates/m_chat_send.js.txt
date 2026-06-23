@@ -1,0 +1,14 @@
+const [room_id, text] = args;
+
+const room = db.get("rooms", room_id);
+if (!room) { result = { error: "Room not found" }; return; }
+
+// Unique message id from player + timestamp
+const now = Date.now();
+const msg_id = caller.id + "_" + now;
+
+db.set("messages", msg_id, {
+  msg_id, room_id, player_id: caller.id, text, sent_at: now,
+});
+
+result = { ok: true, msg_id };

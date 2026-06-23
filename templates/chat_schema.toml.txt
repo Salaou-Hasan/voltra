@@ -1,0 +1,98 @@
+# Chat template schema.
+
+[[tables]]
+name = "rooms"
+[[tables.columns]]
+name = "room_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "name"
+type = "string"
+required = true
+[[tables.columns]]
+name = "owner"
+type = "string"
+required = true
+
+[[tables]]
+name = "messages"
+[[tables.columns]]
+name = "message_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "room_id"
+type = "string"
+required = false
+[[tables.columns]]
+name = "user_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "text"
+type = "string"
+required = true
+[[tables.columns]]
+name = "created_at"
+type = "i64"
+required = true
+
+[[tables]]
+name = "threads"
+[[tables.columns]]
+name = "thread_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "parent_message_id"
+type = "string"
+required = true
+
+[[tables]]
+name = "reactions"
+[[tables.columns]]
+name = "message_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "user_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "emoji"
+type = "string"
+required = true
+
+[[tables]]
+name = "presence"
+[[tables.columns]]
+name = "user_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "online"
+type = "bool"
+required = true
+
+[[tables]]
+name = "typing"
+[[tables.columns]]
+name = "room_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "user_id"
+type = "string"
+required = true
+
+[[tables]]
+name = "bans"
+[[tables.columns]]
+name = "room_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "user_id"
+type = "string"
+required = true

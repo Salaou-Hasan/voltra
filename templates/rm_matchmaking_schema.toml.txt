@@ -1,0 +1,40 @@
+[[table]]
+name = "matchmaking"
+
+[[table.columns]]
+name = "player_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "rating"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "queued_at"
+type = "i64"
+required = true
+
+[[table]]
+name = "matches"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "player1"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "player2"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "status"
+type = "String"
+required = true

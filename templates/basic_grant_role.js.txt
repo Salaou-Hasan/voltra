@@ -1,0 +1,35 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// grant_role — admin-only role change
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [target_username: string, new_role: string]
+// Return: { ok: true, username: string, role: string }
+//         { error: "forbidden" | "no_such_user" }
+//
+// Usage:
+//   voltra call grant_role '["bob", "admin"]'
+//   (requires Authorization: Bearer <key>:admin)
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [target, new_role] = args;
+  if (__voltra_caller_role !== "admin") { return { error: "forbidden" }; }
+  else {
+    const user = __voltra_get("users", target);
+    if (!user) { return { error: "no_such_user" }; }
+    else {
+      user.role = new_role;
+      __voltra_set("users", target, user);
+      return { ok: true, username: target, role: new_role };
+    }
+  }
+}

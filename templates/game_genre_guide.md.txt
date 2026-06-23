@@ -1,0 +1,29 @@
+# Game Genre Adaptation Guide
+
+The game-ready template covers concepts shared across most multiplayer game
+genres. Adapt as follows:
+
+## MMORPG
+- Keep `players`, `npcs`, `quests`, `guilds`, `inventory`, `leaderboard`.
+- Add `zones` table for static map metadata.
+- Subscribe to `players WHERE zone = 'X'` for interest management.
+
+## MOBA / Arena
+- Strip quests and guilds.
+- Add `match_state` table for in-match objectives/towers.
+- Use `matchmaking` + `create_match` flow as-is.
+
+## Battle Royale
+- Single `matches` table acts as the lobby.
+- Add `loot_drops` table; reuse `inventory` per-match instead of persistent.
+
+## Card / Turn-based
+- Replace `players.x/y` with `players.deck` (array of card ids).
+- Add `turn_state` table.
+
+## Casual / Idle
+- Reuse `players.currency` and the `submit_score` reducer.
+- Add a scheduled `tick_idle` reducer mirroring `world_tick`.
+
+Subscriptions, optimistic updates, and the scheduler work the same in every
+genre — only the schema and reducer set change.

@@ -1,0 +1,14 @@
+const [quest_id, amount] = args;
+
+const quest_key = caller.id + ":" + quest_id;
+const quest = db.get("player_quests", quest_key);
+if (!quest) { result = { error: "Quest not found" }; return; }
+if (quest.status !== "active") { result = { error: "Quest is not active" }; return; }
+
+const progress = quest.progress + amount;
+const completed = progress >= quest.goal;
+const status = completed ? "ready_to_claim" : "active";
+
+db.set("player_quests", quest_key, { ...quest, progress, status });
+
+result = { ok: true, progress, completed };

@@ -1,0 +1,31 @@
+// React hooks for Voltra. Requires React 18+.
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { VoltraClient } from "voltra-client";
+
+const VoltraContext = createContext<VoltraClient | null>(null);
+
+export function VoltraProvider({ client, children }: { client: VoltraClient; children: ReactNode }) {
+  return <VoltraContext.Provider value={client}>{children}</VoltraContext.Provider>;
+}
+
+export function useVoltra(): VoltraClient {
+  const c = useContext(VoltraContext);
+  if (!c) throw new Error("VoltraProvider missing");
+  return c;
+}
+
+export function useVoltraQuery<T = unknown>(query: string): T[] {
+  const client = useVoltra();
+  const [rows, setRows] = useState<T[]>([]);
+  useEffect(() => {
+    let live = true;
+    const unsub = client.subscribe(query, (next: T[]) => { if (live) setRows(next); });
+    return () => { live = false; unsub?.then?.((u: () => void) => u()); };
+  }, [query]);
+  return rows;
+}
+
+export function useVoltraReducer<R = unknown>(name: string) {
+  const client = useVoltra();
+  return (args: unknown[]) => client.call(name, args) as Promise<R>;
+}

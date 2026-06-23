@@ -1,0 +1,23 @@
+// Minimal Voltra client for the basic template.
+// Run `npm install voltra-client` or copy from voltra-client-ts/.
+import { VoltraClient } from "voltra-client";
+
+async function main() {
+  const client = new VoltraClient({
+    url: "ws://127.0.0.1:3000",
+    auth: "dev-key",
+  });
+  await client.connect();
+
+  const reg = await client.call("register", ["alice", "hashed-pw"]);
+  console.log("register:", reg);
+
+  const login = await client.call("login", ["alice", "hashed-pw"]);
+  console.log("login:", login);
+
+  await client.subscribe("users", (rows) => {
+    console.log("users update:", rows);
+  });
+}
+
+main().catch(console.error);

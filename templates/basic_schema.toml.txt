@@ -1,0 +1,50 @@
+# Basic template schema — users, sessions, inventory.
+
+[[tables]]
+name = "users"
+[[tables.columns]]
+name = "username"
+type = "string"
+required = true
+[[tables.columns]]
+name = "password_hash"
+type = "string"
+required = true
+[[tables.columns]]
+name = "role"
+type = "string"
+required = true
+[[tables.columns]]
+name = "created_at"
+type = "i64"
+required = true
+
+[[tables]]
+name = "sessions"
+[[tables.columns]]
+name = "username"
+type = "string"
+required = true
+[[tables.columns]]
+name = "last_seen"
+type = "i64"
+required = true
+[[tables.columns]]
+name = "online"
+type = "bool"
+required = true
+
+[[tables]]
+name = "inventory"
+[[tables.columns]]
+name = "username"
+type = "string"
+required = true
+[[tables.columns]]
+name = "item_id"
+type = "string"
+required = true
+[[tables.columns]]
+name = "qty"
+type = "i64"
+required = true

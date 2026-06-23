@@ -1,0 +1,24 @@
+const [item_id] = args;
+
+const item = db.get("shop_items", item_id);
+if (!item) { result = { error: "Item not found in shop" }; return; }
+if (!item.in_stock) { result = { error: "Item out of stock" }; return; }
+
+const wallet = db.get("wallets", caller.id);
+if (!wallet) { result = { error: "Wallet not found" }; return; }
+
+if (wallet.gold < item.cost_gold) {
+  result = { error: "Not enough gold" }; return;
+}
+
+const now = Date.now();
+const gold_remaining = wallet.gold - item.cost_gold;
+
+db.set("wallets", caller.id, { ...wallet, gold: gold_remaining, updated_at: now });
+
+db.set("transactions", caller.id + "_buy_" + now, {
+  tx_id: caller.id + "_buy_" + now, player_id: caller.id,
+  type: "buy", amount: item.cost_gold, currency: "gold", item_id, ts: now,
+});
+
+result = { ok: true, gold_remaining };

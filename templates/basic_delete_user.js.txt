@@ -1,0 +1,33 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// delete_user — permanently delete a user (admin or self)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [username: string]
+// Return: { ok: true }
+//         { error: "forbidden" | "no_such_user" }
+//
+// Usage:
+//   voltra call delete_user '["alice"]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [username] = args;
+  if (__voltra_caller_id !== username && __voltra_caller_role !== "admin") {
+    return { error: "forbidden" };
+  } else if (!__voltra_get("users", username)) {
+    return { error: "no_such_user" };
+  } else {
+    __voltra_delete("users", username);
+    __voltra_delete("sessions", username);
+    return { ok: true };
+  }
+}

@@ -1,0 +1,1 @@
+Run `voltra start` from the project root to start the native Voltra server.

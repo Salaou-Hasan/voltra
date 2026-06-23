@@ -1,0 +1,8 @@
+// Remove the calling player from the matchmaking queue
+
+const entry = db.get("mm_queue", caller.id);
+if (!entry) { result = { error: "Not in queue" }; return; }
+
+db.delete("mm_queue", caller.id);
+
+result = { ok: true };

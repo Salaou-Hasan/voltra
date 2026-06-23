@@ -1,0 +1,15 @@
+const [room_id] = args;
+
+const room = db.get("rooms", room_id);
+if (!room) { result = { error: "Room not found" }; return; }
+
+// Membership row keyed by player+room so one player can be in many rooms
+const member_key = caller.id + ":" + room_id;
+const existing = db.get("chat_members", member_key);
+if (existing) { result = { ok: true }; return; }
+
+db.set("chat_members", member_key, {
+  member_key, player_id: caller.id, room_id, joined_at: Date.now(),
+});
+
+result = { ok: true };

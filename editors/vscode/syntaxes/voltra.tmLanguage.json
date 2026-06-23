@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Voltra",
+  "scopeName": "source.voltra",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#declaration" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#builtins" },
+    { "include": "#numbers" }
+  ],
+  "repository": {
+    "comments": {
+      "match": "//.*$",
+      "name": "comment.line.double-slash.voltra"
+    },
+    "strings": {
+      "name": "string.quoted.double.voltra",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.voltra" }]
+    },
+    "declaration": {
+      "match": "\\b(reducer|table)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.voltra" },
+        "2": { "name": "entity.name.function.voltra" }
+      }
+    },
+    "keywords": {
+      "match": "\\b(reducer|table|let|if|else|return|for|in|delete|true|false|nil)\\b",
+      "name": "keyword.control.voltra"
+    },
+    "types": {
+      "match": "\\b(str|int|float|bool|json)\\b",
+      "name": "storage.type.voltra"
+    },
+    "builtins": {
+      "match": "\\b(concat|timestamp|counter|set_counter|str|len|now)\\b",
+      "name": "support.function.voltra"
+    },
+    "numbers": {
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b",
+      "name": "constant.numeric.voltra"
+    }
+  }
+}

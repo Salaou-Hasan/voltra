@@ -1,0 +1,14 @@
+const [player_id] = args;
+
+const player = db.get("players", player_id);
+if (!player) { result = { error: "Player not found" }; return; }
+
+// Only the owning client or an admin may despawn
+if (caller.id !== player_id && caller.role !== "admin") {
+  result = { error: "Not authorized" }; return;
+}
+
+db.delete("players", player_id);
+db.delete("sessions", player_id);
+
+result = { ok: true };

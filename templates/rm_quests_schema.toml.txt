@@ -1,0 +1,27 @@
+[[table]]
+name = "player_quests"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "player_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "quest_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "progress"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "status"
+type = "String"
+required = true

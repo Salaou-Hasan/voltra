@@ -1,0 +1,11 @@
+const [player_id, amount] = args;
+
+const player = db.get("players", player_id);
+if (!player) { result = { error: "Player not found" }; return; }
+
+// Cap heal at max_hp
+const hp = Math.min(player.max_hp || 100, (player.hp || 0) + amount);
+
+db.set("players", player_id, { ...player, hp });
+
+result = { ok: true, hp };

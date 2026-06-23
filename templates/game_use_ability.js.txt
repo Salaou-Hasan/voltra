@@ -1,0 +1,32 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// use_ability — consume MP and apply an ability effect
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [player_id: string, ability: string, target_id: string]
+// Return: { ok: true, ability: string, target: string, mp_remaining: number }
+//         { error: "not_found" | "insufficient_mp" }
+//
+// Usage:
+//   voltra call use_ability '["player1", "fireball", "goblin_1"]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [pid, ability, tgt] = args;
+  const p = __voltra_get("players", pid);
+  if (!p) { return { error: "not_found" }; }
+  else if (p.mp < 10) { return { error: "insufficient_mp" }; }
+  else {
+    p.mp -= 10;
+    __voltra_set("players", pid, p);
+    return { ok: true, ability, target: tgt, mp_remaining: p.mp };
+  }
+}

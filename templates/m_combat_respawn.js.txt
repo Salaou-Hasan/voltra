@@ -1,0 +1,14 @@
+const [player_id] = args;
+
+const player = db.get("players", player_id);
+if (!player) { result = { error: "Player not found" }; return; }
+
+// Only the player or an admin may respawn
+if (caller.id !== player_id && caller.role !== "admin") {
+  result = { error: "Not authorized" }; return;
+}
+
+const hp = player.max_hp || 100;
+db.set("players", player_id, { ...player, hp, alive: true, x: 0, y: 0 });
+
+result = { ok: true, hp };

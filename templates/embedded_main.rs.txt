@@ -1,0 +1,23 @@
+// src/main.rs — Voltra embedded server
+//
+// All #[reducer]-annotated functions in this crate are discovered automatically
+// at startup via the `inventory` crate. No manual registration needed.
+//
+// Start the server:
+//   cargo run -- start
+//   cargo run --release -- start
+//
+// Client usage (same WebSocket API as always):
+//   voltra call spawn '["player1", 0, 0, "warrior"]'
+//   voltra watch "players WHERE zone = 'zone_0_0'"
+
+mod reducers;
+
+fn main() {
+    env_logger::init();
+    let config = voltra::config::Config::from_env();
+    tokio::runtime::Runtime::new()
+        .expect("Tokio runtime")
+        .block_on(voltra::run_server(config))
+        .expect("Voltra server exited with error");
+}

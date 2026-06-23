@@ -1,0 +1,35 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// refresh — scheduled matchmaking pass; pairs the first two queued players
+// ───────────────────────────────────────────────────────────────────────
+// Args:   []  (called automatically by the scheduler every 5 s)
+// Return: { ok: true, match_id: string }  — when a pair is found
+//         { ok: true, paired: 0 }         — when queue has < 2 players
+//
+// Usage:
+//   voltra call refresh '[]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const queued = __voltra_get_all("matchmaking") || [];
+  if (queued.length >= 2) {
+    const a = queued[0].player_id;
+    const b = queued[1].player_id;
+    const match_id = "m_" + a + "_" + b;
+    __voltra_delete("matchmaking", a);
+    __voltra_delete("matchmaking", b);
+    __voltra_set("matches", match_id, { match_id, players: [a, b], status: "starting", created_at: 0 });
+    return { ok: true, match_id };
+  } else {
+    return { ok: true, paired: 0 };
+  }
+}

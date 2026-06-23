@@ -1,0 +1,64 @@
+table players {
+    hp: int = 100,
+    alive: bool = true,
+    x: float = 0.0,
+    y: float = 0.0,
+    kills: int = 0,
+    name: str = "",
+}
+
+reducer spawn(id: str, name: str, x: float, y: float) {
+    players[id] = { hp: 100, alive: true, x: x, y: y, kills: 0, name: name }
+}
+
+reducer move_player(id: str, x: float, y: float) {
+    let p = players[id] else { error("Player not found") }
+    players[id].x = x
+    players[id].y = y
+    return { ok: true }
+}
+
+reducer take_damage(id: str, amount: int) {
+    let p = players[id] else { error("Player not found") }
+    let hp = p.hp
+    let new_hp = max(0, hp - amount)
+    players[id].hp = new_hp
+    if new_hp <= 0 {
+        players[id].alive = false
+    }
+    return { hp: new_hp, alive: new_hp > 0 }
+}
+
+reducer heal(id: str, amount: int) {
+    players[id].hp += amount
+}
+
+reducer add_kill(id: str) {
+    players[id].kills += 1
+    set_counter("total_kills", counter("total_kills") + 1)
+}
+
+reducer cleanup_dead() {
+    for id, p in players {
+        if p.alive == false {
+            delete players[id]
+        }
+    }
+}
+
+reducer get_stats() {
+    let k = counter("total_kills")
+    let t = timestamp()
+    return { total_kills: k, server_time: t }
+}
+
+reducer roll_loot(id: str) {
+    let roll = rand_int(1, 100)
+    if roll >= 90 {
+        return { rarity: "legendary", roll: roll }
+    }
+    if roll >= 60 {
+        return { rarity: "rare", roll: roll }
+    }
+    return { rarity: "common", roll: roll }
+}

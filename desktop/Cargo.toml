@@ -1,0 +1,22 @@
+[package]
+name = "voltra-console"
+version = "0.1.0"
+edition = "2021"
+description = "Voltra Console — native desktop window around the admin dashboard (system webview, low memory)."
+
+# Standalone workspace so the server build never pulls GUI deps.
+[workspace]
+
+[dependencies]
+wry = "0.46"
+tao = "0.30"
+
+[[bin]]
+name = "voltra-console"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

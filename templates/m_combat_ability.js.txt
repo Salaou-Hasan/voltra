@@ -1,0 +1,29 @@
+const [ability_name, target_id] = args;
+
+const caster = db.get("players", caller.id);
+if (!caster) { result = { error: "Caster not found" }; return; }
+
+let effect;
+
+if (ability_name === "heal_self") {
+  const hp = Math.min(caster.max_hp || 100, (caster.hp || 0) + 30);
+  db.set("players", caller.id, { ...caster, hp });
+  effect = { type: "heal_self", hp };
+
+} else if (ability_name === "shield") {
+  db.set("players", caller.id, { ...caster, shielded: true });
+  effect = { type: "shield", shielded: true };
+
+} else if (ability_name === "stun") {
+  const target = db.get("players", target_id) || db.get("npcs", target_id);
+  if (!target) { result = { error: "Target not found" }; return; }
+  const table = target.npc_id ? "npcs" : "players";
+  const key   = target.npc_id ? target.npc_id : target_id;
+  db.set(table, key, { ...target, stunned: true, stun_until: Date.now() + 3000 });
+  effect = { type: "stun", target: target_id, duration_ms: 3000 };
+
+} else {
+  result = { error: "Unknown ability: " + ability_name }; return;
+}
+
+result = { ok: true, effect };

@@ -1,0 +1,30 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// create_thread — start a reply thread on an existing message
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [thread_id: string, parent_message_id: string, user_id: string]
+// Return: { ok: true, thread_id: string }
+//         { error: "no_such_message" }
+//
+// Usage:
+//   voltra call create_thread '["t_001", "m_001", "alice"]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [tid, parent, uid] = args;
+  const m = __voltra_get("messages", parent);
+  if (!m) { return { error: "no_such_message" }; }
+  else {
+    __voltra_set("threads", tid, { thread_id: tid, parent_message_id: parent, created_by: uid, created_at: 0 });
+    return { ok: true, thread_id: tid };
+  }
+}

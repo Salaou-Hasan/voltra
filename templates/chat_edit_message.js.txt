@@ -1,0 +1,32 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// edit_message — edit a message you authored
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [message_id: string, new_text: string]
+// Return: { ok: true }
+//         { error: "no_such_message" | "forbidden" }
+//
+// Usage:
+//   voltra call edit_message '["m_001", "Updated text"]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [mid, text] = args;
+  const m = __voltra_get("messages", mid);
+  if (!m) { return { error: "no_such_message" }; }
+  else if (m.user_id !== __voltra_caller_id) { return { error: "forbidden" }; }
+  else {
+    m.text = text; m.edited = true;
+    __voltra_set("messages", mid, m);
+    return { ok: true };
+  }
+}

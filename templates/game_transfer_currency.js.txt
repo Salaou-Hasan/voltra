@@ -1,0 +1,34 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// transfer_currency — send coins from one player to another
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [from_id: string, to_id: string, amount: number]
+// Return: { ok: true, from_balance: number, to_balance: number }
+//         { error: "missing_player" | "insufficient_funds" }
+//
+// Usage:
+//   voltra call transfer_currency '["player1", "player2", 100]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [from, to, amount] = args;
+  const a = __voltra_get("players", from);
+  const b = __voltra_get("players", to);
+  if (!a || !b) { return { error: "missing_player" }; }
+  else if (a.currency < amount) { return { error: "insufficient_funds" }; }
+  else {
+    a.currency -= amount; b.currency += amount;
+    __voltra_set("players", from, a);
+    __voltra_set("players", to, b);
+    return { ok: true, from_balance: a.currency, to_balance: b.currency };
+  }
+}

@@ -1,0 +1,35 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// update_profile — change profile fields for the caller (or admin)
+// ───────────────────────────────────────────────────────────────────────
+// Args:   [username: string, profile_patch: object]
+// Return: { ok: true, profile: object }
+//         { error: "forbidden" | "no_such_user" }
+//
+// Usage:
+//   voltra call update_profile '["alice", {"avatar": "elf.png"}]'
+//
+// Voltra reducer API:
+//   __voltra_get(table, key)      → object | null
+//   __voltra_set(table, key, val) → void
+//   __voltra_delete(table, key)   → void
+//   __voltra_get_all(table)       → object[]
+//   __voltra_caller_id            → string (client identity)
+//   __voltra_caller_role          → string (e.g. "admin")
+//
+// Performance: runs on Boa JS engine (no JIT).
+//   Run `voltra build` to compile to WASM for 10–50× more throughput.
+// ═══════════════════════════════════════════════════════════════════════
+function reducer(args) {
+  const [username, patch] = args;
+  if (__voltra_caller_id !== username && __voltra_caller_role !== "admin") {
+    return { error: "forbidden" };
+  } else {
+    const user = __voltra_get("users", username);
+    if (!user) { return { error: "no_such_user" }; }
+    else {
+      user.profile = Object.assign(user.profile || {}, patch || {});
+      __voltra_set("users", username, user);
+      return { ok: true, profile: user.profile };
+    }
+  }
+}

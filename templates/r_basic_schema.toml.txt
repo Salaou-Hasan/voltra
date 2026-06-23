@@ -1,0 +1,79 @@
+[[table]]
+name = "players"
+
+[[table.columns]]
+name = "player_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "lobby"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "region"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "x"
+type = "f64"
+required = true
+
+[[table.columns]]
+name = "y"
+type = "f64"
+required = true
+
+[[table.columns]]
+name = "hp"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "max_hp"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "class"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "alive"
+type = "bool"
+required = false
+default = "true"
+
+[[table.columns]]
+name = "gold"
+type = "i64"
+required = false
+default = "0"
+
+[[table.columns]]
+name = "xp"
+type = "i64"
+required = false
+default = "0"
+
+
+[[table]]
+name = "sessions"
+
+[[table.columns]]
+name = "player_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "connected_at"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "last_seen"
+type = "i64"
+required = true
