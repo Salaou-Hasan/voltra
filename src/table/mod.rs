@@ -288,6 +288,141 @@ impl FieldIndex {
     }
 }
 
+// ── Sorted index (range / top-N) ────────────────────────────────────────────────
+
+/// A field value projected into a total order across JSON types.
+///
+/// Ordering: `Null < Bool < Number < String`. Numbers compare numerically
+/// (`f64::total_cmp`, so `20 < 100`, unlike the lexicographic hash-index keys);
+/// strings lexicographically. Arrays/objects are not orderable and are not
+/// indexed (the projector returns `None`).
+#[derive(Clone, Debug)]
+enum OrderedField {
+    Null,
+    Bool(bool),
+    Num(f64),
+    Str(String),
+}
+
+impl OrderedField {
+    fn rank(&self) -> u8 {
+        match self {
+            OrderedField::Null => 0,
+            OrderedField::Bool(_) => 1,
+            OrderedField::Num(_) => 2,
+            OrderedField::Str(_) => 3,
+        }
+    }
+
+    /// Project a JSON value into the total order, or `None` if unorderable.
+    fn from_value(v: &Value) -> Option<OrderedField> {
+        match v {
+            Value::Null => Some(OrderedField::Null),
+            Value::Bool(b) => Some(OrderedField::Bool(*b)),
+            Value::Number(n) => n.as_f64().map(OrderedField::Num),
+            Value::String(s) => Some(OrderedField::Str(s.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq for OrderedField {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+impl Eq for OrderedField {}
+impl PartialOrd for OrderedField {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for OrderedField {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use OrderedField::*;
+        match (self, other) {
+            (Bool(a), Bool(b)) => a.cmp(b),
+            (Num(a), Num(b)) => a.total_cmp(b),
+            (Str(a), Str(b)) => a.cmp(b),
+            _ => self.rank().cmp(&other.rank()),
+        }
+    }
+}
+
+/// A sorted secondary index: `ordered_field_value → {row_keys}`.
+///
+/// Backs `ORDER BY field [ASC|DESC] LIMIT n` (leaderboards) in O(log n + limit)
+/// instead of an O(n log n) full-scan-and-sort. Maintained incrementally on the
+/// write path.
+///
+/// ponytail: one `RwLock<BTreeMap>` per sorted field — writes to a sorted-indexed
+/// field serialize on this lock. Fine well below the engine's write ceiling and
+/// for typical leaderboard write rates; if a single hot field's write rate ever
+/// dominates, swap the inner map for a lock-free `crossbeam_skiplist::SkipMap`.
+struct SortedIndex {
+    tree: parking_lot::RwLock<
+        std::collections::BTreeMap<OrderedField, std::collections::BTreeSet<String>>,
+    >,
+}
+
+impl SortedIndex {
+    fn new() -> Self {
+        SortedIndex {
+            tree: parking_lot::RwLock::new(std::collections::BTreeMap::new()),
+        }
+    }
+
+    fn insert(&self, value: &Value, row_key: &str) {
+        if let Some(ord) = OrderedField::from_value(value) {
+            self.tree
+                .write()
+                .entry(ord)
+                .or_default()
+                .insert(row_key.to_string());
+        }
+    }
+
+    fn remove(&self, value: &Value, row_key: &str) {
+        if let Some(ord) = OrderedField::from_value(value) {
+            let mut t = self.tree.write();
+            if let Some(set) = t.get_mut(&ord) {
+                set.remove(row_key);
+                if set.is_empty() {
+                    t.remove(&ord);
+                }
+            }
+        }
+    }
+
+    /// Row keys of the top `limit` rows by indexed value. `desc = true` →
+    /// highest first (leaderboard); `false` → lowest first. Ties broken by row
+    /// key order for determinism.
+    fn top_n(&self, limit: usize, desc: bool) -> Vec<String> {
+        let t = self.tree.read();
+        let mut out = Vec::with_capacity(limit.min(1024));
+        if desc {
+            for (_, keys) in t.iter().rev() {
+                for k in keys {
+                    out.push(k.clone());
+                    if out.len() == limit {
+                        return out;
+                    }
+                }
+            }
+        } else {
+            for (_, keys) in t.iter() {
+                for k in keys {
+                    out.push(k.clone());
+                    if out.len() == limit {
+                        return out;
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 // ── Per-table shard ───────────────────────────────────────────────────────────
 
 /// Number of fixed lock slots per table.  Two distinct keys may share a slot
@@ -309,8 +444,10 @@ struct Table {
     rows: DashMap<String, StoredRow>,
     /// Fixed-size mutex pool — no per-row allocation.
     row_locks: Box<[Mutex<()>]>,
-    /// Secondary field indexes: indexed_field_name → FieldIndex.
+    /// Secondary field indexes (equality): indexed_field_name → FieldIndex.
     field_indexes: DashMap<String, Arc<FieldIndex>>,
+    /// Sorted field indexes (range / top-N): field_name → SortedIndex.
+    sorted_indexes: DashMap<String, Arc<SortedIndex>>,
 }
 
 impl Table {
@@ -324,6 +461,7 @@ impl Table {
             rows: DashMap::with_capacity_and_shard_amount(256, shards),
             row_locks,
             field_indexes: DashMap::new(),
+            sorted_indexes: DashMap::new(),
         }
     }
 }
@@ -713,6 +851,20 @@ impl TableStore {
             }
         }
 
+        // ── Maintain sorted indexes (range / top-N) ────────────────────────────
+        for sidx_entry in table.sorted_indexes.iter() {
+            let field = sidx_entry.key();
+            let sidx = sidx_entry.value().clone();
+            if let Some(old_val) = &old_row_value {
+                if let Some(old_fv) = old_val.get(field) {
+                    sidx.remove(old_fv, key);
+                }
+            }
+            if let Some(new_fv) = final_value.get(field) {
+                sidx.insert(new_fv, key);
+            }
+        }
+
         Ok(RowDelta {
             table_name: table_name.to_string(),
             operation,
@@ -741,6 +893,13 @@ impl TableStore {
                         let idx = idx_entry.value().clone();
                         if let Some(fv) = old_val.get(field).and_then(value_to_index_key) {
                             idx.remove(&fv, key);
+                        }
+                    }
+                    for sidx_entry in table.sorted_indexes.iter() {
+                        let field = sidx_entry.key();
+                        let sidx = sidx_entry.value().clone();
+                        if let Some(fv) = old_val.get(field) {
+                            sidx.remove(fv, key);
                         }
                     }
                 }
@@ -1232,6 +1391,50 @@ impl TableStore {
 
         table.field_indexes.insert(field.to_string(), idx);
         Ok(())
+    }
+
+    /// Create a sorted index on `field` (for `ORDER BY field LIMIT n` / top-N).
+    /// Idempotent; back-fills existing rows. Once created it is maintained
+    /// incrementally on every write.
+    pub fn create_sorted_index(&self, table_name: &str, field: &str) -> Result<()> {
+        let table = self.get_or_create_table(table_name);
+        if table.sorted_indexes.contains_key(field) {
+            return Ok(());
+        }
+        let sidx = Arc::new(SortedIndex::new());
+        for entry in table.rows.iter() {
+            let row_key = entry.key();
+            if let Ok(value) = decode_row_bytes(&entry.value().data) {
+                if let Some(fv) = value.get(field) {
+                    sidx.insert(fv, row_key);
+                }
+            }
+        }
+        table.sorted_indexes.insert(field.to_string(), sidx);
+        Ok(())
+    }
+
+    /// Row keys of the top `limit` rows ordered by `field`
+    /// (`desc = true` → highest first). O(log n + limit) via the sorted index;
+    /// the index is materialized on first call, then maintained on writes — so a
+    /// leaderboard refreshed each tick never scans or sorts the table.
+    pub fn top_n(&self, table_name: &str, field: &str, limit: usize, desc: bool) -> Vec<String> {
+        if let Some((lid, logical)) = parse_lobby_key(table_name) {
+            return self
+                .get_lobby_store(&lid)
+                .map_or(vec![], |s| s.top_n(&logical, field, limit, desc));
+        }
+        if self.tables.get(table_name).is_none() {
+            return vec![];
+        }
+        let _ = self.create_sorted_index(table_name, field);
+        match self.tables.get(table_name) {
+            Some(table) => match table.sorted_indexes.get(field) {
+                Some(sidx) => sidx.top_n(limit, desc),
+                None => vec![],
+            },
+            None => vec![],
+        }
     }
 
     /// Drop the secondary index on `field` for `table_name`.
@@ -2023,6 +2226,49 @@ mod tests {
             .expect("index should exist");
         assert_eq!(inactive.len(), 1);
         assert!(inactive.contains(&"p2".to_string()));
+    }
+
+    #[test]
+    fn test_sorted_index_top_n_numeric_order_and_maintenance() {
+        let ts = Arc::new(TableStore::new());
+        // Scores chosen so a lexicographic sort would be WRONG (100 < 20 as strings).
+        for (k, score) in [("a", 20), ("b", 100), ("c", 5), ("d", 100), ("e", 3)] {
+            ts.set_row(
+                "players".to_string(),
+                k.to_string(),
+                serde_json::json!({"score": score}),
+            )
+            .unwrap();
+        }
+        ts.create_sorted_index("players", "score").unwrap();
+
+        // Top 3 by score DESC: the two 100s (b,d tie → key order) then 20 (a).
+        let top = ts.top_n("players", "score", 3, true);
+        assert_eq!(top, vec!["b".to_string(), "d".to_string(), "a".to_string()]);
+
+        // ASC: lowest first — 3 (e), 5 (c), 20 (a).
+        let bottom = ts.top_n("players", "score", 3, false);
+        assert_eq!(
+            bottom,
+            vec!["e".to_string(), "c".to_string(), "a".to_string()]
+        );
+
+        // Update moves a row in the order (e: 3 → 9999, now the leader).
+        ts.set_row(
+            "players".to_string(),
+            "e".to_string(),
+            serde_json::json!({"score": 9999}),
+        )
+        .unwrap();
+        assert_eq!(ts.top_n("players", "score", 1, true), vec!["e".to_string()]);
+
+        // Delete removes a row from the leaderboard.
+        ts.delete_row("players", "e").unwrap();
+        let top1 = ts.top_n("players", "score", 1, true);
+        assert!(top1 == vec!["b".to_string()] || top1 == vec!["d".to_string()]);
+        assert!(!ts
+            .top_n("players", "score", 10, true)
+            .contains(&"e".to_string()));
     }
 
     #[test]

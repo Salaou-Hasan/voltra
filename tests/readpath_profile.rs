@@ -83,6 +83,13 @@ fn profile_read_path() {
         std::hint::black_box(&keys);
     });
 
+    // 6. Top-10 leaderboard via the sorted index (ORDER BY score DESC LIMIT 10).
+    store.create_sorted_index("players", "score").unwrap();
+    let topn = avg_us(|| {
+        let keys = store.top_n("players", "score", 10, true);
+        std::hint::black_box(&keys);
+    });
+
     let per_row_scan = scan / N as f64;
 
     println!("\n╔═══════════════════════════════════════════════════════════╗");
@@ -94,6 +101,7 @@ fn profile_read_path() {
     println!("║  scan_column (1 field × 1000)       {scan_col:>10.2} µs       ║");
     println!("║  count_by_field (zone)              {count:>10.2} µs       ║");
     println!("║  index_lookup (zone=z1)             {idx:>10.2} µs       ║");
+    println!("║  top_n score DESC LIMIT 10          {topn:>10.2} µs       ║");
     println!("╠═══════════════════════════════════════════════════════════╣");
     println!("║  decode share of scan: per-row {per_row_scan:.3} µs ≈ point {point:.2} µs   ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
