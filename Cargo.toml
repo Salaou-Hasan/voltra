@@ -32,6 +32,7 @@ manual_checked_ops = "allow"           # explicit `if d > 0` guards read clearer
 unnecessary_unwrap = "allow"           # guarded by an earlier is_some in the same condition
 doc_lazy_continuation = "allow"
 missing_const_for_thread_local = "allow"  # false-positive: HashMap::new() is not const
+new_without_default = "allow"          # game-runtime types expose new(); Default is not always meaningful
 
 [dependencies]
 socket2 = { version = "0.5", features = ["all"] }

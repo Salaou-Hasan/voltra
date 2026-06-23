@@ -4,6 +4,7 @@ pub mod auth_service;
 pub mod backup;
 pub mod cli;
 pub mod cluster;
+pub mod codegen;
 pub mod compression;
 pub mod config;
 pub mod dsl;

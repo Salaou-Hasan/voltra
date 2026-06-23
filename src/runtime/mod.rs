@@ -4,6 +4,12 @@
 //! lobbies, ECS, AOI, delta fanout, and gameplay modules are explicit concepts
 //! instead of being hidden inside one large "game-ready" template.
 
+pub mod aoi;
+pub mod aoi_broadcast;
+pub mod ecs;
+pub mod lobby_runtime;
+pub mod tick;
+
 use std::collections::{BTreeSet, HashMap};
 
 /// Where a module's state belongs on the latency spectrum.
