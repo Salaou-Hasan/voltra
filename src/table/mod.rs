@@ -277,6 +277,15 @@ impl FieldIndex {
             Some(bucket) => bucket.iter().map(|e| e.key().clone()).collect(),
         }
     }
+
+    /// Materialized `GROUP BY field → COUNT(*)`: row count per indexed value.
+    /// O(distinct values), zero row decode — the index *is* the aggregate.
+    fn counts(&self) -> std::collections::HashMap<String, usize> {
+        self.buckets
+            .iter()
+            .map(|e| (e.key().clone(), e.value().len()))
+            .collect()
+    }
 }
 
 // ── Per-table shard ───────────────────────────────────────────────────────────
@@ -1407,26 +1416,22 @@ impl TableStore {
                 });
         }
         use std::collections::HashMap;
-        let table = match self.tables.get(table_name) {
-            Some(t) => t.clone(),
-            None => return HashMap::new(),
-        };
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        for entry in table.rows.iter() {
-            let row = entry.value();
-            if !self.row_matches_shard(row.shard_id) {
-                continue;
-            }
-            if let Ok(val) = decode_row_bytes(&row.data) {
-                if let Some(obj) = val.as_object() {
-                    if let Some(v) = obj.get(field) {
-                        let key = value_to_index_key(v).unwrap_or_else(|| "null".to_string());
-                        *counts.entry(key).or_insert(0) += 1;
-                    }
-                }
+        // Nonexistent table → empty (don't materialize a phantom table on a read).
+        if self.tables.get(table_name).is_none() {
+            return HashMap::new();
+        }
+        // O(1)-amortized aggregate: materialize the field index once (one-time
+        // O(n) backfill), then read row counts straight from its buckets with
+        // ZERO row decode. The index is maintained incrementally on every
+        // write, so subsequent calls — e.g. a leaderboard refreshed each tick —
+        // are O(distinct values), not O(n) scan + decode.
+        let _ = self.create_index(table_name, field);
+        if let Some(table) = self.tables.get(table_name) {
+            if let Some(idx) = table.field_indexes.get(field) {
+                return idx.counts();
             }
         }
-        counts
+        HashMap::new()
     }
 
     /// Return all distinct values of `field` across all rows in `table_name`,
