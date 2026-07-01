@@ -802,6 +802,7 @@ pub fn object(db: &mut dyn Db, ns: u32, args: &[Bytes]) -> Resp {
             Datum::Set(_) => "hashtable",
             Datum::ZSet(_) => "skiplist",
             Datum::Row(_) => "raw",
+            Datum::Stream(_) => "stream",
         }),
         "REFCOUNT" => Resp::Int(1),
         "IDLETIME" => Resp::Int(0),
