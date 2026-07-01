@@ -231,7 +231,44 @@ pub struct PendingCall {
     /// to a dedicated worker thread for this lobby instead of the global pool.
     /// Parsed from the first argument's key prefix (e.g. `"l42_p123"` → `"42"`).
     pub lobby_hint: Option<String>,
+    /// Wall-clock instant this call was constructed (before it enters the
+    /// reducer queue). Worker loops use this to measure real queue-wait time
+    /// in the `queue_wait_ms` tracing span field — otherwise "time spent
+    /// queued" would be indistinguishable from "time spent executing" once
+    /// `rx.recv()` returns. Defaults via `Instant::now()` at construction;
+    /// not part of the wire protocol (this struct is never serialized).
+    pub enqueued_at: std::time::Instant,
     pub response_tx: mpsc::UnboundedSender<ReducerResponse>,
+    /// When `Some`, this `PendingCall` represents an entire client-side
+    /// transaction (see `ClientMessage::BeginTransaction`) rather than a
+    /// single reducer call. `reducer_name`/`args`/`call_id` above are unused
+    /// in this case (`call_id` is the transaction's own tx_id for logging).
+    /// Every `(reducer_name, args)` pair is executed in order against ONE
+    /// `ReducerContext`, then committed atomically in a single
+    /// `apply_delta_batch_versioned()` call — see `TransactionResult` for the
+    /// exact isolation level this provides.
+    pub tx_batch: Option<Vec<(String, Vec<u8>)>>,
+    /// Result channel for a transaction batch (`tx_batch.is_some()`).
+    /// Ignored for ordinary single-call `PendingCall`s.
+    pub tx_response_tx: Option<mpsc::UnboundedSender<TransactionOutcome>>,
+}
+
+/// Outcome of executing a buffered client transaction. Sent back to the
+/// WebSocket handler task, which encodes it as
+/// `ServerMessage::TransactionResult` and writes it to the client.
+pub struct TransactionOutcome {
+    pub tx_id: u64,
+    pub success: bool,
+    pub responses: Vec<ReducerResponse>,
+    pub error: Option<String>,
+}
+
+/// Per-connection state for a transaction between `BeginTransaction` and
+/// `CommitTransaction`/`RollbackTransaction`. Reducer calls received while
+/// this is `Some` are staged in `calls` rather than dispatched immediately.
+struct OpenTransaction {
+    tx_id: u64,
+    calls: Vec<(String, Vec<u8>)>,
 }
 
 struct ConnectionGuard(Arc<AtomicUsize>);
@@ -698,6 +735,12 @@ where
 
     // ── Main read loop ────────────────────────────────────────────────────────
     let mut send_close_on_exit = false;
+    // Client-side transaction buffer (see `ClientMessage::BeginTransaction`).
+    // `Some` while a transaction is open on this connection; reducer calls are
+    // staged here instead of dispatched individually. Connections process one
+    // WebSocket frame at a time (this loop), so there's no risk of a second
+    // task racing to append to the same buffer.
+    let mut open_tx: Option<OpenTransaction> = None;
     loop {
         let msg_opt = tokio::select! {
             msg = ws_rx.next() => msg,
@@ -772,6 +815,20 @@ where
 
                         let call_id = call.call_id;
 
+                        // ── Transaction buffering ─────────────────────────────
+                        // While a transaction is open on this connection (see
+                        // `ClientMessage::BeginTransaction` below), reducer
+                        // calls are NOT dispatched — they're staged in
+                        // `open_tx` and executed as one atomic batch when
+                        // `CommitTransaction` arrives. This also means the
+                        // inline fast-path and lobby routing are bypassed for
+                        // buffered calls; they always execute through the
+                        // full worker-loop transaction path for correctness.
+                        if let Some(tx) = open_tx.as_mut() {
+                            tx.calls.push((call.reducer_name, call.args));
+                            continue;
+                        }
+
                         // ── Inline fast path ─────────────────────────────────────
                         // Reducers in the inline registry are pure-computation with
                         // no DB writes.  Execute them directly in this async task —
@@ -795,6 +852,9 @@ where
                             caller_role: caller_role.clone(),
                             tenant_id: tenant_id.clone(),
                             lobby_hint,
+                            enqueued_at: std::time::Instant::now(),
+                            tx_batch: None,
+                            tx_response_tx: None,
                             response_tx: response_tx.clone(),
                         };
                         let dispatched = match &lobby_router {
@@ -991,6 +1051,159 @@ where
                         log::debug!("TTL cancelled: {}.{}", table_name, row_key);
                     }
 
+                    // ── BeginTransaction ──────────────────────────────
+                    // Same-node only: starts buffering subsequent ReducerCall
+                    // frames on THIS connection instead of dispatching them.
+                    // A second BeginTransaction while one is already open
+                    // replaces it (the previous buffered calls are dropped —
+                    // no partial/nested transactions).
+                    Ok(ClientMessage::BeginTransaction { tx_id }) => {
+                        if open_tx.is_some() {
+                            log::warn!(
+                                "caller_id='{}' opened tx_id={} while a transaction was already open; discarding the old one",
+                                caller_id, tx_id
+                            );
+                        }
+                        open_tx = Some(OpenTransaction {
+                            tx_id,
+                            calls: Vec::new(),
+                        });
+                        let ack = ServerMessage::TransactionBegan { tx_id };
+                        if let Ok(encoded) = protocol::encode_server_message(&ack) {
+                            if let Err(mpsc::error::TrySendError::Full(_)) =
+                                write_tx.try_send(Message::Binary(encoded))
+                            {
+                                metrics.slow_consumer_evictions_total.inc();
+                                log::warn!("Client send buffer full, disconnecting slow client");
+                                break;
+                            }
+                        }
+                    }
+
+                    // ── RollbackTransaction ───────────────────────────
+                    // Discards every buffered reducer call; nothing was ever
+                    // executed or committed for this transaction.
+                    Ok(ClientMessage::RollbackTransaction { tx_id }) => {
+                        let matched = open_tx.as_ref().map(|t| t.tx_id) == Some(tx_id);
+                        open_tx = None;
+                        let result = ServerMessage::TransactionResult {
+                            tx_id,
+                            success: false,
+                            responses: vec![],
+                            error: Some(if matched {
+                                "rolled back".to_string()
+                            } else {
+                                "no open transaction with that tx_id".to_string()
+                            }),
+                        };
+                        if let Ok(encoded) = protocol::encode_server_message(&result) {
+                            if let Err(mpsc::error::TrySendError::Full(_)) =
+                                write_tx.try_send(Message::Binary(encoded))
+                            {
+                                metrics.slow_consumer_evictions_total.inc();
+                                log::warn!("Client send buffer full, disconnecting slow client");
+                                break;
+                            }
+                        }
+                    }
+
+                    // ── CommitTransaction ─────────────────────────────
+                    // Sends every buffered reducer call as one `PendingCall`
+                    // with `tx_batch: Some(...)` to whichever worker owns
+                    // this connection's queue (global pool or lobby worker —
+                    // same routing as an ordinary ReducerCall, keyed off the
+                    // first buffered call's args so the whole transaction
+                    // lands on one worker/lobby). The worker executes every
+                    // call against a single `ReducerContext` and commits once
+                    // atomically. See `ServerMessage::TransactionResult` for
+                    // the documented isolation level.
+                    Ok(ClientMessage::CommitTransaction { tx_id }) => {
+                        let tx = match open_tx.take() {
+                            Some(t) if t.tx_id == tx_id => Some(t),
+                            Some(other) => {
+                                // Mismatched tx_id — put the buffered calls back;
+                                // this commit request is likely stale/misordered.
+                                open_tx = Some(other);
+                                None
+                            }
+                            None => None,
+                        };
+
+                        let result = match tx {
+                            None => ServerMessage::TransactionResult {
+                                tx_id,
+                                success: false,
+                                responses: vec![],
+                                error: Some("no open transaction with that tx_id".to_string()),
+                            },
+                            Some(tx) if tx.calls.is_empty() => ServerMessage::TransactionResult {
+                                tx_id,
+                                success: true,
+                                responses: vec![],
+                                error: None,
+                            },
+                            Some(tx) => {
+                                let lobby_hint = extract_lobby_hint(
+                                    tx.calls.first().map(|(_, a)| a.as_slice()).unwrap_or(&[]),
+                                );
+                                let (tx_resp_tx, mut tx_resp_rx) =
+                                    mpsc::unbounded_channel::<TransactionOutcome>();
+                                let pending = PendingCall {
+                                    call_id: tx_id,
+                                    reducer_name: String::new(),
+                                    args: Vec::new(),
+                                    caller_id: caller_id.clone(),
+                                    caller_role: caller_role.clone(),
+                                    tenant_id: tenant_id.clone(),
+                                    lobby_hint,
+                                    enqueued_at: std::time::Instant::now(),
+                                    tx_batch: Some(tx.calls),
+                                    tx_response_tx: Some(tx_resp_tx),
+                                    response_tx: response_tx.clone(),
+                                };
+                                let dispatched = match &lobby_router {
+                                    Some(lr) => lr.try_dispatch(pending),
+                                    None => reducer_tx.try_send(pending).is_ok(),
+                                };
+                                if !dispatched {
+                                    ServerMessage::TransactionResult {
+                                        tx_id,
+                                        success: false,
+                                        responses: vec![],
+                                        error: Some("server overloaded, retry later".to_string()),
+                                    }
+                                } else {
+                                    match tx_resp_rx.recv().await {
+                                        Some(outcome) => ServerMessage::TransactionResult {
+                                            tx_id: outcome.tx_id,
+                                            success: outcome.success,
+                                            responses: outcome.responses,
+                                            error: outcome.error,
+                                        },
+                                        None => ServerMessage::TransactionResult {
+                                            tx_id,
+                                            success: false,
+                                            responses: vec![],
+                                            error: Some(
+                                                "worker dropped transaction result".to_string(),
+                                            ),
+                                        },
+                                    }
+                                }
+                            }
+                        };
+
+                        if let Ok(encoded) = protocol::encode_server_message(&result) {
+                            if let Err(mpsc::error::TrySendError::Full(_)) =
+                                write_tx.try_send(Message::Binary(encoded))
+                            {
+                                metrics.slow_consumer_evictions_total.inc();
+                                log::warn!("Client send buffer full, disconnecting slow client");
+                                break;
+                            }
+                        }
+                    }
+
                     Err(_) => {
                         // Fallback: try old ReducerCall-only decode path
                         match protocol::decode_reducer_call(&data) {
@@ -1052,6 +1265,9 @@ where
                                     caller_role: caller_role.clone(),
                                     tenant_id: tenant_id.clone(),
                                     lobby_hint,
+                                    enqueued_at: std::time::Instant::now(),
+                                    tx_batch: None,
+                                    tx_response_tx: None,
                                     response_tx: response_tx.clone(),
                                 };
                                 let dispatched = match &lobby_router {
@@ -1237,6 +1453,9 @@ mod tests {
             caller_role: String::new(),
             tenant_id: None,
             lobby_hint: None,
+            enqueued_at: std::time::Instant::now(),
+            tx_batch: None,
+            tx_response_tx: None,
             response_tx: _tx,
         };
         assert_eq!(call.call_id, 1);

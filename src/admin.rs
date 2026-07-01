@@ -322,6 +322,9 @@ pub async fn handle_metrics_request(
                 caller_role: "admin".to_string(),
                 tenant_id: None,
                 lobby_hint: None,
+                enqueued_at: std::time::Instant::now(),
+                tx_batch: None,
+                tx_response_tx: None,
                 response_tx: resp_tx,
             };
             if queue_probe.send(call).await.is_err() {
@@ -735,6 +738,9 @@ pub async fn handle_metrics_request(
                 caller_role: pr.caller_role,
                 tenant_id: None,
                 lobby_hint: None,
+                enqueued_at: std::time::Instant::now(),
+                tx_batch: None,
+                tx_response_tx: None,
                 response_tx: resp_tx,
             };
             if queue_probe.send(call).await.is_err() {

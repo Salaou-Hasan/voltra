@@ -35,9 +35,13 @@ use voltra::admin::{start_metrics_server, AdminState};
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub(crate) async fn run_server(config: Config) -> Result<()> {
-    let mut logger = env_logger::Builder::from_default_env();
-    logger.filter_level(config.log_level.parse().unwrap_or(log::LevelFilter::Info));
-    let _ = logger.try_init();
+    // Installs the `tracing` subscriber (always-on local `fmt` layer, plus an
+    // opt-in OTLP exporter when built with `--features otel` and
+    // VOLTRA_OTEL_ENDPOINT is set). `tracing_log::LogTracer` bridges the
+    // existing `log::*` call sites into the same pipeline, so this replaces
+    // the old bare `env_logger` init rather than running alongside it —
+    // both would otherwise race to install the global `log` logger.
+    let _tracing_guard = voltra::tracing_setup::init(&config);
 
     log::info!("Starting Voltra Server");
 
@@ -656,9 +660,150 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                     _ = rx_shutdown_w.changed() => break,
                 };
                 let call_id     = call.call_id;
+                let queue_wait_ms = call.enqueued_at.elapsed().as_secs_f64() * 1000.0;
+
+                // Root span for this reducer call's full lifecycle: queue wait
+                // (already elapsed by the time we get here, recorded as a
+                // field since the wait itself can't be "entered" retroactively)
+                // → dispatch/execute → commit → WAL append → subscription
+                // fan-out. `call_id` is the correlation ID a client can match
+                // against its own `ReducerCall.call_id` (already present on
+                // the wire — no protocol change needed to correlate).
+                //
+                // NB: this span is entered with `.enter()` (sync guard) only
+                // across code that never awaits before the guard drops. The
+                // `spawn_blocking` + `.await` further down is wrapped with
+                // `.instrument()` instead (see below) — an `EnteredSpan` guard
+                // is `!Send` and cannot be held across an `.await` inside a
+                // future that gets `tokio::spawn`-ed onto a multi-threaded
+                // runtime.
+                let call_span = tracing::info_span!(
+                    "reducer_call",
+                    call_id = call_id,
+                    reducer = %call.reducer_name,
+                    caller_id = %call.caller_id,
+                    queue_wait_ms = queue_wait_ms,
+                );
+
+                // ── Client transaction batch (BEGIN/COMMIT) ──────────────────
+                // Bundles every reducer call the client staged between
+                // BeginTransaction/CommitTransaction into one atomic unit:
+                // each executes in order against a single ReducerContext,
+                // then the whole batch commits in one
+                // `apply_delta_batch_versioned()` call. See
+                // `ServerMessage::TransactionResult` for the isolation level
+                // this actually provides (read-committed + whole-transaction
+                // OCC, not serializable).
+                if let Some(batch_calls) = call.tx_batch {
+                    let _tx_enter = call_span.enter();
+                    let tenant_blk = tenant_w.clone();
+                    let outcome = if voltra::replication::is_replica() {
+                        voltra::network::TransactionOutcome {
+                            tx_id: call_id,
+                            success: false,
+                            responses: vec![],
+                            error: Some("This node is a read-only replica.".to_string()),
+                        }
+                    } else {
+                        let ts = current_timestamp_nanos();
+                        let mut ctx = ReducerContext::new(tables_w.clone(), ts)
+                            .with_schema(schema_w.clone())
+                            .with_ttl(ttl_w.clone());
+                        ctx.caller_id = call.caller_id.clone();
+                        ctx.caller_role = call.caller_role.clone();
+                        if let Some(tid) = call.tenant_id.clone() {
+                            ctx = ctx.with_tenant(tid, tenant_blk);
+                        }
+
+                        let mut responses = Vec::with_capacity(batch_calls.len());
+                        let mut aborted: Option<String> = None;
+                        for (reducer_name, args) in &batch_calls {
+                            let exec = tracing::info_span!("dispatch", reducer = %reducer_name)
+                                .in_scope(|| registry_w.execute(reducer_name, &mut ctx, args));
+                            match exec {
+                                Ok(bytes) => responses.push(ReducerResponse::success(0, bytes)),
+                                Err(e) => {
+                                    aborted =
+                                        Some(format!("reducer '{}' failed: {}", reducer_name, e));
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let Some(err) = aborted {
+                            ctx.rollback();
+                            metrics_w.reducer_errors_total.inc();
+                            voltra::network::TransactionOutcome {
+                                tx_id: call_id,
+                                success: false,
+                                responses: vec![],
+                                error: Some(err),
+                            }
+                        } else {
+                            let commit_result =
+                                tracing::info_span!("commit").in_scope(|| ctx.commit());
+                            match commit_result {
+                                Ok(deltas) => {
+                                    let _fanout_enter = tracing::info_span!(
+                                        "subscription_fanout",
+                                        rows = deltas.len()
+                                    )
+                                    .entered();
+                                    if !deltas.is_empty() {
+                                        subs_w.publish_deltas(&deltas);
+                                        cluster_w.fanout_deltas(&deltas);
+                                    }
+                                    drop(_fanout_enter);
+
+                                    let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    let _wal_enter =
+                                        tracing::info_span!("wal_append", seq_num).entered();
+                                    let entry = WalEntry::new(
+                                        ts,
+                                        seq_num,
+                                        "__transaction".to_string(),
+                                        Vec::new(),
+                                        deltas,
+                                    );
+                                    if let Err(e) = wal_w.append(&entry, seq_num) {
+                                        log::warn!("[voltra] WAL append failed: {}", e);
+                                    } else {
+                                        metrics_w.wal_entries_written_total.inc();
+                                    }
+                                    drop(_wal_enter);
+
+                                    metrics_w.reducer_calls_total.inc_by(batch_calls.len() as u64);
+                                    voltra::network::TransactionOutcome {
+                                        tx_id: call_id,
+                                        success: true,
+                                        responses,
+                                        error: None,
+                                    }
+                                }
+                                Err(e) => {
+                                    metrics_w.reducer_errors_total.inc();
+                                    voltra::network::TransactionOutcome {
+                                        tx_id: call_id,
+                                        success: false,
+                                        responses: vec![],
+                                        error: Some(format!("Commit error: {}", e)),
+                                    }
+                                }
+                            }
+                        }
+                    };
+
+                    if let Some(tx_tx) = &call.tx_response_tx {
+                        if let Err(e) = tx_tx.send(outcome) {
+                            log::warn!("[voltra] Transaction result delivery failed: {}", e);
+                        }
+                    }
+                    continue;
+                }
 
                 // Replicas are read-only: reject reducer calls until promoted.
                 if voltra::replication::is_replica() {
+                    let _enter = call_span.enter();
                     let resp = ReducerResponse::error(
                         call_id,
                         "This node is a read-only replica. Write to the primary, or promote this node via POST /replication/promote.".to_string(),
@@ -691,9 +836,15 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                     CommitErr(String),
                 }
 
+                // `spawn_blocking` runs on a dedicated OS thread — a `tracing`
+                // span isn't implicitly carried across that boundary the way
+                // it is across a plain `.await`. Clone the span handle in and
+                // `.in_scope()` it inside the closure so "dispatch/execute"
+                // and "commit" (child spans) nest under the same call_id.
+                let exec_span = call_span.clone();
                 let blk = tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
-                    tokio::task::spawn_blocking(move || {
+                    tokio::task::spawn_blocking(move || exec_span.in_scope(|| {
                         let mut ctx = ReducerContext::new(tables_blk, ts)
                             .with_schema(schema_blk)
                             .with_ttl(ttl_blk);
@@ -706,26 +857,32 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                         let mut attempt = 0;
                         loop {
                             attempt += 1;
-                            let exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                                || registry_blk.execute(&reducer_name, &mut ctx, &args)
-                            ));
+                            let exec = tracing::info_span!("dispatch", attempt).in_scope(|| {
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                    || registry_blk.execute(&reducer_name, &mut ctx, &args)
+                                ))
+                            });
                             break match exec {
-                                Ok(Ok(result_bytes)) => match ctx.commit() {
-                                    Ok(deltas) => Outcome::Done(result_bytes, deltas),
-                                    Err(voltra::error::VoltraError::TxnConflict(_))
-                                        if attempt < MAX_CONFLICT_RETRIES =>
-                                    {
-                                        ctx.reset_for_retry();
-                                        std::thread::yield_now();
-                                        continue;
+                                Ok(Ok(result_bytes)) => {
+                                    let commit_result = tracing::info_span!("commit", attempt)
+                                        .in_scope(|| ctx.commit());
+                                    match commit_result {
+                                        Ok(deltas) => Outcome::Done(result_bytes, deltas),
+                                        Err(voltra::error::VoltraError::TxnConflict(_))
+                                            if attempt < MAX_CONFLICT_RETRIES =>
+                                        {
+                                            ctx.reset_for_retry();
+                                            std::thread::yield_now();
+                                            continue;
+                                        }
+                                        Err(e) => Outcome::CommitErr(e.to_string()),
                                     }
-                                    Err(e) => Outcome::CommitErr(e.to_string()),
-                                },
+                                }
                                 Ok(Err(e)) => Outcome::ReducerErr(e.to_string()),
                                 Err(_) => Outcome::Panicked,
                             };
                         }
-                    }),
+                    })),
                 ).await;
 
                 let response = match blk {
@@ -744,11 +901,14 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                             // ── Single-node write path (commit already applied) ──────────────
                             // Fan out to live subscribers, then append to the WAL for crash
                             // recovery. Distribution/consensus was removed in Session 44.
+                            let fanout_span = tracing::info_span!("subscription_fanout", rows = deltas.len());
+                            let _fanout_enter = fanout_span.enter();
                             if !deltas.is_empty() {
                                 subs_w.publish_deltas(&deltas);
                                 // Fan out to cluster peers (fire-and-forget, no-op if single-node).
                                 cluster_w.fanout_deltas(&deltas);
                             }
+                            drop(_fanout_enter);
                             let seq_num = seq_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             // Opt-in disk store write-through (before `deltas` is moved into
                             // the WAL entry). On a crash between here and the WAL write the row
@@ -758,6 +918,7 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                                     log::warn!("[voltra] Disk persist failed: {}", e);
                                 }
                             }
+                            let wal_span = tracing::info_span!("wal_append", seq_num).entered();
                             // `deltas` is moved into the WAL entry (its last use) — no
                             // per-call clone of the delta vec.
                             let entry = WalEntry::new(ts, seq_num, call.reducer_name.clone(), call.args.clone(), deltas);
@@ -766,6 +927,7 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                             } else {
                                 metrics_w.wal_entries_written_total.inc();
                             }
+                            drop(wal_span);
                             // Periodic snapshot + WAL rotation. Skip if a snapshot is
                             // already in flight — overlapping snapshots each clone the
                             // full dataset into memory and would compound, not bound it.
@@ -947,6 +1109,9 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                             caller_role: "scheduler".to_string(),
                             tenant_id: None,
                             lobby_hint: None,
+                            enqueued_at: std::time::Instant::now(),
+                            tx_batch: None,
+                            tx_response_tx: None,
                             response_tx: resp_tx,
                         };
                         if tx_sched.send(call).await.is_ok() {

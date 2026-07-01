@@ -29,6 +29,7 @@ pub mod stat_sync;
 pub mod subscriptions;
 pub mod table;
 pub mod tenant;
+pub mod tracing_setup;
 pub mod ttl;
 pub mod updater;
 pub mod wal;

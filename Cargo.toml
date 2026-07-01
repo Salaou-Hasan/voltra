@@ -91,6 +91,23 @@ ureq = { version = "2.9", features = ["json"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 prometheus = { version = "0.13", default-features = false, features = ["process"] }
 
+# Distributed tracing — spans around the reducer-call lifecycle (queue wait →
+# dispatch → commit → WAL append → subscription fan-out). Always compiled in
+# (small, standard, and `tracing-log` bridges the existing `log::*` call sites
+# so they inherit span context for free — no need to rewrite 260+ call sites).
+# The `fmt` subscriber is the always-on default sink (stderr, no perf cost
+# beyond normal logging). OTLP export over gRPC is opt-in via the `otel`
+# Cargo feature (NOT in `default`) + VOLTRA_OTEL_ENDPOINT at runtime, so a
+# plain `cargo build --release` pulls none of the OTLP dependency chain and
+# pays zero cost when the feature/env var isn't set. See src/tracing_setup.rs.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-log = "0.2"
+opentelemetry = { version = "0.30", optional = true }
+opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic"], optional = true }
+tracing-opentelemetry = { version = "0.31", optional = true }
+
 base64 = "0.21"
 jsonwebtoken = "9"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8", "pem"] }
@@ -189,3 +206,16 @@ simd = []
 # "mimalloc" enables both the global allocator and the mi_collect FFI used by
 # the periodic memory reclaimer. They are always enabled together.
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
+# "otel" pulls in the OpenTelemetry OTLP/gRPC exporter chain (tonic, prost,
+# opentelemetry_sdk). NOT in `default` — a plain `cargo build --release` never
+# compiles this. When built with `--features otel` AND `VOLTRA_OTEL_ENDPOINT`
+# is set at runtime, spans are additionally exported over OTLP/gRPC to a
+# collector (e.g. Jaeger, Tempo, Honeycomb). Without the feature, or without
+# the env var even when the feature is compiled in, tracing falls back to the
+# always-on local `fmt` subscriber only — zero network calls, zero extra cost.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]

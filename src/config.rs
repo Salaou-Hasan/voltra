@@ -232,6 +232,21 @@ pub struct Config {
     /// How often (ms) the stat-sync queue is flushed to home regions.
     /// Env: `VOLTRA_STAT_SYNC_FLUSH_MS`.  Default 500.
     pub stat_sync_flush_ms: u64,
+
+    // ── Distributed tracing (OpenTelemetry) ────────────────────────────────
+    /// OTLP/gRPC collector endpoint (e.g. "http://127.0.0.1:4317"). `None`
+    /// (the default) means tracing spans are recorded locally only (the
+    /// always-on `fmt` subscriber) — no network export, no perf cost beyond
+    /// normal logging. Only takes effect when built with `--features otel`;
+    /// harmless to set otherwise. Env: `VOLTRA_OTEL_ENDPOINT`.
+    pub otel_endpoint: Option<String>,
+    /// Service name reported to the OTLP collector as the `service.name`
+    /// resource attribute. Env: `VOLTRA_OTEL_SERVICE_NAME`. Default "voltra".
+    pub otel_service_name: String,
+    /// Sampling ratio in [0.0, 1.0] for the OTLP exporter — fraction of
+    /// traces actually exported (local `fmt` logging is unaffected and
+    /// always sees every span). Env: `VOLTRA_OTEL_SAMPLE_RATIO`. Default 1.0.
+    pub otel_sample_ratio: f64,
 }
 
 // These structs mirror the TOML schema.
@@ -387,6 +402,9 @@ impl Config {
             leaderboard_interval_secs: 60,
             leaderboard_top_n: 1000,
             stat_sync_flush_ms: 500,
+            otel_endpoint: None,
+            otel_service_name: "voltra".to_string(),
+            otel_sample_ratio: 1.0,
         };
 
         if let Some(toml_path) = find_config_in_cwd() {
@@ -883,6 +901,17 @@ fn apply_env_overrides(cfg: &mut Config) {
         .and_then(|v| v.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
     {
         cfg.stat_sync_flush_ms = ms;
+    }
+    if let Ok(e) = env::var("VOLTRA_OTEL_ENDPOINT") {
+        cfg.otel_endpoint = if e.trim().is_empty() { None } else { Some(e) };
+    }
+    if let Ok(n) = env::var("VOLTRA_OTEL_SERVICE_NAME") {
+        cfg.otel_service_name = n;
+    }
+    if let Ok(r) = env::var("VOLTRA_OTEL_SAMPLE_RATIO")
+        .and_then(|v| v.parse::<f64>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        cfg.otel_sample_ratio = r.clamp(0.0, 1.0);
     }
 }
 
