@@ -443,7 +443,8 @@ pub(crate) fn game_cargo_toml(name: &str) -> String {
 [package]\nname = \"{pkg_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
 [dependencies]\n{voltra_dep}\n\
 serde      = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n\
-env_logger = \"0.11\"\n"
+env_logger = \"0.11\"\n\
+tokio      = {{ version = \"1\", features = [\"full\"] }}\n"
     )
 }
 

@@ -145,7 +145,12 @@ impl LobbyRuntimeRegistry {
     /// Deposit a connecting client's outbound channel so a reducer running
     /// later (keyed by the same `caller_id`) can complete AOI registration.
     /// Called from the WebSocket layer right after `register_client`.
-    pub fn stage_aoi_client(&self, caller_id: &str, client_id: ClientId, tx: Sender<OutboundFrames>) {
+    pub fn stage_aoi_client(
+        &self,
+        caller_id: &str,
+        client_id: ClientId,
+        tx: Sender<OutboundFrames>,
+    ) {
         self.pending_aoi
             .insert(caller_id.to_string(), PendingAoiClient { client_id, tx });
     }
@@ -163,12 +168,19 @@ impl LobbyRuntimeRegistry {
     ///
     /// Called from a hot-sim reducer (e.g. `join_lobby`) after it has spawned
     /// the ECS entity for this connection.
-    pub fn bind_aoi_client(&self, lobby_id: &str, caller_id: &str, player_entity: EntityId) -> bool {
+    pub fn bind_aoi_client(
+        &self,
+        lobby_id: &str,
+        caller_id: &str,
+        player_entity: EntityId,
+    ) -> bool {
         let Some((_, pending)) = self.pending_aoi.remove(caller_id) else {
             return false;
         };
         let cell = self.get_or_create(lobby_id);
-        cell.with_runtime(|rt| rt.register_aoi_client(pending.client_id, pending.tx, player_entity));
+        cell.with_runtime(|rt| {
+            rt.register_aoi_client(pending.client_id, pending.tx, player_entity)
+        });
         true
     }
 
@@ -180,7 +192,9 @@ impl LobbyRuntimeRegistry {
     /// lobby this process knows about" for simplicity at disconnect time.
     pub fn unregister_everywhere(&self, client_id: ClientId) {
         for entry in self.lobbies.iter() {
-            entry.value().with_runtime(|rt| rt.unregister_aoi_client(client_id));
+            entry
+                .value()
+                .with_runtime(|rt| rt.unregister_aoi_client(client_id));
         }
     }
 
@@ -188,7 +202,12 @@ impl LobbyRuntimeRegistry {
     pub fn snapshot_counts(&self) -> HashMap<String, usize> {
         self.lobbies
             .iter()
-            .map(|e| (e.key().clone(), e.value().with_runtime(|rt| rt.entity_count())))
+            .map(|e| {
+                (
+                    e.key().clone(),
+                    e.value().with_runtime(|rt| rt.entity_count()),
+                )
+            })
             .collect()
     }
 }
@@ -506,7 +525,10 @@ pub fn start_tick_driver(
         }
     });
 
-    log::info!("[lobby-runtime] Tick driver started @ {:.1}Hz", tick_rate_hz);
+    log::info!(
+        "[lobby-runtime] Tick driver started @ {:.1}Hz",
+        tick_rate_hz
+    );
 }
 
 #[cfg(test)]
@@ -619,6 +641,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         let ticks = cell.with_runtime(|rt| rt.tick_number());
-        assert!(ticks >= 3, "expected several ticks to have run, got {ticks}");
+        assert!(
+            ticks >= 3,
+            "expected several ticks to have run, got {ticks}"
+        );
     }
 }
