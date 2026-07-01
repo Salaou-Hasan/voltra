@@ -385,6 +385,447 @@ fn zstore_union_inter() {
     assert_eq!(run(&mut db, "ZSCORE", &["dst3", "b"]), bulk("14")); // 2*2 + 10
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Streams
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn stream_xadd_auto_id_and_xlen() {
+    let mut db = TestDb::new();
+    let id1 = match run(&mut db, "XADD", &["s", "*", "field1", "value1"]) {
+        Resp::Bulk(b) => String::from_utf8(b.to_vec()).unwrap(),
+        other => panic!("bad reply {other:?}"),
+    };
+    assert!(id1.contains('-'));
+    assert_eq!(run(&mut db, "XLEN", &["s"]), Resp::Int(1));
+    let id2 = match run(&mut db, "XADD", &["s", "*", "field2", "value2"]) {
+        Resp::Bulk(b) => String::from_utf8(b.to_vec()).unwrap(),
+        other => panic!("bad reply {other:?}"),
+    };
+    assert_ne!(id1, id2);
+    assert_eq!(run(&mut db, "XLEN", &["s"]), Resp::Int(2));
+    // Missing key => 0, not an error.
+    assert_eq!(run(&mut db, "XLEN", &["nope"]), Resp::Int(0));
+}
+
+#[test]
+fn stream_xadd_explicit_ids_must_increase() {
+    let mut db = TestDb::new();
+    assert_eq!(run(&mut db, "XADD", &["s", "5-1", "a", "1"]), bulk("5-1"));
+    assert_eq!(run(&mut db, "XADD", &["s", "5-2", "a", "2"]), bulk("5-2"));
+    // Equal or smaller ID must be rejected.
+    match run(&mut db, "XADD", &["s", "5-2", "a", "3"]) {
+        Resp::Error(msg) => assert!(msg.contains("equal or smaller")),
+        other => panic!("expected error, got {other:?}"),
+    }
+    match run(&mut db, "XADD", &["s", "4-9", "a", "3"]) {
+        Resp::Error(msg) => assert!(msg.contains("equal or smaller")),
+        other => panic!("expected error, got {other:?}"),
+    }
+    // Partial auto-seq form.
+    assert_eq!(run(&mut db, "XADD", &["s", "5-*", "a", "4"]), bulk("5-3"));
+    assert_eq!(run(&mut db, "XADD", &["s", "6-*", "a", "5"]), bulk("6-0"));
+}
+
+#[test]
+fn stream_xadd_nomkstream() {
+    let mut db = TestDb::new();
+    assert_eq!(
+        run(&mut db, "XADD", &["s", "NOMKSTREAM", "*", "a", "1"]),
+        Resp::Null
+    );
+    assert_eq!(run(&mut db, "EXISTS", &["s"]), Resp::Int(0));
+}
+
+#[test]
+fn stream_xrange_and_xrevrange() {
+    let mut db = TestDb::new();
+    run(&mut db, "XADD", &["s", "1-1", "f", "1"]);
+    run(&mut db, "XADD", &["s", "2-1", "f", "2"]);
+    run(&mut db, "XADD", &["s", "3-1", "f", "3"]);
+
+    let r = run(&mut db, "XRANGE", &["s", "-", "+"]);
+    match r {
+        Resp::Array(items) => assert_eq!(items.len(), 3),
+        other => panic!("bad reply {other:?}"),
+    }
+
+    // Exact-id range, both endpoints inclusive.
+    let r = run(&mut db, "XRANGE", &["s", "1-1", "2-1"]);
+    match r {
+        Resp::Array(items) => assert_eq!(items.len(), 2),
+        other => panic!("bad reply {other:?}"),
+    }
+
+    // Exclusive lower bound.
+    let r = run(&mut db, "XRANGE", &["s", "(1-1", "+"]);
+    match r {
+        Resp::Array(items) => assert_eq!(items.len(), 2),
+        other => panic!("bad reply {other:?}"),
+    }
+
+    // COUNT limits results.
+    let r = run(&mut db, "XRANGE", &["s", "-", "+", "COUNT", "1"]);
+    match r {
+        Resp::Array(items) => assert_eq!(items.len(), 1),
+        other => panic!("bad reply {other:?}"),
+    }
+
+    // XREVRANGE returns newest-first.
+    let r = run(&mut db, "XREVRANGE", &["s", "+", "-"]);
+    match r {
+        Resp::Array(items) => {
+            assert_eq!(items.len(), 3);
+            match &items[0] {
+                Resp::Array(pair) => assert_eq!(pair[0], bulk("3-1")),
+                other => panic!("bad entry {other:?}"),
+            }
+        }
+        other => panic!("bad reply {other:?}"),
+    }
+}
+
+#[test]
+fn stream_xrange_entry_shape_has_fields() {
+    let mut db = TestDb::new();
+    run(&mut db, "XADD", &["s", "1-1", "name", "alice", "hp", "100"]);
+    let r = run(&mut db, "XRANGE", &["s", "-", "+"]);
+    match r {
+        Resp::Array(items) => {
+            assert_eq!(items.len(), 1);
+            match &items[0] {
+                Resp::Array(pair) => {
+                    assert_eq!(pair[0], bulk("1-1"));
+                    assert_eq!(
+                        pair[1],
+                        Resp::Array(vec![bulk("name"), bulk("alice"), bulk("hp"), bulk("100")])
+                    );
+                }
+                other => panic!("bad entry {other:?}"),
+            }
+        }
+        other => panic!("bad reply {other:?}"),
+    }
+}
+
+#[test]
+fn stream_xdel_and_xtrim() {
+    let mut db = TestDb::new();
+    run(&mut db, "XADD", &["s", "1-1", "f", "1"]);
+    run(&mut db, "XADD", &["s", "2-1", "f", "2"]);
+    run(&mut db, "XADD", &["s", "3-1", "f", "3"]);
+    assert_eq!(run(&mut db, "XDEL", &["s", "2-1"]), Resp::Int(1));
+    assert_eq!(run(&mut db, "XDEL", &["s", "2-1"]), Resp::Int(0)); // already gone
+    assert_eq!(run(&mut db, "XLEN", &["s"]), Resp::Int(2));
+
+    run(&mut db, "XADD", &["s", "4-1", "f", "4"]);
+    run(&mut db, "XADD", &["s", "5-1", "f", "5"]);
+    assert_eq!(run(&mut db, "XLEN", &["s"]), Resp::Int(4));
+    assert_eq!(run(&mut db, "XTRIM", &["s", "MAXLEN", "2"]), Resp::Int(2));
+    assert_eq!(run(&mut db, "XLEN", &["s"]), Resp::Int(2));
+    // Only the newest two entries should remain.
+    let r = run(&mut db, "XRANGE", &["s", "-", "+"]);
+    match r {
+        Resp::Array(items) => {
+            assert_eq!(items.len(), 2);
+            match &items[0] {
+                Resp::Array(pair) => assert_eq!(pair[0], bulk("4-1")),
+                other => panic!("bad entry {other:?}"),
+            }
+        }
+        other => panic!("bad reply {other:?}"),
+    }
+}
+
+#[test]
+fn stream_xread_since_id() {
+    let mut db = TestDb::new();
+    run(&mut db, "XADD", &["s", "1-1", "f", "1"]);
+    run(&mut db, "XADD", &["s", "2-1", "f", "2"]);
+
+    let r = run(&mut db, "XREAD", &["STREAMS", "s", "1-1"]);
+    match r {
+        Resp::Array(streams) => {
+            assert_eq!(streams.len(), 1);
+            match &streams[0] {
+                Resp::Array(pair) => {
+                    assert_eq!(pair[0], bulk("s"));
+                    match &pair[1] {
+                        Resp::Array(entries) => assert_eq!(entries.len(), 1), // only 2-1
+                        other => panic!("bad entries {other:?}"),
+                    }
+                }
+                other => panic!("bad stream entry {other:?}"),
+            }
+        }
+        other => panic!("bad reply {other:?}"),
+    }
+
+    // Reading from "0" returns everything.
+    let r = run(&mut db, "XREAD", &["COUNT", "10", "STREAMS", "s", "0"]);
+    match r {
+        Resp::Array(streams) => match &streams[0] {
+            Resp::Array(pair) => match &pair[1] {
+                Resp::Array(entries) => assert_eq!(entries.len(), 2),
+                other => panic!("bad entries {other:?}"),
+            },
+            other => panic!("bad stream entry {other:?}"),
+        },
+        other => panic!("bad reply {other:?}"),
+    }
+
+    // Nothing newer than the last ID => NullArray (no key present in output).
+    let r = run(&mut db, "XREAD", &["STREAMS", "s", "2-1"]);
+    assert_eq!(r, Resp::NullArray);
+}
+
+#[test]
+fn stream_wrong_type_is_rejected() {
+    let mut db = TestDb::new();
+    run(&mut db, "SET", &["k", "v"]);
+    assert_eq!(
+        run(&mut db, "XADD", &["k", "*", "f", "v"]),
+        Resp::wrong_type()
+    );
+    assert_eq!(run(&mut db, "XLEN", &["k"]), Resp::wrong_type());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Geospatial
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn geo_add_and_pos_roundtrip() {
+    let mut db = TestDb::new();
+    // Palermo & Catania, the canonical Redis GEO doc example.
+    assert_eq!(
+        run(
+            &mut db,
+            "GEOADD",
+            &["Sicily", "13.361389", "38.115556", "Palermo"]
+        ),
+        Resp::Int(1)
+    );
+    assert_eq!(
+        run(
+            &mut db,
+            "GEOADD",
+            &["Sicily", "15.087269", "37.502669", "Catania"]
+        ),
+        Resp::Int(1)
+    );
+    assert_eq!(run(&mut db, "ZCARD", &["Sicily"]), Resp::Int(2));
+
+    let r = run(&mut db, "GEOPOS", &["Sicily", "Palermo"]);
+    match r {
+        Resp::Array(mut v) => match v.remove(0) {
+            Resp::Array(coords) => {
+                let lon: f64 = match &coords[0] {
+                    Resp::Bulk(b) => std::str::from_utf8(b).unwrap().parse().unwrap(),
+                    other => panic!("bad coord {other:?}"),
+                };
+                let lat: f64 = match &coords[1] {
+                    Resp::Bulk(b) => std::str::from_utf8(b).unwrap().parse().unwrap(),
+                    other => panic!("bad coord {other:?}"),
+                };
+                assert!((lon - 13.361389).abs() < 0.001);
+                assert!((lat - 38.115556).abs() < 0.001);
+            }
+            other => panic!("bad coords {other:?}"),
+        },
+        other => panic!("bad reply {other:?}"),
+    }
+
+    // Missing member => nil.
+    let r = run(&mut db, "GEOPOS", &["Sicily", "Nowhere"]);
+    assert_eq!(r, Resp::Array(vec![Resp::NullArray]));
+}
+
+#[test]
+fn geo_dist_matches_known_value() {
+    let mut db = TestDb::new();
+    run(
+        &mut db,
+        "GEOADD",
+        &["Sicily", "13.361389", "38.115556", "Palermo"],
+    );
+    run(
+        &mut db,
+        "GEOADD",
+        &["Sicily", "15.087269", "37.502669", "Catania"],
+    );
+    // Real Redis returns 166274.1516 for this pair in meters.
+    let r = run(&mut db, "GEODIST", &["Sicily", "Palermo", "Catania"]);
+    match r {
+        Resp::Bulk(b) => {
+            let meters: f64 = std::str::from_utf8(&b).unwrap().parse().unwrap();
+            assert!(
+                (meters - 166274.0).abs() < 200.0,
+                "expected ~166274m, got {meters}"
+            );
+        }
+        other => panic!("bad reply {other:?}"),
+    }
+    // km unit.
+    let r = run(&mut db, "GEODIST", &["Sicily", "Palermo", "Catania", "km"]);
+    match r {
+        Resp::Bulk(b) => {
+            let km: f64 = std::str::from_utf8(&b).unwrap().parse().unwrap();
+            assert!((km - 166.27).abs() < 0.5, "expected ~166.27km, got {km}");
+        }
+        other => panic!("bad reply {other:?}"),
+    }
+    // Missing member => nil.
+    assert_eq!(
+        run(&mut db, "GEODIST", &["Sicily", "Palermo", "Nowhere"]),
+        Resp::Null
+    );
+}
+
+#[test]
+fn geo_hash_matches_known_prefix() {
+    let mut db = TestDb::new();
+    run(
+        &mut db,
+        "GEOADD",
+        &["Sicily", "13.361389", "38.115556", "Palermo"],
+    );
+    let r = run(&mut db, "GEOHASH", &["Sicily", "Palermo"]);
+    match r {
+        Resp::Array(v) => match &v[0] {
+            // Real Redis: "sqc8b49rny0" — same 52-bit cell, so shared prefix.
+            Resp::Bulk(b) => {
+                let s = std::str::from_utf8(b).unwrap();
+                assert!(s.starts_with("sqc8b49"), "got {s}");
+            }
+            other => panic!("bad reply {other:?}"),
+        },
+        other => panic!("bad reply {other:?}"),
+    }
+}
+
+#[test]
+fn geo_search_by_radius_from_lonlat() {
+    let mut db = TestDb::new();
+    run(
+        &mut db,
+        "GEOADD",
+        &["Sicily", "13.361389", "38.115556", "Palermo"],
+    );
+    run(
+        &mut db,
+        "GEOADD",
+        &["Sicily", "15.087269", "37.502669", "Catania"],
+    );
+    // 200km radius around Palermo catches both cities (known Redis doc example).
+    let r = run(
+        &mut db,
+        "GEOSEARCH",
+        &[
+            "Sicily",
+            "FROMLONLAT",
+            "15",
+            "37",
+            "BYRADIUS",
+            "200",
+            "km",
+            "ASC",
+        ],
+    );
+    match r {
+        Resp::Array(items) => {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], bulk("Catania")); // closer to (15, 37)
+        }
+        other => panic!("bad reply {other:?}"),
+    }
+
+    // A tight 60km radius from that same point should include Catania
+    // (actual haversine distance from (15,37) to Catania is ~56.4km — 50km
+    // was too tight and incorrectly excluded it; verified by hand-computing
+    // the haversine distance, not just adjusting until green) but exclude
+    // Palermo, which is ~185km away.
+    let r = run(
+        &mut db,
+        "GEOSEARCH",
+        &["Sicily", "FROMLONLAT", "15", "37", "BYRADIUS", "60", "km"],
+    );
+    match r {
+        Resp::Array(items) => assert_eq!(items, vec![bulk("Catania")]),
+        other => panic!("bad reply {other:?}"),
+    }
+}
+
+#[test]
+fn geo_search_from_member_with_withdist() {
+    let mut db = TestDb::new();
+    run(
+        &mut db,
+        "GEOADD",
+        &["Sicily", "13.361389", "38.115556", "Palermo"],
+    );
+    run(
+        &mut db,
+        "GEOADD",
+        &["Sicily", "15.087269", "37.502669", "Catania"],
+    );
+    let r = run(
+        &mut db,
+        "GEOSEARCH",
+        &[
+            "Sicily",
+            "FROMMEMBER",
+            "Palermo",
+            "BYRADIUS",
+            "200",
+            "km",
+            "WITHDIST",
+            "ASC",
+        ],
+    );
+    match r {
+        Resp::Array(items) => {
+            assert_eq!(items.len(), 2);
+            match &items[0] {
+                Resp::Array(pair) => assert_eq!(pair[0], bulk("Palermo")), // itself, dist 0
+                other => panic!("bad entry {other:?}"),
+            }
+        }
+        other => panic!("bad reply {other:?}"),
+    }
+}
+
+#[test]
+fn geo_search_store_writes_zset() {
+    let mut db = TestDb::new();
+    run(
+        &mut db,
+        "GEOADD",
+        &["Sicily", "13.361389", "38.115556", "Palermo"],
+    );
+    run(
+        &mut db,
+        "GEOADD",
+        &["Sicily", "15.087269", "37.502669", "Catania"],
+    );
+    let r = run(
+        &mut db,
+        "GEORADIUS",
+        &["Sicily", "15", "37", "200", "km", "STORE", "dst"],
+    );
+    assert_eq!(r, Resp::Int(2));
+    assert_eq!(run(&mut db, "ZCARD", &["dst"]), Resp::Int(2));
+}
+
+#[test]
+fn geo_invalid_coordinates_rejected() {
+    let mut db = TestDb::new();
+    match run(&mut db, "GEOADD", &["g", "200", "38", "bad"]) {
+        Resp::Error(msg) => assert!(msg.contains("invalid longitude")),
+        other => panic!("expected error, got {other:?}"),
+    }
+}
+
 #[test]
 fn scan_pagination() {
     let mut db = TestDb::new();
@@ -420,8 +861,28 @@ fn scan_pagination() {
 fn write_classification_is_complete() {
     // Every write command must also be a data command (routing depends on it).
     for cmd in [
-        "SET", "DEL", "EXPIRE", "HSET", "LPUSH", "SADD", "ZADD", "FLUSHDB", "RENAME", "COPY",
-        "GETDEL", "GETEX", "SETBIT", "LMOVE", "SPOP", "ZINCRBY",
+        "SET",
+        "DEL",
+        "EXPIRE",
+        "HSET",
+        "LPUSH",
+        "SADD",
+        "ZADD",
+        "FLUSHDB",
+        "RENAME",
+        "COPY",
+        "GETDEL",
+        "GETEX",
+        "SETBIT",
+        "LMOVE",
+        "SPOP",
+        "ZINCRBY",
+        "XADD",
+        "XDEL",
+        "XTRIM",
+        "GEOADD",
+        "GEORADIUS",
+        "GEORADIUSBYMEMBER",
     ] {
         assert!(is_write(cmd), "{cmd} must be classified as a write");
         assert!(
@@ -430,9 +891,31 @@ fn write_classification_is_complete() {
         );
     }
     for cmd in [
-        "GET", "MGET", "KEYS", "SCAN", "HGETALL", "LRANGE", "SMEMBERS", "ZRANGE", "TTL",
+        "GET",
+        "MGET",
+        "KEYS",
+        "SCAN",
+        "HGETALL",
+        "LRANGE",
+        "SMEMBERS",
+        "ZRANGE",
+        "TTL",
+        "XLEN",
+        "XRANGE",
+        "XREVRANGE",
+        "XREAD",
+        "GEOPOS",
+        "GEODIST",
+        "GEOHASH",
+        "GEOSEARCH",
+        "GEORADIUS_RO",
+        "GEORADIUSBYMEMBER_RO",
     ] {
         assert!(!is_write(cmd), "{cmd} must NOT be a write");
+        assert!(
+            super::engine::is_data_command(cmd),
+            "{cmd} must still be a data command"
+        );
     }
 }
 

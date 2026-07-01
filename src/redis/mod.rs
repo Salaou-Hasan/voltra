@@ -8,8 +8,10 @@
 //!   commit timestamps for conflict detection.
 //! * Pub/Sub, blocking list ops, TTLs, 16 logical databases, AOF persistence.
 
+pub mod cmd_geo;
 pub mod cmd_hash_list;
 pub mod cmd_set_zset;
+pub mod cmd_stream;
 pub mod cmd_string;
 pub mod engine;
 pub mod pubsub;
@@ -614,7 +616,7 @@ async fn step(ctx: &Arc<RedisCtx>, conn: &mut Conn, args: Vec<Bytes>, out: &mut 
         "COMMAND" => {
             let sub = rest.first().map(upper).unwrap_or_default();
             match sub.as_str() {
-                "COUNT" => reply_frames.push(Resp::Int(160)),
+                "COUNT" => reply_frames.push(Resp::Int(178)),
                 "DOCS" | "INFO" => reply_frames.push(Resp::Map(vec![])),
                 _ => reply_frames.push(Resp::Array(vec![])),
             }

@@ -100,6 +100,84 @@ impl ZSet {
     }
 }
 
+/// Redis stream entry ID: `<ms>-<seq>`. Ordered first by ms, then by seq —
+/// the natural `Ord` derive matches Redis's ID ordering exactly.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub struct StreamId {
+    pub ms: u64,
+    pub seq: u64,
+}
+
+impl StreamId {
+    pub const MIN: StreamId = StreamId { ms: 0, seq: 0 };
+    pub const MAX: StreamId = StreamId {
+        ms: u64::MAX,
+        seq: u64::MAX,
+    };
+
+    pub fn next(self) -> Self {
+        if self.seq == u64::MAX {
+            StreamId {
+                ms: self.ms + 1,
+                seq: 0,
+            }
+        } else {
+            StreamId {
+                ms: self.ms,
+                seq: self.seq + 1,
+            }
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        if self.seq == 0 {
+            if self.ms == 0 {
+                StreamId::MIN
+            } else {
+                StreamId {
+                    ms: self.ms - 1,
+                    seq: u64::MAX,
+                }
+            }
+        } else {
+            StreamId {
+                ms: self.ms,
+                seq: self.seq - 1,
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for StreamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.ms, self.seq)
+    }
+}
+
+/// Redis stream: an append-only, ID-ordered log of field/value entries.
+/// Uses `im::OrdMap` (persistent B-tree) for O(1) clone + O(log n) range scans,
+/// the same "clone the whole collection on write" trade-off as ZSet/Hash/List.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct XStream {
+    pub entries: im::OrdMap<StreamId, im::Vector<(Bytes, Bytes)>>,
+    pub last_id: StreamId,
+    /// Highest ID ever deleted or trimmed away (for XINFO-style bookkeeping).
+    pub max_deleted_id: StreamId,
+    /// Monotonic counter of entries ever added (survives trims/deletes).
+    pub entries_added: u64,
+}
+
+impl XStream {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// The value universe shared by the Redis and PostgreSQL layers.
 /// All container variants use persistent (im) collections: cloning any Datum
 /// is O(1), which is what makes per-write version creation cheap.
@@ -117,6 +195,10 @@ pub enum Datum {
     ZSet(ZSet),
     /// PostgreSQL row: column name → scalar.
     Row(im::HashMap<String, Scalar>),
+    /// Redis stream (XADD/XRANGE/XREAD). Appended last — do not reorder
+    /// existing variants, rmp_serde encodes enums by variant index and
+    /// AOF/snapshot files on disk depend on the existing ordinals.
+    Stream(XStream),
 }
 
 impl Datum {
@@ -128,6 +210,7 @@ impl Datum {
             Datum::Set(_) => "set",
             Datum::ZSet(_) => "zset",
             Datum::Row(_) => "row",
+            Datum::Stream(_) => "stream",
         }
     }
 }

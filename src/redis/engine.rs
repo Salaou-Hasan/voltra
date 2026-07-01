@@ -165,6 +165,26 @@ pub fn read_zset(
     }
 }
 
+/// Read a stream. Unlike other collections, a missing key is a distinct
+/// case from an existing-but-empty stream — callers that need to tell them
+/// apart should check `db.get` themselves (e.g. XLEN, XINFO). Command
+/// helpers that only need "the stream, empty if absent" (XRANGE, XREAD) can
+/// use this directly.
+pub fn read_stream(
+    db: &mut dyn Db,
+    ns: u32,
+    key: &Bytes,
+) -> CmdResult<(crate::mvcc::XStream, Option<u64>)> {
+    match db.get(ns, key) {
+        Some(Datum::Stream(s)) => {
+            let e = db.expiry(ns, key);
+            Ok((s, e))
+        }
+        Some(_) => Err(Resp::wrong_type()),
+        None => Ok((crate::mvcc::XStream::default(), None)),
+    }
+}
+
 /// Store a collection back; Redis deletes keys whose collection became empty.
 pub fn store_coll(db: &mut dyn Db, ns: u32, key: Bytes, val: Datum, exp: Option<u64>) {
     let empty = match &val {
@@ -250,6 +270,12 @@ pub fn is_write(cmd: &str) -> bool {
         // zsets
             | "ZADD" | "ZREM" | "ZINCRBY" | "ZPOPMIN" | "ZPOPMAX" | "ZREMRANGEBYRANK"
             | "ZREMRANGEBYSCORE" | "ZREMRANGEBYLEX" | "ZUNIONSTORE" | "ZINTERSTORE" | "ZDIFFSTORE"
+        // streams
+            | "XADD" | "XDEL" | "XTRIM"
+        // geo (implemented as ZADD-on-a-zset — still a write; GEORADIUS/
+        // GEORADIUSBYMEMBER without STORE/STOREDIST are also classified as
+        // writes here for simplicity, matching real Redis's own classification)
+            | "GEOADD" | "GEORADIUS" | "GEORADIUSBYMEMBER"
     )
 }
 
@@ -316,13 +342,27 @@ pub fn is_data_command(cmd: &str) -> bool {
                 | "ZLEXCOUNT"
                 | "ZRANDMEMBER"
                 | "ZSCAN"
+                // streams
+                | "XLEN"
+                | "XRANGE"
+                | "XREVRANGE"
+                | "XREAD"
+                // geo
+                | "GEOPOS"
+                | "GEODIST"
+                | "GEOHASH"
+                | "GEOSEARCH"
+                | "GEORADIUS_RO"
+                | "GEORADIUSBYMEMBER_RO"
         )
 }
 
 /// Execute a data-plane command. `cmd` must already be uppercase.
 /// `dbi` is the logical Redis database (namespace).
 pub fn dispatch_data(db: &mut dyn Db, dbi: u32, cmd: &str, args: &[Bytes]) -> Resp {
-    use crate::redis::{cmd_hash_list as hl, cmd_set_zset as sz, cmd_string as st};
+    use crate::redis::{
+        cmd_geo as geo, cmd_hash_list as hl, cmd_set_zset as sz, cmd_stream as xs, cmd_string as st,
+    };
     match cmd {
         // ── strings ──────────────────────────────────────────────────────────
         "GET" => st::get(db, dbi, args),
@@ -451,6 +491,22 @@ pub fn dispatch_data(db: &mut dyn Db, dbi: u32, cmd: &str, args: &[Bytes]) -> Re
         "ZUNIONSTORE" => sz::zstore(db, dbi, args, SetOp::Union),
         "ZINTERSTORE" => sz::zstore(db, dbi, args, SetOp::Inter),
         "ZDIFFSTORE" => sz::zstore(db, dbi, args, SetOp::Diff),
+        // ── streams ──────────────────────────────────────────────────────────
+        "XADD" => xs::xadd(db, dbi, args),
+        "XLEN" => xs::xlen(db, dbi, args),
+        "XDEL" => xs::xdel(db, dbi, args),
+        "XTRIM" => xs::xtrim(db, dbi, args),
+        "XRANGE" => xs::xrange(db, dbi, args, false),
+        "XREVRANGE" => xs::xrange(db, dbi, args, true),
+        "XREAD" => xs::xread(db, dbi, args),
+        // ── geospatial (ZSET-backed) ─────────────────────────────────────────
+        "GEOADD" => geo::geoadd(db, dbi, args),
+        "GEOPOS" => geo::geopos(db, dbi, args),
+        "GEODIST" => geo::geodist(db, dbi, args),
+        "GEOHASH" => geo::geohash_cmd(db, dbi, args),
+        "GEOSEARCH" => geo::geosearch(db, dbi, args),
+        "GEORADIUS_RO" | "GEORADIUS" => geo::georadius(db, dbi, args, false),
+        "GEORADIUSBYMEMBER_RO" | "GEORADIUSBYMEMBER" => geo::georadius(db, dbi, args, true),
         _ => Resp::err(format!("ERR unknown command '{}'", cmd.to_lowercase())),
     }
 }
