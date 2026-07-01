@@ -214,7 +214,10 @@ impl World {
     }
 }
 
-pub trait System {
+// `Send + Sync` supertraits let a `LobbyRuntime` (which owns a `SystemExecutor`)
+// be driven from a background Tokio task (see `runtime::registry::start_tick_driver`)
+// and shared across threads via `Arc<LobbyRuntimeCell>` without extra wrapping.
+pub trait System: Send + Sync {
     fn run(&self, world: &mut World, tick: u64);
 }
 

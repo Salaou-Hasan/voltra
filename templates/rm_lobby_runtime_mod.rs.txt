@@ -1,0 +1,121 @@
+// `lobby-runtime` module — real ECS/AOI/tick engine (voltra::runtime), NOT
+// TableStore rows. Every reducer below calls straight into a live
+// `LobbyRuntime` via `voltra::runtime::registry::reducer_api`. State here does
+// not appear in `entities` rows — inspect it via the `lobby_stats` reducer
+// below, or through the admin console's per-lobby runtime stats.
+//
+// This is the alternative to the row-based `movement`/`ecs`/`aoi` modules —
+// pick one or the other for a given project, not both (both would define
+// entity-lifecycle reducers over conceptually the same state).
+//
+// IMPORTANT: `voltra::runtime::registry::init(...)` and
+// `voltra::runtime::registry::start_tick_driver(...)` must be called once at
+// startup (see `src/main.rs`, generated with the `lobby-runtime` module) or
+// this module falls back to a default 20Hz / 100.0-view-distance registry
+// that nobody is ticking — reducers below will spawn entities but positions
+// will never advance without a tick driver running.
+
+use voltra::runtime::registry::reducer_api;
+use voltra::{reducer, ret};
+
+/// A connecting client calls this once, right after opening the WebSocket
+/// connection, to spawn its player entity inside `lobby_id`'s `LobbyRuntime`
+/// and bind this connection's outbound channel to that entity's AOI updates.
+/// `session_id` can be any stable per-connection number (e.g. 0 if unused).
+#[reducer]
+fn join_lobby(
+    ctx: Ctx,
+    lobby_id: String,
+    session_id: u64,
+    name: String,
+    x: f32,
+    y: f32,
+    hp: i32,
+) {
+    let caller_id = ctx.caller_id.clone();
+    let entity = reducer_api::join_lobby(&lobby_id, &caller_id, session_id, &name, x, y, hp);
+    ret!({ "ok": true, "entity_id": entity, "lobby_id": lobby_id })
+}
+
+/// Spawn an NPC entity (no AOI-client binding — NPCs are driven by the
+/// simulation, not a connection).
+#[reducer]
+fn spawn_lobby_npc(ctx: Ctx, lobby_id: String, npc_type: String, level: i32, x: f32, y: f32, hp: i32) {
+    let _ = &ctx;
+    let entity = reducer_api::spawn_npc(&lobby_id, &npc_type, level, x, y, hp);
+    ret!({ "ok": true, "entity_id": entity })
+}
+
+/// Client input: set an entity's velocity. The next scheduled tick (driven by
+/// the background tick driver, NOT this reducer call) integrates position
+/// from this velocity via `MovementSystem` — this is the core difference from
+/// the row-based `movement` module, where `apply_entity_movement` had to be
+/// called explicitly per step. Here, ticking is continuous and
+/// server-authoritative regardless of how often clients call this reducer.
+#[reducer]
+fn set_lobby_velocity(ctx: Ctx, lobby_id: String, entity_id: u64, vx: f32, vy: f32, vz: f32) {
+    let _ = &ctx;
+    if !reducer_api::set_velocity(&lobby_id, entity_id, vx, vy, vz) {
+        ret!({ "ok": false, "error": "Entity not found" })
+    }
+    ret!({ "ok": true })
+}
+
+/// Authoritative teleport — bypasses velocity integration. Useful for spawn
+/// placement, respawn points, or server-side corrections.
+#[reducer]
+fn teleport_lobby_entity(ctx: Ctx, lobby_id: String, entity_id: u64, x: f32, y: f32) {
+    let _ = &ctx;
+    if !reducer_api::move_entity(&lobby_id, entity_id, x, y) {
+        ret!({ "ok": false, "error": "Entity not found" })
+    }
+    ret!({ "ok": true })
+}
+
+/// Apply damage to an entity's health component.
+#[reducer]
+fn apply_lobby_damage(ctx: Ctx, lobby_id: String, entity_id: u64, amount: i32) {
+    let _ = &ctx;
+    match reducer_api::apply_damage(&lobby_id, entity_id, amount) {
+        Some((hp, alive)) => ret!({ "ok": true, "hp": hp, "alive": alive }),
+        None => ret!({ "ok": false, "error": "Entity has no health component" }),
+    }
+}
+
+/// Despawn an entity from both ECS storage and the AOI grid (also
+/// unregisters it from AOI broadcast if it was a connected client's entity).
+#[reducer]
+fn despawn_lobby_entity(ctx: Ctx, lobby_id: String, entity_id: u64) {
+    let _ = &ctx;
+    if !reducer_api::despawn(&lobby_id, entity_id) {
+        ret!({ "ok": false, "error": "Entity not found" })
+    }
+    ret!({ "ok": true })
+}
+
+/// Read back an entity's current position — mostly useful for debugging/tests;
+/// real clients get positions from AOI-broadcast fan-out frames, not by
+/// polling this reducer.
+#[reducer]
+fn get_lobby_entity_state(ctx: Ctx, lobby_id: String, entity_id: u64) {
+    let _ = &ctx;
+    let transform = reducer_api::get_transform(&lobby_id, entity_id);
+    let health = reducer_api::get_health(&lobby_id, entity_id);
+    match (transform, health) {
+        (Some((x, y, z)), Some((hp, max_hp, alive))) => ret!({
+            "ok": true, "x": x, "y": y, "z": z, "hp": hp, "max_hp": max_hp, "alive": alive
+        }),
+        (Some((x, y, z)), None) => ret!({ "ok": true, "x": x, "y": y, "z": z }),
+        _ => ret!({ "ok": false, "error": "Entity not found" }),
+    }
+}
+
+/// Diagnostics: current tick number + live entity count for a lobby. Proves
+/// the background tick driver is actually advancing this lobby's simulation.
+#[reducer]
+fn lobby_runtime_stats(ctx: Ctx, lobby_id: String) {
+    let _ = &ctx;
+    let tick = reducer_api::tick_number(&lobby_id);
+    let entities = reducer_api::entity_count(&lobby_id);
+    ret!({ "ok": true, "lobby_id": lobby_id, "tick_number": tick, "entity_count": entities })
+}

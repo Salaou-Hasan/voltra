@@ -925,6 +925,20 @@ pub(crate) fn add_module_files(p: &Path, module: &str) -> Result<()> {
             wf(p, "src/reducers/replay/mod.rs", RM_REPLAY_MOD_RS)?;
             append_schema(p, RM_REPLAY_SCHEMA)?;
         }
+        "lobby-runtime" => {
+            wf(
+                p,
+                "src/reducers/lobby_runtime/mod.rs",
+                RM_LOBBY_RUNTIME_MOD_RS,
+            )?;
+            // No schema.toml entry — hot-sim state lives inside the
+            // LobbyRuntime (voltra::runtime), not TableStore. Swap in the
+            // main.rs that initializes the registry + starts the tick driver;
+            // without it, the reducers above would resolve against a lazily
+            // -defaulted registry that nothing is ticking (see doc comment on
+            // `voltra::runtime::registry::global()`).
+            wf(p, "src/main.rs", GAME_MAIN_LOBBY_RUNTIME_RS)?;
+        }
         _ => {}
     }
     Ok(())
@@ -970,6 +984,16 @@ pub(crate) fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
             add_module_files(project_path, module)?;
             println!();
             println!("  Added {module} module → src/reducers/{module}/");
+            println!("  Rebuild: cargo build --release");
+            println!("  Restart: cargo run --release -- start");
+        }
+        "lobby-runtime" => {
+            add_module_files(project_path, module)?;
+            println!();
+            println!("  Added lobby-runtime module → src/reducers/lobby_runtime/");
+            println!("  src/main.rs was replaced with a version that initializes");
+            println!("  voltra::runtime::registry and starts the tick driver — review the diff");
+            println!("  if you had custom code in main.rs.");
             println!("  Rebuild: cargo build --release");
             println!("  Restart: cargo run --release -- start");
         }

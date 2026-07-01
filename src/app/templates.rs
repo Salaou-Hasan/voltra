@@ -1173,6 +1173,16 @@ pub(crate) const RM_PARTIES_SCHEMA: &str =
 pub(crate) const RM_REPLAY_MOD_RS: &str = include_str!("../../templates/rm_replay_mod.rs.txt");
 pub(crate) const RM_REPLAY_SCHEMA: &str = include_str!("../../templates/rm_replay_schema.toml.txt");
 
+// `lobby-runtime` — real ECS/AOI/tick engine (voltra::runtime) instead of
+// TableStore rows. No schema file: state lives inside the LobbyRuntime, not
+// in the TableStore, so there is nothing to add to schema.toml. Requires its
+// own main.rs (initializes the registry + starts the tick driver) — see
+// `GAME_MAIN_LOBBY_RUNTIME_RS` and `scaffold.rs::init_project_from_recipe`.
+pub(crate) const RM_LOBBY_RUNTIME_MOD_RS: &str =
+    include_str!("../../templates/rm_lobby_runtime_mod.rs.txt");
+pub(crate) const GAME_MAIN_LOBBY_RUNTIME_RS: &str =
+    include_str!("../../templates/r_game_main_lobby_runtime.rs.txt");
+
 // ── Rust client SDK scaffold ──────────────────────────────────────────────────
 
 pub(crate) const CLIENT_MAIN_RS: &str = r#"//! Example Rust client for a Voltra game server.

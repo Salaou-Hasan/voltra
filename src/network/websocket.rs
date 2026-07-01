@@ -687,7 +687,19 @@ where
 
     // ── Register client ───────────────────────────────────────────────────────
     let (sub_tx, mut sub_rx) = mpsc::channel::<OutboundFrames>(CLIENT_SEND_BUFFER_CAPACITY);
-    let client_id = subscription_manager.register_client(sub_tx);
+    let client_id = subscription_manager.register_client(sub_tx.clone());
+
+    // ── Hot-simulation bridge (opt-in) ────────────────────────────────────────
+    // Stage this connection's (ClientId, outbound sender) under its caller_id so
+    // a hot-sim reducer (e.g. `join_lobby`, running later on a reducer worker
+    // thread with only `ctx.caller_id` to go on) can complete
+    // `LobbyRuntime::register_aoi_client` once it knows which entity this
+    // connection controls. No-op cost for projects that never touch
+    // `voltra::runtime::registry` — `is_initialized()` is a single atomic load
+    // and the whole block is skipped when the registry was never started.
+    if crate::runtime::registry::is_initialized() {
+        crate::runtime::registry::global().stage_aoi_client(&caller_id, client_id, sub_tx);
+    }
 
     let write_tx_sub = write_tx.clone();
     let sub_tenant_id = tenant_id.clone();
@@ -1355,6 +1367,16 @@ where
     presence.set_offline(&caller_id);
     rate_limiter.remove(&caller_id);
     metrics.websocket_connections_active.dec();
+
+    // Hot-simulation bridge cleanup — mirror of the staging above. Drops any
+    // never-consumed staged registration (client connected but never joined a
+    // lobby) and removes the client from every lobby's AOI broadcaster it may
+    // have joined. No-op for projects that never initialize the registry.
+    if crate::runtime::registry::is_initialized() {
+        let reg = crate::runtime::registry::global();
+        reg.clear_staged_aoi_client(&caller_id);
+        reg.unregister_everywhere(client_id);
+    }
 
     drop(write_tx);
     let _ = write_task.await;

@@ -1,0 +1,58 @@
+mod reducers;
+
+fn main() {
+    // Default to INFO logging so startup output (listening port, replay status,
+    // reducer registry size) is visible. Override with RUST_LOG=debug or trace.
+    if std::env::var_os("RUST_LOG").is_none() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    env_logger::Builder::from_default_env()
+        .format_timestamp_secs()
+        .init();
+
+    let config = voltra::config::Config::from_env();
+
+    // ── Hot-simulation runtime (lobby-runtime module) ─────────────────────────
+    // Initializes the process-global LobbyRuntime registry — this is what
+    // makes `voltra::runtime::registry::reducer_api` (used by the reducers in
+    // src/reducers/lobby_runtime/mod.rs) reach a real ECS/AOI/tick engine
+    // instead of doing nothing. Tick rate + AOI view distance are read from
+    // env so ops can retune them without a rebuild:
+    //   VOLTRA_TICK_RATE_HZ (default 20), VOLTRA_AOI_VIEW_DISTANCE (default 100.0)
+    let tick_rate_hz: u32 = std::env::var("VOLTRA_TICK_RATE_HZ")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    let view_distance: f32 = std::env::var("VOLTRA_AOI_VIEW_DISTANCE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100.0);
+    let tick_config = voltra::runtime::tick::TickConfig {
+        tick_rate_hz,
+        max_tick_time_ms: 10,
+    };
+    let lobby_registry = voltra::runtime::registry::init(tick_config, view_distance);
+    println!(
+        "[voltra] Lobby-runtime engine initialized — {} Hz tick, {} view distance.",
+        tick_rate_hz, view_distance
+    );
+
+    println!("[voltra] Listening on ws://{}:{} — press Ctrl+C to stop.",
+        config.host, config.port);
+    println!("[voltra] Metrics + admin: http://{}:{}/healthz",
+        config.host, config.metrics_port);
+    println!();
+
+    // Drive every lobby's tick loop from a background Tokio task. Needs a
+    // runtime, so we build one manually here instead of calling
+    // `run_server_blocking` (which builds and consumes its own runtime).
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    rt.block_on(async move {
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        voltra::runtime::registry::start_tick_driver(lobby_registry.clone(), shutdown_rx);
+
+        voltra::run_server(config)
+            .await
+            .expect("Voltra server exited with error");
+    });
+}
