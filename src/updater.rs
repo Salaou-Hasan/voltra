@@ -5,17 +5,31 @@ use std::path::PathBuf;
 const RELEASES_REPO: &str = "Salaou-Hasan/voltra-releases";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn asset_name(bin: &str) -> String {
-    let ext = if cfg!(windows) { ".exe" } else { "" };
-    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        format!("{bin}-macos-arm64{ext}")
-    } else if cfg!(target_os = "macos") {
+/// Pure so it can be unit-tested for all 4 platforms regardless of the host
+/// running the test — this exact string must match `release.yml`'s
+/// `asset_name` for each build matrix entry, or `voltra update` 404s.
+fn asset_name_for(bin: &str, os: &str, arch: &str) -> String {
+    let ext = if os == "windows" { ".exe" } else { "" };
+    if os == "macos" && arch == "aarch64" {
+        format!("{bin}-macos-aarch64{ext}")
+    } else if os == "macos" {
         format!("{bin}-macos-x86_64{ext}")
-    } else if cfg!(target_os = "linux") {
+    } else if os == "linux" {
         format!("{bin}-linux-x86_64{ext}")
     } else {
         format!("{bin}-windows-x86_64{ext}")
     }
+}
+
+fn asset_name(bin: &str) -> String {
+    asset_name_for(bin, std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Pure so it can be unit-tested without a network call. `tag` must be used
+/// verbatim (as returned by `latest_tag()`) — it already carries whatever
+/// prefix letter the release actually uses ("g1.2.0.0", "v2.0.5", ...).
+fn release_download_url(tag: &str, asset: &str) -> String {
+    format!("https://github.com/{RELEASES_REPO}/releases/download/{tag}/{asset}")
 }
 
 fn install_dir() -> PathBuf {
@@ -25,7 +39,11 @@ fn install_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Returns the latest release tag from the releases repo, or None on error.
+/// Returns the latest release tag from the releases repo verbatim (e.g.
+/// "g1.2.0.0" or "v2.0.5"), or None on error. Must NOT strip the leading
+/// letter — `download_and_replace` needs the exact tag to build a working
+/// GitHub release download URL, and `version_newer` parses either prefix
+/// itself.
 fn latest_tag() -> Option<String> {
     let url = format!("https://api.github.com/repos/{RELEASES_REPO}/releases/latest");
     let resp = ureq::get(&url)
@@ -33,9 +51,7 @@ fn latest_tag() -> Option<String> {
         .call()
         .ok()?;
     let json: serde_json::Value = resp.into_json().ok()?;
-    json["tag_name"]
-        .as_str()
-        .map(|s| s.trim_start_matches('v').to_string())
+    json["tag_name"].as_str().map(|s| s.to_string())
 }
 
 /// Compare a release tag against the running build, generation-aware.
@@ -83,7 +99,7 @@ fn version_newer(latest: &str) -> bool {
 
 fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
     let asset = asset_name(bin);
-    let url = format!("https://github.com/{RELEASES_REPO}/releases/download/v{tag}/{asset}");
+    let url = release_download_url(tag, &asset);
     let dest = install_dir().join(if cfg!(windows) {
         format!("{bin}.exe")
     } else {
@@ -217,14 +233,14 @@ pub fn cmd_update(check_only: bool) -> crate::error::Result<()> {
         return Ok(());
     }
 
-    println!("v{CURRENT_VERSION} → v{tag} available!");
+    println!("v{CURRENT_VERSION} → {tag} available!");
 
     if check_only {
         println!("  Run `voltra update` to install.");
         return Ok(());
     }
 
-    println!("Installing v{tag} …");
+    println!("Installing {tag} …");
     match download_and_replace("voltra", &tag) {
         Ok(()) => println!("\n  Done. Restart any running servers to pick up the new version."),
         Err(e) => eprintln!("  ✗ voltra: {e}"),
@@ -237,7 +253,7 @@ pub fn check_and_hint() {
     if let Some(tag) = latest_tag() {
         if version_newer(&tag) {
             eprintln!(
-                "[voltra] Update available: v{CURRENT_VERSION} → v{tag}  (run `voltra update`)"
+                "[voltra] Update available: v{CURRENT_VERSION} → {tag}  (run `voltra update`)"
             );
         }
     }
@@ -303,6 +319,23 @@ fn add_to_path(dir: &std::path::Path) {
     }
 }
 
+/// Pick the shell rc file to edit, based on $SHELL — mirrors what a user's
+/// interactive shell actually sources, so the PATH change takes effect in a
+/// new terminal without guessing wrong and editing a file nobody reads.
+#[cfg(not(windows))]
+fn shell_rc_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let file = if shell.contains("zsh") {
+        ".zshrc"
+    } else if shell.contains("bash") {
+        ".bashrc"
+    } else {
+        ".profile"
+    };
+    Some(home.join(file))
+}
+
 #[cfg(not(windows))]
 fn add_to_path(dir: &std::path::Path) {
     let on_path = std::env::var("PATH")
@@ -310,9 +343,45 @@ fn add_to_path(dir: &std::path::Path) {
         .unwrap_or(false);
     if on_path {
         println!("  {} is on your PATH. Run: voltra -h", dir.display());
-    } else {
-        println!("  Add to PATH — append to your shell rc (~/.bashrc or ~/.zshrc):");
-        println!("    export PATH=\"$PATH:{}\"", dir.display());
+        return;
+    }
+
+    let export_line = format!("export PATH=\"$PATH:{}\"", dir.display());
+    match shell_rc_path() {
+        Some(rc) => {
+            let existing = fs::read_to_string(&rc).unwrap_or_default();
+            if existing.contains(&export_line) {
+                println!(
+                    "  Already in {} — open a NEW terminal, then run: voltra -h",
+                    rc.display()
+                );
+                return;
+            }
+            let mut new_content = existing;
+            if !new_content.is_empty() && !new_content.ends_with('\n') {
+                new_content.push('\n');
+            }
+            new_content.push_str("# Added by `voltra install`\n");
+            new_content.push_str(&export_line);
+            new_content.push('\n');
+            match fs::write(&rc, new_content) {
+                Ok(()) => println!(
+                    "  Added to PATH via {}. Open a NEW terminal, then run: voltra -h",
+                    rc.display()
+                ),
+                Err(e) => {
+                    println!(
+                        "  Couldn't edit {} ({e}). Add this line yourself:",
+                        rc.display()
+                    );
+                    println!("    {export_line}");
+                }
+            }
+        }
+        None => {
+            println!("  Couldn't determine your shell config file. Add this line yourself:");
+            println!("    {export_line}");
+        }
     }
 }
 
@@ -326,5 +395,82 @@ mod install_tests {
         assert!(s.ends_with(".voltra"), "got {s}");
         #[cfg(not(windows))]
         assert!(s.ends_with("bin"), "got {s}");
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::{asset_name_for, release_download_url, version_newer};
+
+    // Regression test: these exact strings must match release.yml's
+    // per-target `asset_name` values, or `voltra update` 404s on that
+    // platform. macOS aarch64 previously said "arm64" instead of "aarch64".
+    #[test]
+    fn asset_name_matches_release_workflow_matrix() {
+        assert_eq!(
+            asset_name_for("voltra", "macos", "aarch64"),
+            "voltra-macos-aarch64"
+        );
+        assert_eq!(
+            asset_name_for("voltra", "macos", "x86_64"),
+            "voltra-macos-x86_64"
+        );
+        assert_eq!(
+            asset_name_for("voltra", "linux", "x86_64"),
+            "voltra-linux-x86_64"
+        );
+        assert_eq!(
+            asset_name_for("voltra", "windows", "x86_64"),
+            "voltra-windows-x86_64.exe"
+        );
+    }
+
+    // Regression test: the tag must be used verbatim in the download URL.
+    // Previously `latest_tag()` stripped a leading 'v' and this function
+    // unconditionally re-added one, so any "g1.x.x.x" tag (the current
+    // generation scheme) built a URL for a release that doesn't exist.
+    #[test]
+    fn download_url_uses_tag_verbatim_for_generation_scheme() {
+        let url = release_download_url("g1.2.0.0", "voltra-linux-x86_64");
+        assert_eq!(
+            url,
+            "https://github.com/Salaou-Hasan/voltra-releases/releases/download/g1.2.0.0/voltra-linux-x86_64"
+        );
+        assert!(
+            !url.contains("/vg1.2.0.0/"),
+            "must not double-prefix: {url}"
+        );
+    }
+
+    #[test]
+    fn download_url_uses_tag_verbatim_for_legacy_scheme() {
+        let url = release_download_url("v2.0.5", "voltra-windows-x86_64.exe");
+        assert_eq!(
+            url,
+            "https://github.com/Salaou-Hasan/voltra-releases/releases/download/v2.0.5/voltra-windows-x86_64.exe"
+        );
+    }
+
+    #[test]
+    fn version_newer_detects_generation_bump_over_legacy_tag() {
+        // A g2.x.x.x release must always beat a g1.x.x.x build, even with a
+        // "lower" numeric version, since generation is the most-significant
+        // component (this is what let the 1.0.0 reset at the start of Gen 1
+        // still update everyone on the old v2.0.x line).
+        assert!(version_newer("g2.0.0.0"));
+    }
+
+    #[test]
+    fn version_newer_rejects_older_patch_in_same_generation() {
+        // Cargo.toml's CURRENT_VERSION ("1.0.0") + GENERATION (1) encodes to
+        // the same 4-tuple as tag "g1.1.0.0" — so a lower g1.x.x.x tag must
+        // NOT be reported as newer. This is the exact case the original bug
+        // report would have masked, since it never got exercised by a test.
+        assert!(!version_newer("g1.0.0.0"));
+    }
+
+    #[test]
+    fn version_newer_compares_within_same_generation() {
+        assert!(version_newer("g1.99.0.0"));
     }
 }
