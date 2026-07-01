@@ -8,6 +8,7 @@ pub mod aoi;
 pub mod aoi_broadcast;
 pub mod ecs;
 pub mod lobby_runtime;
+pub mod registry;
 pub mod tick;
 
 use std::collections::{BTreeSet, HashMap};
@@ -106,7 +107,7 @@ fn resolve_module<'a>(
     Ok(())
 }
 
-const MODULES: [RuntimeModule; 21] = [
+const MODULES: [RuntimeModule; 22] = [
     RuntimeModule {
         id: "sessions",
         domain: RuntimeDomain::ControlPlane,
@@ -154,6 +155,18 @@ const MODULES: [RuntimeModule; 21] = [
         domain: RuntimeDomain::HotSimulation,
         description: "Player transform, velocity, and input application",
         dependencies: &["ecs", "delta"],
+    },
+    RuntimeModule {
+        id: "lobby-runtime",
+        domain: RuntimeDomain::HotSimulation,
+        description: "Real ECS/AOI/tick engine (src/runtime/) driving hot-sim \
+            state instead of TableStore rows — sub-tick movement, spawn, and \
+            damage backed by voltra::runtime::LobbyRuntime. Alternative to the \
+            row-based `movement`/`ecs`/`aoi` reducers for studios that need the \
+            full hot-path engine; mutually exclusive with `movement` (both \
+            define entity-lifecycle reducers over the same `entities`-shaped \
+            state, so a project picks one or the other, not both).",
+        dependencies: &["ecs", "aoi"],
     },
     RuntimeModule {
         id: "weapons",
@@ -303,6 +316,23 @@ mod tests {
         ] {
             assert!(ids.contains(expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn lobby_runtime_module_resolves_ecs_and_aoi_but_not_movement() {
+        // `lobby-runtime` is an alternative to the row-based `movement` module,
+        // not an addition to it — requesting it alone should NOT pull in
+        // `movement`/`delta` (those are row-based hot-sim reducers that would
+        // collide with the real-ECS reducers this module generates).
+        let composition = compose_runtime(None, &["lobby-runtime"]).unwrap();
+        let ids: BTreeSet<_> = composition.modules.iter().map(|module| module.id).collect();
+        for expected in ["sessions", "lobby", "tick", "ecs", "aoi", "lobby-runtime"] {
+            assert!(ids.contains(expected), "missing {expected}");
+        }
+        assert!(
+            !ids.contains("movement"),
+            "lobby-runtime should not pull in the row-based movement module"
+        );
     }
 
     #[test]
