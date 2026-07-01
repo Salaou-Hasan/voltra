@@ -350,6 +350,15 @@ async fn run_server_inner(
         num_cpus::get().max(2)
     };
 
+    // Collected so graceful shutdown can await every in-flight reducer call
+    // actually finishing before the process exits (mirrors
+    // app::bootstrap::run_server, the `voltra start` CLI path). Previously
+    // `run_server_inner` returned as soon as the WebSocket listener stopped
+    // accepting connections, without ever joining these worker threads or
+    // flushing the WAL writer — a Ctrl+C during a burst of writes could exit
+    // the process before those writes ever reached disk.
+    let mut worker_handles = Vec::with_capacity(worker_count);
+
     for _worker_id in 0..worker_count {
         let rx_w = rx.clone();
         let tables_w = tables.clone();
@@ -367,7 +376,7 @@ async fn run_server_inner(
         let snap_dir_w = config.snapshot_dir.clone();
         let snap_busy_w = snapshot_in_progress.clone();
 
-        tokio::task::spawn_blocking(move || {
+        let handle = tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
             // Maximum extra calls to drain per wakeup before going back to sleep.
             // Amortises OS thread wakeup cost at high CCU: one wakeup processes up
@@ -411,7 +420,11 @@ async fn run_server_inner(
                             call_id,
                             "This node is a read-only replica.".to_string(),
                         );
-                        if let Err(e) = call.response_tx.send(resp) {
+                        // Sync context (inside spawn_blocking): try_send, not
+                        // send().await. A Full/Closed result just means the
+                        // client's response channel is backed up or gone —
+                        // never block a shared worker thread on one client.
+                        if let Err(e) = call.response_tx.try_send(resp) {
                             log::warn!("[voltra] Response delivery failed: {}", e);
                         }
                         continue;
@@ -596,12 +609,15 @@ async fn run_server_inner(
                     };
 
                     // Deliver response back to the waiting WebSocket handler.
-                    if let Err(e) = call.response_tx.send(response) {
+                    // Sync context (inside spawn_blocking): try_send, not
+                    // send().await — see the replica-rejection branch above.
+                    if let Err(e) = call.response_tx.try_send(response) {
                         log::warn!("[voltra] Response delivery failed: {}", e);
                     }
                 } // end for call in batch
             }
         });
+        worker_handles.push(handle);
     }
 
     // ── Scheduled reducers ─────────────────────────────────────────────────────
@@ -609,6 +625,7 @@ async fn run_server_inner(
     // through the same reducer queue as client calls. Without this, embedded
     // servers (run_server / .vol projects) silently never run their schedulers.
     let sched_seq = Arc::new(AtomicU64::new(u64::MAX / 2));
+    let mut scheduler_handles = Vec::with_capacity(config.scheduled_reducers.len());
     for sched in &config.scheduled_reducers {
         let sched = sched.clone();
         let tx_sched = tx.clone();
@@ -625,7 +642,7 @@ async fn run_server_inner(
             sched.reducer,
             sched.interval_ms
         );
-        tokio::spawn(async move {
+        scheduler_handles.push(tokio::spawn(async move {
             let mut ticker =
                 tokio::time::interval(std::time::Duration::from_millis(sched.interval_ms.max(1)));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -634,7 +651,12 @@ async fn run_server_inner(
                 tokio::select! {
                     _ = ticker.tick() => {
                         let call_id = seq_sched.fetch_add(1, Ordering::Relaxed);
-                        let (resp_tx, _resp_rx) = tokio::sync::mpsc::unbounded_channel::<ReducerResponse>();
+                        // Fire-and-forget: nobody reads this response, so the
+                        // receiver is dropped immediately. Capacity 1 keeps it
+                        // consistent with PendingCall::response_tx's bounded
+                        // contract; the worker's send simply fails (Closed)
+                        // and is already handled as a no-op there.
+                        let (resp_tx, _resp_rx) = tokio::sync::mpsc::channel::<ReducerResponse>(1);
                         let call = PendingCall {
                             call_id,
                             reducer_name: sched.reducer.clone(),
@@ -650,7 +672,7 @@ async fn run_server_inner(
                     _ = shutdown_sched.changed() => break,
                 }
             }
-        });
+        }));
     }
 
     // ── WebSocket listener ────────────────────────────────────────────────────
@@ -829,7 +851,13 @@ async fn run_server_inner(
         }
     }
 
-    crate::network::start_listener(
+    // `start_listener` returns as soon as the shutdown signal fires (it aborts
+    // its own accept-loop tasks internally); it does NOT wait for already-open
+    // `handle_client` connections to finish sending their WebSocket Close
+    // frames, for in-flight reducer calls to drain, or for the WAL writer's
+    // background thread to flush. Do all three explicitly below so Ctrl+C on
+    // an embedded (`voltra::run_server`) project is as safe as `voltra start`.
+    let listener_result = crate::network::start_listener(
         host,
         port,
         tx,
@@ -853,7 +881,40 @@ async fn run_server_inner(
         None,
         drain_flag,
     )
-    .await
+    .await;
+
+    log::info!("[voltra] Draining in-flight reducer calls before exit...");
+
+    // Wait for every reducer worker (and scheduled-reducer task) to observe
+    // the shutdown signal and return, with a bounded deadline so a stuck
+    // reducer can't hang the process forever.
+    let drain_result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        for h in worker_handles {
+            let _ = h.await;
+        }
+        for h in scheduler_handles {
+            let _ = h.await;
+        }
+    })
+    .await;
+    if drain_result.is_err() {
+        log::warn!(
+            "[voltra] Worker drain timed out after 30s — some in-flight reducers may be incomplete"
+        );
+    }
+
+    // Flush any buffered WAL entries to disk, then join the flusher thread.
+    if let Err(e) = wal_writer.flush().await {
+        log::error!("[voltra] WAL flush failed during shutdown: {}", e);
+    }
+    if let Ok(writer) = Arc::try_unwrap(wal_writer) {
+        if let Err(e) = writer.shutdown() {
+            log::error!("[voltra] WAL shutdown: {}", e);
+        }
+    }
+
+    log::info!("[voltra] Shutdown complete");
+    listener_result
 }
 
 /// Start the Redis (RESP) and PostgreSQL (pgwire) listeners over a shared
@@ -892,5 +953,117 @@ pub fn spawn_protocol_listeners(config: &Config) {
                 log::warn!("[pg] listener on port {port} unavailable: {e}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod graceful_shutdown_tests {
+    // These tests exercise the exact drain-then-flush pattern added to
+    // `run_server_inner`'s shutdown sequence (worker/scheduler handles
+    // collected -> shutdown signal -> bounded-timeout join -> WAL flush ->
+    // WAL writer shutdown) without depending on `tokio::signal::ctrl_c()`,
+    // which requires a real OS signal and cannot be reliably delivered
+    // cross-platform (esp. on Windows, where this project builds/tests) from
+    // within `cargo test`. Regression target: before this fix,
+    // `run_server_inner` returned as soon as the WebSocket listener stopped
+    // accepting connections, without ever joining worker tasks or flushing
+    // the WAL writer.
+    use super::*;
+    use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering as StdOrdering};
+
+    #[tokio::test]
+    async fn shutdown_signal_unblocks_worker_shaped_tasks_before_timeout() {
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let completed = Arc::new(StdAtomicUsize::new(0));
+
+        // Spawn a handful of tasks shaped like the reducer worker loops: they
+        // block on a channel recv racing the shutdown signal, and return as
+        // soon as shutdown fires (mirrors the `tokio::select!` in both the
+        // async worker loop in app::bootstrap::run_server and the
+        // spawn_blocking loop in run_server_inner).
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let mut rx = shutdown_rx.clone();
+            let completed = completed.clone();
+            handles.push(tokio::spawn(async move {
+                let (_tx, mut never_fires): (
+                    tokio::sync::mpsc::Sender<()>,
+                    tokio::sync::mpsc::Receiver<()>,
+                ) = tokio::sync::mpsc::channel(1);
+                tokio::select! {
+                    _ = never_fires.recv() => {}
+                    _ = rx.changed() => {}
+                }
+                completed.fetch_add(1, StdOrdering::SeqCst);
+            }));
+        }
+
+        // Nobody has signalled shutdown yet — the drain must NOT complete
+        // instantly (this would indicate the tasks aren't actually blocking
+        // on the shutdown signal, which would make the rest of the test
+        // meaningless).
+        assert_eq!(completed.load(StdOrdering::SeqCst), 0);
+
+        let _ = shutdown_tx.send(());
+
+        let drain_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            for h in handles {
+                let _ = h.await;
+            }
+        })
+        .await;
+
+        assert!(
+            drain_result.is_ok(),
+            "worker-shaped tasks did not drain within the timeout after shutdown fired"
+        );
+        assert_eq!(
+            completed.load(StdOrdering::SeqCst),
+            4,
+            "all 4 worker-shaped tasks must have observed shutdown and returned"
+        );
+    }
+
+    #[tokio::test]
+    async fn wal_flush_and_shutdown_succeed_after_drain() {
+        // Real BatchedWalWriter, exercised the same way run_server_inner's
+        // shutdown tail does: flush() then Arc::try_unwrap + shutdown().
+        let tmp_dir = std::env::temp_dir().join("voltra_test_graceful_shutdown_wal");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let wal_path = tmp_dir.join("voltra.wal");
+
+        let wal_writer =
+            Arc::new(BatchedWalWriter::open(&wal_path, 50, 1000, true).expect("open WAL writer"));
+
+        for i in 0..10u64 {
+            let entry = WalEntry::new(
+                1000 + i,
+                i,
+                "test_reducer".to_string(),
+                vec![1, 2, 3],
+                vec![],
+            );
+            wal_writer.append(&entry, i).expect("append");
+        }
+
+        // This is the exact call sequence added to run_server_inner's tail.
+        wal_writer.flush().await.expect("WAL flush must succeed");
+        match Arc::try_unwrap(wal_writer) {
+            Ok(writer) => writer.shutdown().expect("WAL shutdown must succeed"),
+            Err(_) => panic!(
+                "expected sole ownership of wal_writer at this point in the test \
+                 (no other clones were created)"
+            ),
+        }
+
+        // Data must actually be on disk after flush(), before shutdown().
+        let size = std::fs::metadata(&wal_path).expect("WAL file exists").len();
+        assert!(
+            size > 0,
+            "flushed WAL file should contain data, got 0 bytes"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

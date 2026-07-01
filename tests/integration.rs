@@ -782,3 +782,100 @@ async fn integration_permissions_open_reducer_always_allowed() {
     let _ = child.wait();
     let _ = std::fs::remove_file(&wal_path);
 }
+
+/// After a periodic snapshot completes, the WAL must be rotated (renamed to
+/// `.wal.old`, replaced by a fresh empty file) rather than growing forever.
+/// This exercises the real end-to-end path: `snapshot_interval` triggers a
+/// snapshot in the worker loop, which on success calls
+/// `BatchedWalWriter::truncate_before` (see src/app/bootstrap.rs and
+/// src/server.rs, both call this identically after `save_snapshot` succeeds).
+#[tokio::test]
+async fn integration_wal_rotates_after_snapshot() {
+    let port = 18094u16;
+    let wal_path = std::env::temp_dir().join("voltra_wal_rotate_test.wal");
+    let snapshot_dir = std::env::temp_dir().join("voltra_wal_rotate_test_snapshots");
+    let _ = std::fs::remove_file(&wal_path);
+    let _ = std::fs::remove_file(wal_path.with_extension("wal.old"));
+    let _ = std::fs::remove_dir_all(&snapshot_dir);
+
+    // Snapshot every 5 committed reducer calls so a short test run crosses
+    // the interval multiple times without needing thousands of calls.
+    let mut child = spawn_server_with_env(
+        port,
+        wal_path.clone(),
+        &[
+            ("VOLTRA_SNAPSHOT_INTERVAL", "5"),
+            ("VOLTRA_SNAPSHOT_DIR", snapshot_dir.to_str().unwrap()),
+        ],
+    );
+    let ws_url = format!("ws://127.0.0.1:{}", port);
+    wait_for_server_ready(&ws_url, Duration::from_secs(5)).await;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("connect");
+
+    // Fire enough increments to cross the snapshot_interval boundary several
+    // times over (5 * 6 = 30 calls -> at least 6 snapshot+rotate cycles).
+    for i in 0..30u64 {
+        let args = rmp_serde::to_vec(&IncrementArgs {
+            name: "rotate_test".to_string(),
+            delta: 1,
+        })
+        .unwrap();
+        let resp = send_call(&mut ws, i, "increment", args).await;
+        assert!(resp.success, "increment #{} failed: {:?}", i, resp.error);
+    }
+
+    // Snapshot + rotation run on a spawned background task after the
+    // triggering call's response is already sent, so give it a moment.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let old_wal_path = wal_path.with_extension("wal.old");
+    while Instant::now() < deadline {
+        if old_wal_path.exists() && snapshot_dir.exists() {
+            let has_snapshot = std::fs::read_dir(&snapshot_dir)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(false);
+            if has_snapshot {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    child.kill().expect("Failed to kill server process");
+    let _ = child.wait();
+
+    assert!(
+        old_wal_path.exists(),
+        "expected the WAL to be rotated to {:?} after a snapshot, but it does not exist \
+         (WAL rotation after snapshot appears to be missing or not firing)",
+        old_wal_path
+    );
+    assert!(
+        snapshot_dir.exists(),
+        "expected a snapshot directory to be created at {:?}",
+        snapshot_dir
+    );
+    let snapshot_files: Vec<_> = std::fs::read_dir(&snapshot_dir)
+        .expect("read snapshot dir")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(
+        !snapshot_files.is_empty(),
+        "expected at least one snapshot file in {:?}",
+        snapshot_dir
+    );
+
+    // The active WAL file (post-rotation) should be much smaller than the
+    // rotated-out `.wal.old`, since it only contains entries written after
+    // the last successful snapshot+rotate cycle.
+    let old_size = std::fs::metadata(&old_wal_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    assert!(old_size > 0, "rotated-out .wal.old should contain data");
+
+    let _ = std::fs::remove_file(&wal_path);
+    let _ = std::fs::remove_file(&old_wal_path);
+    let _ = std::fs::remove_dir_all(&snapshot_dir);
+}

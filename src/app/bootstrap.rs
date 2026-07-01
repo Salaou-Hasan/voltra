@@ -663,7 +663,10 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                         call_id,
                         "This node is a read-only replica. Write to the primary, or promote this node via POST /replication/promote.".to_string(),
                     );
-                    if let Err(e) = call.response_tx.send(resp) { log::warn!("send response: {}", e); }
+                    // Async context: bounded send() backpressures on this one
+                    // connection without blocking the worker loop indefinitely
+                    // (the loop only awaits this connection's own channel).
+                    if let Err(e) = call.response_tx.send(resp).await { log::warn!("send response: {}", e); }
                     continue;
                 }
 
@@ -826,7 +829,9 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                         }
                     },
                 };
-                if let Err(e) = call.response_tx.send(response) { log::warn!("send response: {}", e); }
+                // Async context: bounded send() backpressures on this one
+                // connection without stalling other workers or connections.
+                if let Err(e) = call.response_tx.send(response).await { log::warn!("send response: {}", e); }
             }
             log::debug!("Reducer worker {} stopped", worker_id);
         }));
@@ -938,7 +943,9 @@ pub(crate) async fn run_server(config: Config) -> Result<()> {
                 tokio::select! {
                     _ = ticker.tick() => {
                         let call_id = seq_sched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel::<ReducerResponse>();
+                        // Single response expected — capacity 1 (see
+                        // PendingCall::response_tx's bounded contract).
+                        let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<ReducerResponse>(1);
                         let call = PendingCall {
                             call_id,
                             reducer_name: sched.reducer.clone(),
