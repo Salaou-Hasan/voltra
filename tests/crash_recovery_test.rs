@@ -163,6 +163,17 @@ async fn crash_recovery_basic_counter_survives() {
             call_increment(&mut ws, i as u64 + 1, "crash_test_counter", 1).await;
         }
 
+        // A confirmed reducer response only means the write landed in the
+        // WAL writer's in-process batch queue — that queue is flushed to the
+        // OS on a ~100ms timer (VOLTRA_UNSAFE_NO_FSYNC skips the disk fsync
+        // call, not this in-memory batching). Killing the process before that
+        // timer has fired at least once loses whatever's still queued,
+        // independent of fsync — this is what made the test genuinely flaky
+        // under parallel CI load (passed reliably alone, failed once under
+        // full-suite contention). This margin is what the test's own
+        // durability claim ("must not be lower") actually depends on.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
         ws.close(None).await.ok();
         // Kill abruptly — no graceful shutdown signal.
         child.kill().expect("kill server");

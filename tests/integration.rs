@@ -354,7 +354,14 @@ async fn integration_subscription_notifications() {
     let wal_path = std::env::temp_dir().join("voltra_integration_subscription.wal");
     let _ = std::fs::remove_file(&wal_path);
 
-    let mut child = spawn_server(port, wal_path.clone());
+    // Default config enables 50Hz tick-coalesced subscription delivery
+    // (sub_tick_ms=20), which batches deltas into periodic `BatchUpdate`
+    // frames instead of delivering each one as an immediate `SubscriptionDiff`.
+    // This test verifies the underlying notify-on-write mechanism at the raw
+    // wire-protocol level (not the batching/compression layer, which is a
+    // separate concern), so it disables coalescing for instant delivery —
+    // matching the documented "0 = deliver every write immediately" behavior.
+    let mut child = spawn_server_with_env(port, wal_path.clone(), &[("VOLTRA_SUB_TICK_MS", "0")]);
     let ws_url = format!("ws://127.0.0.1:{}", port);
     wait_for_server_ready(&ws_url, Duration::from_secs(5)).await;
 
@@ -417,23 +424,33 @@ async fn integration_subscription_notifications() {
         .await
         .expect("Failed to send reducer call");
 
-    let mut found_diff = false;
-    for _ in 0..5 {
-        if let Some(msg) = ws_stream.next().await {
-            let msg = msg.expect("Failed to read message");
-            if let Message::Binary(data) = msg {
-                if let Ok(ServerMessage::SubscriptionDiff(diff)) = rmp_serde::from_slice(&data) {
-                    assert_eq!(diff.subscription_id, "sub1");
-                    assert_eq!(diff.row_key, "player1");
-                    assert_eq!(diff.table_name, "counters");
-                    assert_eq!(diff.operation, "insert");
-                    assert!(diff.row_data.is_some());
-                    found_diff = true;
-                    break;
+    // Bounded so a regression here fails fast in CI with a clear message
+    // instead of hanging indefinitely (this loop previously had no timeout at
+    // all — a missing/delayed notification would block forever).
+    let wait_for_diff = async {
+        let mut found_diff = false;
+        for _ in 0..5 {
+            if let Some(msg) = ws_stream.next().await {
+                let msg = msg.expect("Failed to read message");
+                if let Message::Binary(data) = msg {
+                    if let Ok(ServerMessage::SubscriptionDiff(diff)) = rmp_serde::from_slice(&data)
+                    {
+                        assert_eq!(diff.subscription_id, "sub1");
+                        assert_eq!(diff.row_key, "player1");
+                        assert_eq!(diff.table_name, "counters");
+                        assert_eq!(diff.operation, "insert");
+                        assert!(diff.row_data.is_some());
+                        found_diff = true;
+                        break;
+                    }
                 }
             }
         }
-    }
+        found_diff
+    };
+    let found_diff = tokio::time::timeout(Duration::from_secs(10), wait_for_diff)
+        .await
+        .expect("Timed out waiting for subscription diff notification (server never sent it)");
 
     assert!(found_diff, "Did not receive subscription diff notification");
 
