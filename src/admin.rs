@@ -313,7 +313,10 @@ pub async fn handle_metrics_request(
             // Dispatch through the real reducer queue so the call gets the
             // identical execution path as a WebSocket client (permissions
             // excepted — this endpoint is admin-gated above).
-            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
+            // Single response expected — capacity 1 is exactly right (also
+            // keeps this per-call channel bounded like every other
+            // response_tx in the system; see PendingCall::response_tx).
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel(1);
             let call = PendingCall {
                 call_id: 0,
                 reducer_name: name,
@@ -726,7 +729,9 @@ pub async fn handle_metrics_request(
                 Ok(b) => b,
                 Err(e) => return Ok(bad_request(format!("Bad args_b64: {}", e))),
             };
-            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
+            // Single response expected — capacity 1 (see the analogous
+            // /admin/api/call handler above for the same rationale).
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel(1);
             let call = PendingCall {
                 call_id: 0,
                 reducer_name: pr.reducer_name,

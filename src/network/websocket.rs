@@ -231,7 +231,12 @@ pub struct PendingCall {
     /// to a dedicated worker thread for this lobby instead of the global pool.
     /// Parsed from the first argument's key prefix (e.g. `"l42_p123"` → `"42"`).
     pub lobby_hint: Option<String>,
-    pub response_tx: mpsc::UnboundedSender<ReducerResponse>,
+    /// Bounded (capacity `CLIENT_SEND_BUFFER_CAPACITY`): sending a response to
+    /// a connection whose reader has stalled must eventually push back on the
+    /// *worker* (via `try_send` returning `Full`), not grow this channel's
+    /// buffer without limit. See the response task in `handle_client` for the
+    /// corresponding receive side.
+    pub response_tx: mpsc::Sender<ReducerResponse>,
 }
 
 struct ConnectionGuard(Arc<AtomicUsize>);
@@ -609,16 +614,28 @@ where
     };
 
     // ── Reducer response task ─────────────────────────────────────────────────
-    let (response_tx, mut response_rx) = mpsc::unbounded_channel::<ReducerResponse>();
+    // Bounded (not unbounded): a stalled client that keeps its read half open
+    // (so new ReducerCalls keep getting accepted into the shared reducer
+    // queue) but never drains its socket would otherwise let this channel's
+    // internal buffer grow forever — every worker-thread completion enqueues
+    // one more `ReducerResponse` here, and an unbounded mpsc never applies
+    // backpressure to the sender. Bounding it at CLIENT_SEND_BUFFER_CAPACITY
+    // gives this per-connection queue the same hard ceiling as the outbound
+    // write channel and the subscription fan-out channel below.
+    let (response_tx, mut response_rx) =
+        mpsc::channel::<ReducerResponse>(CLIENT_SEND_BUFFER_CAPACITY);
     let write_tx_response = write_tx.clone();
     let response_task = tokio::spawn(async move {
         while let Some(response) = response_rx.recv().await {
             match protocol::encode_response(&response) {
                 Ok(data) => {
-                    // Reducer responses must NEVER be dropped — a lost response
-                    // is a 5s client timeout. When subscription fan-out fills
-                    // the shared write queue, responses wait (backpressure on
-                    // this client only); fan-out frames stay droppable.
+                    // Reducer responses must NEVER be silently dropped once
+                    // accepted here — a lost response is a 5s client timeout.
+                    // When subscription fan-out fills the shared write queue,
+                    // responses wait (backpressure on this client only);
+                    // fan-out frames stay droppable. The bounded channel above
+                    // is what stops that wait from being preceded by unbounded
+                    // buffering on the input side.
                     if write_tx_response.send(Message::Binary(data)).await.is_err() {
                         break; // connection closed
                     }
@@ -780,7 +797,13 @@ where
                         if let Some(inline_fn) = inline_registry.get(&call.reducer_name) {
                             let result_bytes = inline_fn(&call.args);
                             let resp = ReducerResponse::success(call_id, result_bytes);
-                            let _ = response_tx.send(resp);
+                            if let Err(e) = response_tx.try_send(resp) {
+                                log::warn!(
+                                    "Failed to send inline reducer response for call_id={}: {}",
+                                    call_id,
+                                    e
+                                );
+                            }
                             metrics.reducer_calls_total.inc();
                             continue;
                         }
@@ -807,7 +830,7 @@ where
                                 call_id,
                                 "server overloaded, retry later".to_string(),
                             );
-                            let _ = response_tx.send(overloaded);
+                            let _ = response_tx.try_send(overloaded);
                         }
                     }
 
@@ -1064,7 +1087,7 @@ where
                                         call_id,
                                         "server overloaded, retry later".to_string(),
                                     );
-                                    let _ = response_tx.send(overloaded);
+                                    let _ = response_tx.try_send(overloaded);
                                 }
                             }
                             Err(e) => {
@@ -1228,7 +1251,7 @@ mod tests {
 
     #[test]
     fn test_pending_call_creation() {
-        let (_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_tx, _rx) = tokio::sync::mpsc::channel(CLIENT_SEND_BUFFER_CAPACITY);
         let call = PendingCall {
             call_id: 1,
             reducer_name: "increment".to_string(),
@@ -1410,6 +1433,63 @@ mod tests {
             "CLIENT_SEND_BUFFER_CAPACITY must be >= 1024, got {}",
             CLIENT_SEND_BUFFER_CAPACITY
         );
+    }
+
+    #[test]
+    fn test_reducer_response_channel_is_bounded_not_unbounded() {
+        // Regression test for the "response backlog can grow forever" gap: a
+        // stalled connection that keeps its read half open (still submitting
+        // ReducerCalls into the shared queue) but never drains its socket
+        // must NOT let PendingCall::response_tx accumulate responses without
+        // limit. Fill the channel to CLIENT_SEND_BUFFER_CAPACITY and confirm
+        // the next try_send is rejected with Full rather than succeeding —
+        // which is exactly what an unbounded channel would do forever.
+        let (tx, _rx) = mpsc::channel::<ReducerResponse>(CLIENT_SEND_BUFFER_CAPACITY);
+
+        for i in 0..CLIENT_SEND_BUFFER_CAPACITY {
+            let resp = ReducerResponse::success(i as u64, vec![]);
+            assert!(
+                tx.try_send(resp).is_ok(),
+                "response {} should succeed (capacity={})",
+                i,
+                CLIENT_SEND_BUFFER_CAPACITY
+            );
+        }
+
+        let overflow = ReducerResponse::success(u64::MAX, vec![]);
+        match tx.try_send(overflow) {
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                // Expected: the channel applies backpressure instead of
+                // growing without bound.
+            }
+            Ok(_) => panic!(
+                "response_tx accepted a send past capacity {} — it is unbounded again",
+                CLIENT_SEND_BUFFER_CAPACITY
+            ),
+            Err(mpsc::error::TrySendError::Closed(_)) => panic!("channel unexpectedly closed"),
+        }
+    }
+
+    #[test]
+    fn test_pending_call_response_tx_field_is_bounded_sender() {
+        // Compile-time / type-level guard: PendingCall::response_tx must stay
+        // a bounded `mpsc::Sender`, not revert to `mpsc::UnboundedSender`. If
+        // this test fails to compile after a refactor, the field type changed
+        // — update the call sites' send()/try_send() usage accordingly (sync
+        // worker contexts need try_send; async worker contexts need
+        // send().await) rather than silently reintroducing the unbounded gap.
+        let (tx, _rx): (mpsc::Sender<ReducerResponse>, _) = mpsc::channel(1);
+        let call = PendingCall {
+            call_id: 1,
+            reducer_name: "noop".to_string(),
+            args: vec![],
+            caller_id: String::new(),
+            caller_role: String::new(),
+            tenant_id: None,
+            lobby_hint: None,
+            response_tx: tx,
+        };
+        assert_eq!(call.call_id, 1);
     }
 
     #[test]

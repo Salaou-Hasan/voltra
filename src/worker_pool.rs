@@ -381,7 +381,10 @@ fn lobby_worker_loop(
                     call_id,
                     "This node is a read-only replica.".to_string(),
                 );
-                let _ = call.response_tx.send(resp);
+                // Sync context (dedicated OS thread): try_send, not
+                // send().await — never block this lobby's thread on one
+                // stalled connection.
+                let _ = call.response_tx.try_send(resp);
                 continue;
             }
 
@@ -457,7 +460,8 @@ fn lobby_worker_loop(
                 };
             };
 
-            if let Err(e) = call.response_tx.send(response) {
+            // Sync context: try_send, not send().await (see above).
+            if let Err(e) = call.response_tx.try_send(response) {
                 log::warn!("[lobby-{}] Response delivery failed: {}", lobby_id, e);
             }
         }
