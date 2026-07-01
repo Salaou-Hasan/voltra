@@ -376,6 +376,133 @@ fn lobby_worker_loop(
         for call in batch {
             let call_id = call.call_id;
 
+            // Root span for this reducer call's full lifecycle — same shape
+            // as the other two worker loops (src/app/bootstrap.rs,
+            // src/server.rs). `lobby_worker_loop` runs on a dedicated,
+            // pinned OS thread (not an async task), so a plain `.enter()`
+            // guard is safe for the whole per-call body below.
+            let call_span = tracing::info_span!(
+                "reducer_call",
+                call_id = call_id,
+                reducer = %call.reducer_name,
+                caller_id = %call.caller_id,
+                lobby_id = %lobby_id,
+                queue_wait_ms = call.enqueued_at.elapsed().as_secs_f64() * 1000.0,
+            );
+            let _call_enter = call_span.enter();
+            let ts = crate::now_nanos();
+
+            // ── Client transaction batch (BEGIN/COMMIT) ────────────────────
+            // See src/server.rs and src/app/bootstrap.rs for the identical
+            // pattern used by the other two worker loops. Executes every
+            // buffered reducer call in order against one ReducerContext, then
+            // commits the whole batch atomically. See
+            // `ServerMessage::TransactionResult` for the documented isolation
+            // level (read-committed + whole-transaction OCC, not
+            // serializable).
+            if let Some(batch_calls) = call.tx_batch {
+                let outcome = if crate::replication::is_replica() {
+                    crate::network::TransactionOutcome {
+                        tx_id: call_id,
+                        success: false,
+                        responses: vec![],
+                        error: Some("This node is a read-only replica.".to_string()),
+                    }
+                } else {
+                    let mut ctx = ReducerContext::new(deps.tables.clone(), ts)
+                        .with_schema(deps.schema_registry.clone())
+                        .with_ttl(deps.ttl_manager.clone());
+                    ctx.caller_id = call.caller_id.clone();
+                    ctx.caller_role = call.caller_role.clone();
+
+                    let mut responses = Vec::with_capacity(batch_calls.len());
+                    let mut aborted: Option<String> = None;
+                    for (reducer_name, args) in &batch_calls {
+                        let exec = tracing::info_span!("dispatch", reducer = %reducer_name)
+                            .in_scope(|| deps.registry.execute(reducer_name, &mut ctx, args));
+                        match exec {
+                            Ok(bytes) => responses.push(ReducerResponse::success(0, bytes)),
+                            Err(e) => {
+                                aborted = Some(format!("reducer '{}' failed: {}", reducer_name, e));
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Some(err) = aborted {
+                        ctx.rollback();
+                        deps.metrics.reducer_errors_total.inc();
+                        crate::network::TransactionOutcome {
+                            tx_id: call_id,
+                            success: false,
+                            responses: vec![],
+                            error: Some(err),
+                        }
+                    } else {
+                        let commit_result = tracing::info_span!("commit").in_scope(|| ctx.commit());
+                        match commit_result {
+                            Ok(deltas) => {
+                                let _fanout_enter =
+                                    tracing::info_span!("subscription_fanout", rows = deltas.len())
+                                        .entered();
+                                if !deltas.is_empty() {
+                                    deps.subscription_manager.publish_deltas(&deltas);
+                                    deps.cluster_bus.fanout_deltas(&deltas);
+                                }
+                                drop(_fanout_enter);
+
+                                let seq_num = deps.global_seq.fetch_add(1, Ordering::Relaxed);
+                                let _wal_enter =
+                                    tracing::info_span!("wal_append", seq_num).entered();
+                                let entry = WalEntry::new(
+                                    ts,
+                                    seq_num,
+                                    "__transaction".to_string(),
+                                    Vec::new(),
+                                    deltas,
+                                );
+                                if let Err(e) = deps.wal_writer.append(&entry, seq_num) {
+                                    log::warn!("[lobby-{}] WAL append failed: {}", lobby_id, e);
+                                } else {
+                                    deps.metrics.wal_entries_written_total.inc();
+                                }
+                                drop(_wal_enter);
+
+                                deps.metrics
+                                    .reducer_calls_total
+                                    .inc_by(batch_calls.len() as u64);
+                                crate::network::TransactionOutcome {
+                                    tx_id: call_id,
+                                    success: true,
+                                    responses,
+                                    error: None,
+                                }
+                            }
+                            Err(e) => {
+                                deps.metrics.reducer_errors_total.inc();
+                                crate::network::TransactionOutcome {
+                                    tx_id: call_id,
+                                    success: false,
+                                    responses: vec![],
+                                    error: Some(format!("Commit error: {}", e)),
+                                }
+                            }
+                        }
+                    }
+                };
+
+                if let Some(tx_tx) = &call.tx_response_tx {
+                    if let Err(e) = tx_tx.send(outcome) {
+                        log::warn!(
+                            "[lobby-{}] Transaction result delivery failed: {}",
+                            lobby_id,
+                            e
+                        );
+                    }
+                }
+                continue;
+            }
+
             if crate::replication::is_replica() {
                 let resp = ReducerResponse::error(
                     call_id,
@@ -388,7 +515,6 @@ fn lobby_worker_loop(
                 continue;
             }
 
-            let ts = crate::now_nanos();
             let mut ctx = ReducerContext::new(deps.tables.clone(), ts)
                 .with_schema(deps.schema_registry.clone())
                 .with_ttl(deps.ttl_manager.clone());
@@ -400,9 +526,10 @@ fn lobby_worker_loop(
             let call_start = std::time::Instant::now();
             let response = loop {
                 attempt += 1;
-                let exec = deps
-                    .registry
-                    .execute(&call.reducer_name, &mut ctx, &call.args);
+                let exec = tracing::info_span!("dispatch", attempt).in_scope(|| {
+                    deps.registry
+                        .execute(&call.reducer_name, &mut ctx, &call.args)
+                });
 
                 break match exec {
                     Err(e) => {
@@ -411,52 +538,63 @@ fn lobby_worker_loop(
                         stats.errors.fetch_add(1, AOrdering::Relaxed);
                         ReducerResponse::error(call_id, e.to_string())
                     }
-                    Ok(result_bytes) => match ctx.commit() {
-                        Err(crate::error::VoltraError::TxnConflict(_))
-                            if attempt < MAX_CONFLICT_RETRIES =>
-                        {
-                            ctx.reset_for_retry();
-                            std::thread::yield_now();
-                            continue;
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "[lobby-{}] Commit failed for '{}': {}",
-                                lobby_id,
-                                call.reducer_name,
-                                e
-                            );
-                            deps.metrics.reducer_errors_total.inc();
-                            ReducerResponse::error(call_id, format!("Commit error: {}", e))
-                        }
-                        Ok(deltas) => {
-                            if !deltas.is_empty() {
-                                deps.subscription_manager.publish_deltas(&deltas);
-                                deps.cluster_bus.fanout_deltas(&deltas);
+                    Ok(result_bytes) => {
+                        let commit_result =
+                            tracing::info_span!("commit", attempt).in_scope(|| ctx.commit());
+                        match commit_result {
+                            Err(crate::error::VoltraError::TxnConflict(_))
+                                if attempt < MAX_CONFLICT_RETRIES =>
+                            {
+                                ctx.reset_for_retry();
+                                std::thread::yield_now();
+                                continue;
                             }
-
-                            let seq_num = deps.global_seq.fetch_add(1, Ordering::Relaxed);
-                            let entry = WalEntry::new(
-                                ts,
-                                seq_num,
-                                call.reducer_name.clone(),
-                                call.args.clone(),
-                                deltas.clone(),
-                            );
-                            if let Err(e) = deps.wal_writer.append(&entry, seq_num) {
-                                log::warn!("[lobby-{}] WAL append failed: {}", lobby_id, e);
-                            } else {
-                                deps.metrics.wal_entries_written_total.inc();
+                            Err(e) => {
+                                log::error!(
+                                    "[lobby-{}] Commit failed for '{}': {}",
+                                    lobby_id,
+                                    call.reducer_name,
+                                    e
+                                );
+                                deps.metrics.reducer_errors_total.inc();
+                                ReducerResponse::error(call_id, format!("Commit error: {}", e))
                             }
+                            Ok(deltas) => {
+                                let _fanout_enter =
+                                    tracing::info_span!("subscription_fanout", rows = deltas.len())
+                                        .entered();
+                                if !deltas.is_empty() {
+                                    deps.subscription_manager.publish_deltas(&deltas);
+                                    deps.cluster_bus.fanout_deltas(&deltas);
+                                }
+                                drop(_fanout_enter);
 
-                            deps.metrics.reducer_calls_total.inc();
-                            deps.metrics
-                                .reducer_duration_seconds
-                                .observe(call_start.elapsed().as_secs_f64());
-                            stats.record_call(call_start.elapsed().as_nanos() as u64);
-                            ReducerResponse::success(call_id, result_bytes)
+                                let seq_num = deps.global_seq.fetch_add(1, Ordering::Relaxed);
+                                let _wal_enter =
+                                    tracing::info_span!("wal_append", seq_num).entered();
+                                let entry = WalEntry::new(
+                                    ts,
+                                    seq_num,
+                                    call.reducer_name.clone(),
+                                    call.args.clone(),
+                                    deltas.clone(),
+                                );
+                                if let Err(e) = deps.wal_writer.append(&entry, seq_num) {
+                                    log::warn!("[lobby-{}] WAL append failed: {}", lobby_id, e);
+                                } else {
+                                    deps.metrics.wal_entries_written_total.inc();
+                                }
+                                drop(_wal_enter);
+
+                                deps.metrics.reducer_calls_total.inc();
+                                deps.metrics
+                                    .reducer_duration_seconds
+                                    .observe(call_start.elapsed().as_secs_f64());
+                                stats.record_call(call_start.elapsed().as_nanos() as u64);
+                                ReducerResponse::success(call_id, result_bytes)
+                            }
                         }
-                    },
+                    }
                 };
             };
 

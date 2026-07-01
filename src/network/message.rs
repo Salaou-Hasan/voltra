@@ -129,6 +129,31 @@ pub enum ClientMessage {
         table_name: String,
         row_key: String,
     },
+    /// Begin a client-side transaction. While a transaction is open on this
+    /// connection, subsequent `ReducerCall`s are NOT dispatched to the
+    /// reducer queue individually — they are buffered by the WebSocket
+    /// handler and executed as one atomic batch against a single
+    /// `ReducerContext` when `CommitTransaction` arrives (or discarded on
+    /// `RollbackTransaction` / disconnect).
+    ///
+    /// Same-node only: this is a local (single-process) transaction. There is
+    /// no cross-shard/cross-cluster coordination — see docs on
+    /// `ServerMessage::TransactionResult` for the actual isolation level
+    /// provided.
+    BeginTransaction {
+        tx_id: u64,
+    },
+    /// Commit the currently open transaction (must match the `tx_id` from
+    /// `BeginTransaction`). All buffered reducer calls are executed in the
+    /// order received and committed atomically in one lock acquisition.
+    CommitTransaction {
+        tx_id: u64,
+    },
+    /// Discard the currently open transaction without executing any of its
+    /// buffered reducer calls.
+    RollbackTransaction {
+        tx_id: u64,
+    },
 }
 
 /// A diff for subscribed clients.
@@ -179,6 +204,54 @@ pub enum ServerMessage {
     BatchUpdate {
         compressed: bool,
         payload: Vec<u8>,
+    },
+    /// Acknowledges a `ClientMessage::BeginTransaction`.
+    TransactionBegan {
+        tx_id: u64,
+    },
+    /// Result of a `ClientMessage::CommitTransaction` (or an early failure —
+    /// e.g. a reducer inside the batch returned an error, which aborts the
+    /// whole transaction before any of its writes are committed).
+    ///
+    /// ## Isolation level — read this before relying on this feature
+    ///
+    /// This is **atomicity + a single, whole-transaction optimistic-
+    /// concurrency check**, not full serializable isolation:
+    ///
+    /// - **Atomicity**: every reducer call staged in the transaction is
+    ///   applied in one `apply_delta_batch_versioned()` call, under the same
+    ///   sorted per-row lock acquisition Voltra already uses for a single
+    ///   reducer commit. Either all deltas land, or none do.
+    /// - **Isolation actually provided: read-committed with first-writer-wins
+    ///   conflict detection on rows read by the transaction**, i.e. an OCC
+    ///   check equivalent to what a single reducer call already gets: the
+    ///   transaction's read-set (every row any of its reducer calls read via
+    ///   `ctx.get_row`) is validated against the live row versions at commit
+    ///   time. If any row read during the transaction was modified by
+    ///   another commit in the meantime, the whole transaction is rejected
+    ///   with `VoltraError::TxnConflict` and none of its writes apply.
+    /// - **What it is NOT**: reducer calls within the transaction execute
+    ///   sequentially against one in-memory `ReducerContext` *before* the
+    ///   commit-time lock is ever taken — there is no serializable snapshot
+    ///   isolation, no predicate locking, and no protection against
+    ///   write-skew anomalies (two transactions each reading disjoint rows
+    ///   and writing based on a global invariant that only holds across both
+    ///   reads). This matches the isolation level of Voltra's existing
+    ///   single-reducer OCC (documented in CLAUDE.md Session 54) — the
+    ///   transaction feature extends the SAME guarantee across multiple
+    ///   reducer calls rather than introducing a stronger one.
+    /// - **Same-node only**: all reducer calls in a transaction run on the
+    ///   worker that receives the commit; there is no cross-shard or
+    ///   cross-cluster coordination. Do not span a transaction across rows
+    ///   that live on different shards.
+    TransactionResult {
+        tx_id: u64,
+        success: bool,
+        /// One response per buffered reducer call, in call order. Empty when
+        /// `success` is false and the transaction was rejected before any
+        /// reducer executed (e.g. unknown tx_id, empty transaction).
+        responses: Vec<ReducerResponse>,
+        error: Option<String>,
     },
 }
 
@@ -244,5 +317,83 @@ mod tests {
         assert!(r.success);
         assert_eq!(r.columns.len(), 2);
         assert_eq!(r.rows.len(), 1);
+    }
+
+    #[test]
+    fn test_begin_transaction_roundtrip() {
+        let msg = ClientMessage::BeginTransaction { tx_id: 7 };
+        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let decoded: ClientMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            ClientMessage::BeginTransaction { tx_id } => assert_eq!(tx_id, 7),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_commit_transaction_roundtrip() {
+        let msg = ClientMessage::CommitTransaction { tx_id: 99 };
+        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let decoded: ClientMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            ClientMessage::CommitTransaction { tx_id } => assert_eq!(tx_id, 99),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_rollback_transaction_roundtrip() {
+        let msg = ClientMessage::RollbackTransaction { tx_id: 5 };
+        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let decoded: ClientMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            ClientMessage::RollbackTransaction { tx_id } => assert_eq!(tx_id, 5),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_transaction_result_success_roundtrip() {
+        let msg = ServerMessage::TransactionResult {
+            tx_id: 3,
+            success: true,
+            responses: vec![ReducerResponse::success(0, vec![1, 2, 3])],
+            error: None,
+        };
+        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let decoded: ServerMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            ServerMessage::TransactionResult {
+                tx_id,
+                success,
+                responses,
+                error,
+            } => {
+                assert_eq!(tx_id, 3);
+                assert!(success);
+                assert_eq!(responses.len(), 1);
+                assert!(error.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_transaction_result_failure_roundtrip() {
+        let msg = ServerMessage::TransactionResult {
+            tx_id: 4,
+            success: false,
+            responses: vec![],
+            error: Some("reducer 'x' failed: boom".to_string()),
+        };
+        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let decoded: ServerMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            ServerMessage::TransactionResult { success, error, .. } => {
+                assert!(!success);
+                assert!(error.unwrap().contains("boom"));
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 }

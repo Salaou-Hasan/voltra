@@ -23,7 +23,9 @@ use crate::auth::{AuthValidator, IdentityIssuer};
 use crate::config::Config;
 use crate::error::Result;
 use crate::metrics::Metrics;
-use crate::network::{PendingCall, RateLimiterConfig, RateLimiterRegistry, ReducerResponse};
+use crate::network::{
+    PendingCall, RateLimiterConfig, RateLimiterRegistry, ReducerResponse, TransactionOutcome,
+};
 use crate::persistence::PersistenceEngine;
 use crate::presence::PresenceManager;
 use crate::reducer::{ReducerContext, ReducerRegistry};
@@ -123,6 +125,12 @@ async fn run_server_inner(
     config: Config,
     handle_tx: Option<tokio::sync::oneshot::Sender<ServerHandle>>,
 ) -> Result<()> {
+    // Installs the `tracing` subscriber the same way the CLI binary path
+    // does (see src/app/bootstrap.rs). `try_init()`/`LogTracer::init()` are
+    // both no-ops if the embedding application already installed its own
+    // `log`/`tracing` subscriber — safe to call unconditionally here.
+    let _tracing_guard = crate::tracing_setup::init(&config);
+
     // ── Graceful shutdown signal ──────────────────────────────────────────────
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
@@ -414,6 +422,160 @@ async fn run_server_inner(
                 for call in batch {
                     let call_id = call.call_id;
 
+                    // ── Client transaction batch (BEGIN/COMMIT) ────────────
+                    // A `tx_batch` PendingCall bundles every reducer call the
+                    // client staged between BeginTransaction/CommitTransaction
+                    // into one atomic unit: every reducer executes in order
+                    // against a single ReducerContext, then the whole batch
+                    // commits in one `apply_delta_batch_versioned()` call.
+                    // See `ServerMessage::TransactionResult` for the actual
+                    // isolation level this provides (read-committed + OCC
+                    // across the whole transaction, not serializable).
+                    if let Some(batch_calls) = call.tx_batch {
+                        let tx_span = tracing::info_span!(
+                            "client_transaction",
+                            tx_id = call_id,
+                            calls = batch_calls.len(),
+                            queue_wait_ms = call.enqueued_at.elapsed().as_secs_f64() * 1000.0,
+                        );
+                        let _tx_enter = tx_span.enter();
+
+                        let outcome = if crate::replication::is_replica() {
+                            TransactionOutcome {
+                                tx_id: call_id,
+                                success: false,
+                                responses: vec![],
+                                error: Some("This node is a read-only replica.".to_string()),
+                            }
+                        } else {
+                            let ts = now_nanos();
+                            let mut ctx = ReducerContext::new(tables_w.clone(), ts)
+                                .with_schema(schema_w.clone())
+                                .with_ttl(ttl_w.clone());
+                            ctx.caller_id = call.caller_id.clone();
+                            ctx.caller_role = call.caller_role.clone();
+
+                            let mut responses = Vec::with_capacity(batch_calls.len());
+                            let mut aborted: Option<String> = None;
+                            for (reducer_name, args) in &batch_calls {
+                                let exec = tracing::info_span!("dispatch", reducer = %reducer_name)
+                                    .in_scope(|| registry_w.execute(reducer_name, &mut ctx, args));
+                                match exec {
+                                    Ok(bytes) => responses.push(ReducerResponse::success(0, bytes)),
+                                    Err(e) => {
+                                        aborted = Some(format!(
+                                            "reducer '{}' failed: {}",
+                                            reducer_name, e
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if let Some(err) = aborted {
+                                ctx.rollback();
+                                metrics_w.reducer_errors_total.inc();
+                                TransactionOutcome {
+                                    tx_id: call_id,
+                                    success: false,
+                                    responses: vec![],
+                                    error: Some(err),
+                                }
+                            } else {
+                                let commit_result =
+                                    tracing::info_span!("commit").in_scope(|| ctx.commit());
+                                match commit_result {
+                                    Ok(deltas) => {
+                                        let _fanout_enter = tracing::info_span!(
+                                            "subscription_fanout",
+                                            rows = deltas.len()
+                                        )
+                                        .entered();
+                                        if !deltas.is_empty() {
+                                            subs_w.publish_deltas(&deltas);
+                                            cluster_w.fanout_deltas(&deltas);
+                                        }
+                                        drop(_fanout_enter);
+
+                                        let seq_num = seq_w.fetch_add(1, Ordering::Relaxed);
+                                        if let Some(ref pe) = persist_w {
+                                            if !deltas.is_empty() {
+                                                if let Err(e) = pe.persist_deltas(&deltas, seq_num)
+                                                {
+                                                    log::warn!(
+                                                        "[voltra] Disk persist failed: {}",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        }
+
+                                        let _wal_enter =
+                                            tracing::info_span!("wal_append", seq_num).entered();
+                                        let entry = WalEntry::new(
+                                            ts,
+                                            seq_num,
+                                            "__transaction".to_string(),
+                                            Vec::new(),
+                                            deltas,
+                                        );
+                                        if let Err(e) = wal_w.append(&entry, seq_num) {
+                                            log::warn!("[voltra] WAL append failed: {}", e);
+                                        } else {
+                                            metrics_w.wal_entries_written_total.inc();
+                                        }
+                                        drop(_wal_enter);
+
+                                        metrics_w
+                                            .reducer_calls_total
+                                            .inc_by(batch_calls.len() as u64);
+                                        TransactionOutcome {
+                                            tx_id: call_id,
+                                            success: true,
+                                            responses,
+                                            error: None,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        metrics_w.reducer_errors_total.inc();
+                                        TransactionOutcome {
+                                            tx_id: call_id,
+                                            success: false,
+                                            responses: vec![],
+                                            error: Some(format!("Commit error: {}", e)),
+                                        }
+                                    }
+                                }
+                            }
+                        };
+
+                        if let Some(tx_tx) = &call.tx_response_tx {
+                            if let Err(e) = tx_tx.send(outcome) {
+                                log::warn!("[voltra] Transaction result delivery failed: {}", e);
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Root span for this reducer call's full lifecycle — same
+                    // shape as the CLI-binary worker loop in
+                    // src/app/bootstrap.rs (queue wait → dispatch → commit →
+                    // WAL append → subscription fan-out). This whole worker
+                    // loop already runs inside a `spawn_blocking` OS thread
+                    // (see the surrounding `tokio::task::spawn_blocking` a few
+                    // lines up), so a plain `.enter()` guard is safe across
+                    // every line below — there is no `.await` on this thread's
+                    // own stack until the *next* outer iteration's
+                    // `rt.block_on(rx_w.recv())`.
+                    let call_span = tracing::info_span!(
+                        "reducer_call",
+                        call_id = call_id,
+                        reducer = %call.reducer_name,
+                        caller_id = %call.caller_id,
+                        queue_wait_ms = call.enqueued_at.elapsed().as_secs_f64() * 1000.0,
+                    );
+                    let _call_enter = call_span.enter();
+
                     // Replicas are read-only: reject reducer calls until promoted.
                     if crate::replication::is_replica() {
                         let resp = ReducerResponse::error(
@@ -449,7 +611,9 @@ async fn run_server_inner(
                     let mut attempt = 0;
                     let response = loop {
                         attempt += 1;
-                        let exec = registry_w.execute(&call.reducer_name, &mut ctx, &call.args);
+                        let exec = tracing::info_span!("dispatch", attempt).in_scope(|| {
+                            registry_w.execute(&call.reducer_name, &mut ctx, &call.args)
+                        });
 
                         break match exec {
                             Err(e) => {
@@ -459,7 +623,9 @@ async fn run_server_inner(
                             }
                             Ok(result_bytes) => {
                                 // Commit staged writes atomically.
-                                match ctx.commit() {
+                                let commit_result = tracing::info_span!("commit", attempt)
+                                    .in_scope(|| ctx.commit());
+                                match commit_result {
                                     Err(crate::error::VoltraError::TxnConflict(_))
                                         if attempt < MAX_CONFLICT_RETRIES =>
                                     {
@@ -481,11 +647,17 @@ async fn run_server_inner(
                                     }
                                     Ok(deltas) => {
                                         // Fan out live subscription updates — O(1) per subscriber.
+                                        let _fanout_enter = tracing::info_span!(
+                                            "subscription_fanout",
+                                            rows = deltas.len()
+                                        )
+                                        .entered();
                                         if !deltas.is_empty() {
                                             subs_w.publish_deltas(&deltas);
                                             // Replicate to cluster peers (no-op single-node).
                                             cluster_w.fanout_deltas(&deltas);
                                         }
+                                        drop(_fanout_enter);
 
                                         let seq_num = seq_w.fetch_add(1, Ordering::Relaxed);
 
@@ -509,6 +681,8 @@ async fn run_server_inner(
 
                                         // Append to WAL for crash recovery. `deltas` is moved in
                                         // (its last use) — no per-call clone of the delta vec.
+                                        let _wal_enter =
+                                            tracing::info_span!("wal_append", seq_num).entered();
                                         let entry = WalEntry::new(
                                             ts,
                                             seq_num,
@@ -521,6 +695,7 @@ async fn run_server_inner(
                                         } else {
                                             metrics_w.wal_entries_written_total.inc();
                                         }
+                                        drop(_wal_enter);
 
                                         // Periodic snapshot + WAL rotation to bound WAL file size.
                                         // Skip if a snapshot is already in flight — overlapping
@@ -665,6 +840,9 @@ async fn run_server_inner(
                             caller_role: "scheduler".to_string(),
                             tenant_id: None,
                             lobby_hint: None,
+                            enqueued_at: std::time::Instant::now(),
+                            tx_batch: None,
+                            tx_response_tx: None,
                             response_tx: resp_tx,
                         };
                         if tx_sched.send(call).await.is_err() { break; }

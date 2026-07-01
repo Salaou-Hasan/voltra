@@ -12,7 +12,7 @@ pub use protocol::{
     decode_client_message, decode_reducer_call, encode_message, encode_server_message,
 };
 pub use rate_limiter::{RateLimiterConfig, RateLimiterRegistry, ShutdownState, TokenBucket};
-pub use websocket::{start_listener, PendingCall};
+pub use websocket::{start_listener, PendingCall, TransactionOutcome};
 
 // ── Inline reducer fast path ──────────────────────────────────────────────────
 //
