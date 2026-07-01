@@ -5,6 +5,16 @@ use std::path::PathBuf;
 const RELEASES_REPO: &str = "Salaou-Hasan/voltra-releases";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The exact git tag this binary was built from (set by build.rs via
+/// `git describe --tags --always --dirty`, e.g. "g1.3.0.0", or
+/// "g1.3.0.0-5-gabc123" for untagged dev builds). This — not Cargo.toml's
+/// `version`, which stays "1.0.0" for the whole generation by design — is
+/// what identifies which RELEASE the running binary actually is. Comparing
+/// updates against CURRENT_VERSION instead of this was the bug that made
+/// every g1.x binary re-download "available updates" forever: a g1.3.0.0
+/// binary self-identified as g1.1.0.0 and always saw itself as outdated.
+const BUILD_TAG: &str = env!("VOLTRA_BUILD_TAG");
+
 /// Pure so it can be unit-tested for all 4 platforms regardless of the host
 /// running the test — this exact string must match `release.yml`'s
 /// `asset_name` for each build matrix entry, or `voltra update` 404s.
@@ -63,38 +73,67 @@ fn latest_tag() -> Option<String> {
 /// its numeric version is lower (the 1.0.0 reset at the start of a generation
 /// must still update users on the previous line).
 fn version_newer(latest: &str) -> bool {
-    fn parse(v: &str) -> (u64, u64, u64, u64) {
-        let v = v.trim();
-        if let Some(rest) = v.strip_prefix('g') {
-            let p: Vec<u64> = rest.split('.').filter_map(|x| x.parse().ok()).collect();
-            (
-                p.first().copied().unwrap_or(0),
-                p.get(1).copied().unwrap_or(0),
-                p.get(2).copied().unwrap_or(0),
-                p.get(3).copied().unwrap_or(0),
-            )
-        } else {
-            let s = v.strip_prefix('v').unwrap_or(v);
-            let p: Vec<u64> = s.split('.').filter_map(|x| x.parse().ok()).collect();
-            (
-                0,
-                p.first().copied().unwrap_or(0),
-                p.get(1).copied().unwrap_or(0),
-                p.get(2).copied().unwrap_or(0),
-            )
+    parse_version(latest) > current_version_tuple()
+}
+
+/// Parse a version string into a comparable (generation, major, minor, patch)
+/// tuple. Handles "g1.3.0.0" (current scheme), "v2.0.5" / "2.0.5" (legacy,
+/// generation 0), and git-describe suffixes on dev builds ("g1.3.0.0-5-gabc"
+/// / "-dirty" — everything after the first non-digit/non-dot character in the
+/// numeric part is ignored, so a dev build sitting N commits past a tag
+/// identifies as that tag rather than failing to parse).
+fn parse_version(v: &str) -> (u64, u64, u64, u64) {
+    let v = v.trim();
+    if let Some(rest) = v.strip_prefix('g') {
+        let clean: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let p: Vec<u64> = clean.split('.').filter_map(|x| x.parse().ok()).collect();
+        (
+            p.first().copied().unwrap_or(0),
+            p.get(1).copied().unwrap_or(0),
+            p.get(2).copied().unwrap_or(0),
+            p.get(3).copied().unwrap_or(0),
+        )
+    } else {
+        let s = v.strip_prefix('v').unwrap_or(v);
+        let p: Vec<u64> = s.split('.').filter_map(|x| x.parse().ok()).collect();
+        (
+            0,
+            p.first().copied().unwrap_or(0),
+            p.get(1).copied().unwrap_or(0),
+            p.get(2).copied().unwrap_or(0),
+        )
+    }
+}
+
+/// The running binary's own version tuple. Prefers the embedded git tag
+/// (BUILD_TAG — the only thing that distinguishes g1.2.0.0 from g1.3.0.0,
+/// since Cargo's version is frozen at 1.0.0 for the whole generation) and
+/// falls back to GENERATION + CARGO_PKG_VERSION only when the build had no
+/// usable tag (e.g. a source build from a tarball with no .git directory,
+/// where build.rs's `git describe` fallback yields "v1.0.0" — a legacy-format
+/// string whose generation would wrongly parse as 0).
+fn current_version_tuple() -> (u64, u64, u64, u64) {
+    if BUILD_TAG.starts_with('g') {
+        let parsed = parse_version(BUILD_TAG);
+        // A parsed generation of 0 from a g-tag means the tag was garbage
+        // (e.g. bare commit hash that happened to start with 'g') — fall back.
+        if parsed.0 > 0 {
+            return parsed;
         }
     }
     let cur: Vec<u64> = CURRENT_VERSION
         .split('.')
         .filter_map(|p| p.parse().ok())
         .collect();
-    let current = (
+    (
         crate::GENERATION as u64,
         cur.first().copied().unwrap_or(0),
         cur.get(1).copied().unwrap_or(0),
         cur.get(2).copied().unwrap_or(0),
-    );
-    parse(latest) > current
+    )
 }
 
 fn download_and_replace(bin: &str, tag: &str) -> crate::error::Result<()> {
@@ -229,11 +268,11 @@ pub fn cmd_update(check_only: bool) -> crate::error::Result<()> {
     };
 
     if !version_newer(&tag) {
-        println!("already up to date (v{CURRENT_VERSION}).");
+        println!("already up to date ({BUILD_TAG}).");
         return Ok(());
     }
 
-    println!("v{CURRENT_VERSION} → {tag} available!");
+    println!("{BUILD_TAG} → {tag} available!");
 
     if check_only {
         println!("  Run `voltra update` to install.");
@@ -252,9 +291,7 @@ pub fn cmd_update(check_only: bool) -> crate::error::Result<()> {
 pub fn check_and_hint() {
     if let Some(tag) = latest_tag() {
         if version_newer(&tag) {
-            eprintln!(
-                "[voltra] Update available: v{CURRENT_VERSION} → {tag}  (run `voltra update`)"
-            );
+            eprintln!("[voltra] Update available: {BUILD_TAG} → {tag}  (run `voltra update`)");
         }
     }
 }
@@ -462,15 +499,48 @@ mod update_tests {
 
     #[test]
     fn version_newer_rejects_older_patch_in_same_generation() {
-        // Cargo.toml's CURRENT_VERSION ("1.0.0") + GENERATION (1) encodes to
-        // the same 4-tuple as tag "g1.1.0.0" — so a lower g1.x.x.x tag must
-        // NOT be reported as newer. This is the exact case the original bug
-        // report would have masked, since it never got exercised by a test.
         assert!(!version_newer("g1.0.0.0"));
     }
 
     #[test]
     fn version_newer_compares_within_same_generation() {
         assert!(version_newer("g1.99.0.0"));
+    }
+
+    // THE reported bug: after installing g1.3.0.0, `voltra update` re-updated
+    // to g1.3.0.0 every single run, and a running server printed "update
+    // available" for the very version it was. Root cause: version_newer
+    // compared against Cargo.toml's version (frozen at 1.0.0 for the whole
+    // generation → self-identified as g1.1.0.0) instead of the embedded git
+    // tag. The binary's own tag must never be considered a newer version.
+    #[test]
+    fn own_build_tag_is_never_a_newer_version() {
+        use super::BUILD_TAG;
+        assert!(
+            !version_newer(BUILD_TAG),
+            "binary considers its own tag ({BUILD_TAG}) an available update"
+        );
+    }
+
+    #[test]
+    fn parse_version_handles_git_describe_suffixes() {
+        use super::parse_version;
+        // Dev build N commits past a tag identifies as that tag.
+        assert_eq!(parse_version("g1.3.0.0-5-gabc123"), (1, 3, 0, 0));
+        assert_eq!(parse_version("g1.3.0.0-dirty"), (1, 3, 0, 0));
+        assert_eq!(parse_version("g1.3.0.0"), (1, 3, 0, 0));
+        // Legacy tags parse as generation 0.
+        assert_eq!(parse_version("v2.0.5"), (0, 2, 0, 5));
+    }
+
+    #[test]
+    fn current_version_tuple_prefers_build_tag_over_cargo_version() {
+        use super::{current_version_tuple, BUILD_TAG};
+        // In any build made from a git checkout with g-tags reachable (CI
+        // release builds and this dev tree alike), the tuple must come from
+        // the tag — Cargo's frozen 1.0.0 would wrongly encode as g1.1.0.0.
+        if BUILD_TAG.starts_with('g') {
+            assert_eq!(current_version_tuple(), super::parse_version(BUILD_TAG));
+        }
     }
 }
