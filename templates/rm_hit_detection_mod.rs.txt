@@ -1,0 +1,35 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn submit_hit_claim(
+    ctx: Ctx,
+    attacker_id: String,
+    target_id: String,
+    weapon_id: String,
+    client_tick: i64,
+) {
+    // Validate both entities exist before recording the claim. This is a
+    // narrow authority check, not full lag-compensated rewind — see
+    // docs/voltra-v1-runtime.md for the dedicated AOI/tick runtime path.
+    if ctx.get("entities", &attacker_id)?.is_none() {
+        ret!({ "ok": false, "validated": false, "error": "Attacker entity not found" })
+    }
+    if ctx.get("entities", &target_id)?.is_none() {
+        ret!({ "ok": false, "validated": false, "error": "Target entity not found" })
+    }
+
+    let now = ctx.timestamp() as i64;
+    let key = format!("{}:{}:{}", attacker_id, target_id, client_tick);
+    ctx.set("hit_events", &key, json!({
+        "key": key,
+        "attacker_id": attacker_id,
+        "target_id": target_id,
+        "weapon_id": weapon_id,
+        "client_tick": client_tick,
+        "server_tick": now,
+        "timestamp": now
+    }))?;
+
+    ret!({ "ok": true, "validated": true })
+}

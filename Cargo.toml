@@ -10,6 +10,7 @@ name = "voltra"
 version = "1.0.0"
 edition = "2021"
 description = "Voltra — high-throughput in-memory game backend (WebSocket, Redis & Postgres wire, WAL-durable)"
+license = "MIT"
 
 # Clippy: deny warnings in CI, but allow advisory lints that are intentional here.
 # - too_many_arguments / type_complexity: server bootstrap fns thread many subsystems by design.

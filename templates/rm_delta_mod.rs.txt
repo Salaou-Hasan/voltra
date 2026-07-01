@@ -1,0 +1,22 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn ack_delta_cursor(ctx: Ctx, client_id: String, lobby_id: String, seq: i64) {
+    let key = format!("{}:{}", lobby_id, client_id);
+    ctx.set("delta_cursors", &key, json!({
+        "key": key,
+        "client_id": client_id,
+        "lobby_id": lobby_id,
+        "last_seq": seq,
+        "last_ack_at": ctx.timestamp() as i64
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn reset_delta_cursor(ctx: Ctx, client_id: String, lobby_id: String) {
+    let key = format!("{}:{}", lobby_id, client_id);
+    ctx.delete("delta_cursors", key)?;
+    ret!({ "ok": true })
+}

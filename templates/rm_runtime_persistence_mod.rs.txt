@@ -1,0 +1,32 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn record_lobby_snapshot(ctx: Ctx, lobby_id: String, snapshot_seq: i64, row_count: i64) {
+    let key = format!("{}:{}", lobby_id, snapshot_seq);
+    ctx.set("lobby_snapshots", &key, json!({
+        "key": key,
+        "lobby_id": lobby_id,
+        "snapshot_seq": snapshot_seq,
+        "row_count": row_count,
+        "taken_at": ctx.timestamp() as i64
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn prune_lobby_snapshots(ctx: Ctx, lobby_id: String, keep_from_seq: i64) {
+    let rows = ctx.tables.list_rows_with_keys("lobby_snapshots").unwrap_or_default();
+    let mut pruned = 0i64;
+
+    for (key, row) in rows {
+        if row["lobby_id"].as_str() == Some(lobby_id.as_str())
+            && row["snapshot_seq"].as_i64().unwrap_or(0) < keep_from_seq
+        {
+            ctx.delete("lobby_snapshots", &key)?;
+            pruned += 1;
+        }
+    }
+
+    ret!({ "ok": true, "pruned": pruned })
+}

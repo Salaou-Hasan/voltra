@@ -1,0 +1,26 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn set_aoi_view_distance(ctx: Ctx, entity_id: String, lobby_id: String, view_distance: f64) {
+    ctx.set("aoi_subscriptions", &entity_id, json!({
+        "entity_id": entity_id,
+        "lobby_id": lobby_id,
+        "view_distance": view_distance,
+        "cell_x": 0,
+        "cell_y": 0
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn update_aoi_cell(ctx: Ctx, entity_id: String, cell_x: i64, cell_y: i64) {
+    let mut row = match ctx.get("aoi_subscriptions", &entity_id)? {
+        Some(r) => r,
+        None => ret!({ "ok": false, "error": "No AOI subscription for entity" }),
+    };
+    row["cell_x"] = json!(cell_x);
+    row["cell_y"] = json!(cell_y);
+    ctx.set("aoi_subscriptions", &entity_id, row)?;
+    ret!({ "ok": true })
+}

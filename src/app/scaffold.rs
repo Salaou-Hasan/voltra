@@ -12,7 +12,10 @@ use voltra::error::Result;
 use crate::app::build::build_voltra_reducers;
 use crate::app::templates::*;
 
-pub(crate) fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
+/// Resolve the project name + directory, prompting interactively for
+/// whichever piece wasn't given on the command line. Shared by `voltra init`
+/// (template picker) and `voltra init --genre/--modules` (recipe composer).
+pub(crate) fn resolve_project_name_and_path(path: Option<PathBuf>) -> Result<(String, PathBuf)> {
     let theme = ColorfulTheme::default();
 
     let project_name: String = match &path {
@@ -42,6 +45,13 @@ pub(crate) fn init_project(path: Option<PathBuf>, template: Option<String>) -> R
             PathBuf::from(input)
         }
     };
+
+    Ok((project_name, project_path))
+}
+
+pub(crate) fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
+    let theme = ColorfulTheme::default();
+    let (project_name, project_path) = resolve_project_name_and_path(path)?;
 
     let template_name: String = match template {
         Some(t) => {
@@ -140,6 +150,165 @@ pub(crate) fn init_project(path: Option<PathBuf>, template: Option<String>) -> R
             )));
         }
     }
+    Ok(())
+}
+
+/// `voltra init <name> --genre <genre> [--modules a,b,c] [--client rust|unity|godot|all|none]`
+///
+/// Module-first composition (TODO-V1-007): resolves a genre recipe plus any
+/// extra modules through `voltra::runtime::compose_runtime` (dependency-closed
+/// against the `RuntimeModule` catalog in `src/runtime/mod.rs`), lays down the
+/// same baseline every game needs (players/sessions schema, spawn/move/despawn/
+/// damage/heal, Cargo.toml), then layers each resolved module's reducers +
+/// schema on top via the same `add_module_files` pipeline `voltra add` uses.
+///
+/// `--modules`/`--with` alone (no `--genre`) is a fully custom module set.
+pub(crate) fn init_project_from_recipe(
+    path: Option<PathBuf>,
+    genre: Option<String>,
+    modules: Option<String>,
+    client: Option<String>,
+) -> Result<()> {
+    let (project_name, project_path) = resolve_project_name_and_path(path)?;
+
+    let extra_owned: Vec<String> = modules
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let extra: Vec<&str> = extra_owned.iter().map(|s| s.as_str()).collect();
+
+    let composition = voltra::runtime::compose_runtime(genre.as_deref(), &extra).map_err(|e| {
+        let genres: Vec<&str> = voltra::runtime::builtin_genres()
+            .iter()
+            .map(|g| g.id)
+            .collect();
+        let mods: Vec<&str> = voltra::runtime::builtin_modules()
+            .iter()
+            .map(|m| m.id)
+            .collect();
+        eprintln!("Error: {e}");
+        eprintln!("Available genres: {}", genres.join(", "));
+        eprintln!("Available modules: {}", mods.join(", "));
+        voltra::error::VoltraError::invalid_argument(e)
+    })?;
+
+    fs::create_dir_all(&project_path).map_err(|e| {
+        voltra::error::VoltraError::internal(format!("Cannot create directory: {}", e))
+    })?;
+
+    // "game/basic" gets the safe commented-out scheduler note — a composed
+    // project's module set varies too much to guess a correct default
+    // [[scheduler]] entry (a reducer name that doesn't exist errors on tick).
+    write_shared_files(&project_path, &project_name, "game/basic")?;
+
+    // Baseline every genre wants: a players/sessions schema and the core
+    // spawn/move/despawn/damage/heal reducers to attach gameplay modules to.
+    wf(&project_path, "Cargo.toml", &game_cargo_toml(&project_name))?;
+    copy_lockfile_if_available(&project_path)?;
+    wf(&project_path, "src/main.rs", GAME_MAIN_RS)?;
+    wf(&project_path, "src/reducers/mod.rs", R_MOD_BASIC)?;
+    wf(&project_path, "src/reducers/spawn.rs", R_SPAWN_RS)?;
+    wf(&project_path, "src/reducers/move_player.rs", R_MOVE_RS)?;
+    wf(&project_path, "src/reducers/despawn.rs", R_DESPAWN_RS)?;
+    wf(&project_path, "src/reducers/damage.rs", R_DAMAGE_RS)?;
+    wf(&project_path, "src/reducers/heal.rs", R_HEAL_RS)?;
+    wf(&project_path, "schema.toml", R_BASIC_SCHEMA)?;
+    wf(&project_path, "SCALING.md", SCALING_MD)?;
+
+    // Layer every resolved runtime module on top of the baseline.
+    let mut applied: Vec<&str> = Vec::new();
+    for module in &composition.modules {
+        add_module_files(&project_path, module.id)?;
+        applied.push(module.id);
+    }
+
+    match client.as_deref().unwrap_or("all") {
+        "none" => {}
+        "rust" => {
+            wf(
+                &project_path,
+                "clients/rust/Cargo.toml",
+                &client_cargo_toml(&project_name),
+            )?;
+            wf(&project_path, "clients/rust/src/main.rs", CLIENT_MAIN_RS)?;
+            let src_lock = std::path::Path::new(VOLTRA_SOURCE_DIR).join("Cargo.lock");
+            if src_lock.exists() {
+                let _ = fs::copy(&src_lock, project_path.join("clients/rust/Cargo.lock"));
+            }
+        }
+        "unity" => {
+            wf(
+                &project_path,
+                "clients/unity/VoltraClient.cs",
+                UNITY_CLIENT_CS,
+            )?;
+            wf(
+                &project_path,
+                "clients/unity/VoltraBehaviour.cs",
+                UNITY_BEHAVIOUR_CS,
+            )?;
+            wf(
+                &project_path,
+                "clients/unity/VoltraManager.cs",
+                UNITY_MANAGER_CS,
+            )?;
+        }
+        "godot" => {
+            wf(
+                &project_path,
+                "clients/godot/voltra_client.gd",
+                GODOT_CLIENT_GD,
+            )?;
+            wf(
+                &project_path,
+                "clients/godot/VoltraManager.gd",
+                GODOT_MANAGER_GD,
+            )?;
+        }
+        _ => scaffold_all_clients(&project_path, &project_name)?,
+    }
+
+    let genre_line = genre.as_deref().unwrap_or("(none — explicit module list)");
+    let readme = format!(
+        "# {name}\n\n\
+        Voltra V1 module-recipe game server, generated by `voltra init --genre/--modules`.\n\n\
+        Genre: {genre_line}\n\n\
+        Resolved modules ({count}): {modules}\n\n\
+        Each module lives under `src/reducers/<module>/` and contributed its tables to \
+        `schema.toml`. Add more later from inside this project with `voltra add <module>` \
+        (run `voltra modules` for the full list).\n\n\
+        Hot-simulation modules (ecs, aoi, movement, weapons, hit-detection, ...) are \
+        represented here as ordinary reducers over TableStore rows, the same as durable \
+        gameplay modules — that keeps every module runnable with zero extra wiring. Voltra's \
+        own dedicated ECS/AOI/tick hot-path engine (`src/runtime/` in the Voltra repo, not in \
+        this project) is a separate, optional upgrade for studios that need sub-tick \
+        performance; see docs/voltra-v1-runtime.md.\n\n\
+        ## Run\n\n\
+        ```\n\
+        cargo build --release\n\
+        cargo run --release -- start\n\
+        ```\n",
+        name = project_name,
+        genre_line = genre_line,
+        count = applied.len(),
+        modules = applied.join(", "),
+    );
+    wf(&project_path, "README.md", &readme)?;
+
+    println!();
+    println!("  Voltra V1 recipe project created: {}", project_name);
+    println!("  Genre: {}", genre_line);
+    println!("  Modules ({}): {}", applied.len(), applied.join(", "));
+    println!();
+    println!("  cd {}", project_name);
+    println!("  cargo build --release");
+    println!("  cargo run --release -- start");
+    println!();
     Ok(())
 }
 
@@ -604,7 +773,11 @@ pub(crate) fn scaffold_voltra_chat(p: &Path, name: &str) -> Result<()> {
 
 pub(crate) fn register_module_in_mod_rs(p: &Path, module: &str) -> Result<()> {
     let mod_rs = p.join("src/reducers/mod.rs");
-    let line = format!("pub mod {module};\n");
+    // Module ids like "runtime-persistence" / "hit-detection" use hyphens
+    // (matching voltra::runtime::RuntimeModule::id), which are not legal in a
+    // Rust module path segment — sanitize to the on-disk/identifier form.
+    let ident = module.replace('-', "_");
+    let line = format!("pub mod {ident};\n");
     let existing = fs::read_to_string(&mod_rs).unwrap_or_default();
     if existing.contains(line.trim_end()) {
         return Ok(());
@@ -693,6 +866,65 @@ pub(crate) fn add_module_files(p: &Path, module: &str) -> Result<()> {
             wf(p, "src/reducers/world/cleanup.rs", RM_WORLD_CLEANUP_RS)?;
             append_schema(p, RM_WORLD_SCHEMA)?;
         }
+        // ── Voltra V1 runtime modules (RuntimeModule ids from voltra::runtime) ──
+        "sessions" => {
+            wf(p, "src/reducers/sessions/mod.rs", RM_SESSIONS_MOD_RS)?;
+            append_schema(p, RM_SESSIONS_SCHEMA)?;
+        }
+        "lobby" => {
+            wf(p, "src/reducers/lobby/mod.rs", RM_LOBBY_MOD_RS)?;
+            append_schema(p, RM_LOBBY_SCHEMA)?;
+        }
+        "tick" => {
+            wf(p, "src/reducers/tick/mod.rs", RM_TICK_MOD_RS)?;
+            append_schema(p, RM_TICK_SCHEMA)?;
+        }
+        "ecs" => {
+            wf(p, "src/reducers/ecs/mod.rs", RM_ECS_MOD_RS)?;
+            append_schema(p, RM_ECS_SCHEMA)?;
+        }
+        "aoi" => {
+            wf(p, "src/reducers/aoi/mod.rs", RM_AOI_MOD_RS)?;
+            append_schema(p, RM_AOI_SCHEMA)?;
+        }
+        "delta" => {
+            wf(p, "src/reducers/delta/mod.rs", RM_DELTA_MOD_RS)?;
+            append_schema(p, RM_DELTA_SCHEMA)?;
+        }
+        "runtime-persistence" => {
+            wf(
+                p,
+                "src/reducers/runtime_persistence/mod.rs",
+                RM_RTPERSIST_MOD_RS,
+            )?;
+            append_schema(p, RM_RTPERSIST_SCHEMA)?;
+        }
+        "movement" => {
+            // No new table — operates on the `entities` table from the `ecs`
+            // module, which `compose_runtime` guarantees is already resolved
+            // as a dependency whenever `movement` is requested.
+            wf(p, "src/reducers/movement/mod.rs", RM_MOVEMENT_MOD_RS)?;
+        }
+        "weapons" => {
+            wf(p, "src/reducers/weapons/mod.rs", RM_WEAPONS_MOD_RS)?;
+            append_schema(p, RM_WEAPONS_SCHEMA)?;
+        }
+        "hit-detection" => {
+            wf(p, "src/reducers/hit_detection/mod.rs", RM_HITDET_MOD_RS)?;
+            append_schema(p, RM_HITDET_SCHEMA)?;
+        }
+        "equipment" => {
+            wf(p, "src/reducers/equipment/mod.rs", RM_EQUIPMENT_MOD_RS)?;
+            append_schema(p, RM_EQUIPMENT_SCHEMA)?;
+        }
+        "parties" => {
+            wf(p, "src/reducers/parties/mod.rs", RM_PARTIES_MOD_RS)?;
+            append_schema(p, RM_PARTIES_SCHEMA)?;
+        }
+        "replay" => {
+            wf(p, "src/reducers/replay/mod.rs", RM_REPLAY_MOD_RS)?;
+            append_schema(p, RM_REPLAY_SCHEMA)?;
+        }
         _ => {}
     }
     Ok(())
@@ -713,8 +945,28 @@ pub(crate) fn cmd_add_module(module: &str, project_path: &Path) -> Result<()> {
 
     // Rust project path — write .rs files.
     match module {
-        "chat" | "inventory" | "leaderboard" | "matchmaking" | "guilds" | "quests" | "economy"
-        | "combat" | "world" => {
+        "chat"
+        | "inventory"
+        | "leaderboard"
+        | "matchmaking"
+        | "guilds"
+        | "quests"
+        | "economy"
+        | "combat"
+        | "world"
+        | "sessions"
+        | "lobby"
+        | "tick"
+        | "ecs"
+        | "aoi"
+        | "delta"
+        | "runtime-persistence"
+        | "movement"
+        | "weapons"
+        | "hit-detection"
+        | "equipment"
+        | "parties"
+        | "replay" => {
             add_module_files(project_path, module)?;
             println!();
             println!("  Added {module} module → src/reducers/{module}/");

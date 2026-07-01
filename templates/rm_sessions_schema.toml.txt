@@ -1,0 +1,27 @@
+[[table]]
+name = "session_tokens"
+
+[[table.columns]]
+name = "token"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "player_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "role"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "issued_at"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "expires_at"
+type = "i64"
+required = true

@@ -1,0 +1,27 @@
+[[table]]
+name = "lobby_snapshots"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "lobby_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "snapshot_seq"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "row_count"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "taken_at"
+type = "i64"
+required = true

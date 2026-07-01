@@ -1,0 +1,26 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+// Distinct from the `inventory` module's `equip_item` (which flags an item as
+// equipped in the inventory table). This module owns the hot-stat projection
+// slot itself, keyed by (player_id, slot), separate from the item stack.
+
+#[reducer]
+fn equip_loadout_item(ctx: Ctx, player_id: String, slot: String, item_id: String, stat_bonus: i64) {
+    let key = format!("{}:{}", player_id, slot);
+    ctx.set("equipment", &key, json!({
+        "key": key,
+        "player_id": player_id,
+        "slot": slot,
+        "item_id": item_id,
+        "stat_bonus": stat_bonus
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn unequip_loadout_item(ctx: Ctx, player_id: String, slot: String) {
+    let key = format!("{}:{}", player_id, slot);
+    ctx.delete("equipment", key)?;
+    ret!({ "ok": true })
+}

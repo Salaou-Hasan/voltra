@@ -592,6 +592,18 @@ pub(crate) fn cmd_list_modules() {
     println!("    voltra add combat       # adds attack, respawn, ability reducers + schema");
     println!("    voltra add leaderboard  # adds lb_submit, lb_reset reducers + schema");
     println!();
+    println!("  Genre recipes  (voltra init <name> --genre <genre>)");
+    println!();
+    for recipe in voltra::runtime::builtin_genres() {
+        println!("  {:16} — {}", recipe.id, recipe.description);
+    }
+    println!();
+    println!("  Example:");
+    println!("    voltra init my-fps --genre fps");
+    println!("    voltra init my-mmo --genre mmo --with chat,guilds");
+    println!("    voltra init my-game --modules lobby,movement,combat,inventory");
+    println!("    voltra init my-game --client unity --genre survival");
+    println!();
 }
 #[cfg(test)]
 mod start_detection_tests {

@@ -1,7 +1,7 @@
 # Voltra — TODO & Roadmap
 
-**Last Updated**: 2026-06-09 (Session 44)
-**Current Build**: 471 tests passing (465 lib + 6 Raft), zero warnings, ~2.9M raw TPS (in-process benchmark)
+**Last Updated**: 2026-07-01 (verified against actual repo state, not carried forward from prior notes)
+**Current Build**: `cargo build --release` and `cargo clippy --release --lib -- -D warnings` both clean; `cargo test --release --lib` → 695 passed, 0 failed. Raft was removed (Session 44); the "465 lib + 6 Raft" figure below is obsolete.
 
 Read CLAUDE.md before touching any file. This document lists concrete, prioritized tasks for the next agent(s) to execute.
 
@@ -69,7 +69,13 @@ player id, session id, roles/permissions, and runtime character/state id.
 
 #### TODO-V1-001 - Replace Preset Templates With Module-First Recipes
 
-**Status**: Not started  
+**Status**: 🟡 CORE DONE (2026-07-01), cleanup step remaining — the target CLI below now works
+exactly as specified (see TODO-V1-007 for implementation detail): `voltra init my-game --genre
+fps`, `--modules lobby,movement,combat,inventory`, and `--client unity --genre survival` all
+resolve and scaffold correctly. What's left, per this task's own last line: old preset templates
+(`game/basic`, `game/full`, `voltra/*`) are still the *default* — `voltra init` without `--genre`/
+`--modules` behaves exactly as before, and `voltra templates` still lists only the old presets, not
+the genre recipes. Moving/hiding them under `legacy/*` is not done.  
 **Priority**: Critical
 
 Current templates are preset-first. Voltra V1 needs module-first composition:
@@ -96,7 +102,9 @@ them from default listing.
 
 #### TODO-V1-002 - Add Lobby Runtime Skeleton
 
-**Status**: Not started  
+**Status**: ✅ DONE — `src/runtime/lobby_runtime.rs` (`LobbyRuntime`, ~294 lines, 6 tests). Owns
+`World` (ECS), `AreaOfInterest`, tick scheduling, AOI client registration, spawn/despawn. Not yet
+reachable from `voltra init` (see V1-007).  
 **Priority**: Critical
 
 Add a first-class `LobbyManager`. A lobby should own its simulation state, ECS world, AOI,
@@ -104,7 +112,8 @@ subscriptions, reducers/systems, runtime persistence lifecycle, and metrics.
 
 #### TODO-V1-003 - Add ECS/SoA Hot-State Foundation
 
-**Status**: Not started  
+**Status**: ✅ DONE — `src/runtime/ecs.rs` (~470 lines, 9 tests): entity id, lobby id, session
+association, transform/velocity, health/alive state.  
 **Priority**: Critical
 
 Add the first narrow ECS storage layer for hot simulation: entity id, lobby id, player/session
@@ -112,21 +121,23 @@ association, transform/position, velocity, and health/alive state.
 
 #### TODO-V1-004 - Add AOI / Interest Management Foundation
 
-**Status**: Not started  
+**Status**: ✅ DONE — `src/runtime/aoi.rs` (~331 lines, 8 tests) + `src/runtime/aoi_broadcast.rs`
+(~308 lines, 4 tests, `AoiBroadcaster`/`broadcast_tick`). No per-tick O(n^2) fanout.  
 **Priority**: Critical
 
 Build spatial interest management over lobby ECS state. Avoid O(n^2) fanout and per-tick allocation.
 
 #### TODO-V1-005 - Add Runtime Delta Encoder
 
-**Status**: Not started  
+**Status**: ✅ DONE — `AoiDelta` + `AoiBroadcaster::encode_deltas` in `src/runtime/aoi_broadcast.rs`
+(MsgPack via `rmp_serde`, transport-agnostic `OutboundFrames`).  
 **Priority**: High
 
 Create a compact, transport-agnostic runtime delta format for hot-state updates.
 
 #### TODO-V1-006 - Add Auth Adapter Boundary
 
-**Status**: Not started  
+**Status**: ❌ NOT STARTED (verified — no `AuthAdapter` type or equivalent exists anywhere in `src/`)  
 **Priority**: High
 
 Separate account validation from runtime state. Runtime accepts validated session tokens; account
@@ -134,10 +145,35 @@ credentials, billing, OAuth secrets, and business/account records stay outside t
 
 #### TODO-V1-007 - Integrate Module Recipes Into `voltra init`
 
-**Status**: Not started  
+**Status**: ✅ DONE (2026-07-01) — `voltra init <name> --genre <fps|mmo|battle-royale|survival|
+racing|moba|social> [--modules a,b,c] [--with a,b,c] [--client rust|unity|godot|all|none]`
+(`src/main.rs` `Commands::Init`, `src/app/scaffold.rs` `init_project_from_recipe`). Resolves the
+module set through the previously-orphaned `voltra::runtime::compose_runtime`, lays down the
+standard players/sessions baseline, then layers each resolved module's reducers + schema via the
+same `add_module_files` pipeline `voltra add` already used.
+  - The 8 `RuntimeModule` ids that overlapped the legacy `voltra add` set (combat, inventory,
+    economy, quests, guilds, matchmaking, chat, leaderboard) reuse the existing `rm_*` templates.
+  - The 13 that didn't exist anywhere (`sessions`, `lobby`, `tick`, `ecs`, `aoi`, `delta`,
+    `runtime-persistence`, `movement`, `weapons`, `hit-detection`, `equipment`, `parties`,
+    `replay`) got new template content (`templates/rm_<module>_mod.rs.txt` +
+    `_schema.toml.txt`), also wired into plain `voltra add <module>` standalone.
+  - Verified, not just compiled: scaffolded the `fps` genre (15 resolved modules) and `mmo` genre
+    (16 resolved modules, including the `equipment` vs. `inventory`'s `equip_item` naming
+    collision risk) into real directories and ran `cargo build --release` on each generated
+    project — both compile clean. Started the `fps` project's server; all 41 native reducers
+    auto-registered with zero name collisions and the hand-written schema.toml files parsed
+    correctly (would not have been caught by `cargo build` alone).
+  - **Known scope boundary, stated honestly**: these 13 new modules represent hot-simulation
+    state (entities, AOI cells, tick counters, weapon cooldowns, ...) as ordinary TableStore
+    rows/reducers, the same as durable-gameplay modules — NOT wired to the dedicated ECS/AOI/tick
+    hot-path engine already built in `src/runtime/` (that engine is Voltra's own internal code,
+    not something the scaffolder currently injects into generated projects). That deeper
+    integration — generating a project whose `main.rs` actually constructs a `LobbyRuntime` and
+    runs the real ECS/AOI/tick loop — is a separate, larger follow-up, not yet started.
+  - Also **not done**: `.vol` DSL equivalents for the 13 new modules (`cmd_add_module_voltra`
+    still only recognizes the original 9 — calling `voltra add sessions` etc. inside a
+    `reducers.vol`-based project errors clearly rather than silently doing nothing).  
 **Priority**: High
-
-Wire `src/runtime/mod.rs` into scaffolding with `--genre`, `--modules`, `--with`, and `--client`.
 
 #### TODO-V1-008 - 10k CCU 24h Game Simulation Validation
 
@@ -1303,41 +1339,41 @@ Remaining: push to Git repo, connect to Dokploy, deploy image on Linux VPS, run 
 
 ## Remaining for Production (post-Session-39 wave)
 
-The 5-agent Session-39 wave landed schema hardening, new WAL unit tests, and integration-style
-schema tests, but the following gaps remain before Voltra is production-ready. They are listed
-in roughly decreasing order of severity.
+**⚠️ This whole section is from Session 39 and was never updated as later sessions fixed items in
+it. Verified 2026-07-01 against the actual repo — corrections inline below. Do not trust an
+unverified bullet in this section; re-check before acting on it.**
 
-### Build & Test Plumbing (BLOCKING)
-- **`cargo build` (bin) is broken.** `src/main.rs:783` calls `start_listener` with 10 arguments
-  but `src/network/websocket.rs:104` now requires 11. The missing argument is a `u64`.  This
-  blocks every `cargo test` invocation that needs the bin (including the new
-  `tests/wal_recovery_test.rs` and `tests/schema_validation_test.rs` files Agent 5 wrote — they
-  type-check fine via `cargo check --test <name>` but cannot RUN until the bin compiles).
-  Fix is owned by whichever agent introduced the new `start_listener` parameter.
+### Build & Test Plumbing
+- ~~`cargo build` (bin) is broken~~ — **FALSE as of 2026-07-01.** `cargo build --release` and
+  `cargo clippy --release --lib -- -D warnings` both pass clean. This was fixed in a later session
+  and the note was never removed.
 
 ### Data Reliability
-- **Full WAL crash recovery on a REAL server.** Session 39 added unit-level WAL recovery tests
-  (`tests/wal_recovery_test.rs`) covering checksum corruption, mid-entry truncation, and
-  snapshot+replay. We do NOT yet have a test that starts a real `voltra start` process, kills it
-  mid-write, restarts it, and verifies the state matches expectations end-to-end. The integration
-  test infrastructure exists (see Sessions 37–38) but no test exercises crash recovery.
-- **CRDT / HLC for cross-shard write conflict resolution** (Wave 4 of the original plan). With
-  multiple shards there is no causal ordering for concurrent writes that touch the same row on
-  different nodes. Either pick a single-writer-per-key strategy or introduce a Hybrid Logical
-  Clock + CRDT-merge layer. Not designed.
+- ~~Full WAL crash recovery on a REAL server — no test exercises this~~ — **FALSE as of
+  2026-07-01.** `tests/crash_recovery_test.rs` exists with 2 tests that spawn a real server
+  process, kill it, restart it, and verify state via HTTP (counter survival, paired-write
+  integrity). `tests/protocol_fuzz_test.rs`, `tests/wal_recovery_test.rs`, and
+  `tests/schema_validation_test.rs` also now exist. Not personally re-run pass/fail in this
+  session (would require spawning real server processes) — verify with `cargo test` before relying
+  on this being green.
+- **CRDT / HLC for cross-shard write conflict resolution** — still plausible as a gap; multi-shard
+  cluster code exists (`src/cluster/`) but a Hybrid Logical Clock / CRDT-merge layer was not found
+  anywhere in `src/`. Not independently re-verified this session beyond a `grep` for HLC/CRDT
+  terms turning up nothing.
 
 ### Concurrency Bugs
-- **TS / Rust SDK optimistic-update concurrent-diff race** (Wave 3 of the original plan).
-  When two `call_optimistic()` calls overlap and the server's diff for the FIRST call arrives
-  AFTER the optimistic state of the SECOND call has been applied, the rollback path can clobber
-  the second call's speculative state. Reproducer + fix needed for both `voltra-client-ts/src/client.ts`
-  and `voltra-client-rust/src/client.rs`.
+- ~~TS / Rust SDK optimistic-update concurrent-diff race~~ — **contradicted by this same file's
+  own "EXECUTION ORDER" section**, which marks `TODO-036 SDK optimistic race fix` as done in
+  Session 44 Wave 1 (stack-replay layering in both `voltra-client-ts/src/client.ts` and
+  `voltra-client-rust/src/client.rs`). Not independently re-verified this session — if you're
+  about to rely on this, re-read the current `client.ts`/`client.rs` rather than trusting either
+  claim blindly.
 
 ### Cluster
-- **Cluster integration tests (two-node loopback).** `src/cluster/mod.rs` has solid unit tests
-  for `shard_for_key` and config parsing (Session 36) but no test spins up two nodes on
-  loopback, fans out a write, and verifies the peer received it. The cluster HTTP layer is
-  effectively untested at the integration level.
+- **Cluster integration tests (two-node loopback).** Still plausible — `ls tests/` on
+  2026-07-01 shows no file that spins up two server processes and verifies cross-node fan-out.
+  `src/cluster/mod.rs` unit tests (shard routing, config parsing) still look isolated to the
+  module itself. This gap is likely still real.
 
 ### Lower-priority
 - C# / Unity client SDK (TODO-024) — explicit deferral.

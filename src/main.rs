@@ -47,7 +47,7 @@ use app::cli::{
     cmd_backup, cmd_cluster_status, cmd_drain, cmd_generate, cmd_list_backups, cmd_list_modules,
     cmd_list_templates, cmd_promote, cmd_start_project, is_game_project, print_banner,
 };
-use app::scaffold::{cmd_add_module, init_project};
+use app::scaffold::{cmd_add_module, init_project, init_project_from_recipe};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI definition
@@ -73,6 +73,22 @@ enum Commands {
             help = "Template: game/basic | game/full | game/unity | game/godot"
         )]
         template: Option<String>,
+        #[arg(
+            long,
+            help = "Genre recipe (module-first composition): fps | mmo | battle-royale | survival | racing | moba | social. See `voltra modules`. Combine with --template unity/godot for engine clients."
+        )]
+        genre: Option<String>,
+        #[arg(
+            long,
+            alias = "with",
+            help = "Comma-separated runtime modules, e.g. --modules movement,combat,inventory. Adds to --genre if both given, or stands alone as a fully custom module set."
+        )]
+        modules: Option<String>,
+        #[arg(
+            long,
+            help = "Client SDK to scaffold with a --genre/--modules project: rust | unity | godot | all | none (default: all)"
+        )]
+        client: Option<String>,
     },
     /// Add a feature module to an existing project (run inside project dir)
     Add {
@@ -302,8 +318,18 @@ async fn main() -> Result<()> {
         }
     };
     match command {
-        Commands::Init { path, template } => {
-            init_project(path, template)?;
+        Commands::Init {
+            path,
+            template,
+            genre,
+            modules,
+            client,
+        } => {
+            if genre.is_some() || modules.is_some() {
+                init_project_from_recipe(path, genre, modules, client)?;
+            } else {
+                init_project(path, template)?;
+            }
             Ok(())
         }
         Commands::Add { module } => {

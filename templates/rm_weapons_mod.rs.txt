@@ -1,0 +1,48 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn equip_weapon(ctx: Ctx, entity_id: String, weapon_id: String, max_ammo: i64) {
+    ctx.set("weapon_state", &entity_id, json!({
+        "entity_id": entity_id,
+        "weapon_id": weapon_id,
+        "ammo": max_ammo,
+        "max_ammo": max_ammo,
+        "cooldown_until": 0
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn fire_weapon(ctx: Ctx, entity_id: String, cooldown_ms: i64) {
+    let mut state = match ctx.get("weapon_state", &entity_id)? {
+        Some(s) => s,
+        None => ret!({ "ok": false, "error": "No weapon equipped" }),
+    };
+    let now = ctx.timestamp() as i64;
+    let cooldown_until = state["cooldown_until"].as_i64().unwrap_or(0);
+    let ammo = state["ammo"].as_i64().unwrap_or(0);
+    if now < cooldown_until {
+        ret!({ "ok": false, "error": "Weapon on cooldown" })
+    }
+    if ammo <= 0 {
+        ret!({ "ok": false, "error": "Out of ammo" })
+    }
+    let new_ammo = ammo - 1;
+    state["ammo"] = json!(new_ammo);
+    state["cooldown_until"] = json!(now + cooldown_ms);
+    ctx.set("weapon_state", &entity_id, state)?;
+    ret!({ "ok": true, "ammo": new_ammo })
+}
+
+#[reducer]
+fn reload_weapon(ctx: Ctx, entity_id: String) {
+    let mut state = match ctx.get("weapon_state", &entity_id)? {
+        Some(s) => s,
+        None => ret!({ "ok": false, "error": "No weapon equipped" }),
+    };
+    let max_ammo = state["max_ammo"].as_i64().unwrap_or(0);
+    state["ammo"] = json!(max_ammo);
+    ctx.set("weapon_state", &entity_id, state)?;
+    ret!({ "ok": true, "ammo": max_ammo })
+}

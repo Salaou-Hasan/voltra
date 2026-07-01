@@ -1,0 +1,61 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn create_party(ctx: Ctx, party_id: String) {
+    let leader = ctx.caller_id.clone();
+    if ctx.get("parties", &party_id)?.is_some() {
+        ret!({ "ok": false, "error": "Party already exists" })
+    }
+    ctx.set("parties", &party_id, json!({
+        "party_id": party_id,
+        "leader_id": leader,
+        "member_count": 1,
+        "status": "open"
+    }))?;
+    let member_key = format!("{}:{}", party_id, leader);
+    ctx.set("party_members", &member_key, json!({
+        "key": member_key,
+        "party_id": party_id,
+        "player_id": leader
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn invite_to_party(ctx: Ctx, party_id: String, player_id: String) {
+    let mut party = match ctx.get("parties", &party_id)? {
+        Some(p) => p,
+        None => ret!({ "ok": false, "error": "Party not found" }),
+    };
+    let member_key = format!("{}:{}", party_id, player_id);
+    if ctx.get("party_members", &member_key)?.is_some() {
+        ret!({ "ok": false, "error": "Already a member" })
+    }
+    ctx.set("party_members", &member_key, json!({
+        "key": member_key,
+        "party_id": party_id,
+        "player_id": player_id
+    }))?;
+    let count = party["member_count"].as_i64().unwrap_or(0) + 1;
+    party["member_count"] = json!(count);
+    ctx.set("parties", &party_id, party)?;
+    ret!({ "ok": true, "member_count": count })
+}
+
+#[reducer]
+fn leave_party(ctx: Ctx, party_id: String, player_id: String) {
+    let member_key = format!("{}:{}", party_id, player_id);
+    if ctx.get("party_members", &member_key)?.is_none() {
+        ret!({ "ok": false, "error": "Not a member" })
+    }
+    ctx.delete("party_members", member_key)?;
+    let mut party = match ctx.get("parties", &party_id)? {
+        Some(p) => p,
+        None => ret!({ "ok": true }),
+    };
+    let count = (party["member_count"].as_i64().unwrap_or(1) - 1).max(0);
+    party["member_count"] = json!(count);
+    ctx.set("parties", &party_id, party)?;
+    ret!({ "ok": true, "member_count": count })
+}

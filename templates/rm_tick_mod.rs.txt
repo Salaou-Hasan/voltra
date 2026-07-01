@@ -1,0 +1,31 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn configure_lobby_tick(ctx: Ctx, lobby_id: String, tick_rate_hz: i64) {
+    ctx.set("lobby_ticks", &lobby_id, json!({
+        "lobby_id": lobby_id,
+        "tick_number": 0,
+        "tick_rate_hz": tick_rate_hz,
+        "last_tick_at": ctx.timestamp() as i64
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn advance_lobby_tick(ctx: Ctx, lobby_id: String) {
+    let mut row = match ctx.get("lobby_ticks", &lobby_id)? {
+        Some(r) => r,
+        None => json!({
+            "lobby_id": lobby_id.clone(),
+            "tick_number": 0,
+            "tick_rate_hz": 20,
+            "last_tick_at": 0
+        }),
+    };
+    let tick_number = row["tick_number"].as_i64().unwrap_or(0) + 1;
+    row["tick_number"] = json!(tick_number);
+    row["last_tick_at"] = json!(ctx.timestamp() as i64);
+    ctx.set("lobby_ticks", &lobby_id, row)?;
+    ret!({ "ok": true, "tick_number": tick_number })
+}

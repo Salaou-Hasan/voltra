@@ -1,0 +1,37 @@
+[[table]]
+name = "hit_events"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "attacker_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "target_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "weapon_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "client_tick"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "server_tick"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "timestamp"
+type = "i64"
+required = true

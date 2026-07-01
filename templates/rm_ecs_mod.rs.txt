@@ -1,0 +1,36 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn spawn_entity(ctx: Ctx, entity_id: String, lobby_id: String, x: f64, y: f64, z: f64) {
+    if ctx.get("entities", &entity_id)?.is_some() {
+        ret!({ "ok": false, "error": "Entity already exists" })
+    }
+    ctx.set("entities", &entity_id, json!({
+        "entity_id": entity_id,
+        "lobby_id": lobby_id,
+        "x": x, "y": y, "z": z,
+        "vx": 0.0, "vy": 0.0, "vz": 0.0,
+        "alive": true
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn despawn_entity(ctx: Ctx, entity_id: String) {
+    ctx.delete("entities", entity_id)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn set_entity_velocity(ctx: Ctx, entity_id: String, vx: f64, vy: f64, vz: f64) {
+    let mut entity = match ctx.get("entities", &entity_id)? {
+        Some(e) => e,
+        None => ret!({ "ok": false, "error": "Entity not found" }),
+    };
+    entity["vx"] = json!(vx);
+    entity["vy"] = json!(vy);
+    entity["vz"] = json!(vz);
+    ctx.set("entities", &entity_id, entity)?;
+    ret!({ "ok": true })
+}

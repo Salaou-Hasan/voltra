@@ -1,0 +1,32 @@
+[[table]]
+name = "replay_frames"
+
+[[table.columns]]
+name = "key"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "lobby_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "tick_number"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "frame_seq"
+type = "i64"
+required = true
+
+[[table.columns]]
+name = "payload_b64"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "recorded_at"
+type = "i64"
+required = true

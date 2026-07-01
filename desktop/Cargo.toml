@@ -3,6 +3,7 @@ name = "voltra-console"
 version = "0.1.0"
 edition = "2021"
 description = "Voltra Console — native desktop window around the admin dashboard (system webview, low memory)."
+license = "MIT"
 
 # Standalone workspace so the server build never pulls GUI deps.
 [workspace]

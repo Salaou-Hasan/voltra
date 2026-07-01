@@ -1,0 +1,30 @@
+[[table]]
+name = "aoi_subscriptions"
+
+[[table.columns]]
+name = "entity_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "lobby_id"
+type = "String"
+required = true
+
+[[table.columns]]
+name = "view_distance"
+type = "f64"
+required = false
+default = "50"
+
+[[table.columns]]
+name = "cell_x"
+type = "i64"
+required = false
+default = "0"
+
+[[table.columns]]
+name = "cell_y"
+type = "i64"
+required = false
+default = "0"

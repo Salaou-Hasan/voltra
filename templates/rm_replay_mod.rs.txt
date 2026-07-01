@@ -1,0 +1,33 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn record_replay_frame(ctx: Ctx, lobby_id: String, tick_number: i64, frame_seq: i64, payload_b64: String) {
+    let key = format!("{}:{}", lobby_id, frame_seq);
+    ctx.set("replay_frames", &key, json!({
+        "key": key,
+        "lobby_id": lobby_id,
+        "tick_number": tick_number,
+        "frame_seq": frame_seq,
+        "payload_b64": payload_b64,
+        "recorded_at": ctx.timestamp() as i64
+    }))?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn prune_replay_frames(ctx: Ctx, lobby_id: String, keep_from_seq: i64) {
+    let rows = ctx.tables.list_rows_with_keys("replay_frames").unwrap_or_default();
+    let mut pruned = 0i64;
+
+    for (key, row) in rows {
+        if row["lobby_id"].as_str() == Some(lobby_id.as_str())
+            && row["frame_seq"].as_i64().unwrap_or(0) < keep_from_seq
+        {
+            ctx.delete("replay_frames", &key)?;
+            pruned += 1;
+        }
+    }
+
+    ret!({ "ok": true, "pruned": pruned })
+}

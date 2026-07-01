@@ -1,0 +1,36 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+#[reducer]
+fn issue_session_token(ctx: Ctx, player_id: String, role: String, ttl_ms: i64) {
+    let now = ctx.timestamp() as i64;
+    let token = format!("{}-{}", player_id, now);
+    ctx.set("session_tokens", &token, json!({
+        "token": token,
+        "player_id": player_id,
+        "role": role,
+        "issued_at": now,
+        "expires_at": now + ttl_ms
+    }))?;
+    ret!({ "ok": true, "token": token })
+}
+
+#[reducer]
+fn validate_session_token(ctx: Ctx, token: String) {
+    let row = match ctx.get("session_tokens", &token)? {
+        Some(r) => r,
+        None => ret!({ "ok": false, "error": "Unknown token" }),
+    };
+    let expires_at = row["expires_at"].as_i64().unwrap_or(0);
+    let now = ctx.timestamp() as i64;
+    if now > expires_at {
+        ret!({ "ok": false, "error": "Token expired" })
+    }
+    ret!({ "ok": true, "player_id": row["player_id"], "role": row["role"] })
+}
+
+#[reducer]
+fn revoke_session_token(ctx: Ctx, token: String) {
+    ctx.delete("session_tokens", token)?;
+    ret!({ "ok": true })
+}

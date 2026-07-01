@@ -1,0 +1,34 @@
+use voltra::{reducer, ret};
+use serde_json::json;
+
+// Operates on the `entities` table created by the `ecs` module (a required
+// dependency of `movement` in the runtime module catalog).
+
+#[reducer]
+fn set_entity_input(ctx: Ctx, entity_id: String, input_x: f64, input_y: f64) {
+    let mut entity = match ctx.get("entities", &entity_id)? {
+        Some(e) => e,
+        None => ret!({ "ok": false, "error": "Entity not found" }),
+    };
+    entity["vx"] = json!(input_x);
+    entity["vy"] = json!(input_y);
+    ctx.set("entities", &entity_id, entity)?;
+    ret!({ "ok": true })
+}
+
+#[reducer]
+fn apply_entity_movement(ctx: Ctx, entity_id: String, dt_ms: i64) {
+    let mut entity = match ctx.get("entities", &entity_id)? {
+        Some(e) => e,
+        None => ret!({ "ok": false, "error": "Entity not found" }),
+    };
+    let dt = dt_ms as f64 / 1000.0;
+    let x = entity["x"].as_f64().unwrap_or(0.0) + entity["vx"].as_f64().unwrap_or(0.0) * dt;
+    let y = entity["y"].as_f64().unwrap_or(0.0) + entity["vy"].as_f64().unwrap_or(0.0) * dt;
+    let z = entity["z"].as_f64().unwrap_or(0.0) + entity["vz"].as_f64().unwrap_or(0.0) * dt;
+    entity["x"] = json!(x);
+    entity["y"] = json!(y);
+    entity["z"] = json!(z);
+    ctx.set("entities", &entity_id, entity)?;
+    ret!({ "ok": true, "x": x, "y": y, "z": z })
+}

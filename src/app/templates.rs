@@ -41,6 +41,24 @@ pub(crate) const MODULES: &[(&str, &str)] = &[
         "world",
         "World tick, NPC spawn, session cleanup (scheduled)",
     ),
+    // ── Voltra V1 runtime modules (also usable via `voltra init --genre` /
+    //    `--modules`, see `voltra::runtime::builtin_genres()`) ──────────────
+    ("sessions", "Session-token issue/validate/revoke"),
+    ("lobby", "Lobby create/join/leave with capacity tracking"),
+    ("tick", "Per-lobby tick counter bookkeeping"),
+    (
+        "ecs",
+        "Hot-state entity records: transform, velocity, alive",
+    ),
+    ("aoi", "Area-of-interest view distance + grid cell tracking"),
+    ("delta", "Per-client delta cursor ack/reset bookkeeping"),
+    ("runtime-persistence", "Lobby snapshot recording + pruning"),
+    ("movement", "Input + movement integration over ecs entities"),
+    ("weapons", "Weapon equip, fire (ammo/cooldown), reload"),
+    ("hit-detection", "Hit claim submission and recording"),
+    ("equipment", "Equipped-item stat slots (loadout)"),
+    ("parties", "Party create/invite/leave with membership"),
+    ("replay", "Tick/delta frame capture and pruning"),
 ];
 
 /// Path to the Voltra source on the machine that compiled this binary.
@@ -1111,6 +1129,49 @@ pub(crate) const RM_WORLD_NPC_RS: &str = include_str!("../../templates/rm_world_
 pub(crate) const RM_WORLD_CLEANUP_RS: &str =
     include_str!("../../templates/rm_world_cleanup.rs.txt");
 pub(crate) const RM_WORLD_SCHEMA: &str = include_str!("../../templates/rm_world_schema.toml.txt");
+
+// ── Voltra V1 runtime modules (voltra init --genre / --modules) ──────────────
+// These fill out the remaining `RuntimeModule` ids from `voltra::runtime` that
+// the legacy 9-module `voltra add` set didn't cover (TODO-V1-007). Same
+// `add_module_files` wf() + append_schema() pipeline as the modules above —
+// single-file-per-module instead of split into sub-files, since each is 2-3
+// reducers. State is represented via ordinary TableStore rows/reducers today;
+// the dedicated ECS/AOI/tick hot-path engine in `src/runtime/` is a separate,
+// optional upgrade for studios that need it (see docs/voltra-v1-runtime.md).
+pub(crate) const RM_SESSIONS_MOD_RS: &str = include_str!("../../templates/rm_sessions_mod.rs.txt");
+pub(crate) const RM_SESSIONS_SCHEMA: &str =
+    include_str!("../../templates/rm_sessions_schema.toml.txt");
+pub(crate) const RM_LOBBY_MOD_RS: &str = include_str!("../../templates/rm_lobby_mod.rs.txt");
+pub(crate) const RM_LOBBY_SCHEMA: &str = include_str!("../../templates/rm_lobby_schema.toml.txt");
+pub(crate) const RM_TICK_MOD_RS: &str = include_str!("../../templates/rm_tick_mod.rs.txt");
+pub(crate) const RM_TICK_SCHEMA: &str = include_str!("../../templates/rm_tick_schema.toml.txt");
+pub(crate) const RM_ECS_MOD_RS: &str = include_str!("../../templates/rm_ecs_mod.rs.txt");
+pub(crate) const RM_ECS_SCHEMA: &str = include_str!("../../templates/rm_ecs_schema.toml.txt");
+pub(crate) const RM_AOI_MOD_RS: &str = include_str!("../../templates/rm_aoi_mod.rs.txt");
+pub(crate) const RM_AOI_SCHEMA: &str = include_str!("../../templates/rm_aoi_schema.toml.txt");
+pub(crate) const RM_DELTA_MOD_RS: &str = include_str!("../../templates/rm_delta_mod.rs.txt");
+pub(crate) const RM_DELTA_SCHEMA: &str = include_str!("../../templates/rm_delta_schema.toml.txt");
+pub(crate) const RM_RTPERSIST_MOD_RS: &str =
+    include_str!("../../templates/rm_runtime_persistence_mod.rs.txt");
+pub(crate) const RM_RTPERSIST_SCHEMA: &str =
+    include_str!("../../templates/rm_runtime_persistence_schema.toml.txt");
+pub(crate) const RM_MOVEMENT_MOD_RS: &str = include_str!("../../templates/rm_movement_mod.rs.txt");
+pub(crate) const RM_WEAPONS_MOD_RS: &str = include_str!("../../templates/rm_weapons_mod.rs.txt");
+pub(crate) const RM_WEAPONS_SCHEMA: &str =
+    include_str!("../../templates/rm_weapons_schema.toml.txt");
+pub(crate) const RM_HITDET_MOD_RS: &str =
+    include_str!("../../templates/rm_hit_detection_mod.rs.txt");
+pub(crate) const RM_HITDET_SCHEMA: &str =
+    include_str!("../../templates/rm_hit_detection_schema.toml.txt");
+pub(crate) const RM_EQUIPMENT_MOD_RS: &str =
+    include_str!("../../templates/rm_equipment_mod.rs.txt");
+pub(crate) const RM_EQUIPMENT_SCHEMA: &str =
+    include_str!("../../templates/rm_equipment_schema.toml.txt");
+pub(crate) const RM_PARTIES_MOD_RS: &str = include_str!("../../templates/rm_parties_mod.rs.txt");
+pub(crate) const RM_PARTIES_SCHEMA: &str =
+    include_str!("../../templates/rm_parties_schema.toml.txt");
+pub(crate) const RM_REPLAY_MOD_RS: &str = include_str!("../../templates/rm_replay_mod.rs.txt");
+pub(crate) const RM_REPLAY_SCHEMA: &str = include_str!("../../templates/rm_replay_schema.toml.txt");
 
 // ── Rust client SDK scaffold ──────────────────────────────────────────────────
 
