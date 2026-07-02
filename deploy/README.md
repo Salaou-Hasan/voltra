@@ -80,6 +80,27 @@ journalctl -u voltra -f
 
 ---
 
+## Proxmox VE (LXC)
+
+Run this **on the Proxmox host** (not inside a container). It creates an unprivileged Debian 12 LXC container, installs Voltra + systemd inside it, and starts the service:
+
+```bash
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/Salaou-Hasan/voltra/master/deploy/proxmox-install.sh)"
+```
+
+Defaults: 4 cores, 4096MB RAM, 16GB disk, DHCP on `vmbr0`, storage `local-lvm`. Override with env vars:
+
+```bash
+CTID=210 CORES=8 MEMORY=8192 DISK_GB=32 STORAGE=local-zfs ENABLE_HA=1 \
+  bash deploy/proxmox-install.sh
+```
+
+`ENABLE_HA=1` registers the container with Proxmox's HA manager (`ha-manager add ct:<id>`) so Proxmox auto-restarts or migrates it on host failure — recommended for anything beyond a dev box.
+
+An LXC container is deliberately used instead of a full VM: Voltra is a single static binary with no special kernel dependencies, so it gets near-bare-metal CPU/network performance in an unprivileged container while still getting Proxmox snapshots, backups, and (optionally) HA.
+
+---
+
 ## Production Checklist
 
 - [ ] **TLS termination** — place Voltra behind a reverse proxy (nginx, Caddy, Traefik) that handles TLS. Voltra does not terminate TLS itself.

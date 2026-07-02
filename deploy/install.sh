@@ -12,12 +12,15 @@ fi
 INSTALL_BIN="/usr/local/bin/voltra"
 DATA_DIR="/var/lib/voltra"
 SERVICE_FILE="/etc/systemd/system/voltra.service"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ${BASH_SOURCE[0]} is unset under `set -u` when this script is piped
+# straight into bash (curl ... | bash) — stdin has no source path.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" && pwd)"
 
 echo "==> Installing Voltra..."
 
-# Download latest release binary
-REPO="Salaou-Hasan/Voltra"
+# Download latest release binary. Releases are published to a separate
+# repo (voltra-releases) by .github/workflows/release.yml, not the source repo.
+REPO="Salaou-Hasan/voltra-releases"
 LATEST_TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')"
 BINARY_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/voltra-linux-x86_64"
 
@@ -39,9 +42,15 @@ echo "==> Creating data directory ${DATA_DIR}..."
 mkdir -p "$DATA_DIR"
 chown voltra:voltra "$DATA_DIR"
 
-# Install systemd service
+# Install systemd service. When this script is piped straight into bash
+# (curl ... | bash) there is no local voltra.service next to it, so fall
+# back to fetching it from the source repo.
 echo "==> Installing systemd service..."
-cp "${SCRIPT_DIR}/voltra.service" "$SERVICE_FILE"
+if [[ -f "${SCRIPT_DIR}/voltra.service" ]]; then
+  cp "${SCRIPT_DIR}/voltra.service" "$SERVICE_FILE"
+else
+  curl -fsSL "https://raw.githubusercontent.com/Salaou-Hasan/voltra/master/deploy/voltra.service" -o "$SERVICE_FILE"
+fi
 
 # Enable and start service
 echo "==> Enabling and starting voltra service..."

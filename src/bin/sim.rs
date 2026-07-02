@@ -242,36 +242,83 @@ fn sim_spawn_npc(ctx: &mut ReducerContext, args: &[u8]) -> voltra::error::Result
 inventory::submit! { NativeReducerItem { name: "sim_spawn_npc", make: || Box::new(NativeReducerBackend::new(sim_spawn_npc)) } }
 
 // ── Game: world tick (scheduled) ────────────────────────────────────────────
+// Regen/respawn work is committed per-lobby (not one server-wide transaction)
+// so OCC's read/write-set validation is scoped to ~lobby_size rows instead of
+// every player on the server. A single giant commit touching all N players
+// means ANY concurrent write anywhere aborts the whole tick and forces a
+// full re-scan retry — the conflict probability (and retry cost) scales with
+// total server population instead of per-instance population, which is why
+// this collapsed under load at high CCU. Real games tick each game
+// instance/lobby independently for the same reason; this mirrors that.
 fn sim_world_tick(ctx: &mut ReducerContext, _args: &[u8]) -> voltra::error::Result<Vec<u8>> {
     let players = ctx.tables.list_rows("sim_players").unwrap_or_default();
+    let mut players_by_lobby: std::collections::HashMap<String, Vec<&serde_json::Value>> =
+        std::collections::HashMap::new();
     for p in &players {
-        if p["alive"].as_bool().unwrap_or(false) {
-            let mp = p["mp"].as_i64().unwrap_or(100);
-            let max_mp = p["max_mp"].as_i64().unwrap_or(100);
-            if mp < max_mp {
-                let pid = p["pid"].as_str().or(p["row_key"].as_str()).unwrap_or("");
-                let mut pc = p.clone();
-                pc["mp"] = json!((mp + 5).min(max_mp));
-                ctx.set_row("sim_players".into(), pid.into(), pc)?;
+        let lobby = p["lobby"]
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        players_by_lobby.entry(lobby).or_default().push(p);
+    }
+
+    let npcs = ctx.tables.list_rows("sim_npcs").unwrap_or_default();
+    let mut npcs_by_lobby: std::collections::HashMap<String, Vec<&serde_json::Value>> =
+        std::collections::HashMap::new();
+    for n in &npcs {
+        let nid = n["nid"].as_str().or(n["row_key"].as_str()).unwrap_or("");
+        // nid format: l{lobby}_npc_{id}_{i} — the "l{lobby}" prefix must match
+        // the player row's "lobby" field ("l42"), so don't strip the 'l'.
+        let lobby = nid
+            .split("_npc_")
+            .next()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        npcs_by_lobby.entry(lobby).or_default().push(n);
+    }
+
+    let mut lobby_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    lobby_ids.extend(players_by_lobby.keys().cloned());
+    lobby_ids.extend(npcs_by_lobby.keys().cloned());
+
+    let mut respawned = 0i64;
+    let mut players_regen = 0i64;
+    for lobby in lobby_ids {
+        if let Some(ps) = players_by_lobby.get(&lobby) {
+            for p in ps {
+                if p["alive"].as_bool().unwrap_or(false) {
+                    let mp = p["mp"].as_i64().unwrap_or(100);
+                    let max_mp = p["max_mp"].as_i64().unwrap_or(100);
+                    if mp < max_mp {
+                        let pid = p["pid"].as_str().or(p["row_key"].as_str()).unwrap_or("");
+                        let mut pc = (*p).clone();
+                        pc["mp"] = json!((mp + 5).min(max_mp));
+                        ctx.set_row("sim_players".into(), pid.into(), pc)?;
+                        players_regen += 1;
+                    }
+                }
             }
         }
-    }
-    let npcs = ctx.tables.list_rows("sim_npcs").unwrap_or_default();
-    let mut respawned = 0i64;
-    for n in &npcs {
-        if !n["alive"].as_bool().unwrap_or(true) {
-            let nid = n["nid"].as_str().or(n["row_key"].as_str()).unwrap_or("");
-            let mut nc = n.clone();
-            nc["hp"] = json!(nc["max_hp"].as_i64().unwrap_or(50));
-            nc["alive"] = json!(true);
-            nc["x"] = nc["patrol_x"].clone();
-            nc["y"] = nc["patrol_y"].clone();
-            ctx.set_row("sim_npcs".into(), nid.into(), nc)?;
-            respawned += 1;
+        if let Some(ns) = npcs_by_lobby.get(&lobby) {
+            for n in ns {
+                if !n["alive"].as_bool().unwrap_or(true) {
+                    let nid = n["nid"].as_str().or(n["row_key"].as_str()).unwrap_or("");
+                    let mut nc = (*n).clone();
+                    nc["hp"] = json!(nc["max_hp"].as_i64().unwrap_or(50));
+                    nc["alive"] = json!(true);
+                    nc["x"] = nc["patrol_x"].clone();
+                    nc["y"] = nc["patrol_y"].clone();
+                    ctx.set_row("sim_npcs".into(), nid.into(), nc)?;
+                    respawned += 1;
+                }
+            }
         }
+        // Scope the OCC read/write validation to just this lobby's rows.
+        // An empty batch (nothing to regen/respawn this tick) is a cheap no-op.
+        ctx.commit()?;
     }
     Ok(rmp_serde::to_vec(
-        &json!({"ok": true, "respawned": respawned, "players_regen": players.len()}),
+        &json!({"ok": true, "respawned": respawned, "players_regen": players_regen}),
     )?)
 }
 inventory::submit! { NativeReducerItem { name: "sim_world_tick", make: || Box::new(NativeReducerBackend::new(sim_world_tick)) } }
