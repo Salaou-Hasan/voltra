@@ -49,9 +49,60 @@ pub(crate) fn resolve_project_name_and_path(path: Option<PathBuf>) -> Result<(St
     Ok((project_name, project_path))
 }
 
-pub(crate) fn init_project(path: Option<PathBuf>, template: Option<String>) -> Result<()> {
+/// Resolve the database name for a new project. The database names the
+/// persistent data set that lives inside the project folder (data/<name>/),
+/// so a game and its saved state travel together — same model as SpacetimeDB.
+///
+/// Priority: explicit --database flag > interactive prompt (only when init is
+/// already interactive, i.e. no path was given on the command line) > the
+/// project name. Sanitized to [a-z0-9_-] so it is always a valid directory.
+pub(crate) fn resolve_database_name(
+    database: Option<String>,
+    project_name: &str,
+    interactive: bool,
+) -> Result<String> {
+    let raw = match database {
+        Some(d) => d,
+        None if interactive => {
+            let theme = ColorfulTheme::default();
+            Input::with_theme(&theme)
+                .with_prompt("Database name")
+                .default(project_name.to_string())
+                .interact_text()
+                .map_err(|e| voltra::error::VoltraError::internal(format!("Prompt error: {}", e)))?
+        }
+        None => project_name.to_string(),
+    };
+    let sanitized: String = raw
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() || sanitized.chars().all(|c| c == '-') {
+        return Err(voltra::error::VoltraError::invalid_argument(format!(
+            "invalid database name '{}'",
+            raw
+        )));
+    }
+    Ok(sanitized)
+}
+
+pub(crate) fn init_project(
+    path: Option<PathBuf>,
+    template: Option<String>,
+    database: Option<String>,
+) -> Result<()> {
     let theme = ColorfulTheme::default();
+    let interactive = path.is_none();
     let (project_name, project_path) = resolve_project_name_and_path(path)?;
+    let db_name = resolve_database_name(database, &project_name, interactive)?;
 
     let template_name: String = match template {
         Some(t) => {
@@ -129,7 +180,7 @@ pub(crate) fn init_project(path: Option<PathBuf>, template: Option<String>) -> R
         voltra::error::VoltraError::internal(format!("Cannot create directory: {}", e))
     })?;
 
-    write_shared_files(&project_path, &project_name, &template_name)?;
+    write_shared_files(&project_path, &project_name, &template_name, &db_name)?;
 
     match template_name.as_str() {
         "voltra/basic" => scaffold_voltra_basic(&project_path, &project_name)?,
@@ -168,8 +219,11 @@ pub(crate) fn init_project_from_recipe(
     genre: Option<String>,
     modules: Option<String>,
     client: Option<String>,
+    database: Option<String>,
 ) -> Result<()> {
+    let interactive = path.is_none();
     let (project_name, project_path) = resolve_project_name_and_path(path)?;
+    let db_name = resolve_database_name(database, &project_name, interactive)?;
 
     let extra_owned: Vec<String> = modules
         .as_deref()
@@ -204,7 +258,7 @@ pub(crate) fn init_project_from_recipe(
     // "game/basic" gets the safe commented-out scheduler note — a composed
     // project's module set varies too much to guess a correct default
     // [[scheduler]] entry (a reducer name that doesn't exist errors on tick).
-    write_shared_files(&project_path, &project_name, "game/basic")?;
+    write_shared_files(&project_path, &project_name, "game/basic", &db_name)?;
 
     // Baseline every genre wants: a players/sessions schema and the core
     // spawn/move/despawn/damage/heal reducers to attach gameplay modules to.
@@ -320,6 +374,7 @@ pub(crate) fn write_shared_files(
     project_path: &Path,
     project_name: &str,
     template: &str,
+    db_name: &str,
 ) -> Result<()> {
     let scheduler_note = match template {
         "game/full" =>
@@ -333,14 +388,19 @@ pub(crate) fn write_shared_files(
     let permissions_example =
         "\n# [permissions]\n# Restrict reducers to specific roles:\n# guild_kick = [\"admin\", \"guild_owner\"]\n# ban_player = [\"admin\", \"moderator\"]\n";
 
+    // Persistent data (WAL + snapshots) lives inside the project folder under
+    // data/<database>/ — the game and its saved state travel together, and one
+    // project can host multiple named databases (dev/staging/prod) by editing
+    // these two paths.
     let toml = format!(
-        "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\n\
+        "[project]\nname = \"{name}\"\ndatabase = \"{db}\"\nversion = \"0.1.0\"\n\
         [server]\nhost = \"127.0.0.1\"\nport = 3000\nmetrics_port = 3001\n\
-        wal_path = \"./wal\"\nsnapshot_dir = \"./snapshots\"\n\
+        wal_path = \"./data/{db}/wal\"\nsnapshot_dir = \"./data/{db}/snapshots\"\n\
         # api_key = \"change-me\"\nfsync_interval_ms = 0\n\
         # snapshot_interval = 1000000\n\
         {scheduler}{permissions}\n",
         name = project_name,
+        db = db_name,
         scheduler = scheduler_note,
         permissions = permissions_example,
     );
@@ -363,7 +423,7 @@ pub(crate) fn write_shared_files(
 
     fs::write(
         project_path.join(".gitignore"),
-        "*.wal\n*.bin\nsnapshots/\n*.tmp\nnode_modules/\ndist/\n.env\n",
+        "data/\n*.wal\n*.bin\nsnapshots/\n*.tmp\nnode_modules/\ndist/\n.env\n",
     )
     .map_err(|e| voltra::error::VoltraError::internal(format!("Write .gitignore: {}", e)))?;
 

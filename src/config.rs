@@ -286,6 +286,11 @@ struct ConfigPermissionsMeta {
 struct ConfigProject {
     #[allow(dead_code)]
     name: Option<String>,
+    /// Database name — documents which named data set (data/<database>/)
+    /// this project's wal_path/snapshot_dir point at. Written by
+    /// `voltra init`; the paths carry the actual effect.
+    #[allow(dead_code)]
+    database: Option<String>,
 }
 
 #[derive(Deserialize)]

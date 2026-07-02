@@ -89,6 +89,11 @@ enum Commands {
             help = "Client SDK to scaffold with a --genre/--modules project: rust | unity | godot | all | none (default: all)"
         )]
         client: Option<String>,
+        #[arg(
+            long,
+            help = "Database name — persistent data lives in data/<name>/ inside the project (default: project name; prompted interactively)"
+        )]
+        database: Option<String>,
     },
     /// Add a feature module to an existing project (run inside project dir)
     Add {
@@ -324,11 +329,12 @@ async fn main() -> Result<()> {
             genre,
             modules,
             client,
+            database,
         } => {
             if genre.is_some() || modules.is_some() {
-                init_project_from_recipe(path, genre, modules, client)?;
+                init_project_from_recipe(path, genre, modules, client, database)?;
             } else {
-                init_project(path, template)?;
+                init_project(path, template, database)?;
             }
             Ok(())
         }
